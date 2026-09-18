@@ -1380,6 +1380,111 @@ int main(void) {
         }
     }
 
+    /* A LOCK MADE WHILE ANOTHER CLIP PLAYS DOES NOT LAND ON THE PLAYING CLIP.
+     *
+     * The bug reproduced twice on hardware 2026-09-18: a p-lock aimed at a
+     * brand-new clip was keyed to row 0 in one run and row 1 in another --
+     * whichever clip had last played. The resolver answers ONE row, the
+     * playing one, and every honest branch that would have said PENDING sits
+     * under `cslot < 0`, which the live identity skips the moment anything is
+     * playing.
+     *
+     * `lane_edit_unconfirmed` is the shim telling the chain that Move's strip
+     * shows a clip whose bar count is not the playing clip's. A write then
+     * keys to the placeholder and carries the EDITED clip's length, so
+     * adoption binds it to the right row later.
+     *
+     * Both halves are asserted, because either alone is a silent wrong
+     * answer: the row must not be the playing one, and the take's length must
+     * not be the playing clip's. */
+    {
+        chain_instance_t *eu = calloc(1, sizeof(*eu));
+        CHECK(eu != NULL, "calloc for the edit-unconfirmed fixture");
+        if (eu) {
+            setup_fake_synth(eu);
+            eu->lanes_enabled = 1;
+            eu->lane_track = 0;
+            eu->clip_loop_start = 0.0;
+            eu->clip_phase_beats = 1.0;
+            eu->clip_phase_valid = 1;
+            eu->clip_fp_valid = 1;
+            eu->clip_fp.loop_start = 0.0;
+            eu->clip_fp.loop_len = 16.0;
+            eu->clip_fp.note_count = 5;
+            eu->clip_fp.first_note = 60;
+
+            /* Row 3 is PLAYING and is four bars. */
+            eu->lane_clip_slot = 3;
+            eu->clip_loop_len = 16.0;
+
+            /* Baseline: nothing says a different clip is on screen, so a lock
+             * belongs to the playing clip and must key to its row. Without
+             * this the assertion below passes on a build that never writes to
+             * a real row at all. */
+            lane_param_set(eu, "plock", "synth cutoff 1.0 44");
+            int on_row = 0, on_pending = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (!ln->used) continue;
+                if (ln->slot == 3) on_row++;
+                if (lane_slot_is_pending(ln->slot)) on_pending++;
+            }
+            CHECK(on_row == 1 && on_pending == 0,
+                  "a confirmed lock did not key to the playing row "
+                  "(row=%d pending=%d)", on_row, on_pending);
+
+            /* Now Move's strip shows a ONE-bar clip while the four-bar clip
+             * on row 3 keeps playing: a different clip, established. */
+            lane_param_set(eu, "edit_len", "4.00");
+            lane_param_set(eu, "edit_unconfirmed", "1");
+            lane_param_set(eu, "plock", "synth octave 2.0 5");
+
+            const lane_t *oct = NULL;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (ln->used && strcmp(ln->param, "octave") == 0) oct = ln;
+            }
+            CHECK(oct != NULL, "the second lock created no lane");
+            if (oct) {
+                CHECK(lane_slot_is_pending(oct->slot),
+                      "the lock landed on row %d while the user was editing a "
+                      "different clip — silent, and permanent once it adopts",
+                      oct->slot);
+                CHECK(oct->pending_len == 4.0,
+                      "the take recorded length %.2f, expected the EDITED "
+                      "clip's 4.00 — keyed to the playing clip's geometry, "
+                      "adoption binds it to the wrong row",
+                      oct->pending_len);
+            }
+
+            /* And the first lock is untouched: playback keeps the playing row. */
+            const lane_t *cut = NULL;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (ln->used && strcmp(ln->param, "cutoff") == 0) cut = ln;
+            }
+            CHECK(cut && cut->slot == 3,
+                  "the earlier lock on the playing clip moved (slot=%d)",
+                  cut ? cut->slot : -99);
+
+            /* THE FLAG CLEARS. It is restated every frame by the shim, so a
+             * latched 1 would withhold the row from every later gesture aimed
+             * at the playing clip -- the exact failure the old session-decode
+             * version was removed for. */
+            lane_param_set(eu, "edit_unconfirmed", "0");
+            lane_param_set(eu, "plock", "synth cutoff 3.0 70");
+            int still_pending = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (eu->lanes.lanes[i3].used &&
+                    strcmp(eu->lanes.lanes[i3].param, "cutoff") == 0 &&
+                    lane_slot_is_pending(eu->lanes.lanes[i3].slot)) still_pending++;
+            CHECK(still_pending == 0,
+                  "with the flag cleared a lock still deferred — a latched "
+                  "flag makes every p-lock on the playing clip defer forever");
+            free(eu);
+        }
+    }
+
     /* DOUBLE LOOP INSIDE THE SAVE WINDOW KEEPS ONE CLIP IN ONE TAKE.
      *
      * `pending_len` identifies a blind take: it is how the next write finds

@@ -2156,7 +2156,34 @@ static void shadow_inprocess_render_to_buffer(void) {
                  *
                  * ON CHANGE ONLY: a per-block write would serve a param
                  * request on every frame, which is the cost this file avoids
-                 * everywhere else. */
+                 * everywhere else.
+                 *
+                 * TWO VALUES, and the length is not optional: a write keyed to
+                 * the placeholder needs the length of the clip it is being
+                 * made ON, and `loop_len` above is the PLAYING clip's. Pushed
+                 * first, so the chain never sees "unconfirmed" without the
+                 * geometry that makes it usable. */
+                if (shadow_plugin_v2->set_param && s < SHADOW_CHAIN_INSTANCES) {
+                    static int16_t last_unconf[SHADOW_CHAIN_INSTANCES];
+                    static int32_t last_elen[SHADOW_CHAIN_INSTANCES];
+                    static int8_t unconf_seen[SHADOW_CHAIN_INSTANCES];
+                    const int unconf = g_write_unconfirmed[s] ? 1 : 0;
+                    const int elen = g_write_edit_len_x100[s];
+                    if (!unconf_seen[s] || last_elen[s] != elen) {
+                        last_elen[s] = elen;
+                        char buf[24];
+                        snprintf(buf, sizeof(buf), "%d.%02d", elen / 100, elen % 100);
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:edit_len", buf);
+                    }
+                    if (!unconf_seen[s] || last_unconf[s] != unconf) {
+                        last_unconf[s] = (int16_t)unconf;
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:edit_unconfirmed",
+                                                    unconf ? "1" : "0");
+                    }
+                    unconf_seen[s] = 1;
+                }
                 /* THE KILL SWITCH, pushed on change like everything else
                  * here. Off by default: see SHIM_FLAG_LANES_ON. */
                 if (shadow_plugin_v2->set_param) {

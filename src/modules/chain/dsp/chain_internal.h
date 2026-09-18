@@ -905,6 +905,21 @@ typedef struct chain_instance {
      * the build enforces) and must land in neither multiplier. This said
      * 18 KB, which was true before LANE_MAX went 16 -> 32. */
     lane_store_t lanes;
+    /* MAY A WRITE USE `lane_clip_slot`? Pushed by the shim on change.
+     *
+     * The row is the PLAYING clip; a p-lock wants the clip on SCREEN. 1 means
+     * Move's step strip says a clip is being edited whose bar count differs
+     * from the playing clip's -- positive evidence of a different clip -- so a
+     * write must key to the placeholder and adopt later instead of landing on
+     * a clip the user is not looking at. See g_write_unconfirmed in
+     * shadow_chain_mgmt.c for why the STRIP is the signal and the session pad
+     * decode is not. */
+    int    lane_edit_unconfirmed;
+    /* The EDITED clip's length in quarters, off the same strip. A write keyed
+     * to the placeholder needs the geometry of the clip it is being made on;
+     * `clip_loop_len` is the playing clip's and would key the take to the
+     * wrong length, which is what adoption compares. */
+    double lane_edit_len;
     int    lane_armed;            /* pushed from the shim: Move's Record button */
     /* How many lanes the last `lanes:clear` threw away, read back as
      * `lanes:cleared`. The UI announces a NUMBER: a clear that reports

@@ -19,15 +19,18 @@
 
 /* WHICH ROW A WRITE IS KEYED TO — CURRENTLY THE SAME ONE PLAYBACK USES.
  *
- * For an identified clip this is `lane_clip_slot` and nothing more: the
- * write-versus-playback distinction that used to live here (a flag,
- * `lane_edit_unconfirmed`) is gone, because the resolver itself now answers
- * PENDING for a clip it cannot name, and hands that one row to both.
+ * TWO REASONS THIS IS NOT JUST `lane_clip_slot`.
  *
- * What it does do is pick the blind TAKE, below. Do not read the old
- * invariant into it either way: the previous text here claimed a clear could
- * not reach the playing row while a different clip was on screen, and nothing
- * enforces that.
+ * The resolver answers PENDING for a clip it cannot name, and this picks
+ * WHICH blind take that is (by the clip's length -- see
+ * lane_pending_slot_for_len).
+ *
+ * And a row it CAN name is still not always the row to write to:
+ * `lane_edit_unconfirmed` says Move's strip is showing a clip whose bar count
+ * is not the playing clip's, so the answer belongs to a clip the user is not
+ * editing. That flag existed before, read the SESSION pad decode, and was
+ * removed as unworkable for that reason -- it is strip-sourced now, which is
+ * live in Note view where p-locks actually happen.
  *
  * WHAT ASKS THIS, from when the two could differ — the clears, the probe, the
  * lock map and Double Loop. Fixing only the writes back then made the feature
@@ -42,6 +45,19 @@
  * lane_effective_slot), the unarmed PUNCH — which suppresses the lane that is
  * currently driving, so it is a fact about playback — and the `clip`
  * diagnostic, which exists to report the playing row. */
+/* THE LENGTH A WRITE RECORDS AGAINST, which is not always the playing clip's.
+ *
+ * `pending_len` is what identifies a blind take and what adoption compares, so
+ * a take made while a DIFFERENT clip plays has to carry the length of the clip
+ * on screen. Taking `clip_loop_len` there keys the take to the playing clip's
+ * geometry and adoption then matches the wrong row -- the same mistake as
+ * writing to the playing row, one level down. */
+static inline double lane_write_len(const chain_instance_t *inst) {
+    if (inst->lane_edit_unconfirmed && inst->lane_edit_len > 0.0)
+        return inst->lane_edit_len;
+    return inst->clip_loop_len;
+}
+
 static inline int lane_write_slot(const chain_instance_t *inst) {
     /* THE RESOLVER ANSWERS "PENDING"; WHICH pending take is ours to decide.
      *
@@ -60,6 +76,21 @@ static inline int lane_write_slot(const chain_instance_t *inst) {
     if (lane_slot_is_pending(inst->lane_clip_slot))
         return lane_pending_slot_for_len(&inst->lanes, inst->lane_track,
                                          inst->clip_loop_len);
+    /* A ROW WE MAY NOT WRITE TO IS THE SAME PROBLEM AS NO ROW AT ALL.
+     *
+     * Move's strip says a clip is being edited whose bar count is not the
+     * playing clip's, so the row above belongs to a clip the user is not
+     * looking at. Keying a write to it is the wrong-clip binding this whole
+     * area exists to prevent -- silent, and permanent once the lane is
+     * serialized. The placeholder defers instead, and the take is keyed by
+     * the EDITED clip's length so adoption binds it to the right row.
+     *
+     * Playback is untouched: lane_tick reads `lane_clip_slot` through
+     * lane_effective_slot and still gets the playing row, which is the
+     * question playback is asking. */
+    if (inst->lane_edit_unconfirmed && inst->lane_edit_len > 0.0)
+        return lane_pending_slot_for_len(&inst->lanes, inst->lane_track,
+                                         inst->lane_edit_len);
     return inst->lane_clip_slot;
 }
 
@@ -695,7 +726,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
             /* The row already says provisional -- lane_alloc was handed
              * the placeholder. Only the LENGTH has to be remembered;
              * see lane_store.h for why there is no second flag. */
-            ln->pending_len = inst->clip_loop_len;
+            ln->pending_len = lane_write_len(inst);
         }
 
         /* Store full, or a target/param too long for lane_t's fields, which
@@ -921,6 +952,21 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     }
 
     /* Move's Record button, pushed by the shim on CHANGE only. */
+    /* WHETHER A WRITE MAY TAKE THE ROW, and the edited clip's length. Both
+     * pushed on change by the shim; see chain_internal.h. Never gated on
+     * `lanes_enabled` -- they are facts about Move's screen, not lane
+     * content, and a disarmed build that mis-remembers them would mis-key the
+     * first write after arming. */
+    if (strcmp(sub, "edit_unconfirmed") == 0) {
+        inst->lane_edit_unconfirmed = (val && atoi(val) != 0) ? 1 : 0;
+        return;
+    }
+    if (strcmp(sub, "edit_len") == 0) {
+        const double v = val ? atof(val) : 0.0;
+        inst->lane_edit_len = (isfinite(v) && v > 0.0) ? v : 0.0;
+        return;
+    }
+
     if (strcmp(sub, "armed") == 0) {
         lane_set_armed(inst, val && atoi(val) != 0);
         return;
@@ -1183,7 +1229,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
             /* The row already says provisional -- lane_alloc was handed
              * the placeholder. Only the LENGTH has to be remembered;
              * see lane_store.h for why there is no second flag. */
-            ln->pending_len = inst->clip_loop_len;
+            ln->pending_len = lane_write_len(inst);
         }
 
         /* AND ITS ORIGIN IS PROVISIONAL TOO. This used to say `origin_pending`

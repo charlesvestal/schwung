@@ -421,6 +421,32 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     *clip_slot = cslot;
     if (!rg || !rg->valid) return 0;
     const clip_region_t *r = &rg->slots[slot][cslot];
+
+    /* AND WHETHER A WRITE MAY USE IT -- see g_write_unconfirmed above.
+     *
+     * Cleared first: this runs every frame for every slot, and a stale 1 from
+     * a moment when a different clip was on screen would withhold the row
+     * from a gesture aimed at the playing clip, which is the failure the old
+     * flag was removed for. */
+    if (slot < SHADOW_CHAIN_INSTANCES) {
+        g_write_unconfirmed[slot] = 0;
+        g_write_edit_len_x100[slot] = 0;
+        const int segs = step_strip_segments_for_track((int)slot);
+        if (segs > 0) {
+            const double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
+            const double ext = r->loop_start + r->loop_len;
+            /* Rounded UP, because that is how the strip draws it: a segment
+             * is a BAR and a part-bar still gets one. Compared as BARS and
+             * never as quarters -- the strip cannot answer finer than a bar,
+             * so comparing quarters would call every clip different. */
+            const int row_bars = (qpb > 0.0 && ext > 0.0)
+                               ? (int)ceil(ext / qpb - 1e-9) : 0;
+            if (row_bars > 0 && segs != row_bars) {
+                g_write_unconfirmed[slot] = 1;
+                g_write_edit_len_x100[slot] = (int)((double)segs * qpb * 100.0);
+            }
+        }
+    }
     /* !(x > 0.0), not x <= 0.0: the second is FALSE for a NaN, so a torn read
      * of the regions table would reach clip_phase_beats() as a live length.
      * clip_phase_beats() spells it this way; both sites must mean the same
@@ -3441,6 +3467,38 @@ volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
  * Not a param key: nothing acts on it, and the review of this feature is
  * clear that a getter with no consumer reads as plumbing that never landed.
  * A line in the log is what a support question needs. */
+/* MAY A WRITE USE THE ROW THIS RESOLVER JUST ANSWERED?
+ *
+ * The row is the PLAYING clip, which is what playback asks for. A p-lock asks
+ * a different question -- which clip is on SCREEN -- and the two differ in
+ * exactly one situation: a clip is playing while the user step-edits another
+ * one. That situation is the wrong-clip bug, reproduced twice on hardware
+ * 2026-09-18, and it is invisible to every branch below `cslot < 0` because
+ * the live identity fills the row before they run.
+ *
+ * This is the shape of the removed `lane_edit_unconfirmed`, and the reason
+ * that one failed was its SIGNAL, not its shape: it read the session pad
+ * decode, which Move paints only in SESSION view, while p-locks happen in
+ * NOTE view -- so its answer was always a latch from whenever the user last
+ * visited Session, and it withheld the row from gestures aimed squarely at
+ * the playing clip.
+ *
+ * The step strip does not have that problem. Move draws it in Note view,
+ * which is when step editing happens, and it reports the edited clip's BAR
+ * COUNT. So the discriminator is a bar-count comparison at the strip's own
+ * resolution: a clip being edited whose bar count differs from the playing
+ * clip's is a DIFFERENT clip, established rather than guessed.
+ *
+ * Residue, stated here so nobody discovers it later: a clip whose bar count
+ * EQUALS the playing clip's is indistinguishable, so a write there still
+ * takes the playing row. Bar count is the only positive evidence Move gives
+ * us, which is the same reason two blind takes of equal length share a take.
+ *
+ * `edit_len` carries the EDITED clip's length off that same strip, because a
+ * write keyed to the placeholder needs the length of the clip it is being
+ * made on -- not the playing clip's, which is what `loop_len` reports. */
+volatile int g_write_unconfirmed[SHADOW_CHAIN_INSTANCES];
+volatile int g_write_edit_len_x100[SHADOW_CHAIN_INSTANCES];
 volatile int g_row_unknown_clips;   /* clips on the track, -1 = no answer */
 volatile int g_row_unknown_strip;   /* strip segments for the track */
 volatile int g_row_unknown_seen;

@@ -119,6 +119,10 @@ extern volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_go
 /* Why a clip row came back unknown -- see shadow_chain_mgmt.c. Diagnostic
  * only; drained by row_unknown_tick(). */
 extern volatile int g_row_unknown_clips, g_row_unknown_strip, g_row_unknown_seen;
+/* Whether a WRITE may use the row shadow_slot_clip_phase answered, per slot,
+ * and the edited clip'''s length when it may not. See shadow_chain_mgmt.c. */
+extern volatile int g_write_unconfirmed[];
+extern volatile int g_write_edit_len_x100[];
 
 /* Has the press on `step` been down long enough to be a HOLD rather than a
  * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so
