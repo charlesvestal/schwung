@@ -353,6 +353,13 @@ const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
 const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
+/* How many ticks a SET_CHANGED may go unidentified before it is consumed
+ * anyway. The param channel is shared with the shim's own readers, so an empty
+ * answer is routinely a STARVED one rather than "no set" — but a flag that can
+ * never be consumed is its own hang, and each retry re-saves the outgoing set.
+ * See the handler for what a failed identification used to cost. */
+const SET_CHANGE_ID_TRIES = 20;
+let setChangeIdTries = 0;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
 const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
 /* 0x0100 and up live in the shim's `ui_flags_ext`, not `ui_flags` — the 8-bit
@@ -25811,7 +25818,11 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
         }
-        if (flags & SHADOW_UI_FLAG_SET_CHANGED) {
+        /* A LABELLED BLOCK, so an unidentified set change can abandon THIS
+         * work without returning from tick(): ~900 lines follow, including
+         * reconcilePadBlock(), which must run every frame or the pads stay
+         * dead in the Schwung UI while Move's own tracks still respond. */
+        if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
 
             /* 1. Save current state to outgoing directory */
@@ -25827,6 +25838,51 @@ globalThis.tick = function() {
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
+
+            /* A SET CHANGE WE CANNOT NAME IS NOT CONSUMED.
+             *
+             * `getSlotParam` goes over /schwung-param, which has ONE request
+             * slot and can simply be STARVED — it answers empty, which is not
+             * the same fact as "there is no set". Everything below treated it
+             * as the second: active_set.txt was left naming the OUTGOING set
+             * (it is only written `if (uuid)`), `newDir` fell back to the
+             * DEFAULT directory, and the flag was cleared at the end
+             * regardless — so the switch was never retried.
+             *
+             * Observed on the device: active_set.txt naming a set the user had
+             * DELETED while Move played another, `set_state/` holding a
+             * directory for the deleted one and none for the live one, and the
+             * user's p-locks written into the dead set's lane file at a row
+             * only that set had. They never played. On the next restart there
+             * was no directory to restore from, so no slot came up active at
+             * all and the instruments were gone.
+             *
+             * So: leave the flag SET and try again on the next tick. The old
+             * directory stays current meanwhile, which is the safe place to be
+             * — it is where this set's state actually is.
+             *
+             * BOUNDED, because a flag that can never be consumed is its own
+             * kind of hang: after SET_CHANGE_ID_TRIES the switch proceeds on
+             * the default directory exactly as it used to, having said so
+             * loudly first. Retrying forever would also keep re-saving the
+             * outgoing set on every tick. */
+            if (!uuid) {
+                setChangeIdTries++;
+                if (setChangeIdTries <= SET_CHANGE_ID_TRIES) {
+                    debugLog("SET_CHANGED: the shim did not name the set (" +
+                             JSON.stringify(activeSetRaw) + ") — attempt " +
+                             setChangeIdTries + "/" + SET_CHANGE_ID_TRIES +
+                             ", keeping " + activeSlotStateDir +
+                             " and retrying; the flag is NOT consumed");
+                    break setChange;
+                }
+                debugLog("SET_CHANGED: the shim never named the set after " +
+                         SET_CHANGE_ID_TRIES + " attempts — proceeding on the " +
+                         "default state directory. State for the incoming set " +
+                         "will NOT be restored, and active_set.txt still names " +
+                         "the outgoing set.");
+            }
+            setChangeIdTries = 0;
             /* Write active_set.txt for boot persistence (UI thread, not audio thread) */
             if (uuid) {
                 host_write_file("/data/UserData/schwung/active_set.txt", uuid + "\n" + setName);
