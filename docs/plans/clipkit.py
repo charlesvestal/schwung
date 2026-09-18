@@ -459,4 +459,20 @@ def lanes(td):
     return out
 
 _autoarm()   # every import: a deploy resets the flag
-arm_lanes(True)   # lanes are OFF by default; a test run must ask for them
+# NOT ARMED HERE, deliberately.
+#
+# This module used to call arm_lanes(True) at import, so merely IMPORTING the
+# harness -- to read a param, to check which pad mode Move is in, to look at
+# anything at all -- switched the feature on and left it on. An instrument
+# that changes the thing it measures is the same class of defect as the mode
+# model that could not reach NOTE: the reading is real, and it is a reading of
+# a world the instrument created.
+#
+# It also hides the kill switch's own behaviour. Disarming was tested by
+# deleting the flag and reading `lanes:enabled` back through this module --
+# which re-armed it between the delete and the read, and reported 1. That
+# reads as "the switch cannot be turned off", which would have been a
+# serious defect in the one mechanism that exists to turn the feature off
+# when it misbehaves. Measured again without the import: it disarms correctly.
+#
+# A run that wants lanes asks for them: `k.arm_lanes(True)`.
