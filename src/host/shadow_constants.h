@@ -103,6 +103,12 @@
  * for the other order: an old consumer asking for 84 attaches to a 256-byte
  * segment quite happily.
  */
+/* How often the shim republishes lanes_driving_mask, in SPI frames (~2.9 ms
+ * each). A lamp, so ~46 ms is far finer than an eye; per-frame would put four
+ * chain get_params on every callback for no visible gain. */
+#define LANES_DRIVING_PUBLISH_FRAMES 16
+/* `held_step` when no single step is held. Unsigned, so not -1. */
+#define SHADOW_HELD_STEP_NONE 0xFF
 #define CONTROL_BUFFER_SIZE 256
 #define SHADOW_UI_BUFFER_SIZE     512
 /* The param segment: SHADOW_PARAM_VALUE_LEN plus shadow_param_t's header,
@@ -504,6 +510,151 @@ typedef struct shadow_control_t {
      * The C setter writes features.json and JS pushes it back down at startup.
      */
     volatile uint8_t speaker_eq_mode;
+    /*
+     * TEST BUS ONLY: deliver injected packets as if the HARDWARE had sent
+     * them. Default 0, and with it 0 nothing below runs -- the byte exists so
+     * a harness can arm it by poking /dev/shm, and can clear it from outside
+     * the process if Move becomes unhappy.
+     *
+     * WHY IT IS NEEDED. `/schwung-midi-inject` drains into the SHADOW mailbox
+     * -- Move's copy -- while Schwung's own control decoding scans
+     * `hardware_mmap_addr`, the real one. So an injected press drives MOVE and
+     * is invisible to SCHWUNG: measured 2026-09-13, injected Track presses
+     * moved Move's step editor while `selected_slot` never budged. That makes
+     * every Schwung-side input feature untestable by harness, which is how the
+     * p-lock gesture ended up as "waits for a finger".
+     *
+     * With this set, the drain writes BOTH buffers at the top of
+     * shim_post_transfer -- the point at which the library has just copied
+     * hw->shadow, so the packet arrives exactly where and when a real one
+     * would, and any filtering or swallow site downstream treats it the same.
+     *
+     * APPENDED after speaker_eq_mode, for the reason stated on pad_observe:
+     * sizeof is a contract between two binaries. Appending is free.
+     */
+    volatile uint8_t inject_as_hardware;
+    /*
+     * The UI is watching the STEP BUTTONS (notes 16-31), for the p-lock
+     * gesture: hold a step, turn a knob, set a value ON that step.
+     *
+     * PASSIVE, exactly like pad_observe and for the same reason: no
+     * `continue`, nothing withheld, so a step press still reaches Move and
+     * still edits the clip's notes. That is a real cost -- a p-lock also
+     * toggles a note -- and it is deliberate for now: withholding a step
+     * needs a latched both-edge swallow in the MIDI filter, whose failure mode
+     * is a stuck button or a note Move never sees released, and that change
+     * deserves its own hardware pass rather than riding along with this one.
+     * Undo fixes a stray note; a stuck filter does not.
+     *
+     * Restated by the UI every frame, never memoised: the shim drops this
+     * itself when the shadow display closes, so a JS mirror would latch and
+     * the feature would die silently after the first dismiss (the mistake
+     * pad_observe already paid for).
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t step_observe;
+    /*
+     * A P-LOCK WAS ACCEPTED -- bumped once per landed breakpoint, never reset.
+     *
+     * THE GESTURE HAD NO CONFIRMATION AT ALL, on any screen, and that is what
+     * made a working feature read as a broken one: eight p-locks landed on
+     * hardware, correctly, and were reported as "it didn't work" because
+     * nothing on the panel said so and the value only speaks a loop later.
+     *
+     * A COUNTER, not a flag: the UI must be able to tell a second p-lock from
+     * the first one still being shown, and a flag the UI clears would be a
+     * write from the reader into the writer's segment. Wrap is harmless --
+     * the UI compares for INEQUALITY, never magnitude.
+     *
+     * Read straight out of the SHM by the shadow UI, because the alternative
+     * is a `lanes:plocked` param read PER FRAME, and one IPC round trip
+     * (~2.8 ms) costs more than redrawing the whole screen (1.68 ms).
+     *
+     * APPENDED, for the reason stated on pad_observe: sizeof is a contract
+     * between two binaries, and only appending is free.
+     */
+    volatile uint32_t plock_seq;
+    /*
+     * WHICH SLOTS HAVE A LANE DRIVING A PARAMETER RIGHT NOW, one bit each.
+     *
+     * The playback half of the same problem plock_seq solves for the gesture:
+     * automation running was indistinguishable from nothing running on a
+     * module that draws its own screen. The knob grid has the per-key mark
+     * already (`<key>:modulated`, the dot riding the arc); this is the same
+     * fact at SLOT altitude, for the surfaces that cannot draw a per-knob one.
+     *
+     * Published by the shim (shadow_lanes_publish_driving) every
+     * LANES_DRIVING_PUBLISH_FRAMES rather than per frame: it is a lamp, and a
+     * lamp does not need 344 Hz. Read straight from SHM by the UI, because the
+     * alternative is a param read per frame at ~2.8 ms.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t lanes_driving_mask;
+    /*
+     * THE STEP BUTTON UNDER THE USER'S FINGER, 0..15, or 0xFF for none.
+     *
+     * The shim already decides this (shim_plock_held_step: exactly one step,
+     * shadow display up) because a component write while a step is held is a
+     * p-lock. The UI needs the same answer to show what is LOCKED on that
+     * step, and it needs it every frame -- so it is published rather than
+     * asked. A param read is ~2.8 ms; this is a byte.
+     *
+     * 0xFF rather than -1 because the field is unsigned, and "none" has to be
+     * a value the UI can test rather than a bit pattern it has to know.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t held_step;
+    /*
+     * ...AND WHETHER THAT PRESS HAS BECOME A HOLD, 0 or 1.
+     *
+     * `held_step` goes live on the PRESS, because the p-lock gesture must work
+     * faster than the tap threshold -- hold a step, turn a knob, done inside
+     * 100 ms. But a press under STEP_TAP_MS is still a TAP, and the grid was
+     * acting on `held_step` alone: every press fired the lock-map query, and
+     * that question being converted into an edit is what took the step buttons
+     * away (see component_key.mjs).
+     *
+     * So the two facts are published separately. The map waits for this one.
+     * A tap then costs NO IPC at all, which on this surface is the point: a
+     * param read is ~2.8 ms against a 1.68 ms whole-page render.
+     *
+     * PUBLISHED RATHER THAN TIMED IN THE UI, because the threshold is
+     * STEP_TAP_MS and it lives in the shim beside the press timestamps. A UI
+     * stopwatch would be a second copy of a number that already exists, which
+     * is how the transport grid and the recall-quantize off-by-one both got
+     * wrong in two places at once.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t held_step_is_hold;
+    /*
+     * MOVE'S DELETE BUTTON IS DOWN (CC 119), 0 or 1.
+     *
+     * For "Delete + a knob, with no step held" -- clear that knob's whole
+     * automation for this clip, the third of the clear set whose other two
+     * are the held-step gestures.
+     *
+     * PUBLISHED AS A BYTE rather than forwarding the CC, and the difference
+     * matters. The raw CC reaches the grid's edit handler, which ALSO arms the
+     * child copy/clear gesture -- so forwarding it would switch that on for
+     * every module that never declared `claims_edit_ccs`, which is a
+     * behaviour change nobody asked for. A byte feeds exactly the one gesture.
+     *
+     * PASSIVE: nothing is withheld from Move, so Delete keeps doing whatever
+     * Move does with it. That is deliberate but it leaves a real edge -- a
+     * Delete pressed and NOT followed by a knob reaches Move, and a lone
+     * Delete DELETES THE SELECTED CLIP (measured on hardware 2026-09-14:
+     * clips [0,1] -> [0] from one press with nothing else held). The gesture
+     * itself is safe; abandoning it half-way is not. Closing that needs the
+     * press withheld and replayed if no knob follows -- the shape the step
+     * tap/hold split already uses -- and is not done here.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t delete_held;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */

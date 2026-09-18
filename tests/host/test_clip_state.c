@@ -87,11 +87,17 @@ static void test_launch_sets_anchor(void)
     CHECK(st.tracks[2].identity_valid && st.tracks[2].clip_slot == 2,
           "track 3 should be playing clip 3, got slot=%d", st.tracks[2].clip_slot);
 
-    /* The measured anchor: queued at pulse 684, quantised boundary at 768,
-     * ch-9 ON observed at 770. */
+    /* The measured capture: queued at pulse 684, quantised boundary at 768,
+     * ch-9 ON observed at 770 -- two pulses late, as every launch is.
+     *
+     * THE ANCHOR IS THE BOUNDARY, 768, not the 770 we noticed. This assertion
+     * used to read 770, and the capture's own notes named 768 as the launch
+     * point on the same line: the test agreed with the code rather than with
+     * the clip. See CLIP_LAUNCH_SNAP_PULSES. */
     CHECK(st.tracks[2].anchor_valid, "track 3 must be anchored after a launch");
-    CHECK(st.tracks[2].anchor_pulse == 770,
-          "track 3 anchor should be pulse 770, got %u", st.tracks[2].anchor_pulse);
+    CHECK(st.tracks[2].anchor_pulse == 768,
+          "track 3 anchor should snap to the boundary 768, got %u",
+          st.tracks[2].anchor_pulse);
 }
 
 static void test_bare_ch9_is_a_refresh_not_an_anchor(void)
@@ -218,8 +224,10 @@ static void test_chosen_clip_on_a_stopped_track_anchors(void)
           st.tracks[0].clip_slot);
     CHECK(st.tracks[0].anchor_valid,
           "the clip the user chose must be ANCHORED -- we watched it start");
-    CHECK(st.tracks[0].anchor_pulse == 4,
-          "anchor should be the pulse we saw it start, got %u",
+    /* Pulse 4 is four pulses past the boundary at 0, so the anchor IS 0 --
+     * the launch was quantised to it. Snapping (CLIP_LAUNCH_SNAP_PULSES). */
+    CHECK(st.tracks[0].anchor_pulse == 0,
+          "anchor should snap to the boundary 0, got %u",
           st.tracks[0].anchor_pulse);
 }
 
@@ -291,10 +299,22 @@ static void test_clip_returning_after_a_start_anchors_at_the_start(void)
     /* Playing, then its clip stops (a clip change in progress). */
     clip_state_on_led(&st, 0x99, 97, 122, 4000, 1, 1);   /* T1 c6 */
     clip_state_on_led(&st, 0x89, 97, 0, 4600, 1, 1);
-    CHECK(st.tracks[0].clip_slot == -1, "setup: nothing playing");
+    /* The off is DEFERRED, not acted on: at this instant a stop and a queued
+     * replacement are the same event, and Move sends the queue afterwards.
+     * (This assertion used to read clip_slot == -1 -- the immediate clear
+     * that stopped the user's automation beats before the audio.) */
+    CHECK(st.pending_off_slot[0] == 5, "setup: the off is pending, got %d",
+          st.pending_off_slot[0]);
 
-    /* Transport restarts while this track has no clip. */
+    /* Transport restarts while this track has no clip. A Start commits the
+     * deferral -- nothing can call it a replacement across a resync. */
     clip_state_on_transport_start(&st);
+    CHECK(st.tracks[0].clip_slot == -1,
+          "the Start should have committed the stop, got %d",
+          st.tracks[0].clip_slot);
+    CHECK(st.saw_stop[0],
+          "and kept the witnessed silence -- without it this track can never "
+          "anchor again, which is the bug this test was written for");
 
     /* The clip comes up 40 pulses later. It began at the START, not here. */
     clip_state_on_led(&st, 0x99, 94, 122, 40, 1, 1);     /* T1 c3 */
@@ -506,8 +526,222 @@ static void test_common_start_from_congruence_and_bracket(void)
     CHECK(st.tracks[2].anchor_pulse == 55, "real evidence survives");
 }
 
+/* Hardware, found by the user: "I'm playing clip A, I press clip B and the
+ * automation for clip A stops. then clip B starts playing with automation."
+ *
+ * Clip A keeps SOUNDING until the launch-quantize boundary, so its automation
+ * must keep playing for that whole window. Move, though, turns the outgoing
+ * clip's PULSING animation off the moment a replacement is QUEUED -- measured
+ * 86 pulses (~3.6 beats at 4/4) before the new clip's own ch-9 ON:
+ *
+ *     seq=369  pul=684   ch9  OFF  Track 3 clip 1
+ *     seq=371  pul=684   ch14 ON   Track 3 clip 3
+ *     seq=374  pul=770   ch9  ON   Track 3 clip 3
+ *
+ * Note the ORDER: the OFF precedes the queue. So the clear cannot be gated on
+ * "is a launch queued on this track" -- nothing is queued yet when the OFF is
+ * decoded. It has to be DEFERRED and resolved by what happens next. */
+static void test_a_queued_replacement_is_not_a_stop(void)
+{
+    printf("a ch-9 OFF followed by a queue keeps the outgoing clip playing\n");
+    clip_state_t st; clip_state_reset(&st);
+
+    /* T3 clip 1 launched and anchored the ordinary way. */
+    clip_state_on_led(&st, 0x9E, 76, 122, 300, 1, 1);   /* ch14 queued  */
+    clip_state_on_led(&st, 0x99, 76, 122, 324, 1, 1);   /* ch9  ON      */
+    CHECK(st.tracks[2].identity_valid && st.tracks[2].clip_slot == 0,
+          "setup: T3 should be playing clip 1, got valid=%d slot=%d",
+          st.tracks[2].identity_valid, st.tracks[2].clip_slot);
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 324,
+          "setup: anchor 324, got valid=%d pulse=%u",
+          st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
+
+    /* The user presses clip 3. Move drops clip 1's pulsing FIRST. */
+    clip_state_on_led(&st, 0x89, 76, 0, 684, 1, 1);
+    CHECK(st.tracks[2].identity_valid && st.tracks[2].clip_slot == 0,
+          "the OFF is not yet a stop -- clip 1 is still audible; got slot=%d",
+          st.tracks[2].clip_slot);
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 324,
+          "and its anchor must survive, got valid=%d pulse=%u",
+          st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
+
+    /* Then the queue. THIS is what says the OFF was a replacement. */
+    clip_state_on_led(&st, 0x9E, 78, 122, 684, 1, 1);
+    CHECK(st.tracks[2].clip_slot == 0,
+          "a queue must keep the outgoing clip, got slot=%d",
+          st.tracks[2].clip_slot);
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 324,
+          "and its anchor, got valid=%d pulse=%u",
+          st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
+
+    /* 86 pulses of queue window, with unrelated traffic passing through (a
+     * base-colour repaint of the same pad). Time passing must NOT commit the
+     * stop while a launch is pending -- launch quantize can be bars out. */
+    clip_state_on_led(&st, 0x90, 76, 19, 750, 1, 1);    /* ch0: base colour */
+    CHECK(st.tracks[2].clip_slot == 0 && st.tracks[2].anchor_valid,
+          "clip 1 must still own the track mid-window, got slot=%d valid=%d",
+          st.tracks[2].clip_slot, st.tracks[2].anchor_valid);
+    double beats;
+    CHECK(clip_phase_beats(&st.tracks[2], 750, 0.0, 4.0, &beats),
+          "and its phase must still resolve -- a lane with no phase stops "
+          "recording, which is the bug the user saw");
+    CHECK(beats > 1.74 && beats < 1.76,
+          "(750-324)/24 = 17.75 beats, mod 4 = 1.75; got %f", beats);
+
+    /* The new clip's own ch-9 ON: now identity moves, and anchors here. */
+    clip_state_on_led(&st, 0x99, 78, 122, 770, 1, 1);
+    CHECK(st.tracks[2].clip_slot == 2, "should now be clip 3, got %d",
+          st.tracks[2].clip_slot);
+    /* 770 is the LED; 768 is the boundary it was quantised to. */
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 768,
+          "anchored at the launch boundary 768, got valid=%d pulse=%u",
+          st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
+}
+
+/* The two events shared pul=684 in the capture, which makes them PLAUSIBLY
+ * one SPI frame -- but that is a single observation, and this design must not
+ * rest on it. The same sequence spread over later frames must behave the
+ * same. */
+static void test_off_then_queue_in_a_later_frame(void)
+{
+    printf("the OFF/queue pair works when they do NOT share a frame\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x9E, 76, 122, 300, 1, 1);
+    clip_state_on_led(&st, 0x99, 76, 122, 324, 1, 1);
+
+    clip_state_on_led(&st, 0x89, 76, 0, 684, 1, 1);     /* OFF            */
+    clip_state_on_led(&st, 0x9E, 78, 122, 700, 1, 1);   /* queue, 16 later */
+    CHECK(st.tracks[2].clip_slot == 0 && st.tracks[2].anchor_pulse == 324,
+          "clip 1 must still own the track, got slot=%d pulse=%u",
+          st.tracks[2].clip_slot, st.tracks[2].anchor_pulse);
+
+    clip_state_on_led(&st, 0x99, 78, 122, 770, 1, 1);
+    CHECK(st.tracks[2].clip_slot == 2 && st.tracks[2].anchor_pulse == 768,
+          "and the launch still lands, got slot=%d pulse=%u",
+          st.tracks[2].clip_slot, st.tracks[2].anchor_pulse);
+}
+
+/* The other half of the deferral: a clip that REALLY stopped. Nothing follows
+ * the OFF, so after the grace the track must end up at "nothing playing" --
+ * and it must still carry the witnessed silence that lets its next clip
+ * anchor, or the track is stranded unanchored for good (a Project 1 bug). */
+static void test_a_real_stop_commits_after_the_grace(void)
+{
+    printf("a ch-9 OFF with nothing following it commits as a stop\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x9E, 93, 122, 480, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, 500, 1, 1);
+    CHECK(st.tracks[0].clip_slot == 1 && st.tracks[0].anchor_valid, "setup");
+
+    clip_state_on_led(&st, 0x89, 93, 0, 600, 1, 1);
+    CHECK(st.tracks[0].clip_slot == 1,
+          "inside the grace it is held -- a stop and a queued replacement are "
+          "not yet distinguishable; got slot=%d", st.tracks[0].clip_slot);
+
+    /* Nothing followed. The frame hook commits it. */
+    clip_state_expire_pending_off(&st, 600 + CLIP_OFF_GRACE_PULSES + 1);
+    CHECK(st.tracks[0].clip_slot == -1,
+          "past the grace the stop must commit, got slot=%d",
+          st.tracks[0].clip_slot);
+    CHECK(!st.tracks[0].anchor_valid, "and the anchor is meaningless");
+
+    /* saw_stop survives the commit: the next clip on this track is one we
+     * watched begin, so it may anchor. */
+    clip_state_on_led(&st, 0x99, 95, 122, 800, 1, 1);
+    CHECK(st.tracks[0].clip_slot == 3, "got %d", st.tracks[0].clip_slot);
+    CHECK(st.tracks[0].anchor_valid && st.tracks[0].anchor_pulse == 800,
+          "a genuinely stopped track must anchor its next clip, got "
+          "valid=%d pulse=%u",
+          st.tracks[0].anchor_valid, st.tracks[0].anchor_pulse);
+}
+
+/* The commit does not need the frame hook: any LED event arriving past the
+ * grace carries the pulse that expires it. This is the path a device
+ * actually takes, since the scan feeds events far more often than the poll. */
+static void test_a_later_event_expires_the_pending_off(void)
+{
+    printf("an event past the grace commits the pending stop on its way in\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x9E, 93, 122, 480, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, 500, 1, 1);
+    clip_state_on_led(&st, 0x89, 93, 0, 600, 1, 1);
+
+    /* A base-colour repaint on another track, well past the grace. */
+    clip_state_on_led(&st, 0x90, 68, 19, 900, 1, 1);
+    CHECK(st.tracks[0].clip_slot == -1,
+          "the stop should have committed, got slot=%d", st.tracks[0].clip_slot);
+    CHECK(st.saw_stop[0], "and the witnessed silence must be recorded");
+}
+
+/* THE MEASURED LAGS, all fifteen of them, replayed as launches.
+ *
+ * Captured 2026-09-14 on hardware at three tempos (offset of the ch-9 ON past
+ * its bar boundary, in pulses):
+ *
+ *      60 BPM   1 1 1 1 1
+ *     120 BPM   1 1 2 1
+ *     180 BPM   1 2 3 2 2 1
+ *
+ * Every one of them must land on the boundary. The table is the evidence that
+ * the tolerance is not fitted to a single observation -- and that the lag is
+ * NOT a constant number of pulses, which is what the old "two pulses,
+ * constant" reading claimed from one sample at one tempo. */
+static void test_measured_launch_lags_all_snap(void)
+{
+    printf("every measured launch lag snaps to its boundary\n");
+    static const unsigned lags[] = { 1,1,1,1,1,  1,1,2,1,  1,2,3,2,2,1 };
+    for (unsigned i = 0; i < sizeof(lags) / sizeof(lags[0]); i++) {
+        clip_state_t st; clip_state_reset(&st);
+        /* A bar boundary a long way into the timeline, so nothing can be
+         * confused with the Start grace. */
+        const unsigned bar = 96u * (4u + i);
+        clip_state_on_led(&st, 0x9E, 93, 122, bar - 40, 1, 1);      /* QUEUED */
+        clip_state_on_led(&st, 0x99, 93, 122, bar + lags[i], 1, 1); /* ON */
+        CHECK(st.tracks[0].anchor_valid, "lag %u: no anchor", lags[i]);
+        CHECK(st.tracks[0].anchor_pulse == bar,
+              "lag %u: anchor %u should have snapped to %u",
+              lags[i], st.tracks[0].anchor_pulse, bar);
+    }
+}
+
+/* ...AND A LATE ONE IS LEFT ALONE. Past the window the LED cannot be
+ * attributed to a boundary, and inventing one would move the anchor further
+ * than the error being corrected. Anchoring where we saw it is today's
+ * behaviour and the right direction to fail in. */
+static void test_an_unattributable_launch_keeps_its_pulse(void)
+{
+    printf("a launch too far past a boundary is NOT snapped\n");
+    clip_state_t st; clip_state_reset(&st);
+    const unsigned bar = 96u * 5u;
+    clip_state_on_led(&st, 0x9E, 93, 122, bar - 40, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, bar + 11, 1, 1);
+    CHECK(st.tracks[0].anchor_pulse == bar + 11,
+          "an unattributable launch should keep its own pulse, got %u",
+          st.tracks[0].anchor_pulse);
+}
+
+/* THE SNAP IS TO THE BEAT, AND THAT IS NOT AN ARBITRARY CHOICE. We are not
+ * told the user's launch quantize. Every grid Move offers is a whole number of
+ * beats, so a beat boundary is a boundary of all of them; snapping to the BAR
+ * instead would be right on a bar grid and up to 72 pulses EARLY on a finer
+ * one -- an error far larger than the ~25 ms this fixes. */
+static void test_snap_lands_on_a_beat_not_only_a_bar(void)
+{
+    printf("a launch quantised to a BEAT snaps to that beat\n");
+    clip_state_t st; clip_state_reset(&st);
+    const unsigned beat = 96u * 5u + 24u * 3u;      /* beat 4 of a bar */
+    clip_state_on_led(&st, 0x9E, 93, 122, beat - 30, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, beat + 2, 1, 1);
+    CHECK(st.tracks[0].anchor_pulse == beat,
+          "expected the beat boundary %u, got %u", beat, st.tracks[0].anchor_pulse);
+}
+
 int main(void)
 {
+    test_a_queued_replacement_is_not_a_stop();
+    test_off_then_queue_in_a_later_frame();
+    test_a_real_stop_commits_after_the_grace();
+    test_a_later_event_expires_the_pending_off();
     test_common_start_from_congruence_and_bracket();
     test_anchor_sharing_checks_divisibility();
     test_anchor_derived_from_playhead();
@@ -521,6 +755,9 @@ int main(void)
     test_pad_decode();
     test_grid_refresh_matches_song_abl();
     test_launch_sets_anchor();
+    test_measured_launch_lags_all_snap();
+    test_an_unattributable_launch_keeps_its_pulse();
+    test_snap_lands_on_a_beat_not_only_a_bar();
     test_bare_ch9_is_a_refresh_not_an_anchor();
     test_coldstart_refresh_burst_anchors_nothing();
     test_restart_reanchors_to_zero();

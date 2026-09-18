@@ -261,10 +261,25 @@ instance is zeroed by construction (`mm_init` memsets, `shadow_host_api` is BSS,
 `overtake_host_api` is a static, `chain_host` memcpy's `sizeof()`).
 
 **It does not make the ABI extensible** — appending a real field still requires
-rebuilds. It buys a safe failure instead of a crash. So **consume `reserved`
-from the front** when adding a field and never reduce the total;
+rebuilds. It buys a safe failure instead of a crash.
+
+**So do NOT consume the run — not from the front, and not from the back.** This
+file said "from the front" for a while and that advice is the crash: `reserved`
+begins at **exactly +120** (measured; `sizeof(host_api_v1_t)` is 184 and
+`get_beat_position` sits at +112), which is the offset breakbeat reads. A real
+field there is a **live pointer at the crash site** — breakbeat's own
+`if (host->fn)` guard passes and the device boot-loops again. Taking from the
+back shortens the run instead, and old binaries start reaching past it.
+**A new host capability goes in as a dlsym'd export** — `chain_set_clip_phase`,
+`chain_take_midi_tick_wake`, `move_plugin_render_split` — which is what that
+precedent is for.
+
 `tests/host/test_host_api_reserved_tail.c` fails on a shrunken tail, on a field
-appended *after* `reserved`, and on +120 specifically.
+appended *after* `reserved`, and (now) on a field inserted *before* it, which
+moves the run to +128. It could not see that on its own: it inspects a
+`memset`-zeroed struct, so a real field at +120 reads NULL there and passes. The
+enforcement is the geometry check plus a `_Static_assert(offsetof(host_api_v1_t,
+reserved) == 120)` beside the field.
 
 **The diagnosis needed the load base.** The shim's SIGSEGV handler prints `pc`,
 `lr` and `sp` plus a `/proc/self/maps` dump to
@@ -297,6 +312,15 @@ CC 79 is the host volume knob by default. Modules can claim it via `capabilities
 ## Move Hardware MIDI
 
 Pads notes 68–99. Steps notes 16–31. Tracks CCs 40–43 (**reversed**: CC43=Track1, CC40=Track4). Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71–78 (knobs). Notes 0–9: capacitive knob touch (filter if unused).
+
+**CC 50 is ALSO Move's Note/Session toggle**, which is worth knowing because
+"menu" reads as ours. Pressed while Move owns the screen it puts up *Session
+Mode*, and **in Session Mode the PADS LAUNCH CLIPS**: rows descend by eight
+(92–99 = Track 1, 84 = Track 2, 76 = Track 3, 68 = Track 4) and the column is
+the clip slot, so note 76 launches Track 3 clip 1. Pressing a playing clip
+RETRIGGERS it rather than stopping it. Measured 2026-09-13 by injection —
+and only after scanning every other CC and note in 0–127 for it, because the
+one already named in this line was the one not tried.
 
 ## SPI Protocol
 
@@ -554,6 +578,83 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **A P-LOCK IS DECIDED BELOW THE UI, and a RECORDING PASS is never converted.**
+  Hold a step, turn a knob. Both halves used to live in the host's param-pages
+  io, so a module drawing its own screen from `ui_chain.js` could RECORD
+  automation and never p-lock — `lane_on_set_param` intercepts every component
+  write, which is what made it read as a module bug. A component write made
+  while exactly ONE step is held is now also a p-lock
+  (`shadow_lanes_plock_from_write`). The guard is what this took two attempts
+  to get: a p-lock writes a RECTANGLE, recording writes a SLOPE, into the same
+  lane — so a stale held step made ordinary recording WORSE, not merely
+  useless. It asks the chain `lanes:recording`, the record branch's own
+  condition, never a copy of it. And `no_bar` on a module's own screen was a
+  STATE artifact (the strip names one track, and only that track's slot),
+  measured, not a structural blocker.
+- **A SLOT MAY NOT CLEAR ITS LANE FILE UNTIL A RESTORE IS CONFIRMED.**
+  `restoreSlotLanes` pushed the document with `setSlotParam` and never checked
+  it landed, while setting the write cache as though it had — and the param
+  channel is busiest exactly there, at boot, behind a chain still
+  instantiating. The autosave then asked the slot, got `""` (served-and-empty,
+  a perfectly good answer for an empty DSP), saw the cache disagree and
+  DELETED the file. Two sets of automation lost on one device, recovered only
+  from a hand-taken copy. The restore now READS BACK what it pushed, and the
+  delete branch refuses an unconfirmed slot — an absent or empty FILE still
+  confirms, because that is positive knowledge that the slot owns nothing.
+- **A LOCK IS DRAWN AS MODULATION IS**: pointer on the BASE, mark at the
+  step's value, and the mark is what moves as you turn. Replacing the pointer
+  made the cell mean one thing while held and another during playback — two
+  grammars for one picture. "An LFO drives this to 0.1" and "this step plays
+  0.1" now render pixel-identically in the knob; the corner mark and the
+  inverted band are what say *which step*.
+- **A P-LOCK OWNS ONE STEP, via `lane_point_t.span`** — `[phase, phase+span)`
+  and nothing else; outside it the lane answers as if the spanned points were
+  absent, so a sweep underneath keeps playing and a lane of only locks goes
+  SILENT between them. A held point with **span 0 keeps the legacy meaning**
+  (hold until the next point), so lanes on disk are unchanged. The step LENGTH
+  is the HOST's to supply. Before this, one lock meant the whole bar and the
+  part of it BEFORE the lock too.
+- **The edit buttons are claimed as a ROW while a step is held.** Claiming
+  only Delete (which deletes clips) left Copy reaching Move, which DUPLICATES
+  the clip and selects the copy — so later p-locks addressed a different clip
+  than the lane being edited. Undo reached Move too and undid a NOTE edit.
+- **REMOVE ONE STEP'S AUTOMATION: hold DELETE, then PICK** — a knob touch
+  takes that parameter, releasing without a pick takes the whole step
+  (`lanes:clear_point`, host-translated from the held step). The grain did not
+  exist: every other clear verb takes a whole lane or more. Move has no
+  encoder press, so Elektron's verb is re-mapped onto the grid's own
+  copy/clear idiom. **Delete must be claimed even with no child levels**, or
+  it reaches Move and deletes the CLIP. A lane emptied this way is FREED and
+  its override released, or the parameter stays stuck where the lane left it.
+- **A STEP IS TWO GESTURES: a TAP toggles Move's note, a HOLD locks the
+  parameter** (`step_note_withhold`, `STEP_TAP_MS` 250). The press is DEFERRED,
+  not swallowed — swallowing it outright removed Move's own step editing for as
+  long as the grid was up. A tap is replayed to Move **after**
+  `shadow_midi_in_compact()`, on/off in consecutive frames; a hold is never
+  replayed, which is what makes a **lock trig** (automation on a step with no
+  note) possible. **`step_observe` is armed for a module-drawn grid as well as
+  `PARAM_PAGES`** — gating it on the host's view alone meant that on 9W9 no
+  step reached the UI and none was withheld from Move, failing silently in both
+  directions.
+- **HOLD A STEP TO SEE AND EDIT WHAT IS LOCKED ON IT.** `<key>:held` (shim
+  answers; chain evaluates via `lanes:probe`) returns `"<value> <exact>"` —
+  `exact` meaning a point SITS there, not that the curve passes through. The
+  window must be passed IN: `lane_eval` says nothing for a zero `loop_len`,
+  and the live geometry is zero whenever the transport is stopped, which is
+  when step editing happens. Every "no" is the empty string, never 0. The
+  gesture follows Elektron: the turn continues from the LOCK, and a landed
+  p-lock REPLACES the live write instead of accompanying it — a refusal still
+  falls through, so a knob never goes dead. Which step is held comes from the
+  SHIM (`shadow_control_t.held_step`), so the value shown and the value a turn
+  replaces cannot disagree.
+- **THE GESTURE IS SILENT, so it draws a MARK** — the knob grid's mod-dot plus,
+  top right, 600 ms, from the overlay block AFTER the view switch so it lands
+  over a module's own frame. Eight p-locks that landed correctly were reported
+  as the feature not working, because nothing on the panel says so and the
+  value only speaks a loop later. `shadow_control_t.plock_seq` counts ACCEPTED
+  ones — asked of `lanes:plocked`, never assumed from "we forwarded it", and
+  bumped at all THREE write paths or the gesture reports itself on some screens
+  and not others.
 - **`synth:last_note` is recorded at BOTH synth-feed paths**, via
   `chain_record_synth_note`. `v2_tick_midi_fx` is the one that looks optional
   and is not: an ARPEGGIATOR emits from `tick()`, not `process_midi()`, so
@@ -612,6 +713,110 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   tick, then ONE `chain_take_midi_tick_wake`, then the render — because `take`
   is one-shot and a "no" is what clears the double-tick guard. Transitions in
   `chain_idle_tick.h` so `tests/host` can drive them.
+- **An automation lane is ABSOLUTE and TIME-ADDRESSED, and it has no length of
+  its own.** Breakpoints are beats from the clip's `loop_start`; playback wraps
+  at whatever `loop_len` the clip has *now*, considering only points below it,
+  so extending a clip reveals what was recorded there and shrinking it makes
+  the tail dormant — nothing is rescaled and nothing is deleted. It drains
+  through an **override** source class in `chain_mod` (`effective = (override ?
+  override : base) + Σ offsets`), so LFOs still sum on top and clearing returns
+  the parameter to the knob. **Move's clips carry no identity** — no id, no
+  uuid — so a lane is keyed to a grid POSITION plus a fingerprint of the clip's
+  notes, and a mismatch makes it STALE: retained, silent, never guessed at.
+  **Unknown phase refuses** both playback and recording, and is never phase 0.
+  The arm is Move's own Record button, read off its LED. See `docs/CHAIN.md`.
+  **Only the CONTENT half of the fingerprint is compared** — neither loop field
+  is, because a clip that grew and a clip whose loop was dragged are both the
+  same clip, and going stale on either is silent. **And a content mismatch
+  while NOT orphaned is an EDIT**: the lane re-stamps and plays on. Identity is
+  CONTINUITY — a replaced clip went through a deletion, which the worker
+  reports as `orphaned`. Before that, `note_count` + `first_note` meant adding
+  or deleting ONE note silenced the clip's automation (measured on hardware),
+  which is most of what anyone does to a clip.
+- **A breakpoint is CLIP TIME in QUARTERS, and the loop is a WINDOW over it.**
+  Move's notes are absolute from the clip's start (a clip whose loop is 8..20
+  carries a note at 0.0, which does not play), so a lane in the same coordinate
+  keeps automation on its notes when the loop moves or grows — loop-relative
+  storage slid a sweep two bars and made a step p-lock unaddressable. The unit
+  is the quarter: changing a set to **11/8** changed not one number in
+  `Song.abl`, so only converting BARS needs the signature. Points outside the
+  window are dormant at EITHER end, a pass wraps at the window (never at 0),
+  and the dlsym'd seam did not grow an argument — the window's start rides in
+  `fp[0]`. Documents are `V 2` and a `V 1` one is REFUSED, loudly: the format
+  never shipped, and the two coordinates are indistinguishable per point.
+- **A p-lock is a RECTANGLE, and a held step's phase is settled arithmetic.**
+  `lane_point_t.hold` (free — the struct was padded) holds a value to the next
+  point instead of ramping, the LEFT point of a segment deciding, and a rewrite
+  replaces the shape with the value. `step_plock.h` inverts the verified
+  mapping — but **Move NAMES the displayed page itself**, so the mapping is
+  just `phase = stepEditorScrollPosition + step * res`: no bar, no signature,
+  no page count, and 4/4 and 11/8 are one path. The bar-and-page form it
+  replaced could only REFUSE a bar wider than the 16 buttons, which is every
+  bar of an 11/8 set at 1/16 (22 steps) — p-locks did not work there at all.
+  The scroll is FILE-aged, so the live strip cross-checks it and wins on
+  disagreement. Three more that each cost a hardware session:
+  a **TRIPLET grid deactivates every fourth BUTTON** (12 steps per page, so
+  `button != step`, and the duration cannot reveal triplet-ness — 1/16t and a
+  straight 1/24 are both 1/6); a **p-lock edits the SELECTED clip**, which the
+  file calls `isPlaying`, never the playing one (the live identity says -1 when
+  stopped, and stopped is how step editing is done); and a **one-bar loop
+  draws thin with no thickening**, so `bold_segment` 0 means both "bar 1" and
+  "cannot say" — `step_strip_displayed_bar()` is the only thing that tells
+  them apart. `lanes:plock_reason` names the refusal, because this runs on the
+  SPI callback where `shadow_log()` is a no-op and five causes otherwise share
+  one bit.
+  **The GESTURE works** — `step_observe` forwards Move's steps to the UI, which
+  writes `lanes:plock_step` on a knob COMMIT (a turn's write is DEBOUNCED, so
+  the hook wraps `setParam` rather than sitting on one of six call sites).
+  Verified on hardware, driven entirely by injection. The forward is PASSIVE,
+  so a p-lock also toggles a note until the swallow lands.
+- **CLEARING HAS FOUR GRAINS and undo is a SWAP.** `lanes:clear` was the only
+  one and empties the whole SLOT — every clip, every parameter. Beside it now:
+  `clear_clip` (the bound clip), `clear_param` (one knob on it), and
+  `clear_target` (one component, which is what the module's own page offers,
+  because that is where the knobs you automated are). `lanes:undo` is one
+  level and SWAPS its buffer, so the same verb is redo — the right shape when
+  the mistake is HEARD rather than seen. **The store cannot clear anything by
+  itself**: a driving lane holds a modulation override, and dropping it
+  without releasing leaves the parameter pinned where automation last wrote
+  it. On the grid this is its own **Automation** section (the words matter:
+  "Clear Clip Automation" truncates to "Clear Clip...", which beside Move's
+  own clip deletion reads as *delete this clip*), each row naming its clip as
+  `C1` — never `T3C1`, since `lane_track` IS the slot index. **Undo is slot
+  level only**, one buffer per slot.
+- **A clip Move has not saved yet can be recorded onto, and the two missing
+  facts arrive separately.** The length comes from the step editor's strip NOW
+  (bar resolution, origin assumed 0); the identity and true origin come from
+  the file ~10 s later, and the lane is then **adopted** — points shifted by
+  the real `loop_start`, fingerprint stamped, one step, exact arithmetic.
+  `fp_valid == 0 with a valid phase` is the provisional signal, so the dlsym'd
+  seam needed no new argument. Adoption is scoped to THIS session's blind takes
+  (`origin_pending`, never serialized): the same bytes on disk mean "never
+  identified", and adopting those would bind a lane to a stranger's clip. A
+  blind take PLAYS while unidentified — its position is the one playing, and
+  staleness needs a fingerprint to establish.
+- **Move's step editor draws the clip's bar count, and we READ it rather than
+  model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
+  no length, so no phase, so recording refuses — and Move's own screen has the
+  answer: a full-width strip on **row 59** in equal segments, the displayed bar
+  thickened, the playhead a **1 px interruption** (against 2 px bar gaps, which
+  is what keeps it from inflating the count) plus a stub below. Page-independent,
+  unlike the step LEDs. It does **not** say where the loop begins, which costs
+  nothing because lane phases are loop-relative. `src/host/step_strip.c`, decoded
+  where the frame COMPLETES on the callback and paired with the track selected at
+  that instant. The geometry is measured and the rejection gates are not, so it
+  is **a diagnostic first** (`clip_state.json`'s `step_strip`, the manager's
+  `/clip-state`) and nothing depends on it yet. Never build a parallel model of
+  Move's sequencer UI: read its answer. **A segment is a BAR, ROUNDED UP**, so the
+  strip answers a RANGE (`segments × quarters_per_bar`) and never better than
+  bar resolution. Two wrong answers preceded that, both from coincidences —
+  `bars × 4`, then "a 16-step page" — and only a clip whose bar and page counts
+  differ (16 quarters under 11/8: 2.91 bars, 4 pages, strip drew 3) could tell
+  them apart. **A one-bar loop draws a thin line with NO thickening** (the
+  manual says so), so the displayed-bar gate refused every new clip until it
+  was scoped to 2+ segments. The grid runs **1/8t to 1/64**, so a TRIPLET
+  suffix must parse — `sscanf("\"%d/%d\"")` read `1/8t` as a straight eighth,
+  a silent 50% error.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -1646,6 +1851,46 @@ inline is how this file got to 151 KB.
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
+- `docs/MOVE_UI_MAP.md` — **Move's own UI, measured by driving it** on firmware
+  **2.1.0**: the known-state reset, how to tell which pad mode you are in (three
+  modes, not two — **Set Overview swaps the loaded SET from both its pads AND its
+  steps**), the LED language, every control per mode, and a machine-readable
+  action table. Two hazards a driver must respect: an **armed Copy source is a
+  landmine** that persists across screens and the reset until the next step press
+  pastes, and **Menu is not idempotent on an overlay** (the first tap dismisses).
+  **Move already owns hold-step + encoder as per-step automation**, which is the
+  gesture Schwung's own p-lock is built on — and its feedback is the encoder
+  RING turning red, never the step, which stays `122`. The step-content LED is
+  decoded there too: test **`== 122`**, never `122` against a fixed "empty"
+  value, because empty is a PER-TRACK colour index (98/112/124 seen) and `122`
+  follows the selected drum voice. Holding **Mute** publishes a per-track
+  automation mask on CCs 71-78 — the cheapest "does this parameter have
+  per-step automation?" query on the device, straight off the CC stream.
+  **Two reading channels beat every probe and were found late**: Move Manager
+  ships a 6.4 MB SOURCE MAP with `sourcesContent` (Ableton's own TypeScript API
+  client, so endpoints are read rather than guessed), and `strings
+  /opt/move/MoveOriginal` yields **675 `ableton::move` RTTI class names** plus a
+  single mangled symbol carrying Move's whole VIEW TREE in construction order.
+  Both are read-only, cost the device nothing, and answer questions no amount of
+  button-pressing can. Reach for them FIRST.
+  **`com.ableton.update` exposes `factoryReset` as a plain D-Bus method on the
+  SYSTEM bus.** Introspecting that tree is safe; anyone enumerating it is one
+  method call from wiping the instrument. (`…/auth`'s `setSecret` is the Manager
+  PIN flow seen from the other side -- the thing `pin_check_and_speak()` watches
+  for.) Move ships **no shared libraries at all** -- everything is statically
+  linked into the 29.7 MB `MoveOriginal`, so the DSP image and the UI image are
+  one file, and `/opt/move/Dsp/` is 194 wavetable WAVs with no code in it.
+- `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
+  being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
+  the two disagree the DEVICE is the authority. Carries the reconciliation table.
+- `docs/MOVE_COPY_GESTURES.md` — **Move's own copy/paste**, for steps, pages and
+  clips, measured by driving each gesture and diffing `Song.abl`. Read it before
+  mirroring automation locks onto a copy. Copy is HELD and step presses **PAIR
+  UP** (source, destination, new source, …); **Loop + Copy** makes the pair
+  PAGES; re-tapping the source pastes onto itself and CONSUMES the pair rather
+  than cancelling; an EMPTY source is a no-op and does **not** clear the
+  destination. Its "Not known" section is load-bearing — a mirror built on the
+  untested half desyncs locks from notes silently.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)

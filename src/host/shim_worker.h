@@ -36,6 +36,7 @@
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
+#include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
 
 extern volatile uint32_t shim_debug_flags;
 
@@ -74,6 +75,34 @@ extern volatile int shim_jack_persist;
  * but a burst of them means the mailbox is saturated and motors are lagging. */
 extern volatile int shim_ext_midi_drops;
 extern volatile int shim_ui_midi_drops;
+
+/* THE STEP TAP PATH, stage by stage.
+ *
+ * "I tap a step with the grid up and no note appears" has five places it can
+ * die, and from the outside they are one silence. Counters rather than a log
+ * line because every one of these sites is the SPI callback, where an
+ * increment is free and a printf is forbidden. Reported by the worker at
+ * 1 Hz, and only when something moved. */
+extern volatile int shim_step_press_seen;    /* a press was withheld */
+extern volatile int shim_step_release_seen;  /* its release was withheld */
+extern volatile int shim_step_used_skip;     /* release spent by a p-lock */
+extern volatile int shim_step_nopress_skip;  /* release with no press on record */
+extern volatile int shim_step_tap_queued;    /* release inside STEP_TAP_MS */
+extern volatile int shim_step_tap_emitted;   /* packets actually written */
+extern volatile int shim_step_tap_noroom;    /* MIDI_IN full, deferred */
+extern volatile int shim_step_hold_ms_last;  /* the last release's held time */
+extern char shim_step_plock_key[64];         /* the key that last spent a press */
+
+/* The blind-window anchor's decision — see shadow_slot_clip_phase. */
+extern volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
+extern volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
+
+/* Has the press on `step` been down long enough to be a HOLD rather than a
+ * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so
+ * the threshold stays ONE number: the alternative is a stopwatch in the UI,
+ * which is a second copy of a constant that already exists. 0 for a step with
+ * no press on record -- that is "cannot tell", not "held forever". */
+int shim_step_press_is_hold(int step);
 extern volatile int shim_ui_midi_out_drops;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
@@ -91,6 +120,12 @@ extern volatile int shim_usbc_out_replay;
  * Unlike shim_usbc_out_persist these are levels, not edges: the worker polls
  * them to notice Move's sampling page clearing monitoring behind our back with
  * a lone 37 12. See usbc_gate_tick_monitor. */
+/* XMOS control-message re-send counters (host/xmos_resend.h). Written by the
+ * SPI callback, read and LOGGED by the worker — the callback may not log. */
+extern volatile uint32_t shim_xmos_resend_lost;     /* absent from the mailbox */
+extern volatile uint32_t shim_xmos_resend_sent;     /* re-sends emitted */
+extern volatile uint32_t shim_xmos_resend_gave_up;  /* budget exhausted */
+
 extern volatile int shim_usbc_out_level;   /* 37 14: 0 = Mic, 1 = Main Out */
 extern volatile int shim_usbc_monitor;     /* 37 12 bit1: monitoring engaged */
 
@@ -150,5 +185,15 @@ void perf_shm_attach_tick(void);
 
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
+
+/* The live clip geometry parsed from Song.abl, or NULL before the first parse.
+ * Exposed rather than re-parsed: a second copy of a >1 MB parse on a different
+ * schedule is two answers to one question, and a reader needs the very table
+ * the worker seeded clip_state from. Check ->valid.
+ *
+ * Worker writes, SPI callback reads. The worker overwrites the struct in
+ * place, so a torn read is possible; nothing here gates audio, and a lane that
+ * reads a half-written loop length loses one block of phase. */
+const clip_regions_t *shadow_clip_regions(void);
 
 #endif /* SHIM_WORKER_H */

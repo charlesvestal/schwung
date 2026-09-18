@@ -123,6 +123,17 @@ const clipStateHTML = `<!doctype html>
  it needs you to change step page at least once.</p>
 <div id="pc" class="ctx"></div>
 
+<h2 style="font-size:14px;margin:22px 0 6px">Step strip (read off Move&rsquo;s screen)</h2>
+<p class="sub" style="margin:0 0 10px">Move&rsquo;s step editor draws the clip&rsquo;s
+ committed bar count and a loop-relative playhead &mdash; the two facts
+ <code>Song.abl</code> is ~35&nbsp;s late with on a clip you just made. Nothing
+ depends on this yet: it is here to be <b>checked</b>. On the step editor it
+ should read <b>valid</b> with the bar count you can see; on any other Move
+ screen it should <b>refuse</b>, and say which gate refused. A frame counter
+ that never moves means frames are not arriving at all &mdash; a different
+ fault from a refusal.</p>
+<div id="ss" class="ctx"></div>
+
 <h2 style="font-size:14px;margin:22px 0 6px">Grid as decoded</h2>
 <p class="sub" style="margin:0 0 10px">Rows are tracks, columns clips 1&ndash;8.
  <span class="k live">live</span> what we think is playing &middot;
@@ -224,6 +235,61 @@ async function tick(){
          '<td class="n">'+boff+'</td></tr>';
     }
     document.getElementById('pc').innerHTML=h+'</table>';
+  }
+  const ss=d.step_strip;
+  if(ss){
+    /* Named for the enum in step_strip.h -- a bare number would make the one
+       interesting case ("we saw a strip and did not believe it") unreadable. */
+    const REJ={0:'ok',1:'no strip on the row',2:'not full width',
+               3:'a hole no bar boundary explains',4:'too many bars',
+               5:'segments not uniform',6:'no displayed-bar thickening (with 2+ bars)'};
+    const EV=['none','stub only','interruption only','stub + interruption'];
+    let h;
+    if(!ss.seq) h='<span class="pill off">no frame decoded yet</span> '+
+      '&mdash; Move&rsquo;s frames are not reaching the accumulator';
+    else if(ss.valid) h='<span class="pill ok">valid</span> '+
+      '<b>'+ss.segments+'</b> bar'+(ss.segments===1?'':'s')+
+      ' &middot; displayed bar <b>'+(ss.bold_segment||'\u2014')+'</b>'+
+      ' &middot; track <b>'+(ss.track>0?('T'+ss.track):'none selected')+'</b>'+
+      ' &middot; playhead '+(ss.playhead_col>=0
+          ? 'x='+ss.playhead_col+' ('+(100*ss.phase_frac).toFixed(1)+'% of the loop, '+
+            esc(EV[ss.evidence]||ss.evidence)+')'
+          : '<span class="pill warn">not located</span>');
+    else h='<span class="pill warn">refused</span> '+esc(REJ[ss.reject]||ss.reject)+
+      ' <small>(gate '+ss.reject+')</small>';
+    if(ss.valid && ss.strip_quarters>0){
+      /* The bar count AS A LENGTH, beside the file's own number. With the clip
+         present the file's length must fall INSIDE the range. A segment is a
+         BAR (Move's manual), and the count is rounded up, so the strip answers
+         to bar resolution and never better. An 11/8 set is what told bars
+         apart from 16-step pages: 16 quarters is 2.91 bars but exactly 4
+         pages, and the strip drew 3. */
+      /* A RANGE, not a number: the segment count is bars ROUNDED UP, so the
+         file's length only has to fall inside it. Comparing against the upper
+         end alone would call every fractional loop a disagreement. */
+      /* INCLUSIVE at the lower end: Move can draw one bar more than the loop
+         holds (the next bar it offers you), measured by lengthening a loop --
+         16.5 quarters, exactly 3 bars of 11/8, drew four segments. */
+      const agree = ss.file_quarters>0
+        ? ((ss.file_quarters>=ss.strip_quarters_min-0.001 &&
+            ss.file_quarters<=ss.strip_quarters+0.001)
+            ? '<span class="pill ok">the file falls in that range</span>'
+            : '<span class="pill off">the file says '+
+              (+ss.file_quarters).toFixed(2)+', OUTSIDE it</span>')
+        : '<span class="pill warn">clip not in the file yet</span>';
+      h+='<div style="margin-top:6px">'+ss.segments+' bar'+(ss.segments===1?'':'s')+
+         ' &times; '+(+ss.quarters_per_bar).toFixed(2)+' quarters/bar = <b>'+
+         (+ss.strip_quarters_min).toFixed(2)+'&ndash;'+
+         (+ss.strip_quarters).toFixed(2)+'</b> quarters &nbsp; '+agree+
+         ' &nbsp; <small>signature '+esc(ss.sig||'?')+', grid '+
+         esc(ss.grid||'?')+(ss.single_thin?', one bar (thin line, ambiguous)':'')+
+         '</small></div>';
+    }
+    h+='<div class="sub" style="margin-top:6px">frame '+ss.seq+
+       ' &middot; cached bar counts per track: '+
+       ss.segments_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
+       '</div>';
+    document.getElementById('ss').innerHTML=h;
   }
   if(d.grid){
     let h='<table class="g"><tr><th></th>';

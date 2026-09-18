@@ -2581,17 +2581,45 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * step you are looking at what the step will play, not at what the
          * knob is set to now), and `locked` marks the cell.
          *
-         * The MARK is where the two layouts diverge, and it has to. The dial
-         * layout inverts the label strip; this grid already spends that
-         * inversion on "a finger is on this knob", so reusing it would make a
-         * locked cell indistinguishable from a held one — and on the step-held
-         * view, where locks are read, several cells are locked and none is
-         * touched. The top-right 2x2 tick is likewise taken, by modulation.
-         * So a lock is the top-LEFT corner: the one unspent corner, mirroring
-         * the modulation tick across the cell.
+         * THE MARK IS BOTH: inverted like Elektron's, plus the corner.
+         *
+         * This comment used to argue for the corner ALONE, on the grounds that
+         * the inversion is already spent on "a finger is on this knob". The
+         * argument is right in general and wrong on this screen. Every
+         * Elektron manual describes the same thing — "the graphics become
+         * inverted for the locked parameter, and the locked parameter value is
+         * displayed" — and that inversion is how the gesture reads at a
+         * glance; a 2x2 corner pixel is something you have to be told about.
+         *
+         * The collision survives, but it is small and the corner settles it:
+         * inversion means "you are being shown a value" (touched or locked)
+         * and the top-left corner means "there is a lock here". The top-right
+         * 2x2 tick stays modulation's, so the two marks mirror each other
+         * across the cell.
          */
         const dec = decorations ? decorations[slot] : null;
         const locked = !!(dec && dec.locked);
+        /* ...AND WHETHER A POINT ACTUALLY SITS HERE.
+         *
+         * The two are not the same and the corner has always meant the second
+         * one -- see the comment above: inversion says "you are being shown a
+         * value", the corner says "there is a lock here". `exact` was read off
+         * `<key>:held`, carried into the decoration, and then never drawn, so
+         * a value the recorded CURVE merely passes through wore the lock mark
+         * exactly like a real lock.
+         *
+         * Reported from the device: clearing a lock left the knob showing a
+         * value, which is correct -- the readout answers the curve, and a
+         * recorded sweep still interpolates across the step whose point you
+         * removed -- but with the corner still lit there was nothing on screen
+         * to say the lock was gone, so a working clear looked like a broken
+         * one. "we cleared the LOCK but the recorded automation lane is still
+         * there and that's maybe what I'm seeing" -- exactly that.
+         *
+         * A decoration that does not carry `exact` keeps the old meaning, so a
+         * host that never supplied it is unchanged. */
+        const lockedExact = !!(dec && (dec.exact === undefined ? dec.locked
+                                                               : dec.exact));
         const decValue = (dec && dec.value !== undefined && dec.value !== null)
             ? dec.value : undefined;
         const raw = decValue !== undefined ? decValue : (values ? values[key] : null);
@@ -2627,11 +2655,28 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
              * at all. It looked like it worked because the graphics stand-down
              * moved the screen at the same moment.
              *
-             * The lock is what the step will play, so it wins over both the
-             * base and the modulated live value.
+             * The lock is what the step will play, so it wins over the
+             * modulated live value -- but NOT over the base, which the
+             * pointer keeps. See the arguments below.
              */
-            drawKnobWidget(ctx, g, col, rowY, meta, raw,
-                           modValues ? modValues[key] : undefined,
+            drawKnobWidget(ctx, g, col, rowY, meta,
+                           /* THE POINTER KEEPS THE BASE. A lock is what
+                            * AUTOMATION does to this parameter, and automation
+                            * already has a language on this grid: the pointer
+                            * is what you dialled, the mark rides at what is
+                            * being played. Moving the pointer to the lock
+                            * instead made the cell mean one thing while you
+                            * held the step and another while the lane played
+                            * it back -- same picture, two grammars. */
+                           values ? values[key] : null,
+                           /* ...and the lock rides as the MARK, which is also
+                            * what moves as you turn: the value being set is
+                            * the step's, not the track's. */
+                           decValue !== undefined ? decValue
+                               : (modValues ? modValues[key] : undefined),
+                           /* A widget that can only show ONE value shows the
+                            * lock, for the same reason it shows a modulated
+                            * value: it is what the step will play. */
                            decValue !== undefined ? decValue
                                : (liveValues ? liveValues[key] : undefined),
                            cellText, btnPhase,
@@ -2697,7 +2742,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * fact about this one parameter, and the controller already stands
          * graphics down while decorations are live precisely so a picture
          * cannot hide which of the cells it spans is locked. */
-        if (locked) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
+        if (lockedExact) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
 
         /*
          * `short_name` is for the CELL only -- the same split as short_options.
@@ -2734,7 +2779,28 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
-        drawLabelCell(ctx, g, col, lblY, label, display, isTouched, isTouched,
+        /*
+         * A LOCKED CELL READS AS ELEKTRON'S DOES: inverted, with the VALUE in
+         * the band rather than the parameter's name.
+         *
+         * Every Elektron manual that documents this says the same sentence --
+         * "the graphics become inverted for the locked parameter, and the
+         * locked parameter value is displayed" -- and it is the headline of
+         * the whole gesture: hold a trig and the screen tells you, at a
+         * glance, which parameters that step owns. The corner mark alone said
+         * it in a way you had to already know to read.
+         *
+         * The inversion is shared with "a finger is on this knob", which is
+         * why it was avoided here originally. On THIS screen that collision is
+         * benign and the corner mark resolves what is left of it: inversion
+         * means "you are being shown a value", touched or locked, and the
+         * top-left corner means "there is a lock here". Elektron has no
+         * capacitive knobs, so it never has to separate the two -- and on
+         * Elektron, touching a knob under a held trig creates a lock anyway,
+         * which is exactly what ours does too.
+         */
+        const showAsLock = isTouched || locked;
+        drawLabelCell(ctx, g, col, lblY, label, display, showAsLock, showAsLock,
                       modulated ? !!modulated(key) : false);
     }
 }

@@ -256,3 +256,171 @@ A param read still happens, but only on a **contradiction**: disk reports a
 position empty while the perf snapshot shows measured time for it — the
 hot-swap window where the on-disk mirror is momentarily stale relative to
 what is actually running. Every other refresh is disk-only.
+
+## Driving Move's own controls: `tools/inject/schwung_inject.c`
+
+Cross-compile it (`aarch64-linux-gnu-gcc -Isrc/host tools/inject/schwung_inject.c
+-lrt`), drop it on the device, and press Move's buttons with no hands:
+
+```
+schwung_inject step 1          # a step button: toggles a note in the editor
+schwung_inject track 3         # a track button (CCs 40-43, REVERSED)
+schwung_inject 09 90 10 7f     # any raw USB-MIDI packet
+```
+
+It pushes into `/schwung-midi-inject`, the same MPSC ring pytest-schwung uses,
+through `shadow_midi_inject_writer.h` rather than a hand-rolled copy of the
+protocol — a cable-0/CIN-0 packet reaching MIDI_IN reads as "misc function" and
+**aborts Move's firmware**, so the tool also refuses a `0x00` header outright.
+Outside overtake the shim drains the ring into Move's mailbox, so an injected
+packet is indistinguishable from a press *to Move*.
+
+**It is ONE-SIDED, and that will mislead you.** The drain writes the SHADOW
+mailbox — what Move reads — while Schwung's own control decoding scans
+`hardware_mmap_addr`, the real one. So Move acts on an injected press and
+Schwung never sees it: `shadow_control->selected_slot` (which is what
+`clip_selected_track()` returns) does not move, so anything attributed to "the
+selected track" is attributed to the previous one. Measured 2026-09-12 —
+injected Track 2 / Track 4 / Track 1 presses each changed the step editor, which
+the decoded bar strip followed exactly (4, invalid, 3 bars), while
+`selected_track` sat at 1 for all three. A real finger lands in both buffers, so
+this is an artifact of driving, not a bug in use.
+
+**Rule: read the results of an injected press off MOVE** — its screen, its file
+— never off Schwung's own state.
+
+### Move's save latency is 10 s, and D-Bus will not shorten it
+
+Measured 2026-09-12 with injected step presses, twice, identically:
+
+| | edit -> `Song.abl` rewritten |
+|---|---|
+| control (nothing called) | **10 s** |
+| `saveSongIfDirty` called at +2 s | **10 s** |
+
+`com.ableton.move.Browser.saveSongIfDirty` is real — introspect
+`/com/ableton/move/browser` — takes one string, and returns `method return` for
+every argument shape tried (set directory, uuid, `Song.abl` path, empty). It
+does not flush the LOADED song early. The interface is not the same thing as
+the effect, and with a clean song it returns identically, so the reply proves
+nothing on its own: the only thing that separated the two readings was measuring
+the natural latency FIRST.
+
+The inherited figure for that latency was "~35 s" and it is wrong by 3.5x,
+which matters because every design around the blind window was sized against it.
+
+### Driving SCHWUNG's own input, not just Move's
+
+`schwung_inject` alone is **one-sided**: the drain writes the SHADOW mailbox
+(Move's copy) while Schwung's control decoding scans `hardware_mmap_addr`, so
+an injected press moves Move and is invisible to Schwung. That is what made
+every Schwung-side input feature untestable by harness.
+
+`shadow_control_t.inject_as_hardware` (default 0, poke it in `/dev/shm`) makes
+the drain write **both** buffers at the top of `shim_post_transfer` — where the
+library's hw→shadow copy has just left the real events — so an injected packet
+arrives exactly where and when a real one would.
+
+```
+python3 -c 'import mmap,os; f=os.open("/dev/shm/schwung-control",os.O_RDWR); \
+  m=mmap.mmap(f,256); m[108]=1; m.flush()'      # offset: offsetof(inject_as_hardware)
+```
+
+Measured 2026-09-13: with it clear, an injected Track 3 press left
+`selected_track` at 1; with it set, `selected_track` followed to 3 and then 2,
+and an injected Shift+Vol+Track1 opened the shadow UI. **Clear it when done** —
+it makes every injected packet look like hardware, including the ones
+song-mode and an overtake DSP send.
+
+The offset is `offsetof(shadow_control_t, inject_as_hardware)`; compile
+`src/host/shadow_constants.h` on the host and print it rather than counting
+fields, because appending a field moves nothing but reading a stale offset
+writes over whatever is there now.
+
+## MIDI_OUT loss attribution — the THREE views, not two
+
+Arm with `touch /data/UserData/schwung/log_xmos_sysex_on`; output is
+`/data/UserData/schwung/xmos_sysex.txt`, 8 MB capped, disarm by removing the
+flag. It records every cable-0 SysEx packet in MIDI_OUT at **three** points, and
+the third one is the reason it can answer anything:
+
+```
+PRE     early in shim_pre_transfer
+PREEND  its LAST statement, immediately before the library's shadow->hw copy
+POSThw  the hardware mailbox, after the ioctl
+```
+
+```
+PRE == PREEND != POSThw    lost during the IOCTL — Move's other threads, or the hardware
+PRE != PREEND              lost in SCHWUNG's own pre-transfer work (~1100 lines of it)
+PRE == PREEND == POSThw    survived
+```
+
+**`PREEND` has to stay the last statement of `shim_pre_transfer`.** A MIDI_OUT
+writer added after it is not merely invisible — it is *exonerated*, because
+anything it overwrites still reads intact at `PREEND` and the log then blames
+the ioctl. `tests/host/test_xmos_log_slots_call_sites.sh` fails on a call that
+is no longer last, on the two ends reading the same buffer, and on a missing or
+duplicated view.
+
+Score a capture with `tools/xmos/attribute_midi_out.py <file>` (`--key 37` for
+the XMOS control messages, `--frame N` to dump one). It says *"PREEND view
+ABSENT — cannot attribute"* on a capture taken by an older shim rather than
+guessing.
+
+**Why it exists.** Captured 2026-09-12 on hardware: **9 of the 13 `37`-family
+XMOS control messages Move emitted were replaced in the mailbox by an RGB LED
+SysEx (`3b 10`) before reaching the wire.** Move's USB-C audio-out selection
+therefore silently did nothing on those frames — the field report is *"Main Out
+stops working until a reboot"*, and re-selecting appears not to help because
+the next attempt can be eaten too. The two-view capture could see the loss and
+could not attribute it, and that ambiguity is what a whole session went into.
+
+Two things the same capture already establishes, worth not re-deriving:
+
+- **In ~25,000 frames `POSThw` carried cable-0 SysEx that was not present at
+  `PRE`.** Move writes MIDI_OUT heavily *after* that early log point, so its own
+  threads are live in the window — which is why "Schwung did not write those
+  bytes" is not the same as "Schwung did not cause the loss".
+- **A message surviving is not evidence about the XMOS.** Five lone `37 12`
+  messages were once read as proof that Move firmware 2.1.0 preserves the
+  monitoring bit; all five had been discarded before the wire, so they testified
+  about nothing.
+
+One dormant instance of the same hazard, found on the way:
+`led_queue_flush_jack_sysex_restore()` opens by zeroing **every** cable-0 SysEx
+packet in MIDI_OUT, reasoning only about RNBO's SysEx — Move's `37`-family and
+its own LED commands ride that cable too.
+
+### The re-send, and why it is not the 1.3.2 persistence
+
+`src/host/xmos_resend.h` closes the failure above without knowing who caused it:
+watch the `37`-family envelopes Move writes into MIDI_OUT, check the hardware
+mailbox after the transfer, and if the bytes are not there, put them back —
+bounded at `XMOS_RESEND_MAX_ATTEMPTS`, then abandoned with a log line.
+
+**It replays Move's own bytes from this session, verbatim, milliseconds later.**
+The persistence retired in 1.3.2 replayed a value read from a file written on a
+*previous boot*, which is how it could assert Main Out — and mute the built-in
+speaker — against what the user currently wanted. This has no source of intent
+other than the message Move itself just emitted, so it cannot express one the
+user did not. It is kept entirely separate from `shim_usbc_out_replay` and
+`usbc_out_persist_enabled`, which stay hard-off.
+
+Three things that are easy to get wrong:
+
+- **Observe EARLY in `pre_transfer`, not at `PREEND`.** At `PREEND` you only see
+  the survivors — the half of the problem that needs no defence.
+- **Our own re-send is not a special case.** Confirmation asks whether the bytes
+  are on the wire, not who put them there, so the re-send landing is what closes
+  the watch.
+- **An abandoned message must stay in its slot.** Clearing it let the next frame
+  re-watch the same bytes with a fresh budget, which is an unbounded re-send
+  loop — 150 emissions across 200 frames where 3 were intended. It is retired
+  only when a *different* message arrives, because that is new intent. Found by
+  `test_budget_is_bounded`, not by review.
+
+The worker logs `XMOS ctl msg: N dropped from MIDI_OUT, M re-sent, K gave up`
+when those counters move; detection is on the SPI callback, which may not log.
+A `lost` with no `gave_up` is the defence working. A `gave_up` is the silent
+USB-C failure, now with a line that names it.

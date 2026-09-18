@@ -333,11 +333,29 @@ export const SLOT_GRID_ACTIONS = [
  * @param {boolean} hasPreset  whether this slot already holds a saved preset
  * @param {boolean} [hasSplits] whether this slot's synth publishes split_voices
  */
-export function slotGridHierarchy(hasPreset, hasSplits) {
+export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
     const have = { preset: !!hasPreset, splits: !!hasSplits };
+    /* NAME THE CLIP THE CLIP-SCOPED ACTION WILL ACT ON.
+     *
+     * "Clear Clip Lanes" is a promise about a clip the row cannot show, and
+     * the slot's bound clip is not visible from this menu at all -- so the
+     * row asked the user to trust an answer they could not check, and read
+     * identically whether it was about to clear four breakpoints or nothing.
+     * A menu entry carries a right-aligned `value` exactly like a list row,
+     * so the clip goes there and the wording does not have to change.
+     *
+     * BOTH LABELS KEEP THE WORD LANES, and that is why the CLIP one is the
+     * shorter of the two. "Clear Clip Lanes" plus a value does not fit: the
+     * label floor truncated it to "Clear Clip...", which beside Move's own
+     * clip deletion reads as "delete this clip" -- the one misreading here
+     * that would cost real work. So the slot-wide row takes the long name
+     * ("Clear All Lanes", no value to crowd it) and the clip row is
+     * "Clear Lanes" with the clip beside it. */
     const menu = SLOT_GRID_ACTIONS
         .filter((a) => !a.when || have[a.when])
-        .map((a) => ({ label: a.label, action: a.action }));
+        .map((a) => (a.action === "clear_clip_lanes" && clipLabel
+                        ? { label: a.label, action: a.action, value: clipLabel }
+                        : { label: a.label, action: a.action }));
     /*
      * Page order is Main, Sends, LFO 1, LFO 2, Actions.
      *
@@ -355,6 +373,7 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
                 .concat([{ level: "sends", label: "Sends" },
                          { level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
+                         { level: "automation", label: "Automation" },
                          { level: "actions", label: "Actions" }]),
         },
         /* Before the LFOs: a send is a mix decision and belongs beside the
@@ -367,6 +386,33 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
     };
     Object.assign(levels, lfoLevels([1, 2]));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+
+    /* AUTOMATION IS ITS OWN SECTION, not three rows among the Actions.
+     *
+     * Two reasons, and the second is the one that decided it. The words:
+     * "lanes" is this codebase's term and means nothing to a user, and the
+     * full phrases that DO mean something ("Clear Clip Automation") do not fit
+     * a row that also carries the clip -- the label floor truncated one to
+     * "Clear Clip...", which beside Move's own clip deletion reads as "delete
+     * this clip". Under a breadcrumb that already says AUTOMATION, each row
+     * can say what it does in full and nothing has to be abbreviated.
+     *
+     * And the scopes are a set, not a scatter: this clip, every clip, undo.
+     * Three sibling rows make that legible in a way three rows filed between
+     * Knob Mapping and Save never did. */
+    levels.automation = {
+        label: "Automation", knobs: [], params: [], menu_label: "Automation",
+        menu: [
+            { label: "Clear This Clip", action: "clear_clip_lanes",
+              value: clipLabel || "" },
+            { label: "Clear All Clips", action: "clear_lanes" },
+            /* Undo is SLOT-WIDE by construction -- one buffer per slot, shared
+             * by every module in it -- so it sits here and never on a module
+             * page, where it would promise a module-scoped undo it does not
+             * do. */
+            { label: "Undo Last Edit", action: "undo_lane_edit" },
+        ],
+    };
     return { modes: null, levels };
 }
 
@@ -435,7 +481,8 @@ export function createSlotGridIo(io) {
             if (k === "ui_hierarchy") {
                 return JSON.stringify(slotGridHierarchy(
                     !!io.hasPreset(),
-                    io.hasSplitVoices ? !!io.hasSplitVoices() : false));
+                    io.hasSplitVoices ? !!io.hasSplitVoices() : false,
+                    io.clipLabel ? io.clipLabel() : ""));
             }
             if (k === "chain_params") return JSON.stringify(allSlotGridParams());
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";

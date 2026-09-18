@@ -478,7 +478,20 @@ function drawCell(ctx, opts) {
      * right corner instead. */
     if (modulated) ctx.fillRect(cellX + cellW - 3, y, 2, 2, 1);
 
-    const locked = decoration && decoration.locked;
+    /* THE INVERSION IS THIS LAYOUT'S LOCK MARK, so it follows `exact` -- "a
+     * point SITS on this step" -- and not merely "a held value is being
+     * shown". The movy layout can spend two marks (inversion for "you are
+     * being shown a value", the corner for the lock); this one has a single
+     * strip, and its own comment below says what that strip is for: "which of
+     * the eight are locked".
+     *
+     * A value the recorded CURVE passes through is still displayed -- it is
+     * what the step will play -- it just does not claim to be a lock. Without
+     * this, clearing a lock left the screen pixel-identical and a working
+     * clear read as a broken one. A decoration carrying no `exact` keeps the
+     * old meaning. */
+    const locked = decoration &&
+        (decoration.exact === undefined ? decoration.locked : decoration.exact);
     const value = (decoration && decoration.value !== undefined) ? decoration.value : raw;
 
     const label = opts.label !== undefined ? opts.label : shortenLabel(ctx, meta.label || meta.key, w);
@@ -611,7 +624,7 @@ export function renderPage(ctx, o) {
         const m = o.metaIndex.getOrGuess(page.keys[touched]);
         const dec = o.decorations ? o.decorations[touched] : null;
         const v = dec && dec.value !== undefined ? dec.value : (o.values ? o.values[page.keys[touched]] : null);
-        drawTouchStrip(ctx, rect, m, v, dec && dec.locked);
+        drawTouchStrip(ctx, rect, m, v, dec && (dec.exact === undefined ? dec.locked : dec.exact));
     }
 
     /*
@@ -779,6 +792,11 @@ function drawTouchStrip(ctx, rect, meta, value, locked) {
     const x = rect.x, y = rect.y, w = rect.w;
     ctx.fillRect(x, y, w, FONT_H + 1, 1);
     const val = value === null || value === undefined ? "--" : formatParamValue(value, meta);
+    /* The `*` is the list layout's version of the movy corner and makes the
+     * same claim: a point SITS on this step. A value the recorded curve merely
+     * passes through is still shown -- it is what the step will play -- but it
+     * must not wear the mark, or clearing a lock leaves the screen identical
+     * and a working clear reads as a broken one. See render_page_movy.mjs. */
     const suffix = locked ? " *" : "";
     const right = asciiFold(val + suffix);
     const rw = ctx.textWidth(right);

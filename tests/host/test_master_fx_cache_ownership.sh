@@ -95,8 +95,44 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len) {
 void unified_log(const char *source, int level, const char *fmt, ...) {
     (void)source; (void)level; (void)fmt;
 }
+
+/* Clip phase seam: shadow_chain_mgmt.c's shadow_slot_clip_phase() reads the
+ * clip tables and the transport. Stubbed to "nothing known", which is the
+ * answer that makes the resolver return 0 = phase UNKNOWN. */
+int shadow_transport_pulses = 0;
+const void *clip_state_current(void) { return 0; }
+/* No playhead in a host unit test: the blind-window phase source asks for one
+ * and must get "never seen", which is the state every other stub here models. */
+int clip_playhead_last(unsigned char *i, unsigned int *p) { (void)i; (void)p; return 0; }
+const void *shadow_clip_regions(void) { return 0; }
+int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
+                     double loop_len, double *out_beats) {
+    (void)t; (void)pulses; (void)loop_start; (void)loop_len; (void)out_beats;
+    return 0;
+}
+/* And the fallback the resolver reaches for when Move has not saved the clip
+ * yet: the step editor's bar strip. "No reading" keeps the answer UNKNOWN,
+ * which is what these tests want -- they are about Master FX permutation and
+ * must not acquire an opinion about clip phase. */
+int step_strip_segments_for_track(int track) { (void)track; return 0; }
+/* And the last reading itself, which the p-lock step translation consults for
+ * the displayed bar. "Nothing observed" keeps these tests out of the business
+ * of having an opinion about Move's screen. */
+unsigned step_strip_latest(void *out, int *track) {
+    if (out) { unsigned char *p = (unsigned char *)out; for (int i = 0; i < 64; i++) p[i] = 0; }
+    if (track) *track = -1;
+    return 0;
+}
+double clip_regions_quarters_per_bar(const void *rg, int track, int slot) {
+    (void)rg; (void)track; (void)slot; return 4.0;
+}
 EOF
 
+# lane_trace.c is LINKED, not stubbed: it owns the diagnostic ring that
+# shadow_lanes_publish_driving pushes into, and a stub would let the ring
+# be per-translation-unit again -- the writer filling one copy and the
+# reader draining another. Disarmed it does nothing, so the real file is
+# free here.
 # -lm because shadow_chain_mgmt.c pulls fmod/roundf in through the LFO
 # tick. macOS folds libm into libSystem, so a missing -lm links fine there and
 # only fails on the Linux CI runner -- which is exactly what it did.
@@ -109,6 +145,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
   -Isrc/host \
   -DFIXTURE_DSP_PATH="\"$work/fixture/dsp.so\"" \
   tests/host/test_master_fx_cache_ownership.c "$work/stubs.c" \
+  src/host/lane_trace.c \
   -lm -o "$bin"
 
 "$bin"
