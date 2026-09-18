@@ -1309,6 +1309,77 @@ int main(void) {
         inst->lanes_enabled = 1;
     }
 
+    /* TWO BLIND CLIPS IN ONE SAVE WINDOW ARE TWO TAKES, and only the one
+     * whose length matches may adopt the arriving row.
+     *
+     * Before this, both clips' automation shared one lane: the key is
+     * (track, slot, target, param) and there was a single placeholder, so
+     * lane_alloc handed the second clip the first clip's lane, the points
+     * interleaved, and the second clip's `pending_len` overwrote the first's
+     * -- after which the length gate compared the arriving clip against the
+     * WRONG clip's length. One clip's automation playing on another.
+     *
+     * Two things are pinned here: the takes stay separate, and the reconcile
+     * adopts ONE of them. The second half matters because the gate accepts an
+     * integer MULTIPLE (a clip can be lengthened after its take), so a 2-bar
+     * take passes for a 4-bar clip -- and having adopted, it would displace
+     * the right take as a twin. Exact beats multiple. */
+    {
+        chain_instance_t *tk = calloc(1, sizeof(*tk));
+        CHECK(tk != NULL, "calloc for the two-take fixture");
+        if (tk) {
+            setup_fake_synth(tk);
+            tk->lanes_enabled = 1;
+            tk->lane_track = 0;
+            tk->clip_loop_start = 0.0;
+            tk->clip_phase_beats = 1.0;
+            tk->clip_phase_valid = 1;
+
+            lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+
+            /* Clip A: two bars. Locked while Move had not saved it. */
+            tk->clip_loop_len = 8.0;
+            int pa = lane_pending_slot_for_len(&tk->lanes, 0, 8.0);
+            lane_t *la = lane_alloc(&tk->lanes, "synth", "cutoff", 0, pa, &absent);
+            CHECK(la != NULL, "clip A's lane");
+            if (la) { la->pending_len = 8.0; lane_write(la, 4.0, 0.25f, 1); }
+
+            /* Clip B: four bars, made seconds later, same parameter. */
+            tk->clip_loop_len = 16.0;
+            int pb = lane_pending_slot_for_len(&tk->lanes, 0, 16.0);
+            lane_t *lb = lane_alloc(&tk->lanes, "synth", "cutoff", 0, pb, &absent);
+            CHECK(lb != NULL, "clip B's lane");
+            CHECK(la != lb,
+                  "both blind clips got the SAME lane — their points interleave "
+                  "and the second clip's length overwrites the first's");
+            if (lb) { lb->pending_len = 16.0; lane_write(lb, 12.0, 0.9f, 1); }
+
+            /* Song.abl now names row 3, and the clip there is four bars. */
+            tk->lane_new_row = 3;
+            tk->clip_fp_valid = 1;
+            tk->clip_fp.loop_start = 0.0;
+            tk->clip_fp.loop_len = 16.0;
+            tk->clip_fp.note_count = 3;
+            tk->clip_fp.first_note = 60;
+            lane_tick(tk);
+
+            CHECK(lb && lb->slot == 3,
+                  "the four-bar take did not adopt the four-bar clip (slot=%d)",
+                  lb ? lb->slot : -99);
+            CHECK(la && lane_slot_is_pending(la->slot),
+                  "the TWO-bar take adopted the four-bar row (slot=%d) — it "
+                  "passes the multiple rule, and having adopted it would "
+                  "displace the right take as a twin",
+                  la ? la->slot : -99);
+            CHECK(la && la->n == 1 && la->pts[0].phase == 4.0,
+                  "clip A's lock was disturbed (n=%d)", la ? la->n : -1);
+            CHECK(lb && lb->n == 1,
+                  "clip B's lane holds %d point(s) — the two takes merged",
+                  lb ? lb->n : -1);
+            free(tk);
+        }
+    }
+
     /* WHICH VERBS THE SWITCH GATES, stated once and executably.
      *
      * It was defined by omission before: `lane_on_set_param` checked the flag

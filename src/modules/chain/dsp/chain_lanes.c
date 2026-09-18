@@ -19,20 +19,15 @@
 
 /* WHICH ROW A WRITE IS KEYED TO — CURRENTLY THE SAME ONE PLAYBACK USES.
  *
- * This is an identity function today, and the comment below described
- * machinery that no longer exists: it substituted the PENDING placeholder
- * when the playing clip and the clip on screen could not be confirmed equal,
- * from a flag (`lane_edit_unconfirmed`) that was removed once the resolver
- * itself started answering PENDING for an unidentifiable clip. The
- * write-versus-playback distinction now lives entirely in
- * shadow_slot_clip_phase, which hands one row to both.
+ * For an identified clip this is `lane_clip_slot` and nothing more: the
+ * write-versus-playback distinction that used to live here (a flag,
+ * `lane_edit_unconfirmed`) is gone, because the resolver itself now answers
+ * PENDING for a clip it cannot name, and hands that one row to both.
  *
- * Kept as a named seam rather than inlined, because it is where that
- * distinction goes if it is ever needed again, and fifteen call sites
- * otherwise say `inst->lane_clip_slot` with nothing recording that some of
- * them meant "the row being EDITED". But do not read an invariant into it:
- * the old text claimed a clear could not reach the playing row while a
- * different clip was on screen, and nothing enforces that now.
+ * What it does do is pick the blind TAKE, below. Do not read the old
+ * invariant into it either way: the previous text here claimed a clear could
+ * not reach the playing row while a different clip was on screen, and nothing
+ * enforces that.
  *
  * WHAT ASKS THIS, from when the two could differ — the clears, the probe, the
  * lock map and Double Loop. Fixing only the writes back then made the feature
@@ -48,6 +43,23 @@
  * currently driving, so it is a fact about playback — and the `clip`
  * diagnostic, which exists to report the playing row. */
 static inline int lane_write_slot(const chain_instance_t *inst) {
+    /* THE RESOLVER ANSWERS "PENDING"; WHICH pending take is ours to decide.
+     *
+     * shadow_slot_clip_phase can only say "a clip exists here that the file
+     * cannot name" -- one answer for every unnamed clip. The store needs a
+     * KEY, and two clips made inside one save window that share it share a
+     * lane. So the base placeholder is translated here into the take whose
+     * recorded length matches the clip in front of us; see
+     * lane_pending_slot_for_len, which decides it from the store rather than
+     * from any state kept here (a remembered take would go stale exactly
+     * when a clip is adopted underneath it).
+     *
+     * Every surface the user's hand drives goes through this -- the writes,
+     * the clears, the probe, the lock map, Double Loop -- so they all address
+     * the same take without any of them knowing takes exist. */
+    if (lane_slot_is_pending(inst->lane_clip_slot))
+        return lane_pending_slot_for_len(&inst->lanes, inst->lane_track,
+                                         inst->clip_loop_len);
     return inst->lane_clip_slot;
 }
 
@@ -204,9 +216,48 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
     const int adopt_row = (inst->lane_new_row >= 0) ? inst->lane_new_row
                                                     : inst->lane_clip_slot;
     if (inst->lane_track < 0 || adopt_row < 0) return;
+
+    /* ONE TAKE ADOPTS, AND IT IS THE ONE WHOSE LENGTH ACTUALLY MATCHES.
+     *
+     * This used to walk every pending lane and re-key each onto `adopt_row`,
+     * which was right while all pending lanes belonged to one clip -- there
+     * was a single placeholder, so they did. Now that concurrent blind takes
+     * have their own placeholder values (LANE_PENDING_TAKES), adopting them
+     * all would hand several clips' automation to one row.
+     *
+     * The take is chosen before anything is re-keyed, preferring the better
+     * evidence:
+     *
+     *   EXACT length beats a MULTIPLE. lane_adopt_slot accepts an integer
+     *   multiple because a clip can be lengthened after the take was recorded
+     *   (Double Loop doubles it; adding bars repeats it), and refusing that
+     *   left the locks on a just-doubled clip silent for good -- measured.
+     *   But a multiple is weak: a 2-bar take passes the gate for a 4-bar
+     *   clip, so with two takes in flight the wrong one could adopt, and then
+     *   DISPLACE the right one as a twin. Order-dependent, and silent.
+     *
+     * Then every lane of that take moves together -- a take is one clip and
+     * may hold many parameters. */
+    int take = 0, take_score = 0;
+    for (int p = LANE_SLOT_PENDING; p >= LANE_SLOT_PENDING_MIN; p--) {
+        for (int i = 0; i < LANE_MAX; i++) {
+            const lane_t *ln = &inst->lanes.lanes[i];
+            if (!ln->used || ln->slot != p || ln->track != inst->lane_track)
+                continue;
+            int score = 0;
+            if (lane_len_same(ln->pending_len, inst->clip_loop_len)) score = 2;
+            else if (lane_adopt_len_ok(ln->pending_len, inst->clip_loop_len))
+                score = 1;
+            if (score > take_score) { take_score = score; take = p; }
+            break;                  /* one length per take */
+        }
+        if (take_score == 2) break; /* nothing beats exact */
+    }
+    if (!take_score) return;        /* no take describes this clip: wait */
+
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
-        if (!ln->used || !lane_slot_is_pending(ln->slot)) continue;
+        if (!ln->used || ln->slot != take) continue;
 
         /* THE ROW MAY ALREADY BE TAKEN, AND TWO LANES ON ONE KEY IS A
          * DOCUMENT THAT CAN NEVER LOAD AGAIN.

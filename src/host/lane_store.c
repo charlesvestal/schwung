@@ -567,10 +567,9 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * way.
      *
      * Only LONGER. A clip shorter than the take is not this take's clip. */
-    const double mult = now_len / recorded_len;
-    const double near = mult - (double)(long)(mult + 0.5);
-    if (now_len + 0.5 < recorded_len) return 0;
-    if (fabs(recorded_len - now_len) > 0.5 && fabs(near) > 0.01) return 0;
+    /* The rule itself is lane_adopt_len_ok, in the header, because the
+     * reconcile has to SCORE takes with it -- see there. */
+    if (!lane_adopt_len_ok(recorded_len, now_len)) return 0;
     /* THE IDENTITY COMES WITH THE ROW, and only once the length has agreed.
      *
      * A gesture made blind has an ABSENT fingerprint -- there were no notes to
