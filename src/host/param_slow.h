@@ -40,6 +40,7 @@
  */
 
 #include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -119,6 +120,38 @@ static inline int param_slow_record(param_slow_t *p, const char *key,
      * complete before the index that makes it visible moves. */
     __atomic_store_n(&p->write, p->write + 1, __ATOMIC_RELEASE);
     return 1;
+}
+
+/* ELAPSED MICROSECONDS BETWEEN TWO CLOCK_MONOTONIC READS.
+ *
+ * Here, and not at the call site, because the obvious form is wrong and it
+ * fails in the most misleading possible way:
+ *
+ *     us = (w1.tv_sec - w0.tv_sec) * 1000000 + (w1.tv_nsec - w0.tv_nsec)/1000
+ *
+ * `tv_nsec` BORROWS -- whenever the nanosecond field wrapped, the second term
+ * is negative. Cast to an unsigned type it becomes ~1.8e19, the sum is
+ * clamped, and the line reports 4294967.295 ms: exactly 0xFFFFFFFF
+ * microseconds, and a confident accusation that a module is blocking the SPI
+ * callback for 71 minutes. Observed twice in one log on an idle device,
+ * against `synth:name` and `lfo2:enabled`, neither of which was slow.
+ *
+ * That matters more than an ordinary arithmetic slip because `param-slow` is
+ * ALWAYS ON and is what this codebase reaches for to attribute a stall. A
+ * diagnostic that cries wolf costs the session it was meant to save.
+ *
+ * Signed nanoseconds, then divide. A negative result means the clock went
+ * backwards, which is not a measurement -- report 0 rather than a number
+ * somebody would act on. */
+static inline uint32_t param_slow_elapsed_us(const struct timespec *a,
+                                             const struct timespec *b) {
+    if (!a || !b) return 0;
+    int64_t ns = (int64_t)(b->tv_sec - a->tv_sec) * 1000000000ll
+               + (int64_t)(b->tv_nsec - a->tv_nsec);
+    if (ns <= 0) return 0;
+    int64_t us = ns / 1000;
+    if (us > 0xFFFFFFFFll) us = 0xFFFFFFFFll;
+    return (uint32_t)us;
 }
 
 /* Consumer. Copies the next pending entry into `out`; returns 0 when drained. */
