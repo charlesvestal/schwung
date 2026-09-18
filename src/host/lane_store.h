@@ -85,7 +85,53 @@ extern "C" {
  * `slot < 0` guard already in the code keeps treating it as "no clip". */
 #define LANE_SLOT_PENDING (-2)
 
-static inline int lane_slot_is_pending(int slot) { return slot == LANE_SLOT_PENDING; }
+/* THE KEY SPACE, NAMED. Move's session grid is four tracks of eight clip
+ * rows, which this file has always stated in prose ("track 0..3, clip row
+ * 0..7") and nowhere in code -- so the DESERIALIZER checked neither and
+ * assigned whatever the document said. `lane_track` is the chain SLOT index,
+ * which is why the track bound is 4 and not Move's track count. */
+#define LANE_TRACKS 4
+#define LANE_ROWS   8
+
+/* A KEY THAT CAN ADDRESS A REAL CLIP. Deliberately excludes the pending
+ * placeholder: this is the test a document must pass, and a provisional take
+ * is never written to one (lane_serial.c). Runtime code asks
+ * lane_slot_usable() instead, which does accept it. */
+static inline int lane_key_in_range(int track, int slot) {
+    return track >= 0 && track < LANE_TRACKS && slot >= 0 && slot < LANE_ROWS;
+}
+
+/* ...AND THERE CAN BE MORE THAN ONE BLIND TAKE AT A TIME.
+ *
+ * One placeholder value was one KEY, and the key is (track, slot, target,
+ * param) -- so two clips made inside the same save window, automating the
+ * same parameter on the same track, resolved to the SAME LANE. Measured:
+ * `lane_alloc` returned the first clip's lane, both sets of points landed in
+ * it interleaved, and the second clip's `pending_len` OVERWROTE the first's,
+ * so the length gate then compared the arriving clip against the wrong
+ * clip's length and adopted the first take onto the second clip's row. One
+ * clip's automation playing on another -- the outcome this design forbids --
+ * and it is the same defect the position-in-key fix closed for real rows
+ * ("recording the same knob against a second clip returned the FIRST clip's
+ * lane"), still live wherever the row is the placeholder.
+ *
+ * So the placeholder is a small RANGE, one value per concurrent blind take,
+ * and the take is chosen by the only positive evidence available at write
+ * time: the clip LENGTH off Move's bar strip. A different length is a
+ * different clip, established rather than guessed.
+ *
+ * Two blind clips of the SAME length remain indistinguishable and still
+ * share a take. Nothing observable separates them -- Move has written
+ * neither, the strip reports one geometry, and the row is the thing we are
+ * waiting for -- so the choice there is between merging them and refusing
+ * the user's newest gesture. It merges, as it always did; that is now the
+ * only residue rather than the general case. */
+#define LANE_PENDING_TAKES 4
+#define LANE_SLOT_PENDING_MIN (LANE_SLOT_PENDING - (LANE_PENDING_TAKES - 1))
+
+static inline int lane_slot_is_pending(int slot) {
+    return slot <= LANE_SLOT_PENDING && slot >= LANE_SLOT_PENDING_MIN;
+}
 /* A row that can key a lane: a real one, or the pending placeholder. */
 static inline int lane_slot_usable(int slot) {
     return (slot >= 0) || lane_slot_is_pending(slot);
@@ -262,18 +308,35 @@ typedef struct {
      * re-recorded. Silent and retained is the failure this design chooses
      * every other time it has to choose. */
     int    origin_pending;
-    /* THE CLIP ROW IS PROVISIONAL, and this is NOT serialized either, for the
-     * same reason origin_pending is not: on disk, "a lane I recorded blind
-     * thirty seconds ago" and "a lane whose clip was never identified" are the
-     * same bytes, and binding the second to whatever clip later turns up in
-     * its column is confidently wrong.
+    /* THERE IS NO `slot_pending` FIELD. "The clip row is provisional" is
+     * `slot == LANE_SLOT_PENDING` -- ask lane_slot_is_pending().
      *
-     * Set when a lane is created while `slot` is LANE_SLOT_PENDING. Cleared by
-     * lane_adopt_slot when Song.abl finally names the row -- and only if the
-     * arriving clip's LENGTH matches what we recorded against, so a clip
-     * deleted and remade inside the window binds nothing rather than binding
-     * the wrong take. */
-    int    slot_pending;
+     * It existed as a second latch beside the row, set and cleared at three
+     * sites, and the two could only ever disagree one way: a DESERIALIZED
+     * lane, which carried the row from the file and could not carry a
+     * runtime-only flag. That combination -- row PENDING, latch clear -- was
+     * the un-re-keyable zombie, and lane_adopt_slot's guard required both, so
+     * such a lane could never be re-keyed and never went stale either.
+     *
+     * The reader refuses an out-of-range key now (lane_key_in_range), so the
+     * one state that made two fields necessary cannot arrive, and keeping
+     * them was keeping a "cleared one, forgot the other" bug available for
+     * free. `pending_len` stays: it is DATA, not a restatement of the row. */
+    /* HOW LONG THIS TAKE HAS BEEN WAITING FOR A ROW, in render blocks.
+     *
+     * Runtime only, and it exists to tell WAITING from STUCK. A take with no
+     * row is the ordinary state for the 8-12 s Move takes to write the clip;
+     * past that, something is wrong with this particular clip and the user
+     * has no way to know -- the take plays, so it looks fine, and it is
+     * dropped at the next set change or reboot without a word. That is the
+     * note-free clip (Move never writes a clip with no notes, so there is
+     * never a row to adopt), and a clip whose loop was resized to a length no
+     * take matches.
+     *
+     * Neither case can be FIXED here -- with no row there is nothing to key
+     * against, and adopting anyway is the confidently-wrong answer this
+     * design refuses everywhere. So it is reported instead. */
+    uint32_t pending_blocks;
     /* The clip LENGTH the blind take was recorded against, read off Move's bar
      * strip. Kept so lane_adopt_slot can refuse a clip that is not the one we
      * were editing; 0 means "never recorded blind". Runtime only. */
@@ -291,6 +354,115 @@ typedef struct {
 } lane_t;
 
 typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
+
+/* WHICH BLIND TAKE A WRITE BELONGS TO, decided by the clip's LENGTH.
+ *
+ * Preference order, and every step is evidence rather than preference:
+ *   1. a take already holding lanes for this track whose recorded length is
+ *      the one in front of us -- the clip we are still editing;
+ *   2. a take holding nothing -- a clip we have not seen before;
+ *   3. the base placeholder, which merges. Reached only when every
+ *      LANE_PENDING_TAKES is held at some other length, which the caller can
+ *      detect (this answers the base while step 1 did not match) and count.
+ *
+ * An unusable length cannot discriminate and takes the base; a write with no
+ * clip geometry is refused upstream anyway.
+ *
+ * The comparison has a tolerance because the two sources disagree by
+ * construction: `pending_len` comes from the step strip, which answers in
+ * BARS ROUNDED UP, while the arriving clip's length is a float from the
+ * file. The epsilon is far under one bar, so two clips a bar apart stay two
+ * clips. */
+#define LANE_PENDING_LEN_EPS 0.001
+
+/* WHEN A WAITING TAKE BECOMES A STUCK ONE. A block is 128 frames at 44100 Hz
+ * (2.90 ms), so this is ~30 s -- well past the 8-12 s Move's save window was
+ * MEASURED at, so a take past it is not merely slow. Deliberately generous:
+ * the answer this gates is user-facing, and crying stuck at a save that was
+ * simply late is its own kind of wrong. */
+#define LANE_PENDING_STALL_BLOCKS 10345
+
+static inline int lane_pending_is_stalled(const lane_t *ln) {
+    return ln && ln->used && lane_slot_is_pending(ln->slot) &&
+           ln->pending_blocks >= LANE_PENDING_STALL_BLOCKS;
+}
+
+/* Do these two lengths describe the same clip, EXACTLY? The tolerance is the
+ * strip-versus-file disagreement, nothing more. lane_adopt_slot separately
+ * accepts an integer MULTIPLE, because a clip can be lengthened after the
+ * take -- but a multiple is much weaker evidence, and when several blind
+ * takes compete for one arriving row the exact one must win. */
+static inline int lane_len_same(double a, double b) {
+    if (!(a > 0.0) || !(b > 0.0)) return 0;
+    const double d = a - b;
+    return d > -0.5 && d < 0.5;
+}
+
+/* CAN A TAKE RECORDED AGAINST `recorded` BELONG TO A CLIP OF `now`?
+ *
+ * The gate lane_adopt_slot applies, lifted out so the reconcile can SCORE
+ * candidate takes with it instead of restating it. Two copies of a rule that
+ * decides which clip owns an automation lane is how this feature has already
+ * lost data twice.
+ *
+ * Equal, or an integer multiple, and only LONGER. The multiple is there
+ * because the lengthening gestures produce one -- Double Loop doubles the
+ * clip, adding bars repeats it -- and equality alone left the locks on a
+ * just-doubled new clip PENDING for good (measured: `adopt=0 slot=-2`). The
+ * take's points sit in the first repeat either way.
+ *
+ * It is deliberately weaker evidence than lane_len_same, and the caller is
+ * expected to prefer an exact match when it has one. */
+static inline int lane_adopt_len_ok(double recorded, double now) {
+    if (!(recorded > 0.0) || !(now > 0.0)) return 0;
+    if (now + 0.5 < recorded) return 0;                 /* shorter: not ours */
+    if (lane_len_same(recorded, now)) return 1;
+    const double mult = now / recorded;
+    const double near = mult - (double)(long)(mult + 0.5);
+    return (near > -0.01 && near < 0.01);
+}
+
+static inline int lane_pending_slot_for_len(const lane_store_t *st, int track,
+                                            double len) {
+    if (!st || track < 0 || !(len > 0.0)) return LANE_SLOT_PENDING;
+    for (int p = LANE_SLOT_PENDING; p >= LANE_SLOT_PENDING_MIN; p--) {
+        for (int i = 0; i < LANE_MAX; i++) {
+            const lane_t *ln = &st->lanes[i];
+            if (!ln->used || ln->track != track || ln->slot != p) continue;
+            const double d = ln->pending_len - len;
+            if (d > -LANE_PENDING_LEN_EPS && d < LANE_PENDING_LEN_EPS) return p;
+            break;      /* this take belongs to a clip of another length */
+        }
+    }
+    for (int p = LANE_SLOT_PENDING; p >= LANE_SLOT_PENDING_MIN; p--) {
+        int held = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            const lane_t *ln = &st->lanes[i];
+            if (ln->used && ln->track == track && ln->slot == p) { held = 1; break; }
+        }
+        if (!held) return p;
+    }
+    return LANE_SLOT_PENDING;
+}
+
+/* HOW BIG THIS IS ALLOWED TO GET, enforced rather than described.
+ *
+ * Two comments stated the size in prose and BOTH were wrong -- one said
+ * 18 KB, the other 37 KB, against a measured 53.2 KB; the first predates the
+ * LANE_MAX 16 -> 32 raise and the second predates something else. The number
+ * matters because a lane_store_t must never land on the SPI callback's frame
+ * (patch_info_t alone took that to 232 KB when SLOT_BUSES went 4 -> 8), and a
+ * prose number that drifts is exactly how it would: the next person sizes a
+ * temporary against 18 KB.
+ *
+ * So the constraint is a budget the build checks, not a figure to keep in
+ * sync. Raising LANE_MAX or LANE_POINTS_MAX past it fails HERE, where the
+ * decision is, with the reason attached. */
+#define LANE_STORE_MAX_BYTES (64 * 1024)
+_Static_assert(sizeof(lane_store_t) <= LANE_STORE_MAX_BYTES,
+               "lane_store_t is over budget: it must not sit on the SPI "
+               "callback's stack frame, and lane_store_swap keeps one as a "
+               "static for that reason");
 
 /* How many lanes a snapshot CANNOT hold — the ones lane_serial.c refuses to
  * write because their clip cannot yet be identified (a pending row, or a real
@@ -520,10 +692,21 @@ int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now);
  * refuses an absent fingerprint outright, so without taking it here the lane
  * is re-keyed correctly and then goes STALE the moment the clip appears.
  * Taken INSIDE the length check, so a clip that is not ours cannot leave its
- * identity behind; and WITHOUT re-origining, unlike lane_adopt_fingerprint,
- * because a blind p-lock's phase is already true clip time.
+ * identity behind.
  *
- * Returns 1 if the lane was re-keyed. */
+ * IT RE-ORIGINS, through the same lane_take_identity as
+ * lane_adopt_fingerprint. This said the opposite for a while -- "WITHOUT
+ * re-origining, because a blind p-lock's phase is already true clip time" --
+ * which holds only when the clip's origin is 0, and that is precisely what a
+ * clip Move has not written cannot tell us: chain_set_clip_phase hands the
+ * write side 0, so the lock lands in 0-space. The belief was measured false
+ * and fixed in the .c, and this half of the comment survived it; anyone
+ * reading only the header re-learned the disproven version with the disproof
+ * one file away.
+ *
+ * Returns 1 if the lane was re-keyed. A row that arrives WITHOUT a usable
+ * identity is refused rather than half-taken -- see the .c for why closing
+ * the pending latch early strands the lane silently forever. */
 int lane_adopt_slot(lane_t *ln, int track, int slot,
                     double recorded_len, double now_len,
                     const lane_fingerprint_t *now_fp);

@@ -1309,6 +1309,335 @@ int main(void) {
         inst->lanes_enabled = 1;
     }
 
+    /* TWO BLIND CLIPS IN ONE SAVE WINDOW ARE TWO TAKES, and only the one
+     * whose length matches may adopt the arriving row.
+     *
+     * Before this, both clips' automation shared one lane: the key is
+     * (track, slot, target, param) and there was a single placeholder, so
+     * lane_alloc handed the second clip the first clip's lane, the points
+     * interleaved, and the second clip's `pending_len` overwrote the first's
+     * -- after which the length gate compared the arriving clip against the
+     * WRONG clip's length. One clip's automation playing on another.
+     *
+     * Two things are pinned here: the takes stay separate, and the reconcile
+     * adopts ONE of them. The second half matters because the gate accepts an
+     * integer MULTIPLE (a clip can be lengthened after its take), so a 2-bar
+     * take passes for a 4-bar clip -- and having adopted, it would displace
+     * the right take as a twin. Exact beats multiple. */
+    {
+        chain_instance_t *tk = calloc(1, sizeof(*tk));
+        CHECK(tk != NULL, "calloc for the two-take fixture");
+        if (tk) {
+            setup_fake_synth(tk);
+            tk->lanes_enabled = 1;
+            tk->lane_track = 0;
+            tk->clip_loop_start = 0.0;
+            tk->clip_phase_beats = 1.0;
+            tk->clip_phase_valid = 1;
+
+            lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+
+            /* Clip A: two bars. Locked while Move had not saved it. */
+            tk->clip_loop_len = 8.0;
+            int pa = lane_pending_slot_for_len(&tk->lanes, 0, 8.0);
+            lane_t *la = lane_alloc(&tk->lanes, "synth", "cutoff", 0, pa, &absent);
+            CHECK(la != NULL, "clip A's lane");
+            if (la) { la->pending_len = 8.0; lane_write(la, 4.0, 0.25f, 1); }
+
+            /* Clip B: four bars, made seconds later, same parameter. */
+            tk->clip_loop_len = 16.0;
+            int pb = lane_pending_slot_for_len(&tk->lanes, 0, 16.0);
+            lane_t *lb = lane_alloc(&tk->lanes, "synth", "cutoff", 0, pb, &absent);
+            CHECK(lb != NULL, "clip B's lane");
+            CHECK(la != lb,
+                  "both blind clips got the SAME lane — their points interleave "
+                  "and the second clip's length overwrites the first's");
+            if (lb) { lb->pending_len = 16.0; lane_write(lb, 12.0, 0.9f, 1); }
+
+            /* Song.abl now names row 3, and the clip there is four bars. */
+            tk->lane_new_row = 3;
+            tk->clip_fp_valid = 1;
+            tk->clip_fp.loop_start = 0.0;
+            tk->clip_fp.loop_len = 16.0;
+            tk->clip_fp.note_count = 3;
+            tk->clip_fp.first_note = 60;
+            lane_tick(tk);
+
+            CHECK(lb && lb->slot == 3,
+                  "the four-bar take did not adopt the four-bar clip (slot=%d)",
+                  lb ? lb->slot : -99);
+            CHECK(la && lane_slot_is_pending(la->slot),
+                  "the TWO-bar take adopted the four-bar row (slot=%d) — it "
+                  "passes the multiple rule, and having adopted it would "
+                  "displace the right take as a twin",
+                  la ? la->slot : -99);
+            CHECK(la && la->n == 1 && la->pts[0].phase == 4.0,
+                  "clip A's lock was disturbed (n=%d)", la ? la->n : -1);
+            CHECK(lb && lb->n == 1,
+                  "clip B's lane holds %d point(s) — the two takes merged",
+                  lb ? lb->n : -1);
+            free(tk);
+        }
+    }
+
+    /* A LOCK MADE WHILE ANOTHER CLIP PLAYS DOES NOT LAND ON THE PLAYING CLIP.
+     *
+     * The bug reproduced twice on hardware 2026-09-18: a p-lock aimed at a
+     * brand-new clip was keyed to row 0 in one run and row 1 in another --
+     * whichever clip had last played. The resolver answers ONE row, the
+     * playing one, and every honest branch that would have said PENDING sits
+     * under `cslot < 0`, which the live identity skips the moment anything is
+     * playing.
+     *
+     * `lane_edit_unconfirmed` is the shim telling the chain that Move's strip
+     * shows a clip whose bar count is not the playing clip's. A write then
+     * keys to the placeholder and carries the EDITED clip's length, so
+     * adoption binds it to the right row later.
+     *
+     * Both halves are asserted, because either alone is a silent wrong
+     * answer: the row must not be the playing one, and the take's length must
+     * not be the playing clip's. */
+    {
+        chain_instance_t *eu = calloc(1, sizeof(*eu));
+        CHECK(eu != NULL, "calloc for the edit-unconfirmed fixture");
+        if (eu) {
+            setup_fake_synth(eu);
+            eu->lanes_enabled = 1;
+            eu->lane_track = 0;
+            eu->clip_loop_start = 0.0;
+            eu->clip_phase_beats = 1.0;
+            eu->clip_phase_valid = 1;
+            eu->clip_fp_valid = 1;
+            eu->clip_fp.loop_start = 0.0;
+            eu->clip_fp.loop_len = 16.0;
+            eu->clip_fp.note_count = 5;
+            eu->clip_fp.first_note = 60;
+
+            /* Row 3 is PLAYING and is four bars. */
+            eu->lane_clip_slot = 3;
+            eu->clip_loop_len = 16.0;
+
+            /* Baseline: nothing says a different clip is on screen, so a lock
+             * belongs to the playing clip and must key to its row. Without
+             * this the assertion below passes on a build that never writes to
+             * a real row at all. */
+            lane_param_set(eu, "plock", "synth cutoff 1.0 44");
+            int on_row = 0, on_pending = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (!ln->used) continue;
+                if (ln->slot == 3) on_row++;
+                if (lane_slot_is_pending(ln->slot)) on_pending++;
+            }
+            CHECK(on_row == 1 && on_pending == 0,
+                  "a confirmed lock did not key to the playing row "
+                  "(row=%d pending=%d)", on_row, on_pending);
+
+            /* Now Move's strip shows a ONE-bar clip while the four-bar clip
+             * on row 3 keeps playing: a different clip, established. */
+            lane_param_set(eu, "edit_len", "4.00");
+            lane_param_set(eu, "edit_unconfirmed", "1");
+            lane_param_set(eu, "plock", "synth octave 2.0 5");
+
+            const lane_t *oct = NULL;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (ln->used && strcmp(ln->param, "octave") == 0) oct = ln;
+            }
+            CHECK(oct != NULL, "the second lock created no lane");
+            if (oct) {
+                CHECK(lane_slot_is_pending(oct->slot),
+                      "the lock landed on row %d while the user was editing a "
+                      "different clip — silent, and permanent once it adopts",
+                      oct->slot);
+                CHECK(oct->pending_len == 4.0,
+                      "the take recorded length %.2f, expected the EDITED "
+                      "clip's 4.00 — keyed to the playing clip's geometry, "
+                      "adoption binds it to the wrong row",
+                      oct->pending_len);
+            }
+
+            /* And the first lock is untouched: playback keeps the playing row. */
+            const lane_t *cut = NULL;
+            for (int i3 = 0; i3 < LANE_MAX; i3++) {
+                const lane_t *ln = &eu->lanes.lanes[i3];
+                if (ln->used && strcmp(ln->param, "cutoff") == 0) cut = ln;
+            }
+            CHECK(cut && cut->slot == 3,
+                  "the earlier lock on the playing clip moved (slot=%d)",
+                  cut ? cut->slot : -99);
+
+            /* THE FLAG CLEARS. It is restated every frame by the shim, so a
+             * latched 1 would withhold the row from every later gesture aimed
+             * at the playing clip -- the exact failure the old session-decode
+             * version was removed for. */
+            lane_param_set(eu, "edit_unconfirmed", "0");
+            lane_param_set(eu, "plock", "synth cutoff 3.0 70");
+            int still_pending = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (eu->lanes.lanes[i3].used &&
+                    strcmp(eu->lanes.lanes[i3].param, "cutoff") == 0 &&
+                    lane_slot_is_pending(eu->lanes.lanes[i3].slot)) still_pending++;
+            CHECK(still_pending == 0,
+                  "with the flag cleared a lock still deferred — a latched "
+                  "flag makes every p-lock on the playing clip defer forever");
+            free(eu);
+        }
+    }
+
+    /* DOUBLE LOOP INSIDE THE SAVE WINDOW KEEPS ONE CLIP IN ONE TAKE.
+     *
+     * `pending_len` identifies a blind take: it is how the next write finds
+     * the take it belongs to, and how adoption tells this clip from another.
+     * So doubling the clip's points and leaving that number behind splits one
+     * clip across two takes -- the next lock reads the new length off the
+     * strip, matches nothing, and opens a second take. Only the one whose
+     * length matches would then adopt, stranding the earlier lock.
+     *
+     * The previous code got this right by accident (one placeholder meant one
+     * take, and the later write simply overwrote the length); the take range
+     * is what makes it something to state. */
+    {
+        chain_instance_t *dl = calloc(1, sizeof(*dl));
+        CHECK(dl != NULL, "calloc for the double-in-window fixture");
+        if (dl) {
+            setup_fake_synth(dl);
+            dl->lanes_enabled = 1;
+            dl->lane_track = 0;
+            dl->lane_clip_slot = LANE_SLOT_PENDING;
+            dl->clip_loop_start = 0.0;
+            dl->clip_loop_len = 4.0;        /* one bar, brand new */
+            dl->clip_phase_beats = 1.0;
+            dl->clip_phase_valid = 1;
+
+            /* Lock one parameter on the new clip. */
+            lane_param_set(dl, "plock", "synth cutoff 1.0 55");
+            char pb[64] = {0};
+            lane_param_get(dl, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 1 0") == 0,
+                  "after the first lock, expected one take: got '%s'", pb);
+
+            /* Double Loop. The clip is two bars now, and so is the take. */
+            lane_param_set(dl, "double", "1");
+            dl->clip_loop_len = 8.0;
+            int pl = -99;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (dl->lanes.lanes[i3].used) pl = (int)dl->lanes.lanes[i3].pending_len;
+            CHECK(pl == 8,
+                  "the take's recorded length is %d after doubling, expected 8 "
+                  "— it identifies the take, so a stale value splits the clip",
+                  pl);
+
+            /* A second lock on the SAME clip must join the SAME take. */
+            lane_param_set(dl, "plock", "synth octave 2.0 3");
+            lane_param_get(dl, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 2 0") == 0,
+                  "expected '1 2 0' (ONE take holding two parameters), got "
+                  "'%s' — the doubled clip was split across two takes, and "
+                  "only the matching one would adopt", pb);
+            free(dl);
+        }
+    }
+
+    /* A TAKE THAT CANNOT BE SAVED SAYS SO -- `lanes:pending`.
+     *
+     * The serializer refuses a provisional lane by design, so a slot holding
+     * only such takes serves an empty document and the autosave deletes its
+     * file. Correct, and it was silent: the take plays, so nothing looks
+     * wrong, and it is gone at the next set change. This is the number the
+     * autosave reports, and the distinction that makes it useful -- WAITING
+     * (the ordinary 8-12 s) versus STALLED (a clip with no notes, which Move
+     * never writes, so no row ever arrives). */
+    {
+        chain_instance_t *pn = calloc(1, sizeof(*pn));
+        CHECK(pn != NULL, "calloc for the pending-report fixture");
+        if (pn) {
+            setup_fake_synth(pn);
+            pn->lanes_enabled = 1;
+            pn->lane_track = 0;
+            pn->clip_loop_start = 0.0;
+            pn->clip_phase_beats = 1.0;
+            pn->clip_phase_valid = 1;
+            pn->lane_new_row = -1;          /* no row has appeared */
+            pn->lane_clip_slot = LANE_SLOT_PENDING;
+            lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+
+            char pb[64] = {0};
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "0 0 0") == 0,
+                  "an empty slot reported pending as '%s'", pb);
+
+            /* One new clip, two parameters locked on it: ONE take. */
+            pn->clip_loop_len = 8.0;
+            int p1 = lane_pending_slot_for_len(&pn->lanes, 0, 8.0);
+            lane_t *x = lane_alloc(&pn->lanes, "synth", "cutoff", 0, p1, &absent);
+            lane_t *y = lane_alloc(&pn->lanes, "synth", "room_size", 0, p1, &absent);
+            CHECK(x && y, "the two lanes of one take");
+            if (x) { x->pending_len = 8.0; lane_write(x, 1.0, 0.2f, 1); }
+            if (y) { y->pending_len = 8.0; lane_write(y, 1.0, 0.3f, 1); }
+
+            /* And a second new clip of another length: a SECOND take. */
+            pn->clip_loop_len = 16.0;
+            int p2 = lane_pending_slot_for_len(&pn->lanes, 0, 16.0);
+            lane_t *z = lane_alloc(&pn->lanes, "synth", "cutoff", 0, p2, &absent);
+            CHECK(z != NULL, "the second take's lane");
+            if (z) { z->pending_len = 16.0; lane_write(z, 2.0, 0.4f, 1); }
+
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 0") == 0,
+                  "expected '2 3 0' (two takes, three lanes, none stalled), "
+                  "got '%s' — takes count CLIPS, not lanes, because \"three "
+                  "parameters on one clip\" and \"three clips\" are different "
+                  "sentences", pb);
+
+            /* The store serves NOTHING for these, which is what makes the
+             * report necessary: the autosave sees an empty document and
+             * cannot tell an empty slot from this one. */
+            char doc[256] = {0};
+            int dn = lane_serve_state(pn, doc, sizeof(doc));
+            CHECK(dn == 0,
+                  "a provisional-only store served %d byte(s) — it must not be "
+                  "written, and the caller writes any non-empty answer", dn);
+
+            /* WAITING IS NOT STALLED. A tick charges each take one block; one
+             * tick must not trip a ~30 s threshold. */
+            pn->clip_loop_len = 8.0;
+            lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 0") == 0,
+                  "one block of waiting reported as stalled: '%s'", pb);
+
+            /* AND THE WAIT IS ACCUMULATED BY TICKING, not set by hand. The
+             * first version of this test wrote `pending_blocks` directly and
+             * therefore passed with the increment deleted -- it measured the
+             * getter and not the counting. Driven for the real threshold
+             * instead: ~30 s of blocks, which costs milliseconds here. */
+            for (uint32_t t = 0; t < LANE_PENDING_STALL_BLOCKS; t++)
+                lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 3") == 0,
+                  "after %u blocks (~30 s) of waiting, expected '2 3 3', got "
+                  "'%s' — a take that never resolves must stop reading as one "
+                  "that is merely new", (unsigned)LANE_PENDING_STALL_BLOCKS, pb);
+
+            /* AND ADOPTING CLEARS THE WAIT, or a lane that resolved would go
+             * on being counted as stuck for the rest of the session. */
+            pn->lane_new_row = 5;
+            pn->clip_fp_valid = 1;
+            pn->clip_fp.loop_start = 0.0;
+            pn->clip_fp.loop_len = 8.0;
+            pn->clip_fp.note_count = 3;
+            pn->clip_fp.first_note = 60;
+            pn->clip_loop_len = 8.0;
+            lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 1 1") == 0,
+                  "after the eight-bar take adopted row 5, expected '1 1 1' "
+                  "(the sixteen-bar take still waiting), got '%s'", pb);
+            free(pn);
+        }
+    }
+
     /* WHICH VERBS THE SWITCH GATES, stated once and executably.
      *
      * It was defined by omission before: `lane_on_set_param` checked the flag

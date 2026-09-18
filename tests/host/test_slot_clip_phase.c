@@ -44,6 +44,8 @@
  * worker publishes the row that newly appeared in Song.abl, and with this
  * nailed to -1 the fixture could only ever exercise the blind half — which is
  * exactly why the whole ladder went unpinned. -1 = nothing appeared. */
+extern volatile int g_write_unconfirmed[];
+extern volatile int g_write_edit_len_x100[];
 static int fake_new_slot[CLIP_TRACKS] = { -1, -1, -1, -1 };
 int shadow_clip_new_slot(int track) {
     if (track < 0 || track >= CLIP_TRACKS) return -1;
@@ -591,6 +593,77 @@ int main(void) {
         CHECK(cs == 3,
               "with one clip and no strip the file's answer was dropped "
               "(cs=%d)", cs);
+        step_strip_reset();
+    }
+
+    printf("\nmay a WRITE use the row? the bar-count discriminator\n");
+    {
+        /* The bug reproduced twice on hardware 2026-09-18, and the reason
+         * every honest branch missed it: the live identity fills the row the
+         * moment a clip PLAYS, so the `cslot < 0` ladder -- where the strip
+         * check and PENDING live -- never runs. Playback wants that row. A
+         * p-lock does not.
+         *
+         * The discriminator is the strip's BAR COUNT against the playing
+         * clip's, which is the only positive evidence Move gives us in Note
+         * view. Asserted in both directions, because a flag that is always
+         * set withholds the row from every gesture aimed at the playing clip
+         * -- the failure the session-decode version was removed for. */
+        reset_world();
+        set_region(0, 3, 0.0, 16.0);   set_region_notes(0, 3, 5, 60);
+        set_track(0, 1, 3, 1, 1);              /* row 3 playing, 4 bars */
+
+        paint_strip(0, 4);                     /* editing a FOUR-bar clip */
+        rc = call(0, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == 3, "the playing row was not reported (cs=%d)", cs);
+        CHECK(g_write_unconfirmed[0] == 0,
+              "a write was withheld while the strip agreed with the playing "
+              "clip — every p-lock on the clip you are playing would defer");
+
+        paint_strip(0, 1);                     /* now a ONE-bar clip */
+        rc = call(0, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == 3,
+              "playback lost the playing row when a different clip appeared "
+              "on screen (cs=%d) — playback asks a different question", cs);
+        CHECK(g_write_unconfirmed[0] == 1,
+              "a one-bar clip on screen over a four-bar playing clip did not "
+              "withhold the row — this is the wrong-clip binding, silent and "
+              "permanent once the lane adopts");
+        CHECK(g_write_edit_len_x100[0] == 400,
+              "the edited clip's length came back %d (x100), expected 400 — "
+              "a deferred take keyed to the playing clip's geometry adopts "
+              "the wrong row", g_write_edit_len_x100[0]);
+
+        /* A PART-BAR CLIP IS STILL THE SAME CLIP, and this is why the
+         * comparison is in BARS and not quarters.
+         *
+         * The strip cannot answer finer than a bar -- a segment IS a bar and
+         * a part-bar still gets one -- so a clip of 3.5 bars draws FOUR
+         * segments. Comparing quarters (4 x 4 = 16 against 14) calls that a
+         * different clip and withholds the row from every p-lock on it, which
+         * is the "flag always set" failure in its quietest form: it only
+         * happens on clips whose length is not a whole number of bars.
+         *
+         * Caught by mutation, not by design: the whole-bar fixture above
+         * passes either way. */
+        reset_world();
+        set_region(0, 3, 0.0, 14.0);   set_region_notes(0, 3, 5, 60);
+        set_track(0, 1, 3, 1, 1);
+        paint_strip(0, 4);                     /* 3.5 bars draws as 4 */
+        rc = call(0, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == 3, "the part-bar playing row was not reported (cs=%d)", cs);
+        CHECK(g_write_unconfirmed[0] == 0,
+              "a 3.5-bar clip drawing 4 segments was called a different clip "
+              "— the strip answers in BARS, so comparing quarters withholds "
+              "the row from every p-lock on a part-bar clip");
+
+        /* NO STRIP AT ALL is not evidence of anything: nothing is being
+         * step-edited, so the row stands. */
+        step_strip_reset();
+        rc = call(0, &ph, &len, &cs, &fpv, fp);
+        CHECK(g_write_unconfirmed[0] == 0,
+              "with no strip the row was withheld anyway — a p-lock needs a "
+              "held step, so no strip means no competing clip");
         step_strip_reset();
     }
 

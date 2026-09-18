@@ -194,12 +194,194 @@ tested; nothing in the resolver reads it.
 
 ## Still open
 
-- A **non-multiple loop resize** leaves a blind take provisional and silent.
-- **Two blind clips in one save window** share the single PENDING key per
-  track; nothing distinguishes them and the length check usually cannot.
-- **Create-then-duplicate inside one window** is never detected: the duplicate
-  test needs the source present in the PREVIOUS parse.
-- A **note-free clip** is never written by Move, so a clip used purely as an
-  automation carrier stays blind and its lanes are not saved.
-- `clips_on_track == 1` still refuses on a multi-clip track with no strip, and
-  the refusal reads as the generic `no_clip`.
+Updated 2026-09-18, after the design review. Two of the five are closed; the
+other three cannot be solved without guessing, so what they got instead is a
+voice.
+
+- ~~**Two blind clips in one save window** share the single PENDING key per
+  track~~ — **FIXED**, and it was worse than recorded: not a lost take but
+  active mis-binding. Both clips' points landed in one lane and the second
+  clip's `pending_len` overwrote the first's, after which the length gate
+  compared the arriving clip against the wrong clip's length. The placeholder
+  is a small RANGE now, one value per concurrent take, chosen by the clip
+  length off the bar strip. Residue: two blind clips of the SAME length are
+  still indistinguishable and still share a take — nothing observable
+  separates them.
+- ~~`clips_on_track == 1` refuses on a multi-clip track with no strip, and the
+  refusal reads as the generic `no_clip`~~ — **NAMED**. The resolver reports
+  it on the 1 Hz `lane-row:` line with the clip count, so "the clip is there
+  and its row is not readable" is no longer identical, from outside, to "there
+  is no clip".
+- A **non-multiple loop resize** leaves a blind take provisional. Refusing is
+  CORRECT — the alternative is inheriting a clip that is not the take's — so
+  this stays, but it is no longer silent: `lanes:pending` counts it and the
+  autosave says so once it is past the save window.
+- A **note-free clip** is never written by Move, so there is never a row to
+  key against. Structural, not a defect we can fix: with no row there is
+  nothing to adopt. Reported the same way.
+- **Create-then-duplicate inside one window** is still never detected: the
+  duplicate test needs the source present in the PREVIOUS parse.
+- **Armed recording** remains untested end to end (deferred deliberately).
+
+### What "reported" means
+
+`lanes:pending` serves `"<takes> <lanes> <stalled>"` per slot. `takes` counts
+distinct blind CLIPS rather than lanes, because "three parameters on one new
+clip" and "three new clips" are different sentences. `stalled` is the count
+past `LANE_PENDING_STALL_BLOCKS` (~30 s, against a save window MEASURED at
+8-12 s), which separates a take that is merely new from one that is never
+going to resolve.
+
+The autosave reads it in the branch that DROPS the take — a slot holding only
+provisional lanes serves an empty document, so that branch is where the file
+is deleted — logs the count every pass, and announces once per episode when
+something is stalled. Once per episode and not once per pass: the autosave
+runs every ~5 s and a stuck take stays stuck, so reporting on the condition
+is how a useful sentence becomes noise.
+
+### Not hardware-tested
+
+None of the 2026-09-18 work has run on the device. Lanes are off by default
+(`lanes_on`), and the take-selection change alters behaviour inside a live
+blind window specifically — arm the switch and try two new clips in one window
+before trusting it.
+
+## 2026-09-18: can Move be asked to write the song? No.
+
+The whole clip-identity apparatus exists because Move writes a new clip to
+`Song.abl` 8-12 s late. If the firmware could be told to flush, the blind
+window would close and the placeholder, the take range, the adoption ladder,
+the length gate and the stall report could all be deleted rather than
+maintained. So it was worth an afternoon to find out.
+
+`com.ableton.move.Browser.saveSongIfDirty` looked like exactly that lever. It
+is not. The measurement:
+
+| trial | flush calls | edit -> Song.abl written |
+|-------|-------------|--------------------------|
+| B     | every 2 s   | ~20 s                    |
+| control | none      | ~23 s                    |
+
+During trial B the song was PROVABLY dirty -- a write did eventually arrive --
+and the method was called about ten times before it did. A working on-demand
+flush produces the write on the FIRST call. No acceleration, so this is a
+clean negative rather than an absent measurement.
+
+**We were calling it correctly.** A no-arg call is refused with
+`InvalidArgs: expecting 's'`, so sd-bus validated our call against a real
+registered vtable entry: the method exists, has a signature, and accepts our
+string with no error. What it is NOT is a hook into the live sequencer.
+`Browser` is Move's CONTENT-LIBRARY interface -- `importSongBundleFile`,
+`refreshCache`, `replaceFileReferences`, `saveSongIfDirty` -- and
+MoveWebService calls it immediately before serving a `.ablbundle`. Read that
+way every observation fits: "if this library entry has unsaved metadata, write
+it", a no-op when the library copy is already consistent. Its sibling
+`refreshCache` is equally inert, while a `Settings` property read returns real
+data, so the service itself is fine.
+
+Static analysis agrees in an odd way and is recorded so nobody repeats it: the
+method name is in MoveOriginal's `.rodata`, and NOTHING references it -- not
+one of 5.68M instructions, no relocation addend, no data pointer. Consistent
+with names held as pool offsets rather than pointers. An implementation
+detail, not the answer; the empirical test above is what settles it.
+
+**So the blind window is structural.** Move's own save is ~20 s for a note
+edit, there is no observable way to hurry it, and even a working flush at 20 s
+is far too slow for a gesture. The design consequence: KEEP THE DEFERRAL. A
+lock on a brand-new clip records and plays immediately and binds to a row a
+few seconds later; that is the honest answer and the only one available.
+
+### What else the afternoon bought
+
+- **The Move HTTP API is usable.** With the Manager's
+  `Ableton-Challenge-Response-Token` cookie: `/api/v1/data/Sets` enumerates
+  every set (uuid, name, size, cloud state) and `/api/v1/data/Sets/<uuid>`
+  returns a full `.ablbundle`. Its `Song.abl` matched disk exactly, which is
+  itself a finding -- the export does not flush either.
+- **`com.ableton.move` carries no clip or selection state at all**:
+  `SongRenderer`, `Browser`, `Settings`, `ScreenReader`, `auth`, `cloudauth`,
+  `perf`, `sshkeys`. That closes off "ask Move directly" as a design avenue
+  rather than leaving it an open maybe.
+
+### Three instrument failures, which cost most of the session
+
+Recorded because each one produced a confident wrong conclusion, and all three
+are things this repo already knew.
+
+1. **Injected gestures were not reaching Move's firmware.** Proved by
+   injecting Menu and watching the pad mode not change. Three runs had
+   therefore "created clips" that were never created, so `saveSongIfDirty` was
+   being tested against a song that was never dirty -- and a no-op is
+   indistinguishable from a broken lever when there is nothing to save. AN
+   INSTRUMENT NEEDS A POSITIVE CONTROL; this one had none for either the
+   gesture or the dirtiness.
+2. **`pkill -f <pattern>` kills its own ssh shell** when the shell's command
+   line contains the pattern. It silently killed two watchers before they
+   started and later killed a background flush loop. Do not use `pkill -f` on
+   this device; kill by pid.
+3. **Device-side logging to a file produced nothing** twice for reasons not
+   worth chasing. Polling from the host over ssh, printing to stdout, worked
+   first time. Prefer it.
+
+The lasting fix for (1) is that the harness must verify its own gestures --
+every scenario needs a witness that the gesture LANDED before anything it
+causes is scored. Until that exists, on-device conclusions are not evidence.
+
+## The remaining wrong-clip bug, located precisely
+
+Two hardware runs on 2026-09-18 had a p-lock land on a clip the user was not
+editing -- row 0 in one run, row 1 in another. The cause is NOT the ladder
+inside `shadow_slot_clip_phase`'s `cslot < 0` block. It is that the block is
+SKIPPED:
+
+```c
+int cslot = (tr->identity_valid && tr->clip_slot >= 0 && ...) ? tr->clip_slot : -1;
+...
+if (cslot < 0) {           /* the strip check, and PENDING, live in here */
+```
+
+So the moment a clip is PLAYING on that track, the live identity supplies its
+row and every honest branch below -- including "the strip says a clip is being
+edited, answer PENDING" -- never runs. A write then takes the playing row
+while the user is step-editing a different clip. That is the whole defect, and
+it explains both runs: something was playing in each.
+
+**A deletion does not fix it, and one was tried and reverted.** Removing the
+`clips_on_track == 1` fallback looked like removing a guess; it is not one.
+That fallback only runs when the strip is DOWN, i.e. nothing is being
+step-edited, and it answers the ordinary post-boot case where nothing has
+played and the file's selected clip IS the clip on screen. Deleting it made
+`tests/host/test_slot_clip_phase` fail on exactly the two assertions that pin
+that case, and rightly: without it, automation on an existing never-played
+clip can never bind, because `lane_new_row` only fires for a clip that newly
+APPEARS in the file.
+
+### The fix this needs
+
+The resolver answers ONE row and two callers want different things: playback
+wants the clip that is PLAYING; a write wants the clip on SCREEN. They differ
+only while a clip plays and a different one is edited -- which is exactly when
+the bug fires. So the resolver has to report the row AND whether a write may
+use it.
+
+That is the shape of the removed `lane_edit_unconfirmed`, and the reason it
+failed the first time was its SIGNAL, not its shape: it read the session pad
+decode, which Move only paints in SESSION view, while p-locks happen in NOTE
+view -- so it was always a latch from whenever the user last visited Session,
+and it withheld the row from gestures aimed squarely at the playing clip.
+
+The strip does not have that problem. It is drawn by Move in Note view, which
+is when step editing happens, and it reports the edited clip's BAR COUNT. So
+the discriminator is a length comparison: a clip being step-edited whose
+geometry disagrees with the playing clip's length is a DIFFERENT clip, and a
+write must defer to PENDING. Agreeing lengths take the row, which keeps the
+common case exact.
+
+Residue, stated up front: a new clip whose length happens to equal the playing
+clip's is still indistinguishable, so a write there still takes the playing
+row. Same class of residue as two blind takes of equal length, and for the
+same reason -- length is the only positive evidence available.
+
+NOT IMPLEMENTED. It needs the flag published to the chain again and a write
+path that reads it, and it must be verified per-guard on hardware rather than
+assumed, which needs a harness that witnesses its own gestures first.

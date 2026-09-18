@@ -448,7 +448,8 @@ int main(void) {
         CHECK(pn > 0, "serializing a store with a pending lane failed");
 
         lane_store_t back; memset(&back, 0, sizeof(back));
-        CHECK(lane_store_deserialize(&back, pbuf) >= 0, "parse of that document failed");
+        /* > 0, not >= 0: a refusal IS 0, so the old assertion could not fail. */
+        CHECK(lane_store_deserialize(&back, pbuf) > 0, "parse of that document failed");
 
         int pending_back = 0, ordinary_back = 0;
         for (int i2 = 0; i2 < LANE_MAX; i2++) {
@@ -490,7 +491,7 @@ int main(void) {
         CHECK(lane_store_serialize(&bs, bbuf, sizeof(bbuf)) > 0,
               "serializing the blind-but-rowed store failed");
         lane_store_t back2; memset(&back2, 0, sizeof(back2));
-        CHECK(lane_store_deserialize(&back2, bbuf) >= 0, "parse failed");
+        CHECK(lane_store_deserialize(&back2, bbuf) > 0, "parse failed");
 
         int absent_back = 0, ident_back = 0;
         for (int i3 = 0; i3 < LANE_MAX; i3++) {
@@ -503,6 +504,131 @@ int main(void) {
               "reloads permanently stale and squats on its key", absent_back);
         CHECK(ident_back == 1,
               "the identified lane did not survive (%d back)", ident_back);
+    }
+
+    /* A DOCUMENT WE DID NOT WRITE. The writer refuses to emit a provisional
+     * lane, but files written before it did still exist, and the reader
+     * assigned whatever two integers it found. Fed such a document, the
+     * loader must refuse the WHOLE thing and leave the live store alone --
+     * not load the half it understands, because a lane keyed to -2 is the
+     * un-re-keyable zombie that plays on the next blind clip. */
+    {
+        struct { const char *doc; const char *what; } bad[] = {
+            { "V 2\nL synth cutoff 0 -2 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "the pending placeholder as a stored row" },
+            { "V 2\nL synth cutoff 0 8 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "a clip row past the session grid" },
+            { "V 2\nL synth cutoff 4 0 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "a track past the four slots" },
+            { "V 2\nL synth cutoff -1 0 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "the 'no row' sentinel as a stored key" },
+        };
+        for (unsigned bi = 0; bi < sizeof(bad) / sizeof(bad[0]); bi++) {
+            /* A store with real content, so a refusal that WIPED it would be
+             * caught here too rather than looking like a clean refusal. */
+            lane_store_t live; memset(&live, 0, sizeof(live));
+            lane_fingerprint_t lf = { 0.0, 8.0, 3, 60 };
+            lane_t *keep = lane_alloc(&live, "synth", "cutoff", 0, 1, &lf);
+            CHECK(keep != NULL, "live lane_alloc refused");
+            if (keep) lane_write(keep, 2.0, 0.25f, 0);
+
+            /* 0 IS the refusal here — see lane_store_deserialize. */
+            int r = lane_store_deserialize(&live, bad[bi].doc);
+            CHECK(r == 0, "%s was ACCEPTED (r=%d) — it keys a lane nothing can "
+                         "re-key and the next blind clip matches it",
+                  bad[bi].what, r);
+            int still = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (live.lanes[i3].used) still++;
+            CHECK(still == 1,
+                  "%s: the refusal left %d lane(s) — a refused document must "
+                  "leave the live store untouched", bad[bi].what, still);
+        }
+
+        /* POSITIVE CONTROL: the same document with a real key loads, or every
+         * assertion above passes on a parser that refuses everything. */
+        lane_store_t good; memset(&good, 0, sizeof(good));
+        int gr = lane_store_deserialize(&good,
+            "V 2\nL synth cutoff 0 3 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n");
+        CHECK(gr > 0, "a well-keyed document was refused too (r=%d) — the "
+                       "range check is rejecting everything", gr);
+        int loaded = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) if (good.lanes[i3].used) loaded++;
+        CHECK(loaded == 1, "the well-keyed document loaded %d lane(s)", loaded);
+    }
+
+    /* A STORE WHOSE LANES ARE ALL PROVISIONAL SERVES NOTHING, NOT A HEADER.
+     *
+     * The writer's emptiness test asked "is any lane USED", and the skips
+     * decide what is EMITTED -- different numbers for exactly the store that
+     * p-locking a brand-new clip produces, inside Move's 8-12 s save window.
+     * It emitted "V 2\n" and returned 4, so the autosave saw a non-empty
+     * answer and left a 4-byte file; the reader then refused a document with
+     * no lanes, so lane_store_reset never ran and a set change into that slot
+     * kept the OUTGOING set's lanes loaded and playing. */
+    {
+        lane_store_t pv; memset(&pv, 0, sizeof(pv));
+        lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+        lane_t *a = lane_alloc(&pv, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
+        CHECK(a != NULL, "provisional lane_alloc refused");
+        if (a) { a->pending_len = 8.0; lane_write(a, 1.0, 0.5f, 1); }
+        char pbuf2[512];
+        int pn = lane_store_serialize(&pv, pbuf2, sizeof(pbuf2));
+        CHECK(pn == 0 && pbuf2[0] == '\0',
+              "an all-provisional store served %d byte(s) [%s] — the caller "
+              "writes a file for any non-empty answer, and a header-only file "
+              "is one the reader refuses", pn, pbuf2);
+
+        /* And a lane that IS storable still makes it a non-empty document, or
+         * the assertion above passes on a serializer that emits nothing. */
+        lane_fingerprint_t real = { 0.0, 8.0, 3, 60 };
+        lane_t *b = lane_alloc(&pv, "synth", "room_size", 0, 2, &real);
+        CHECK(b != NULL, "identified lane_alloc refused");
+        if (b) lane_write(b, 1.0, 0.5f, 0);
+        pn = lane_store_serialize(&pv, pbuf2, sizeof(pbuf2));
+        CHECK(pn > 0, "a store with one storable lane served nothing");
+    }
+
+    /* AND A VERSION-ONLY DOCUMENT CLEARS THE SLOT. The writer no longer makes
+     * one; this is for the files it already wrote. Refusing it is what left
+     * the outgoing set's lanes loaded, because a refusal deliberately leaves
+     * the live store untouched. */
+    {
+        lane_store_t live2; memset(&live2, 0, sizeof(live2));
+        lane_fingerprint_t fp2 = { 0.0, 8.0, 3, 60 };
+        lane_t *ln2 = lane_alloc(&live2, "synth", "cutoff", 0, 1, &fp2);
+        CHECK(ln2 != NULL, "live lane_alloc refused");
+        if (ln2) lane_write(ln2, 1.0, 0.5f, 0);
+        int r2 = lane_store_deserialize(&live2, "V 2\n");
+        CHECK(r2 > 0, "a version-only document was refused (r=%d) — restoring "
+                      "it then leaves the previous set's lanes loaded", r2);
+        int left = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) if (live2.lanes[i3].used) left++;
+        CHECK(left == 0,
+              "%d lane(s) survived an empty document — this is the outgoing "
+              "set's automation playing on the incoming set's clips", left);
+
+        /* A document with no version line is still corruption, and an empty
+         * STRING is a third answer again ("nothing was said"), which must not
+         * clear anything. */
+        lane_t *ln3 = lane_alloc(&live2, "synth", "cutoff", 0, 1, &fp2);
+        if (ln3) lane_write(ln3, 1.0, 0.5f, 0);
+        CHECK(lane_store_deserialize(&live2, "L synth cutoff 0 1 0 8 3 60 0\n") == 0,
+              "a document with no version line was accepted");
+        /* AND THE VERSION MUST COME FIRST, not merely be present somewhere.
+         * A document whose lanes precede its version has already been parsed
+         * by the time the version is known, so a V1 body would be read with
+         * V2 rules and only then be told what it was. */
+        CHECK(lane_store_deserialize(&live2,
+                  "L synth cutoff 0 1 0 8 3 60 1\nP 1 0.5\nV 2\n") == 0,
+              "a document whose version line comes AFTER its lanes was "
+              "accepted — the body was parsed before the version was known");
+        CHECK(lane_store_deserialize(&live2, "") == 0,
+              "an empty string was treated as a document");
+        left = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) if (live2.lanes[i3].used) left++;
+        CHECK(left == 1,
+              "a refused document cleared the store anyway (%d lanes left)", left);
     }
 
     if (fails) { printf("%d failure(s)\n", fails); return 1; }

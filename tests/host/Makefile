@@ -27,6 +27,27 @@ LDFLAGS = -lpthread
 # commit that introduced it.
 DEPFLAGS = -MMD -MP -MF $@.d
 
+# AND TIMESTAMPS LIE ON THIS CHECKOUT, which defeats all of the above.
+#
+# The repo lives on an ExtFS volume whose mtime resolution is ~1 s, so a file
+# edited and rebuilt inside the same second looks UNCHANGED to make and the
+# old binary is re-run. The prerequisites are correct and the .d files are
+# correct; make simply cannot see the edit.
+#
+# It matters most for exactly the thing this suite is used for: a mutation
+# applied and immediately tested reports PASS, and the honest reading of that
+# -- "the test cannot see this defect" -- is wrong. It cost two false
+# conclusions in one session, one of which was nearly written into a comment
+# as a design fact.
+#
+# So mutation checking uses `make retest`, which cannot be fooled. Ordinary
+# `make test` during development is fine: a human edit and a later build are
+# seconds apart.
+.PHONY: retest
+retest:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory test
+
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \

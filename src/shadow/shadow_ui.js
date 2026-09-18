@@ -828,9 +828,21 @@ let laneRestoreConfirmed = [false, false, false, false];
  * free -- without it the autosave pass gained a second eMMC write every five
  * seconds forever, which is the defect the slot cache above was added for. */
 let lastWrittenLaneJson = [null, null, null, null];
+
+/* Have we already said that this slot is holding a take it cannot save?
+ *
+ * The autosave runs every ~5 s and a stuck take stays stuck, so announcing on
+ * the CONDITION would repeat until the user cleared it. This latches on the
+ * transition into the state and resets when it leaves, so the sentence is
+ * said when it becomes true and a second episode is still heard. */
+let laneStallAnnounced = [false, false, false, false];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
     lastWrittenLaneJson = [null, null, null, null];
+    /* A stall belongs to the set that was loaded. Carrying the latch across a
+     * set change would swallow the announcement for the incoming set's first
+     * stuck take, which is the one worth hearing. */
+    laneStallAnnounced = [false, false, false, false];
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
@@ -10157,6 +10169,61 @@ function persistSlotLanes(i) {
          * restore succeeds or the user clears it explicitly.
          */
         if (!laneRestoreConfirmed[i]) return;
+
+        /*
+         * "NO LANES" AND "NO LANES I CAN STORE" ARE DIFFERENT, and the second
+         * one was silent.
+         *
+         * A take recorded against a clip Move has not written yet cannot be
+         * serialized -- there is no row to key it to, and a document keyed to
+         * the placeholder reloads as a lane nothing can re-key. So the
+         * serializer refuses it, which means a slot holding ONLY such takes
+         * serves an empty document and lands here: the take is playing, the
+         * user can hear it, and this function is about to delete the file.
+         * Then a set change or a reboot takes the take with it, with nothing
+         * having said so.
+         *
+         * Normally that window is 8-12 s and resolves itself. When it does
+         * not -- a clip with no notes, which Move never writes at all, or a
+         * clip resized to a length no take matches -- the take waits forever.
+         * `lanes:pending` separates the two: anything STALLED is past 30 s and
+         * is not going to resolve.
+         *
+         * Nothing here can fix either case: with no row there is nothing to
+         * key against, and keying it anyway to whatever clip turns up is the
+         * confidently-wrong answer this whole area refuses. So it is
+         * REPORTED. The file still goes -- the slot genuinely holds nothing
+         * storable, and an identified lane would have kept the document
+         * non-empty.
+         */
+        const pend = getSlotParam(i, "lanes:pending");
+        if (pend) {
+            const f = pend.split(" ");
+            const takes = parseInt(f[0], 10) || 0;
+            const stalledLanes = parseInt(f[2], 10) || 0;
+            if (takes > 0) {
+                debugLog("autosave: slot " + i + " holds " + takes +
+                         " unsaved take(s), " + f[1] + " lane(s), " +
+                         stalledLanes + " stalled — not storable until Move " +
+                         "writes the clip");
+            }
+            /* ONCE PER EPISODE, not once per pass. This runs every ~5 s and a
+             * stuck take stays stuck, so announcing on the condition would
+             * repeat forever; announcing on the TRANSITION says it when it
+             * becomes true and then stops. Reset when it clears, so a second
+             * episode is heard. */
+            if (stalledLanes > 0 && !laneStallAnnounced[i]) {
+                laneStallAnnounced[i] = true;
+                announce("Slot " + (i + 1) + " automation not saved: " +
+                         "Move has not written this clip");
+                debugLog("autosave: slot " + i + " STALLED — " + stalledLanes +
+                         " lane(s) past the save window. A clip with no notes " +
+                         "is never written, so its automation cannot be keyed.");
+            } else if (stalledLanes === 0) {
+                laneStallAnnounced[i] = false;
+            }
+        }
+
         /* Removing it once, and only if there is something there: an
          * unconditional remove every five seconds is the churn the write
          * cache exists to avoid. */
