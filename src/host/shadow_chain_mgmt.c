@@ -4940,15 +4940,15 @@ static void pserve_emit(pserve_span_t *ps) {
     if (!ps->sp) return;
     struct timespec w1;
     clock_gettime(CLOCK_MONOTONIC, &w1);
-    uint64_t us = (uint64_t)(w1.tv_sec - ps->w0.tv_sec) * 1000000ull
-                + (uint64_t)(w1.tv_nsec - ps->w0.tv_nsec) / 1000ull;
+    /* The borrow is handled in param_slow_elapsed_us -- see there for what the
+     * obvious form reports instead. */
+    const uint32_t us = param_slow_elapsed_us(&ps->w0, &w1);
     if (us < PARAM_SLOW_THRESHOLD_US) return;
-    if (us > 0xFFFFFFFFull) us = 0xFFFFFFFFull;
 
     /* SHADOW_PARAM_REQ: 1 = set, 2 = get. Read from the request rather than
      * from the response, which a GET has already overwritten by now. */
     param_slow_record(&shim_param_slow, ps->sp->key, ps->sp->slot,
-                      ps->req_type == 1, (uint32_t)us);
+                      ps->req_type == 1, us);
 }
 
 void shadow_inprocess_handle_param_request(void) {
