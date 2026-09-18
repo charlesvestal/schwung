@@ -1380,6 +1380,105 @@ int main(void) {
         }
     }
 
+    /* A TAKE THAT CANNOT BE SAVED SAYS SO -- `lanes:pending`.
+     *
+     * The serializer refuses a provisional lane by design, so a slot holding
+     * only such takes serves an empty document and the autosave deletes its
+     * file. Correct, and it was silent: the take plays, so nothing looks
+     * wrong, and it is gone at the next set change. This is the number the
+     * autosave reports, and the distinction that makes it useful -- WAITING
+     * (the ordinary 8-12 s) versus STALLED (a clip with no notes, which Move
+     * never writes, so no row ever arrives). */
+    {
+        chain_instance_t *pn = calloc(1, sizeof(*pn));
+        CHECK(pn != NULL, "calloc for the pending-report fixture");
+        if (pn) {
+            setup_fake_synth(pn);
+            pn->lanes_enabled = 1;
+            pn->lane_track = 0;
+            pn->clip_loop_start = 0.0;
+            pn->clip_phase_beats = 1.0;
+            pn->clip_phase_valid = 1;
+            pn->lane_new_row = -1;          /* no row has appeared */
+            pn->lane_clip_slot = LANE_SLOT_PENDING;
+            lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+
+            char pb[64] = {0};
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "0 0 0") == 0,
+                  "an empty slot reported pending as '%s'", pb);
+
+            /* One new clip, two parameters locked on it: ONE take. */
+            pn->clip_loop_len = 8.0;
+            int p1 = lane_pending_slot_for_len(&pn->lanes, 0, 8.0);
+            lane_t *x = lane_alloc(&pn->lanes, "synth", "cutoff", 0, p1, &absent);
+            lane_t *y = lane_alloc(&pn->lanes, "synth", "room_size", 0, p1, &absent);
+            CHECK(x && y, "the two lanes of one take");
+            if (x) { x->pending_len = 8.0; lane_write(x, 1.0, 0.2f, 1); }
+            if (y) { y->pending_len = 8.0; lane_write(y, 1.0, 0.3f, 1); }
+
+            /* And a second new clip of another length: a SECOND take. */
+            pn->clip_loop_len = 16.0;
+            int p2 = lane_pending_slot_for_len(&pn->lanes, 0, 16.0);
+            lane_t *z = lane_alloc(&pn->lanes, "synth", "cutoff", 0, p2, &absent);
+            CHECK(z != NULL, "the second take's lane");
+            if (z) { z->pending_len = 16.0; lane_write(z, 2.0, 0.4f, 1); }
+
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 0") == 0,
+                  "expected '2 3 0' (two takes, three lanes, none stalled), "
+                  "got '%s' — takes count CLIPS, not lanes, because \"three "
+                  "parameters on one clip\" and \"three clips\" are different "
+                  "sentences", pb);
+
+            /* The store serves NOTHING for these, which is what makes the
+             * report necessary: the autosave sees an empty document and
+             * cannot tell an empty slot from this one. */
+            char doc[256] = {0};
+            int dn = lane_serve_state(pn, doc, sizeof(doc));
+            CHECK(dn == 0,
+                  "a provisional-only store served %d byte(s) — it must not be "
+                  "written, and the caller writes any non-empty answer", dn);
+
+            /* WAITING IS NOT STALLED. A tick charges each take one block; one
+             * tick must not trip a ~30 s threshold. */
+            pn->clip_loop_len = 8.0;
+            lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 0") == 0,
+                  "one block of waiting reported as stalled: '%s'", pb);
+
+            /* AND THE WAIT IS ACCUMULATED BY TICKING, not set by hand. The
+             * first version of this test wrote `pending_blocks` directly and
+             * therefore passed with the increment deleted -- it measured the
+             * getter and not the counting. Driven for the real threshold
+             * instead: ~30 s of blocks, which costs milliseconds here. */
+            for (uint32_t t = 0; t < LANE_PENDING_STALL_BLOCKS; t++)
+                lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "2 3 3") == 0,
+                  "after %u blocks (~30 s) of waiting, expected '2 3 3', got "
+                  "'%s' — a take that never resolves must stop reading as one "
+                  "that is merely new", (unsigned)LANE_PENDING_STALL_BLOCKS, pb);
+
+            /* AND ADOPTING CLEARS THE WAIT, or a lane that resolved would go
+             * on being counted as stuck for the rest of the session. */
+            pn->lane_new_row = 5;
+            pn->clip_fp_valid = 1;
+            pn->clip_fp.loop_start = 0.0;
+            pn->clip_fp.loop_len = 8.0;
+            pn->clip_fp.note_count = 3;
+            pn->clip_fp.first_note = 60;
+            pn->clip_loop_len = 8.0;
+            lane_tick(pn);
+            lane_param_get(pn, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 1 1") == 0,
+                  "after the eight-bar take adopted row 5, expected '1 1 1' "
+                  "(the sixteen-bar take still waiting), got '%s'", pb);
+            free(pn);
+        }
+    }
+
     /* WHICH VERBS THE SWITCH GATES, stated once and executably.
      *
      * It was defined by omission before: `lane_on_set_param` checked the flag

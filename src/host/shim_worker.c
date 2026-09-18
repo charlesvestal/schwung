@@ -1041,6 +1041,22 @@ static void step_tap_tick(void)
     LOG_DEBUG("shim", msg);
 }
 
+/* THE ROW WAS UNKNOWN AND THE SCREEN COULD NOT SAY. Once a second, silent
+ * otherwise -- see g_row_unknown_* in shadow_chain_mgmt.c for why this needed
+ * a name of its own rather than the chain's generic `no_clip`. */
+static void row_unknown_tick(void)
+{
+    if (!g_row_unknown_seen) return;
+    g_row_unknown_seen = 0;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "lane-row: UNKNOWN -- %d clips on this track and no step strip "
+             "(segs=%d), so the file's answer would be a guess. A p-lock here "
+             "reports no_clip; the clip is there, its row is not readable.",
+             g_row_unknown_clips, g_row_unknown_strip);
+    LOG_DEBUG("shim", msg);
+}
+
 /* THE BLIND WINDOW, once a second while it is open. Silent otherwise. */
 static void blind_anchor_tick(void)
 {
@@ -1784,6 +1800,7 @@ static void *worker_main(void *arg) {
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
             blind_anchor_tick();      /* 1 Hz while a clip has no row yet */
+            row_unknown_tick();       /* 1 Hz while the row is unreadable */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;

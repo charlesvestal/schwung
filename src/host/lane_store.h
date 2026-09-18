@@ -322,6 +322,21 @@ typedef struct {
      * one state that made two fields necessary cannot arrive, and keeping
      * them was keeping a "cleared one, forgot the other" bug available for
      * free. `pending_len` stays: it is DATA, not a restatement of the row. */
+    /* HOW LONG THIS TAKE HAS BEEN WAITING FOR A ROW, in render blocks.
+     *
+     * Runtime only, and it exists to tell WAITING from STUCK. A take with no
+     * row is the ordinary state for the 8-12 s Move takes to write the clip;
+     * past that, something is wrong with this particular clip and the user
+     * has no way to know -- the take plays, so it looks fine, and it is
+     * dropped at the next set change or reboot without a word. That is the
+     * note-free clip (Move never writes a clip with no notes, so there is
+     * never a row to adopt), and a clip whose loop was resized to a length no
+     * take matches.
+     *
+     * Neither case can be FIXED here -- with no row there is nothing to key
+     * against, and adopting anyway is the confidently-wrong answer this
+     * design refuses everywhere. So it is reported instead. */
+    uint32_t pending_blocks;
     /* The clip LENGTH the blind take was recorded against, read off Move's bar
      * strip. Kept so lane_adopt_slot can refuse a clip that is not the one we
      * were editing; 0 means "never recorded blind". Runtime only. */
@@ -359,6 +374,18 @@ typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
  * file. The epsilon is far under one bar, so two clips a bar apart stay two
  * clips. */
 #define LANE_PENDING_LEN_EPS 0.001
+
+/* WHEN A WAITING TAKE BECOMES A STUCK ONE. A block is 128 frames at 44100 Hz
+ * (2.90 ms), so this is ~30 s -- well past the 8-12 s Move's save window was
+ * MEASURED at, so a take past it is not merely slow. Deliberately generous:
+ * the answer this gates is user-facing, and crying stuck at a save that was
+ * simply late is its own kind of wrong. */
+#define LANE_PENDING_STALL_BLOCKS 10345
+
+static inline int lane_pending_is_stalled(const lane_t *ln) {
+    return ln && ln->used && lane_slot_is_pending(ln->slot) &&
+           ln->pending_blocks >= LANE_PENDING_STALL_BLOCKS;
+}
 
 /* Do these two lengths describe the same clip, EXACTLY? The tolerance is the
  * strip-versus-file disagreement, nothing more. lane_adopt_slot separately

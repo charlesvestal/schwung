@@ -326,6 +326,15 @@ void lane_tick(chain_instance_t *inst) {
         return;
     }
 
+    /* HOW LONG EACH TAKE HAS BEEN WAITING. Counted before the reconcile, so a
+     * take that adopts on this block is not charged for it. One increment per
+     * pending lane per block; nothing else in this loop. */
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *pl = &inst->lanes.lanes[i];
+        if (!pl->used || !lane_slot_is_pending(pl->slot)) continue;
+        if (pl->pending_blocks < 0xFFFFFFFFu) pl->pending_blocks++;
+    }
+
     lane_reconcile_pending_slots(inst);
 
     /* NO PHASE MEANS UNKNOWN, AND UNKNOWN IS NOT ZERO. Release anything we
@@ -1638,6 +1647,37 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
     if (strcmp(sub, "unsaved") == 0)
         return snprintf(buf, buf_len, "%d",
                         lane_store_provisional_count(&inst->lanes));
+
+    /* "<takes> <lanes> <stalled>" -- WHAT THIS SLOT HOLDS THAT IT CANNOT
+     * SAVE, and how much of it has stopped being merely new.
+     *
+     * The serializer refuses a provisional lane by design: a take whose clip
+     * cannot be identified cannot be restored honestly. So the autosave skips
+     * these and, when they are all a slot has, DELETES the slot's file. All
+     * of that is correct and all of it was silent -- the take plays, so
+     * nothing looks wrong, and it is gone at the next set change or reboot.
+     *
+     * `takes` counts distinct blind clips rather than lanes, because "three
+     * parameters on one new clip" and "three new clips" are different
+     * sentences and the count is what a UI says out loud. `stalled` is the
+     * number past LANE_PENDING_STALL_BLOCKS: the ones that will not resolve
+     * on their own, which is a note-free clip (Move never writes one, so no
+     * row ever arrives) or a clip resized to a length no take matches. */
+    if (strcmp(sub, "pending") == 0) {
+        int takes = 0, lanes = 0, stalled = 0;
+        for (int p = LANE_SLOT_PENDING; p >= LANE_SLOT_PENDING_MIN; p--) {
+            int held = 0;
+            for (int i = 0; i < LANE_MAX; i++) {
+                const lane_t *ln = &inst->lanes.lanes[i];
+                if (!ln->used || ln->slot != p) continue;
+                held = 1;
+                lanes++;
+                if (lane_pending_is_stalled(ln)) stalled++;
+            }
+            if (held) takes++;
+        }
+        return snprintf(buf, buf_len, "%d %d %d", takes, lanes, stalled);
+    }
 
     if (strcmp(sub, "undone") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_undone);

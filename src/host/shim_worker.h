@@ -116,6 +116,9 @@ extern char shim_step_plock_key[64];         /* the key that last spent a press 
 /* The blind-window anchor's decision — see shadow_slot_clip_phase. */
 extern volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
 extern volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
+/* Why a clip row came back unknown -- see shadow_chain_mgmt.c. Diagnostic
+ * only; drained by row_unknown_tick(). */
+extern volatile int g_row_unknown_clips, g_row_unknown_strip, g_row_unknown_seen;
 
 /* Has the press on `step` been down long enough to be a HOLD rather than a
  * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so

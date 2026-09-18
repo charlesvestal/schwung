@@ -316,8 +316,17 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                     for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
                         if (rg->slots[slot][cs2].exists) clips_on_track++;
                 }
-                if (clips_on_track == 1)
+                if (clips_on_track == 1) {
                     cslot = clip_regions_selected_slot(rg, (int)slot);
+                } else {
+                    /* AMBIGUOUS, and that is not the same as "no clip". Say
+                     * which, once a second, or a p-lock that does nothing on
+                     * a multi-clip track is indistinguishable from one on an
+                     * empty slot. */
+                    g_row_unknown_clips = clips_on_track;
+                    g_row_unknown_strip = 0;
+                    g_row_unknown_seen = 1;
+                }
             }
         }
     }
@@ -3418,6 +3427,23 @@ static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
  * shadow_slot_clip_phase; drained by shim_worker's 1 Hz line. */
 volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
 volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
+/* WHY THE ROW CAME BACK UNKNOWN, when it did. Diagnostic only, drained by the
+ * same 1 Hz line as the rest of the blind-window report.
+ *
+ * It exists because one refusal path had no name. With no step strip for this
+ * track, the file's answer is used only when it cannot be ambiguous -- which
+ * means exactly one clip on the track. On a MULTI-CLIP track with no strip
+ * there is nothing to disambiguate with, so the row stays unknown and the
+ * chain reports the generic `no_clip`: from outside, identical to a track
+ * with no clips at all, and to a slot with no chain. Two very different
+ * things to be told when a p-lock does nothing.
+ *
+ * Not a param key: nothing acts on it, and the review of this feature is
+ * clear that a getter with no consumer reads as plumbing that never landed.
+ * A line in the log is what a support question needs. */
+volatile int g_row_unknown_clips;   /* clips on the track, -1 = no answer */
+volatile int g_row_unknown_strip;   /* strip segments for the track */
+volatile int g_row_unknown_seen;
 
 /* The lock map's pending query, per slot. See lanes:step_locks_query. */
 static char g_step_locks_query[SHADOW_CHAIN_INSTANCES][544];

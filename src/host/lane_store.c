@@ -616,6 +616,10 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * lane_store.h for why there is no longer a second flag saying so. */
     ln->slot = slot;
     ln->pending_len = 0.0;
+    /* Hygiene, not logic: a lane cannot return to pending (adoption requires
+     * it), so nothing reads this again. It is zeroed so a diagnostic never
+     * shows an adopted lane wearing a 30-second wait. */
+    ln->pending_blocks = 0;
     return 1;
 }
 

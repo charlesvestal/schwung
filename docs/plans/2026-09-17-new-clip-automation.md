@@ -194,12 +194,54 @@ tested; nothing in the resolver reads it.
 
 ## Still open
 
-- A **non-multiple loop resize** leaves a blind take provisional and silent.
-- **Two blind clips in one save window** share the single PENDING key per
-  track; nothing distinguishes them and the length check usually cannot.
-- **Create-then-duplicate inside one window** is never detected: the duplicate
-  test needs the source present in the PREVIOUS parse.
-- A **note-free clip** is never written by Move, so a clip used purely as an
-  automation carrier stays blind and its lanes are not saved.
-- `clips_on_track == 1` still refuses on a multi-clip track with no strip, and
-  the refusal reads as the generic `no_clip`.
+Updated 2026-09-18, after the design review. Two of the five are closed; the
+other three cannot be solved without guessing, so what they got instead is a
+voice.
+
+- ~~**Two blind clips in one save window** share the single PENDING key per
+  track~~ — **FIXED**, and it was worse than recorded: not a lost take but
+  active mis-binding. Both clips' points landed in one lane and the second
+  clip's `pending_len` overwrote the first's, after which the length gate
+  compared the arriving clip against the wrong clip's length. The placeholder
+  is a small RANGE now, one value per concurrent take, chosen by the clip
+  length off the bar strip. Residue: two blind clips of the SAME length are
+  still indistinguishable and still share a take — nothing observable
+  separates them.
+- ~~`clips_on_track == 1` refuses on a multi-clip track with no strip, and the
+  refusal reads as the generic `no_clip`~~ — **NAMED**. The resolver reports
+  it on the 1 Hz `lane-row:` line with the clip count, so "the clip is there
+  and its row is not readable" is no longer identical, from outside, to "there
+  is no clip".
+- A **non-multiple loop resize** leaves a blind take provisional. Refusing is
+  CORRECT — the alternative is inheriting a clip that is not the take's — so
+  this stays, but it is no longer silent: `lanes:pending` counts it and the
+  autosave says so once it is past the save window.
+- A **note-free clip** is never written by Move, so there is never a row to
+  key against. Structural, not a defect we can fix: with no row there is
+  nothing to adopt. Reported the same way.
+- **Create-then-duplicate inside one window** is still never detected: the
+  duplicate test needs the source present in the PREVIOUS parse.
+- **Armed recording** remains untested end to end (deferred deliberately).
+
+### What "reported" means
+
+`lanes:pending` serves `"<takes> <lanes> <stalled>"` per slot. `takes` counts
+distinct blind CLIPS rather than lanes, because "three parameters on one new
+clip" and "three new clips" are different sentences. `stalled` is the count
+past `LANE_PENDING_STALL_BLOCKS` (~30 s, against a save window MEASURED at
+8-12 s), which separates a take that is merely new from one that is never
+going to resolve.
+
+The autosave reads it in the branch that DROPS the take — a slot holding only
+provisional lanes serves an empty document, so that branch is where the file
+is deleted — logs the count every pass, and announces once per episode when
+something is stalled. Once per episode and not once per pass: the autosave
+runs every ~5 s and a stuck take stays stuck, so reporting on the condition
+is how a useful sentence becomes noise.
+
+### Not hardware-tested
+
+None of the 2026-09-18 work has run on the device. Lanes are off by default
+(`lanes_on`), and the take-selection change alters behaviour inside a live
+blind window specifically — arm the switch and try two new clips in one window
+before trusting it.
