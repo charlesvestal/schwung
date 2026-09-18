@@ -326,3 +326,62 @@ are things this repo already knew.
 The lasting fix for (1) is that the harness must verify its own gestures --
 every scenario needs a witness that the gesture LANDED before anything it
 causes is scored. Until that exists, on-device conclusions are not evidence.
+
+## The remaining wrong-clip bug, located precisely
+
+Two hardware runs on 2026-09-18 had a p-lock land on a clip the user was not
+editing -- row 0 in one run, row 1 in another. The cause is NOT the ladder
+inside `shadow_slot_clip_phase`'s `cslot < 0` block. It is that the block is
+SKIPPED:
+
+```c
+int cslot = (tr->identity_valid && tr->clip_slot >= 0 && ...) ? tr->clip_slot : -1;
+...
+if (cslot < 0) {           /* the strip check, and PENDING, live in here */
+```
+
+So the moment a clip is PLAYING on that track, the live identity supplies its
+row and every honest branch below -- including "the strip says a clip is being
+edited, answer PENDING" -- never runs. A write then takes the playing row
+while the user is step-editing a different clip. That is the whole defect, and
+it explains both runs: something was playing in each.
+
+**A deletion does not fix it, and one was tried and reverted.** Removing the
+`clips_on_track == 1` fallback looked like removing a guess; it is not one.
+That fallback only runs when the strip is DOWN, i.e. nothing is being
+step-edited, and it answers the ordinary post-boot case where nothing has
+played and the file's selected clip IS the clip on screen. Deleting it made
+`tests/host/test_slot_clip_phase` fail on exactly the two assertions that pin
+that case, and rightly: without it, automation on an existing never-played
+clip can never bind, because `lane_new_row` only fires for a clip that newly
+APPEARS in the file.
+
+### The fix this needs
+
+The resolver answers ONE row and two callers want different things: playback
+wants the clip that is PLAYING; a write wants the clip on SCREEN. They differ
+only while a clip plays and a different one is edited -- which is exactly when
+the bug fires. So the resolver has to report the row AND whether a write may
+use it.
+
+That is the shape of the removed `lane_edit_unconfirmed`, and the reason it
+failed the first time was its SIGNAL, not its shape: it read the session pad
+decode, which Move only paints in SESSION view, while p-locks happen in NOTE
+view -- so it was always a latch from whenever the user last visited Session,
+and it withheld the row from gestures aimed squarely at the playing clip.
+
+The strip does not have that problem. It is drawn by Move in Note view, which
+is when step editing happens, and it reports the edited clip's BAR COUNT. So
+the discriminator is a length comparison: a clip being step-edited whose
+geometry disagrees with the playing clip's length is a DIFFERENT clip, and a
+write must defer to PENDING. Agreeing lengths take the row, which keeps the
+common case exact.
+
+Residue, stated up front: a new clip whose length happens to equal the playing
+clip's is still indistinguishable, so a write there still takes the playing
+row. Same class of residue as two blind takes of equal length, and for the
+same reason -- length is the only positive evidence available.
+
+NOT IMPLEMENTED. It needs the flag published to the chain again and a write
+path that reads it, and it must be verified per-guard on hardware rather than
+assumed, which needs a harness that witnesses its own gestures first.
