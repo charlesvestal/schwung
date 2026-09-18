@@ -385,3 +385,46 @@ same reason -- length is the only positive evidence available.
 NOT IMPLEMENTED. It needs the flag published to the chain again and a write
 path that reads it, and it must be verified per-guard on hardware rather than
 assumed, which needs a harness that witnesses its own gestures first.
+
+## 2026-09-18, later: hardware verification with a harness that works
+
+The harness was fixed first (it modelled two pad modes; Move has three), which
+is why any of this is evidence. Every step below confirmed its own setup.
+
+**The kill switch, both directions.** Armed: a p-lock lands. Disarmed:
+no lane, `plocked=0`, refusal reported as `disabled`, and THE LIVE WRITE LANDS
+(64 -> 77) -- the deadened-knob defect is gone. Disarm was briefly reported as
+broken and was not: `clipkit` re-armed the flag on import, between the delete
+and the read. Read over a raw socket with no import in the path, the flag being
+absent gives `lanes:enabled = 0`.
+
+**A lock on a new clip defers instead of binding to another clip.** Double Loop
+took row 1 from 4.0 to 8.0 quarters (a real Move gesture, driven), then a new
+clip was made at row 2 while identity was latched to row 1. The lock went to
+`slot=-2`, the placeholder, and `lanes:pending` read `1 1 0`. Before today's
+work this is where locks landed on the latched row.
+
+**Armed recording, end to end, for the first time.** In NOTE view (Record only
+goes solid there -- in Session it blinks queued and `lanes:armed` stays 0,
+which is what the first attempt measured), arming gave `armed=1 recording=1`,
+eight knob writes left EIGHT points keyed to the playing row, and the lane came
+up `drv=1`. Disarming cleared it.
+
+### What is still NOT verified on hardware
+
+The write-unconfirmed guard added today -- the resolver reporting that a WRITE
+may not use the row it just answered -- was never isolated. Three attempts all
+landed in the BLIND path instead, and the reason is worth recording because it
+narrows the guard's scope:
+
+  * selecting a CLIP moves Move's identity to it, so "latched to a different
+    clip" cannot be produced that way -- the resolver correctly names the clip
+    being edited;
+  * selecting an EMPTY slot CLEARS the identity, so the blind branch answers
+    the placeholder before the guard is consulted.
+
+So the guard covers a narrower, transient window than assumed -- most likely a
+clip QUEUED while a different one still plays, where identity has not moved
+yet. It is covered by host tests and mutation at both altitudes; it is defence
+in depth, not the thing carrying the new-clip flow. Say so rather than claim it
+is verified.
