@@ -163,7 +163,14 @@ static void ui_set_synth_param(chain_instance_t *inst, const char *key,
 
 int main(void) {
     chain_instance_t *inst = calloc(1, sizeof(*inst));
+    if (inst) inst->lanes_enabled = 1;   /* lanes are OFF by default */
     if (!inst) { printf("FAIL: calloc\n"); return 1; }
+    /* Every instance below is armed where it is allocated: lanes are OFF
+     * unless the kill switch is set (the shim pushes `lanes:enabled` from
+     * /data/UserData/schwung/lanes_on) and calloc leaves it off, which is the
+     * shipped default. A fixture that forgot would measure a disabled feature
+     * and read as playback being broken — which is how it presented when the
+     * switch landed. */
     setup_fake_synth(inst);
 
     /* The clip that is playing, and the clip the lanes were recorded against:
@@ -272,6 +279,7 @@ int main(void) {
     /* 8. Armed + phase valid records at the phase, and CREATES the lane --
      *    there is no "add lane" gesture; an armed knob turn is the gesture. */
     chain_instance_t *rec = calloc(1, sizeof(*rec));
+    if (rec) rec->lanes_enabled = 1;   /* lanes are OFF by default */
     CHECK(rec != NULL, "calloc for the recording instance");
     if (!rec) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
     setup_fake_synth(rec);
@@ -410,6 +418,7 @@ int main(void) {
      * parser could count notes. These cases push REAL fingerprints through the
      * real entry point. */
     chain_instance_t *fpi = calloc(1, sizeof(*fpi));
+    if (fpi) fpi->lanes_enabled = 1;   /* lanes are OFF by default */
     CHECK(fpi != NULL, "calloc for the fingerprint instance");
     if (!fpi) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
     setup_fake_synth(fpi);
@@ -601,6 +610,7 @@ int main(void) {
      *  UI actually reaches and a helper nothing routes to is not a feature. */
     {
         chain_instance_t *ci = calloc(1, sizeof(*ci));
+        if (ci) ci->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(ci != NULL, "clear-path instance");
         if (ci) {
             setup_fake_synth(ci);
@@ -722,6 +732,7 @@ int main(void) {
      */
     {
         chain_instance_t *rp = calloc(1, sizeof(*rp));
+        if (rp) rp->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(rp != NULL, "calloc for the recording-pass instance");
         if (rp) {
             setup_fake_synth(rp);
@@ -878,6 +889,7 @@ int main(void) {
      */
     {
         chain_instance_t *pk = calloc(1, sizeof(*pk));
+        if (pk) pk->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(pk != NULL, "calloc for the p-lock instance");
         if (pk) {
             setup_fake_synth(pk);
@@ -1003,6 +1015,7 @@ int main(void) {
      */
     {
         chain_instance_t *ed = calloc(1, sizeof(*ed));
+        if (ed) ed->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(ed != NULL, "calloc for the edit instance");
         if (ed) {
             setup_fake_synth(ed);
@@ -1089,6 +1102,7 @@ int main(void) {
      */
     {
         chain_instance_t *cp = calloc(1, sizeof(*cp));
+        if (cp) cp->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(cp != NULL, "calloc for the copy instance");
         if (cp) {
             setup_fake_synth(cp);
@@ -1160,6 +1174,7 @@ int main(void) {
      * ------------------------------------------------------------------ */
     {
         chain_instance_t *pl = calloc(1, sizeof(*pl));
+        if (pl) pl->lanes_enabled = 1;   /* lanes are OFF by default */
         if (pl) {
             setup_fake_synth(pl);
             lane_fingerprint_t pfp = { 0.0, 8.0, 3, 60 };
@@ -1225,6 +1240,7 @@ int main(void) {
      * flag the stop path forgot. */
     {
         chain_instance_t *st = calloc(1, sizeof(chain_instance_t));
+        if (st) st->lanes_enabled = 1;   /* lanes are OFF by default */
         if (st) {
             setup_fake_synth(st);
             st->lane_track = 0;
@@ -1275,6 +1291,21 @@ int main(void) {
     }
 
     free(inst);
+    /* AND THE SWITCH REALLY GATES IT: disarmed, a driving lane is RELEASED
+     * rather than left asserting an override the user cannot take back. */
+    {
+        inst->lanes_enabled = 0;
+        lane_tick(inst);
+        int still_driving = 0;
+        for (int i2 = 0; i2 < LANE_MAX; i2++)
+            if (inst->lanes.lanes[i2].used && inst->lanes.lanes[i2].driving)
+                still_driving++;
+        CHECK(still_driving == 0,
+              "%d lane(s) still driving with the feature disarmed — the "
+              "parameter is stuck where the clip left it", still_driving);
+        inst->lanes_enabled = 1;
+    }
+
     if (fails) {
         printf("FAILURES: %d\n", fails);
         return 1;

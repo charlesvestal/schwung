@@ -112,6 +112,10 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
     { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
+    /* The lanes kill switch. Polled like the rest so arming it needs no
+     * restart, and so a user can turn the feature off again the moment it
+     * misbehaves. */
+    { "/data/UserData/schwung/lanes_on",             SHIM_FLAG_LANES_ON,     0 },
 };
 
 /* ---- SPI frame tally --------------------------------------------------- */

@@ -2157,6 +2157,21 @@ static void shadow_inprocess_render_to_buffer(void) {
                  * ON CHANGE ONLY: a per-block write would serve a param
                  * request on every frame, which is the cost this file avoids
                  * everywhere else. */
+                /* THE KILL SWITCH, pushed on change like everything else
+                 * here. Off by default: see SHIM_FLAG_LANES_ON. */
+                if (shadow_plugin_v2->set_param) {
+                    static int8_t last_en[SHADOW_CHAIN_INSTANCES];
+                    static int8_t en_seen[SHADOW_CHAIN_INSTANCES];
+                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_ON) ? 1 : 0;
+                    if (s < SHADOW_CHAIN_INSTANCES &&
+                        (!en_seen[s] || last_en[s] != en)) {
+                        last_en[s] = (int8_t)en;
+                        en_seen[s] = 1;
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:enabled", en ? "1" : "0");
+                    }
+                }
+
                 /* THE ROW A BLIND TAKE SHOULD ADOPT ONTO. Published by the
                  * worker as the row that newly appeared in Song.abl, which is
                  * the clip the user just made — as against the PLAYING row,

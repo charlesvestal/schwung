@@ -252,6 +252,21 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
 void lane_tick(chain_instance_t *inst) {
     if (!inst) return;
 
+    /* DISARMED: RELEASE, THEN NOTHING.
+     *
+     * Not simply "stop ticking" — a lane that was driving holds an override
+     * source on the mod bus, and dropping out without releasing leaves the
+     * parameter stuck wherever the clip left it with no gesture that hands it
+     * back. That is the same mistake lane_apply_state had to solve. Releasing
+     * is once-only through `driving`, so this costs nothing per block once the
+     * switch has been seen. */
+    if (!inst->lanes_enabled) {
+        lane_release_all(inst);
+        lane_record_end_all(inst);
+        lane_punch_end_all(inst);
+        return;
+    }
+
     lane_reconcile_pending_slots(inst);
 
     /* NO PHASE MEANS UNKNOWN, AND UNKNOWN IS NOT ZERO. Release anything we
@@ -567,6 +582,10 @@ static int lane_is_recording(const chain_instance_t *inst) {
  * no locks, and every loop inside is bounded by LANE_MAX / LANE_POINTS_MAX. */
 void lane_on_set_param(chain_instance_t *inst, const char *target,
                        const char *param, const char *val) {
+    /* DISARMED: no lane is created or extended. Reads and the clear verbs
+     * still work, so existing automation can be inspected and removed while
+     * the feature is off. */
+    if (inst && !inst->lanes_enabled) return;
     if (!inst || !target || !param || !val) return;
 
     /* Only a parameter the module actually declares can be automated: the
@@ -765,6 +784,22 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
     inst->lanes_last_discarded = lane_store_provisional_count(&inst->lanes);
     lane_release_all(inst);
     lane_store_deserialize(&inst->lanes, doc);
+
+    /* AND THE REMEMBERED ROWS GO WITH THE OUTGOING SET.
+     *
+     * `lane_last_known_slot` and `lane_new_row` are facts about the set that
+     * was loaded a moment ago, and this is the one hook a set change runs
+     * through — the instance itself survives, so without this they answered
+     * for the NEW set. A row remembered from the old set is then handed to
+     * `lane_effective_slot` the first time the new set's row is momentarily
+     * unknown, and to adoption as the row a blind take should take.
+     *
+     * Observed on the device: locks made on a fresh set were keyed to row 7,
+     * a row only the PREVIOUS set had, and never played. (The stale
+     * active_set.txt pointer was the larger half of that failure, but this is
+     * the half that lives here.) */
+    inst->lane_last_known_slot = -1;
+    inst->lane_new_row = -1;
 }
 
 /* ---- the one "lanes:" dispatch ----------------------------------------
@@ -797,6 +832,14 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * lock landed on the playing clip, silently, which is the last of the
      * new-clip defects. 1 = the two cannot be confirmed equal, so a write
      * keys to the PENDING placeholder and adopts when Song.abl names a row. */
+    /* THE KILL SWITCH. Off by default (the field is 0 from calloc), so a build
+     * carrying this feature cannot mis-key anybody's automation until they
+     * arm it — see SHIM_FLAG_LANES_ON for the failure that forced it. */
+    if (strcmp(sub, "enabled") == 0) {
+        inst->lanes_enabled = (val && atoi(val) != 0) ? 1 : 0;
+        return;
+    }
+
     /* The row that newly appeared in Song.abl on this track — the clip the
      * user just made. A blind take adopts onto THIS rather than onto the
      * playing row, which belongs to a different clip whenever something else
@@ -1488,6 +1531,9 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
     /* The row a WRITE is keyed to, which is NOT always the row `clip` names. */
     if (strcmp(sub, "write_row") == 0)
         return snprintf(buf, buf_len, "%d", lane_write_slot(inst));
+
+    if (strcmp(sub, "enabled") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_enabled ? 1 : 0);
 
     if (strcmp(sub, "discarded") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_discarded);

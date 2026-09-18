@@ -34,6 +34,26 @@
  * there is nothing for the RT side to consume. Left as a hole on purpose:
  * reusing the bit would make a stale build read one trigger as another. */
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
+/*
+ * AUTOMATION LANES ARE OFF UNLESS ARMED — /data/UserData/schwung/lanes_on.
+ *
+ * Not a diagnostic like the flags above: it is a KILL SWITCH, and it exists
+ * because the feature can attach automation to the wrong clip and that is
+ * SILENT. The case that forced it: Schwung believed the active set was one the
+ * user had deleted, so p-locks were written into the outgoing set's lane file
+ * at a row that set happened to have — the locks simply never played, and
+ * nothing said why.
+ *
+ * Off by default, so a build carrying this feature cannot mis-key anybody's
+ * automation until they ask for it. Armed, everything behaves as it does on
+ * the development branch.
+ *
+ * When DISARMED the chain releases whatever it is driving and then does
+ * nothing: no writes, no playback. It must not merely stop ticking, or a lane
+ * that was driving would leave its override asserted and the parameter stuck
+ * where the clip left it, with no gesture that hands it back.
+ */
+#define SHIM_FLAG_LANES_ON       (1u << 11) /* lanes_on -- the kill switch */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
 #include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
