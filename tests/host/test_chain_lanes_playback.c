@@ -163,7 +163,14 @@ static void ui_set_synth_param(chain_instance_t *inst, const char *key,
 
 int main(void) {
     chain_instance_t *inst = calloc(1, sizeof(*inst));
+    if (inst) inst->lanes_enabled = 1;   /* lanes are OFF by default */
     if (!inst) { printf("FAIL: calloc\n"); return 1; }
+    /* Every instance below is armed where it is allocated: lanes are OFF
+     * unless the kill switch is set (the shim pushes `lanes:enabled` from
+     * /data/UserData/schwung/lanes_on) and calloc leaves it off, which is the
+     * shipped default. A fixture that forgot would measure a disabled feature
+     * and read as playback being broken — which is how it presented when the
+     * switch landed. */
     setup_fake_synth(inst);
 
     /* The clip that is playing, and the clip the lanes were recorded against:
@@ -272,6 +279,7 @@ int main(void) {
     /* 8. Armed + phase valid records at the phase, and CREATES the lane --
      *    there is no "add lane" gesture; an armed knob turn is the gesture. */
     chain_instance_t *rec = calloc(1, sizeof(*rec));
+    if (rec) rec->lanes_enabled = 1;   /* lanes are OFF by default */
     CHECK(rec != NULL, "calloc for the recording instance");
     if (!rec) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
     setup_fake_synth(rec);
@@ -410,6 +418,7 @@ int main(void) {
      * parser could count notes. These cases push REAL fingerprints through the
      * real entry point. */
     chain_instance_t *fpi = calloc(1, sizeof(*fpi));
+    if (fpi) fpi->lanes_enabled = 1;   /* lanes are OFF by default */
     CHECK(fpi != NULL, "calloc for the fingerprint instance");
     if (!fpi) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
     setup_fake_synth(fpi);
@@ -601,6 +610,7 @@ int main(void) {
      *  UI actually reaches and a helper nothing routes to is not a feature. */
     {
         chain_instance_t *ci = calloc(1, sizeof(*ci));
+        if (ci) ci->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(ci != NULL, "clear-path instance");
         if (ci) {
             setup_fake_synth(ci);
@@ -722,6 +732,7 @@ int main(void) {
      */
     {
         chain_instance_t *rp = calloc(1, sizeof(*rp));
+        if (rp) rp->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(rp != NULL, "calloc for the recording-pass instance");
         if (rp) {
             setup_fake_synth(rp);
@@ -878,6 +889,7 @@ int main(void) {
      */
     {
         chain_instance_t *pk = calloc(1, sizeof(*pk));
+        if (pk) pk->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(pk != NULL, "calloc for the p-lock instance");
         if (pk) {
             setup_fake_synth(pk);
@@ -903,15 +915,33 @@ int main(void) {
                       "a p-lock must be a RECTANGLE (hold=%d)", pl->pts[0].hold);
                 CHECK(fabsf(pl->pts[0].value - 77.0f) < 1e-6f,
                       "value %f, want 77", pl->pts[0].value);
-                /* AND ITS PHASE IS NOT PROVISIONAL. The clip is unidentified
-                 * here, so a RECORDED point would be marked origin_pending and
-                 * later shifted by the real loop_start -- which would move a
-                 * p-lock off the step the user pressed. A p-lock's phase comes
-                 * from the bar number on Move's own strip: it is already true
-                 * clip time. */
-                CHECK(pl->origin_pending == 0,
-                      "a p-lock was marked origin_pending -- adoption would "
-                      "later shift it off its step");
+                /* AND ITS PHASE IS PROVISIONAL, which REVERSES what this
+                 * asserted.
+                 *
+                 * It used to require origin_pending == 0 here, on the grounds
+                 * that "a p-lock's phase comes from the bar number on Move's
+                 * own strip: it is already true clip time". That is true only
+                 * when the clip's origin is 0 — and the clip is UNIDENTIFIED
+                 * in this case, which is exactly when the origin cannot be
+                 * read, so chain_set_clip_phase hands the write side 0 and
+                 * the lock lands in 0-space.
+                 *
+                 * Measured 2026-09-17: a lock written at 1.5 on a clip whose
+                 * window starts at 4 evaluates to NOTHING — lane_eval plays
+                 * only points inside the window. So the lock must be shifted
+                 * when the real loop_start arrives, and a lane with a real row
+                 * but no fingerprint (a clip seen playing before Move saved
+                 * it) could not be adopted at all without this flag: it fell
+                 * to stale on every tick, retained and silent, while writes
+                 * kept landing.
+                 *
+                 * A p-lock on an IDENTIFIED clip is still not marked — the
+                 * flag is set only where the fingerprint is absent — so the
+                 * concern this assertion was protecting still holds where it
+                 * applies. */
+                CHECK(pl->origin_pending == 1,
+                      "a blind p-lock was NOT marked origin_pending -- it can "
+                      "never be adopted and goes stale ~10 s later");
             }
 
             /* A SECOND P-LOCK ON THE SAME STEP REPLACES IT rather than
@@ -985,6 +1015,7 @@ int main(void) {
      */
     {
         chain_instance_t *ed = calloc(1, sizeof(*ed));
+        if (ed) ed->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(ed != NULL, "calloc for the edit instance");
         if (ed) {
             setup_fake_synth(ed);
@@ -1071,6 +1102,7 @@ int main(void) {
      */
     {
         chain_instance_t *cp = calloc(1, sizeof(*cp));
+        if (cp) cp->lanes_enabled = 1;   /* lanes are OFF by default */
         CHECK(cp != NULL, "calloc for the copy instance");
         if (cp) {
             setup_fake_synth(cp);
@@ -1142,6 +1174,7 @@ int main(void) {
      * ------------------------------------------------------------------ */
     {
         chain_instance_t *pl = calloc(1, sizeof(*pl));
+        if (pl) pl->lanes_enabled = 1;   /* lanes are OFF by default */
         if (pl) {
             setup_fake_synth(pl);
             lane_fingerprint_t pfp = { 0.0, 8.0, 3, 60 };
@@ -1207,6 +1240,7 @@ int main(void) {
      * flag the stop path forgot. */
     {
         chain_instance_t *st = calloc(1, sizeof(chain_instance_t));
+        if (st) st->lanes_enabled = 1;   /* lanes are OFF by default */
         if (st) {
             setup_fake_synth(st);
             st->lane_track = 0;
@@ -1256,7 +1290,154 @@ int main(void) {
         }
     }
 
+    /* AND THE SWITCH REALLY GATES IT: disarmed, a driving lane is RELEASED
+     * rather than left asserting an override the user cannot take back.
+     *
+     * This block used to sit AFTER `free(inst)` and read every field of it
+     * through the freed pointer. It passed, which is what a use-after-free
+     * does most of the time. */
+    {
+        inst->lanes_enabled = 0;
+        lane_tick(inst);
+        int still_driving = 0;
+        for (int i2 = 0; i2 < LANE_MAX; i2++)
+            if (inst->lanes.lanes[i2].used && inst->lanes.lanes[i2].driving)
+                still_driving++;
+        CHECK(still_driving == 0,
+              "%d lane(s) still driving with the feature disarmed — the "
+              "parameter is stuck where the clip left it", still_driving);
+        inst->lanes_enabled = 1;
+    }
+
+    /* WHICH VERBS THE SWITCH GATES, stated once and executably.
+     *
+     * It was defined by omission before: `lane_on_set_param` checked the flag
+     * and the three verbs that create lane content did not, so a disarmed
+     * build accepted a p-lock, reported it as landed, deadened the knob and
+     * wrote the lane to disk. The partition is the rule -- CREATION is
+     * refused, inspection and REMOVAL stay live so automation already on disk
+     * can still be found and cleared -- and both halves are asserted here so
+     * a verb added to either side has to choose one. */
+    {
+        chain_instance_t *g = calloc(1, sizeof(*g));
+        CHECK(g != NULL, "calloc for the gate fixture");
+        if (g) {
+            setup_fake_synth(g);
+            g->lane_track = 0;
+            g->lane_clip_slot = 2;
+            g->clip_loop_start = 0.0;
+            g->clip_loop_len = 8.0;
+            g->clip_fp_valid = 1;
+            g->clip_phase_beats = 1.0;
+            g->clip_phase_valid = 1;
+
+            /* Disarmed: none of the three creates anything. */
+            g->lanes_enabled = 0;
+            lane_param_set(g, "plock", "synth cutoff 4.0 77");
+            lane_param_set(g, "double", "1");
+            lane_param_set(g, "copy_clip", "2 3");
+            int used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 0,
+                  "disarmed, the creation verbs made %d lane(s) — a build with "
+                  "the feature off must not be able to key anybody's automation",
+                  used);
+
+            /* And the refusal has a NAME, not a silent nothing: `plocked` at 0
+             * for an unstated reason is what deadened the knob, because the
+             * host reads that same 0 to decide whether to pass the write on. */
+            char rb[32] = {0};
+            lane_param_get(g, "plock_refused", rb, sizeof(rb));
+            CHECK(strstr(rb, "disabled") != NULL,
+                  "disarmed plock refusal reported as '%s', not 'disabled'", rb);
+            char pb[8] = {0};
+            lane_param_get(g, "plocked", pb, sizeof(pb));
+            CHECK(pb[0] == '0',
+                  "disarmed plock reported as landed ('%s') — the host "
+                  "suppresses the live parameter write on that, so the knob "
+                  "goes dead with the feature off", pb);
+
+            /* Armed, the same three do work — or the assertion above would
+             * pass on a fixture that simply cannot p-lock. */
+            g->lanes_enabled = 1;
+            lane_param_set(g, "plock", "synth cutoff 4.0 77");
+            used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 1,
+                  "armed, the same p-lock made %d lane(s) — the disarmed "
+                  "assertion above proves nothing if this fixture cannot lock",
+                  used);
+
+            /* AND THE OTHER TWO CREATION VERBS, against a store that HAS
+             * content -- an empty one cannot show them refusing, because
+             * `double` and `copy_clip` both walk existing lanes and a walk
+             * over nothing is indistinguishable from a refusal. The armed
+             * p-lock above left exactly one lane on slot 2 to work with. */
+            {
+                int pts_before = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_before += g->lanes.lanes[i2].n;
+                CHECK(pts_before > 0, "the gate fixture has a point to double");
+
+                g->lanes_enabled = 0;
+                lane_param_set(g, "double", "1");
+                int pts_after = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_after += g->lanes.lanes[i2].n;
+                CHECK(pts_after == pts_before,
+                      "disarmed, `double` grew the store from %d to %d point(s)",
+                      pts_before, pts_after);
+
+                lane_param_set(g, "copy_clip", "2 3");
+                int on_dst = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used && g->lanes.lanes[i2].slot == 3)
+                        on_dst++;
+                CHECK(on_dst == 0,
+                      "disarmed, `copy_clip` put %d lane(s) on the duplicate",
+                      on_dst);
+
+                /* Armed, both do something — or the two assertions above pass
+                 * on a fixture that could never have doubled or copied. */
+                g->lanes_enabled = 1;
+                lane_param_set(g, "double", "1");
+                int pts_armed = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_armed += g->lanes.lanes[i2].n;
+                CHECK(pts_armed > pts_before,
+                      "armed, `double` left %d point(s) against %d — the "
+                      "disarmed assertion proves nothing if this fixture "
+                      "cannot double", pts_armed, pts_before);
+                lane_param_set(g, "copy_clip", "2 3");
+                on_dst = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used && g->lanes.lanes[i2].slot == 3)
+                        on_dst++;
+                CHECK(on_dst > 0,
+                      "armed, `copy_clip` put nothing on the duplicate — the "
+                      "disarmed assertion proves nothing");
+            }
+
+            /* REMOVAL STAYS LIVE WHILE OFF. This is the half that makes the
+             * switch usable rather than a trap: a user who armed it, recorded
+             * automation and switched it off must still be able to delete it. */
+            g->lanes_enabled = 0;
+            lane_param_set(g, "clear", "1");
+            used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 0,
+                  "disarmed, `clear` left %d lane(s) — automation recorded "
+                  "before the switch was turned off would be unremovable",
+                  used);
+            free(g);
+        }
+    }
+
     free(inst);
+
     if (fails) {
         printf("FAILURES: %d\n", fails);
         return 1;

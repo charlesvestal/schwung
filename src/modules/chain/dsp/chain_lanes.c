@@ -15,6 +15,34 @@
 #include <stdio.h>
 #include <math.h>   /* isfinite, for the p-lock phase */
 
+#include "host/lane_lookahead.h"
+
+/* WHICH ROW A WRITE IS KEYED TO.
+ *
+ * Playback uses `lane_clip_slot` — the clip that is PLAYING. A write wants
+ * the clip on SCREEN, and when they cannot be confirmed to be the same the
+ * only honest answer is the placeholder: keying a p-lock to the playing row
+ * puts it on a clip the user is not editing, silently and permanently.
+ * PENDING plays through the window and adopts when the file names a row. */
+/* EVERY SURFACE THE USER'S HAND DRIVES USES THIS, not just the writes.
+ *
+ * Fixing only the write paths made the feature asymmetric in the worst
+ * direction: while a clip played and the user edited a new one, a lock landed
+ * under the placeholder but `clear_point` still keyed to the PLAYING row — so
+ * Delete + step aimed at the new clip DELETED the playing clip's lock, and
+ * the lock map showed no mark on the clip in front of them. A destructive
+ * edit to a clip the user is not looking at is worse than the bug the write
+ * fix closed.
+ *
+ * So the clears, the probe, the lock map and Double Loop all ask this. What
+ * stays on `lane_clip_slot` is PLAYBACK (lane_tick, through
+ * lane_effective_slot), the unarmed PUNCH — which suppresses the lane that is
+ * currently driving, so it is a fact about playback — and the `clip`
+ * diagnostic, which exists to report the playing row. */
+static inline int lane_write_slot(const chain_instance_t *inst) {
+    return inst->lane_clip_slot;
+}
+
 /* One source id per lane, so the mod bus can tell two lanes apart and clear
  * one without disturbing the other -- and so a lane's own release names only
  * itself. target is 16 bytes and param 32 (lane_store.h), both of which
@@ -91,12 +119,19 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
 CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
                                         const char *target, const char *param) {
     if (!inst || !target || !param) return 0;
-    if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return 0;
+    /* THE SAME ROW PLAYBACK USES. lane_tick matches on lane_effective_slot --
+     * an unknown row falls back to the last one we had an answer for -- while
+     * this asked with the RAW row, so during those windows the lane kept
+     * driving and the grid's `:modulated` answer dropped to 0. That split
+     * (the ear says automated, the screen says not) has already been reported
+     * once in this feature, as "I hear it but I don't see it". */
+    const int row = lane_effective_slot(inst->lane_clip_slot,
+                                        inst->lane_last_known_slot);
+    if (inst->lane_track < 0 || !lane_slot_usable(row)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
-        if (lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
-                              target, param))
+        if (lane_is_for_param(ln, inst->lane_track, row, target, param))
             return 1;
     }
     return 0;
@@ -151,18 +186,86 @@ void lane_release_all(chain_instance_t *inst) {
  * clip it fits, which is the direction every other choice in this file fails
  * in. */
 static void lane_reconcile_pending_slots(chain_instance_t *inst) {
-    if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+    /* ADOPT ONTO THE CLIP THAT WAS MADE, not onto whatever is playing.
+     *
+     * This used `lane_clip_slot` — the PLAYING row — so a take recorded blind
+     * while another clip played was re-keyed onto that other clip. The row
+     * published as newly-appeared is the clip the gesture belongs to; it is
+     * preferred when we have one, and the playing row remains the fallback
+     * for the ordinary case where the new clip IS the one playing. */
+    const int adopt_row = (inst->lane_new_row >= 0) ? inst->lane_new_row
+                                                    : inst->lane_clip_slot;
+    if (inst->lane_track < 0 || adopt_row < 0) return;
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || !ln->slot_pending) continue;
-        lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
-                        ln->pending_len, inst->clip_loop_len,
-                        inst->clip_fp_valid ? &inst->clip_fp : NULL);
+
+        /* THE ROW MAY ALREADY BE TAKEN, AND TWO LANES ON ONE KEY IS A
+         * DOCUMENT THAT CAN NEVER LOAD AGAIN.
+         *
+         * `lane_adopt_slot` re-keys one lane and cannot see the store, so
+         * nothing checked whether (track, row, target, param) was already
+         * held. The orphan design guarantees it often is: deleting a clip
+         * RETAINS its lanes as orphans at that row, and Move reuses the row
+         * for the next clip. Adopting on top produced two lanes with one key
+         * -- and then:
+         *
+         *   - `lane_find` returns the FIRST hit, so later writes land in one
+         *     twin while the other also plays: two lanes driving one
+         *     parameter, flapping;
+         *   - the serializer writes BOTH, and the loader REFUSES A DOCUMENT
+         *     with a duplicate key outright (lane_serial.c) -- it is
+         *     all-or-nothing, so at the next set change or reboot EVERY lane
+         *     on this chain slot is silent, on every load, for good.
+         *
+         * So the key is resolved before adopting, and it always ends with
+         * exactly one lane on it.
+         *
+         * AN ORPHANED TWIN LOSES. Its points belong to a clip that was
+         * deleted, and the clip now at that row is a different one -- the
+         * same rule the write paths already apply ("an orphan does not come
+         * back to life with its old points"). Freeing it is what that rule
+         * means here.
+         *
+         * A LIVE TWIN IS REPLACED BY THE ARRIVING TAKE, not refused. The
+         * pending lane is by definition the gesture the user just made on the
+         * clip in front of them, which is the same statement that lets an
+         * explicit write outrank the bookkeeping elsewhere in this file.
+         * Refusing instead would leave the take keyed to PENDING, which stops
+         * matching the moment the file names a row -- a silent loss of the
+         * newest thing the user did, which is the complaint this whole area
+         * exists to answer. */
+        lane_t *twin = lane_find(&inst->lanes, ln->target, ln->param,
+                                 inst->lane_track, adopt_row);
+        if (twin && twin != ln) {
+            twin->used = 0;                 /* exactly one lane on the key */
+            inst->lanes_adopt_displaced++;
+        }
+
+        if (lane_adopt_slot(ln, inst->lane_track, adopt_row,
+                            ln->pending_len, inst->clip_loop_len,
+                            inst->clip_fp_valid ? &inst->clip_fp : NULL))
+            inst->lane_new_row = -1;   /* consumed: one clip, one adoption */
     }
 }
 
 void lane_tick(chain_instance_t *inst) {
     if (!inst) return;
+
+    /* DISARMED: RELEASE, THEN NOTHING.
+     *
+     * Not simply "stop ticking" — a lane that was driving holds an override
+     * source on the mod bus, and dropping out without releasing leaves the
+     * parameter stuck wherever the clip left it with no gesture that hands it
+     * back. That is the same mistake lane_apply_state had to solve. Releasing
+     * is once-only through `driving`, so this costs nothing per block once the
+     * switch has been seen. */
+    if (!inst->lanes_enabled) {
+        lane_release_all(inst);
+        lane_record_end_all(inst);
+        lane_punch_end_all(inst);
+        return;
+    }
 
     lane_reconcile_pending_slots(inst);
 
@@ -179,8 +282,53 @@ void lane_tick(chain_instance_t *inst) {
          * write rather than a sweep from a phase measured before the gap. */
         lane_record_end_all(inst);
         lane_punch_end_all(inst);
+        inst->lane_prev_phase_valid = 0;   /* the next tick has no delta */
         return;
     }
+
+    /* ONE BLOCK OF LOOKAHEAD, because playback is a block AHEAD of where the
+     * value has to be standing.
+     *
+     * Inside one frame the shim renders first and delivers Move's MIDI second
+     * (shadow_mix_audio then shadow_inprocess_process_midi, both in
+     * shim_pre_transfer). `clip_phase_beats` has not advanced to the step when
+     * the render runs, so a p-lock whose rectangle starts exactly on a step
+     * was applied one block AFTER the note for that step reached the synth.
+     * A drum voice latches its pitch at note-on, so it read the value the lock
+     * was meant to replace and the lock appeared on the NEXT hit -- reported
+     * as "my tune isn't taking effect on my med tom", with "if I place the
+     * lock BEFORE the step I hear it" as the giveaway.
+     *
+     * Measured 2026-09-17 rather than assumed: Move's notes are stamped
+     * arriving at ph=0.000000, 1.000000, 1.500000, 3.000000 -- exactly on the
+     * boundaries. There is no timing lag to compensate, so this wants one
+     * block of lead and NOT a tuned constant.
+     *
+     * The lead is the phase travelled since the last tick, REMEMBERED rather
+     * than computed from tempo: the lane code does not own a BPM, and a
+     * derived one would be wrong the moment the clock changed. A wrap gives a
+     * negative delta and a re-anchor can give a large one, so both are
+     * refused and the lead is simply 0 for that tick -- one late block, the
+     * behaviour we had everywhere before. */
+    const double eval_phase =
+        lane_lookahead_phase(inst->clip_phase_beats, inst->lane_prev_phase,
+                             inst->lane_prev_phase_valid,
+                             inst->clip_loop_start, inst->clip_loop_len);
+    inst->lane_prev_phase = inst->clip_phase_beats;
+    inst->lane_prev_phase_valid = 1;
+
+    /* Remember whatever we last had an ANSWER for -- a real row, or PENDING.
+     *
+     * PENDING must be held too, and leaving it out was a real hole: a clip
+     * Move has not written yet has no row at all, so its lane is keyed to the
+     * placeholder. Leave that track and the placeholder evaporates (the step
+     * strip now names a different track), the row drops to -1, and the lane
+     * is released -- while the clip is plainly still playing, because Move
+     * owns the notes and only our automation stops. Reported exactly so:
+     * "i have a new clip at track 1 clip 2 ... i switch to track 2 while it's
+     * playing, it should continue to play track 1 clip 2's locks". */
+    if (lane_slot_usable(inst->lane_clip_slot))
+        inst->lane_last_known_slot = inst->lane_clip_slot;
 
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
@@ -191,8 +339,25 @@ void lane_tick(chain_instance_t *inst) {
          * automation is worse than no lane at all, and nothing on screen
          * would explain it. (Fingerprint matching -- the same clip position
          * holding different content -- is Task 6's, through ln->stale, which
-         * lane_eval already refuses.) */
-        if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot) {
+         * lane_eval already refuses.)
+         *
+         * BUT "WE CANNOT NAME THE ROW" IS NOT "A DIFFERENT CLIP IS PLAYING",
+         * and this compared against `lane_clip_slot` raw, so the two were one
+         * answer. The row goes unknown (-1) routinely -- a clip Move has not
+         * written to Song.abl yet, or a track whose row we cannot currently
+         * read -- and every lane on the slot was released mid-playback with
+         * nothing else launched and the clip still audible.
+         *
+         * `effective_slot` holds the LAST ROW WE KNEW while the answer is
+         * missing. Not "match anything": one slot can hold lanes for several
+         * rows, and matching anything drives all of them into the same
+         * parameter at once. A positively-known DIFFERENT row still releases,
+         * which is the case the paragraph above is about, and a stopped
+         * transport still releases everything through the phase guard. */
+        const int effective_slot =
+            lane_effective_slot(inst->lane_clip_slot, inst->lane_last_known_slot);
+
+        if (ln->track != inst->lane_track || ln->slot != effective_slot) {
             if (ln->driving) lane_release_one(inst, ln);
             /* This lane's clip stopped being the one playing, so its pass is
              * over whatever Record is doing. Otherwise coming back to the clip
@@ -344,7 +509,7 @@ void lane_tick(chain_instance_t *inst) {
                              pinfo->type == KNOB_TYPE_ENUM);
 
         float v = 0.0f;
-        if (!lane_eval(ln, inst->clip_phase_beats, inst->clip_loop_start,
+        if (!lane_eval(ln, eval_phase, inst->clip_loop_start,
                        inst->clip_loop_len,
                        stepped, &v)) {
             /* "Nothing to say" -- empty, stale or orphaned. That is NOT the
@@ -417,6 +582,10 @@ static int lane_is_recording(const chain_instance_t *inst) {
  * no locks, and every loop inside is bounded by LANE_MAX / LANE_POINTS_MAX. */
 void lane_on_set_param(chain_instance_t *inst, const char *target,
                        const char *param, const char *val) {
+    /* DISARMED: no lane is created or extended. Reads and the clear verbs
+     * still work, so existing automation can be inspected and removed while
+     * the feature is off. */
+    if (inst && !inst->lanes_enabled) return;
     if (!inst || !target || !param || !val) return;
 
     /* Only a parameter the module actually declares can be automated: the
@@ -434,7 +603,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
         lane_fingerprint_t fp;
         lane_current_fingerprint(inst, &fp);
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
-                                inst->lane_track, inst->lane_clip_slot, &fp);
+                                inst->lane_track, lane_write_slot(inst), &fp);
         /* A TAKE RECORDED IN THE BLIND WINDOW IS MARKED AS SUCH. No
          * fingerprint while the phase is valid means Move has not written
          * this clip to Song.abl yet (~10 s), so the geometry we are recording
@@ -454,7 +623,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * window cannot inherit this take. Set on an existing lane too, for
          * the reason the origin flag is: a second write in the same window
          * must not leave the first one's state behind. */
-        if (ln && lane_slot_is_pending(inst->lane_clip_slot)) {
+        if (ln && lane_slot_is_pending(lane_write_slot(inst))) {
             ln->slot_pending = 1;
             ln->pending_len = inst->clip_loop_len;
         }
@@ -486,8 +655,19 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * is false only on the first write of a pass, so the dead clip's points
          * go at the start and the take then accumulates normally. Restarting on
          * every write would erase the take as it was being made. */
+        /* THE ORPHAN IS CLEARED WITHOUT A FINGERPRINT, for the reason spelled
+         * out on the p-lock path: `orphaned` says the clip at this position
+         * was DELETED, and a user recording onto the clip in front of them
+         * has answered that — which needs no fingerprint, only stamping one
+         * does. Gated on fp_valid, a take recorded into an orphaned lane
+         * during Move's save window stayed orphaned, so lane_eval refused it
+         * and the take was silent forever. */
+        if (ln->orphaned && !ln->rec_active) {
+            ln->n = 0;                    /* the dead clip's points go, once */
+            ln->orphaned = 0;
+            if (!inst->clip_fp_valid) ln->origin_pending = 1;
+        }
         if (inst->clip_fp_valid) {
-            if (ln->orphaned && !ln->rec_active) ln->n = 0;
             ln->fp = inst->clip_fp;
             ln->stale = 0;
             ln->orphaned = 0;
@@ -589,8 +769,37 @@ int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
  * all-or-nothing), so a corrupt file loses nothing that is already loaded. */
 void lane_apply_state(chain_instance_t *inst, const char *doc) {
     if (!inst || !doc) return;
+    /* COUNT WHAT THIS DESTROYS THAT NO DOCUMENT COULD HOLD.
+     *
+     * A take whose clip cannot yet be identified is not written by
+     * lane_serial.c, so a snapshot taken inside Move's save window does not
+     * contain it — and putting that snapshot back replaces the live take with
+     * a document that never held it. Silent on both sides: the snapshot said
+     * nothing when it could not capture it, and the recall said nothing when
+     * it dropped it.
+     *
+     * Every other partial restore in this codebase reports a number, for the
+     * reason stated at `lanes_last_cleared`: a restore that reports nothing is
+     * indistinguishable from one that worked. */
+    inst->lanes_last_discarded = lane_store_provisional_count(&inst->lanes);
     lane_release_all(inst);
     lane_store_deserialize(&inst->lanes, doc);
+
+    /* AND THE REMEMBERED ROWS GO WITH THE OUTGOING SET.
+     *
+     * `lane_last_known_slot` and `lane_new_row` are facts about the set that
+     * was loaded a moment ago, and this is the one hook a set change runs
+     * through — the instance itself survives, so without this they answered
+     * for the NEW set. A row remembered from the old set is then handed to
+     * `lane_effective_slot` the first time the new set's row is momentarily
+     * unknown, and to adoption as the row a blind take should take.
+     *
+     * Observed on the device: locks made on a fresh set were keyed to row 7,
+     * a row only the PREVIOUS set had, and never played. (The stale
+     * active_set.txt pointer was the larger half of that failure, but this is
+     * the half that lives here.) */
+    inst->lane_last_known_slot = -1;
+    inst->lane_new_row = -1;
 }
 
 /* ---- the one "lanes:" dispatch ----------------------------------------
@@ -612,6 +821,32 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     /* The whole store as one opaque document. */
     if (strcmp(sub, "state") == 0) {
         lane_apply_state(inst, val ? val : "");
+        return;
+    }
+
+    /* CAN A WRITE TRUST THE CLIP ROW? Pushed by the shim on CHANGE only.
+     *
+     * The row the shim reports is the PLAYING clip, which is what playback
+     * wants. A p-lock wants the clip on SCREEN, and when one clip plays while
+     * the user edits a different (new) one those are not the same row — the
+     * lock landed on the playing clip, silently, which is the last of the
+     * new-clip defects. 1 = the two cannot be confirmed equal, so a write
+     * keys to the PENDING placeholder and adopts when Song.abl names a row. */
+    /* THE KILL SWITCH. Off by default (the field is 0 from calloc), so a build
+     * carrying this feature cannot mis-key anybody's automation until they
+     * arm it — see SHIM_FLAG_LANES_ON for the failure that forced it. */
+    if (strcmp(sub, "enabled") == 0) {
+        inst->lanes_enabled = (val && atoi(val) != 0) ? 1 : 0;
+        return;
+    }
+
+    /* The row that newly appeared in Song.abl on this track — the clip the
+     * user just made. A blind take adopts onto THIS rather than onto the
+     * playing row, which belongs to a different clip whenever something else
+     * is playing. Pushed by the shim on change only. */
+    if (strcmp(sub, "new_row") == 0) {
+        const int r = val ? atoi(val) : -1;
+        inst->lane_new_row = (r >= 0 && r < 8) ? r : -1;
         return;
     }
 
@@ -698,13 +933,13 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const int got = sscanf(val, "%lf %15s %31s", &phase, target, param);
         if (got < 1 || !isfinite(phase) || phase < 0.0) return;
         const int one = (got == 3);
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used) continue;
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst))) continue;
             if (one && (strcmp(ln->target, target) != 0 ||
                         strcmp(ln->param, param) != 0)) continue;
             int w = 0;
@@ -766,9 +1001,9 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
             len = inst->clip_loop_len;
         }
         if (!isfinite(phase) || phase < 0.0) return;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
         lane_t *ln = lane_find(&inst->lanes, target, param,
-                               inst->lane_track, inst->lane_clip_slot);
+                               inst->lane_track, lane_write_slot(inst));
         if (!ln) return;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
         if (!pinfo) return;
@@ -803,6 +1038,29 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * the refusals of the step->phase translation. This names the
          * refusals of the WRITE. */
         inst->lanes_last_plocked = 0;
+
+        /* DISARMED, AND THE CHAIN IS WHAT MUST SAY SO.
+         *
+         * The switch gates the verbs that CREATE lane content and nothing
+         * else -- the clears, the reads and the undo stay live while it is
+         * off, so automation already on disk can be inspected and removed.
+         *
+         * Refusing it HERE rather than in the caller is the load-bearing
+         * part. The host suppresses the live parameter write when a lock
+         * LANDS, and it asks `lanes:plocked` to find out
+         * (shadow_lanes_plock_from_write). A disarmed build that accepted
+         * the lock answered 1 to that, so all of this happened with the
+         * feature off: the knob went dead, the confirm mark was drawn, the
+         * step press was spent, and a lane was created that lane_tick would
+         * never play -- and once the clip had a fingerprint, SERIALIZED to
+         * disk. Worse than the feature being on, and exactly the mis-keying
+         * the switch was added to make impossible. Refused here, `plocked`
+         * stays 0 and all four fall away together. */
+        if (!inst->lanes_enabled) {
+            inst->lanes_plock_refusal = LANE_PLOCK_DISABLED;
+            return;
+        }
+
         inst->lanes_plock_refusal = LANE_PLOCK_BAD_REQUEST;
         if (!val) return;
         char target[16] = {0}, param[32] = {0};
@@ -834,7 +1092,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const char *value_str = val + consumed;
         if (!isfinite(phase) || phase < 0.0) return;
         inst->lanes_plock_refusal = LANE_PLOCK_NO_CLIP;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
 
         inst->lanes_plock_refusal = LANE_PLOCK_UNKNOWN_PARAM;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
@@ -845,21 +1103,37 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         lane_current_fingerprint(inst, &fp);
         inst->lanes_plock_refusal = LANE_PLOCK_STORE_FULL;
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
-                                inst->lane_track, inst->lane_clip_slot, &fp);
+                                inst->lane_track, lane_write_slot(inst), &fp);
         if (!ln) return;
         /* A LOCK MADE BEFORE THE CLIP HAS A ROW, marked for re-keying exactly
          * as a blind recording is -- see LANE_SLOT_PENDING. This is the whole
          * "make a clip, lock its steps" flow: the row is 8-12 s away and the
-         * gesture must land now.
-         *
-         * `origin_pending` is deliberately NOT set here, for the reason the
-         * p-lock branch already gives: a lock's phase comes from the BAR on
-         * Move's own strip, so it is true clip time already and must not be
-         * re-origined later. Only the ROW is provisional. */
-        if (lane_slot_is_pending(inst->lane_clip_slot)) {
+         * gesture must land now. */
+        if (lane_slot_is_pending(lane_write_slot(inst))) {
             ln->slot_pending = 1;
             ln->pending_len = inst->clip_loop_len;
         }
+
+        /* AND ITS ORIGIN IS PROVISIONAL TOO. This used to say `origin_pending`
+         * was "deliberately NOT set here", because a lock's phase comes off
+         * Move's own bar strip and "is true clip time already". That holds
+         * only when the clip's origin is 0 — which is precisely what a clip
+         * Move has not written cannot tell us, so chain_set_clip_phase hands
+         * the write side 0 and the lock lands in 0-space.
+         *
+         * Without the flag, the lane that has a REAL ROW but no fingerprint
+         * — a clip seen PLAYING before Move saved it, which is what live
+         * recording produces — could never be adopted: lane_adopt_fingerprint
+         * refuses without it, the adopt-on-edit branch excludes an absent
+         * fingerprint, and the lane fell to `stale = 1` on every tick.
+         * Retained, SILENT, forever, while writes kept landing. The user's
+         * report for that is "the locks on my freshly recorded clip died after
+         * about ten seconds".
+         *
+         * It cannot double-shift: lane_adopt_slot re-origins and STAMPS the
+         * fingerprint, after which lane_adopt_fingerprint's own
+         * `lane_fp_absent` guard refuses. Exactly one of the two ever runs. */
+        if (!inst->clip_fp_valid) ln->origin_pending = 1;
         /* A FULL LANE REFUSES A LOCK RATHER THAN MOVING SOMEBODY ELSE'S.
          *
          * lane_write's overflow rule takes the NEAREST point and relocates it
@@ -900,6 +1174,43 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * Only with a fingerprint to take. With none -- the blind window --
          * the lane keeps the absent one it already has and lane_adopt_slot
          * binds it when the clip lands. */
+        /* THE ORPHAN IS CLEARED WITH OR WITHOUT A FINGERPRINT.
+         *
+         * This whole block used to sit inside `if (inst->clip_fp_valid)`, on
+         * the reasoning that with no fingerprint "the lane keeps the absent
+         * one it already has and lane_adopt_slot binds it when the clip
+         * lands". That is right about the FINGERPRINT and wrong about the
+         * ORPHAN, and the difference is the entire blind-window case:
+         *
+         *   make a clip where a deleted one used to be, p-lock it, and the
+         *   lane stays orphaned -- so lane_eval refuses it and the lock is
+         *   SILENT FOREVER. Adoption re-keys the row; it does not resurrect
+         *   an orphan.
+         *
+         * Observed on the device in exactly that state: one lane, row 0,
+         * n=1, orph=1, drv=0, with the clip plainly on screen. Reported as
+         * "i JUST added p locks on a new clip ... and the p locks aren't
+         * playing".
+         *
+         * `orphaned` means "the clip at this position was deleted". A user
+         * holding a step on a clip that is THERE has answered that question,
+         * and answering it needs no fingerprint -- only STAMPING one does.
+         * This is the same "an explicit gesture outranks the bookkeeping"
+         * rule the block above states; it was simply gated behind a fact it
+         * does not depend on.
+         *
+         * The restart rule is unchanged and still applies: an orphan does not
+         * come back to life with the dead clip's points. */
+        if (ln->orphaned) {
+            ln->n = 0;                       /* the dead clip's points go */
+            lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
+            ln->orphaned = 0;
+            /* With no fingerprint to take, this take is a blind one: mark it
+             * so lane_tick can re-origin and identify it when the clip
+             * lands, exactly as a first blind write on a fresh lane is. */
+            if (!inst->clip_fp_valid) ln->origin_pending = 1;
+        }
+
         if (inst->clip_fp_valid) {
             /* AN ORPHAN DOES NOT COME BACK TO LIFE WITH ITS OLD POINTS.
              *
@@ -919,13 +1230,9 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
              * A merely STALE lane keeps its points: that is the same clip,
              * edited, which is exactly what the adopt-on-edit branch in
              * lane_tick already decided. Only a deletion breaks continuity. */
-            if (ln->orphaned) {
-                ln->n = 0;                       /* the dead clip's points go */
-                lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
-            }
             ln->fp = inst->clip_fp;
             ln->stale = 0;
-            ln->orphaned = 0;
+            ln->orphaned = 0;   /* already cleared above; kept explicit */
         }
         inst->lanes_plock_refusal = LANE_PLOCK_OK;
         return;
@@ -948,13 +1255,15 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (strcmp(sub, "double") == 0) {
         /* Zeroed first, for the reason on copy_clip below. */
         inst->lanes_last_doubled = 0;
+        /* DISARMED: a creation verb. See the plock verb above. */
+        if (!inst->lanes_enabled) return;
         if (!val || atoi(val) == 0) return;
         if (!(inst->clip_loop_len > 0.0) || !(inst->clip_loop_start >= 0.0)) return;
         int total = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used || ln->stale || ln->orphaned) continue;
-            if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot)
+            if (ln->track != inst->lane_track || ln->slot != lane_write_slot(inst))
                 continue;
             total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
         }
@@ -981,6 +1290,24 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * previous call's count in place makes a refusal read as a success --
          * which is the exact ambiguity these counters exist to remove. */
         inst->lanes_last_copied = 0;
+        /* DISARMED: a creation verb. See the plock verb above. */
+        if (!inst->lanes_enabled) return;
+
+        /* RE-KEY BEFORE COPYING, or a blind take is never duplicated.
+         *
+         * The duplicate is recognised FROM THE FILE, so by the time this
+         * fires the file names both clips -- which is also the moment a
+         * pending lane can finally be given its real row. But the shim
+         * consumes the copy generation in its per-slot loop BEFORE
+         * render_block runs lane_tick (schwung_shim.c, "lanes:copy_clip"),
+         * so the reconcile that would have adopted the source had not run
+         * yet: the source was still PENDING with an absent fingerprint, the
+         * skip below dropped it, and the generation was already marked seen,
+         * so it was never retried. The duplicate arrived silent, permanently.
+         *
+         * Reported as "i had the same thing with losing my p locks on a new
+         * clip, and then copied that clip and they didn't come". */
+        lane_reconcile_pending_slots(inst);
         int src = -1, dst = -1;
         if (!val || sscanf(val, "%d %d", &src, &dst) != 2) return;
         if (src < 0 || dst < 0 || src == dst) return;
@@ -1001,9 +1328,15 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
              * recording pass. Those describe THIS block on the source lane,
              * and lane_alloc has already zeroed them on a fresh slot. */
             to->n = 0;
+            /* SPAN AND ALL. `lane_write`'s 4-argument form leaves `span`
+             * at 0, which is the LEGACY meaning -- "hold until the next
+             * point" -- so every copied p-lock silently widened from one step
+             * to the rest of the bar, which is the exact behaviour the span
+             * field was added to kill. A duplicate whose locks smear is a
+             * wrong copy that reads as a design choice. */
             for (int k = 0; k < from->n; k++)
-                lane_write(to, from->pts[k].phase, from->pts[k].value,
-                           from->pts[k].hold);
+                lane_write_span(to, from->pts[k].phase, from->pts[k].value,
+                                from->pts[k].hold, from->pts[k].span);
             copied++;
         }
         inst->lanes_last_copied = copied;
@@ -1031,12 +1364,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (strcmp(sub, "clear_clip") == 0) {
         if (!val || atoi(val) == 0) return;
         inst->lanes_last_cleared = 0;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst)))
                 continue;
             if (ln->driving) lane_release_one(inst, ln);
             lane_clear_one(ln);
@@ -1053,12 +1386,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0}, param[32] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s %31s", target, param) != 2) return;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
+            if (!lane_is_for_param(ln, inst->lane_track, lane_write_slot(inst),
                                    target, param))
                 continue;
             if (ln->driving) lane_release_one(inst, ln);
@@ -1080,12 +1413,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s", target) != 1) return;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst)))
                 continue;
             if (strcmp(ln->target, target) != 0) continue;
             if (ln->driving) lane_release_one(inst, ln);
@@ -1152,12 +1485,12 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * value per point would multiply the size of this for nothing. */
     if (strcmp(sub, "phases") == 0) {
         int off = 0;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot))
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst)))
             return snprintf(buf, buf_len, "%s", "");
         for (int i = 0; i < LANE_MAX; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used || ln->n <= 0) continue;
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst))) continue;
             /* A DELETED CLIP'S LOCKS ARE NOT THIS CLIP'S LOCKS.
              *
              * Deleting a clip ORPHANS its lanes rather than deleting them, so
@@ -1208,12 +1541,40 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     if (strcmp(sub, "plock_refused") == 0) {
         static const char *names[] = {
-            "ok", "bad_request", "no_clip", "unknown_param", "store_full"
+            "ok", "bad_request", "no_clip", "unknown_param", "store_full",
+            "disabled"
         };
+        /* The table and the enum are one fact in two places, so the build is
+         * what keeps them equal rather than the next reader. */
+        _Static_assert(sizeof(names) / sizeof(names[0]) == LANE_PLOCK_REASON_COUNT,
+                       "every LANE_PLOCK_* reason needs a name");
         int r = inst->lanes_plock_refusal;
-        if (r < 0 || r > LANE_PLOCK_STORE_FULL) r = LANE_PLOCK_BAD_REQUEST;
+        if (r < 0 || r >= LANE_PLOCK_REASON_COUNT) r = LANE_PLOCK_BAD_REQUEST;
         return snprintf(buf, buf_len, "%d %s", r, names[r]);
     }
+
+    /* Provisional takes the last `lanes:state` replaced — see lane_apply_state.
+     * A snapshot cannot hold them, so a recall inside Move's save window drops
+     * the take just made, and this is the number the UI can say out loud. */
+    /* Whether a WRITE may use the row `clip` reports. Readable because the
+     * difference between "the clear did nothing" and "the clear went to the
+     * placeholder" is invisible otherwise, and both look like a dead gesture
+     * from outside. */
+    /* The row a WRITE is keyed to, which is NOT always the row `clip` names. */
+    if (strcmp(sub, "write_row") == 0)
+        return snprintf(buf, buf_len, "%d", lane_write_slot(inst));
+
+    if (strcmp(sub, "enabled") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_enabled ? 1 : 0);
+
+    if (strcmp(sub, "discarded") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_discarded);
+
+    /* How many lanes the store holds that a snapshot could not capture, asked
+     * BEFORE taking one so the snapshot itself can report it. */
+    if (strcmp(sub, "unsaved") == 0)
+        return snprintf(buf, buf_len, "%d",
+                        lane_store_provisional_count(&inst->lanes));
 
     if (strcmp(sub, "undone") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_undone);
@@ -1273,6 +1634,15 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * `lanes:driving`, which is one count of both. This reports them per lane
      * beside the transport phase they are compared against, so the extra-loop
      * report can be attributed rather than guessed at. Read-only; no state. */
+    /* The clip phase alone, for callers that want it without formatting every
+     * lane the way `diag` does. It is what established that Move's notes
+     * arrive EXACTLY on the step boundaries (ph=0.000000, 1.000000, 1.500000,
+     * 3.000000) -- the measurement behind lane_lookahead.h being one block of
+     * lead rather than a tuned constant. */
+    if (strcmp(sub, "phase") == 0)
+        return snprintf(buf, buf_len, "%.6f",
+                        inst->clip_phase_valid ? inst->clip_phase_beats : -1.0);
+
     if (strcmp(sub, "diag") == 0) {
         int off = snprintf(buf, buf_len,
                            "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d",

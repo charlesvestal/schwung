@@ -37,6 +37,19 @@
 #include "shadow_chain_mgmt.c"
 #include "step_strip.h"
 
+/* No worker in this fixture, so nothing ever "newly appeared" and nothing is
+ * selected: both answer "not known", which keeps shadow_slot_clip_phase on the
+ * path it took before those signals existed. */
+/* SETTABLE, because the ladder's exit from the blind state depends on it: the
+ * worker publishes the row that newly appeared in Song.abl, and with this
+ * nailed to -1 the fixture could only ever exercise the blind half — which is
+ * exactly why the whole ladder went unpinned. -1 = nothing appeared. */
+static int fake_new_slot[CLIP_TRACKS] = { -1, -1, -1, -1 };
+int shadow_clip_new_slot(int track) {
+    if (track < 0 || track >= CLIP_TRACKS) return -1;
+    return fake_new_slot[track];
+}
+
 static int failures = 0;
 static int checks = 0;
 
@@ -144,6 +157,31 @@ static void reset_world(void) {
  * legitimately produce -- so "left untouched" is distinguishable from "written
  * with the right answer", which is what Finding 3 was about. */
 #define POISON 424242.0
+
+/* Paint an N-bar strip for `track` through the REAL decoder and its two-frame
+ * confirmation, the same way the saved-clip case above does. */
+static void paint_strip(int track, int bars) {
+    static uint8_t fb[1024];
+    memset(fb, 0, sizeof(fb));
+    const int X0 = 1, X1 = 126;
+    int usable = (X1 - X0 + 1) - 2 * (bars - 1);
+    int base = usable / bars, rem = usable % bars, x = X0;
+    for (int i = 0; i < bars; i++) {
+        int w = base + (i < rem ? 1 : 0);
+        for (int c = x; c < x + w; c++) {
+            fb[(59 / 8) * 128 + c] |= (uint8_t)(1u << (59 % 8));
+            if (i == 0) {
+                fb[(58 / 8) * 128 + c] |= (uint8_t)(1u << (58 % 8));
+                fb[(60 / 8) * 128 + c] |= (uint8_t)(1u << (60 % 8));
+            }
+        }
+        x += w + 2;
+    }
+    step_strip_reset();
+    step_strip_observe(fb, track);
+    step_strip_observe(fb, track);
+}
+
 static int call(int slot, double *ph, double *len, int *cs, int *fpv,
                 double *fp) {
     *ph = POISON;
@@ -492,6 +530,69 @@ int main(void) {
     fake_regions.slots[0][3].is_playing = 1;
     rc = call(0, &ph, &len, &cs, &fpv, fp);
     CHECK(cs == 1, "the playing clip 1 must win over the selected 3, got %d", cs);
+
+    printf("\nthe selection ladder: a new clip on a POPULATED track\n");
+    {
+        /* This was the worst defect in the feature and nothing pinned it. The
+         * ambiguity gate counts clips IN THE FILE, which cannot see a clip
+         * made seconds ago — so one old clip plus one new one counted as
+         * "unambiguous" and every p-lock was keyed to the OLD clip, silently.
+         * Measured on hardware as four of five permutations writing to the
+         * wrong clip. The fixture stubbed the two new signals to "nothing",
+         * with a comment saying it kept the resolver on its pre-fix path. */
+        reset_world();
+        set_region(1, 2, 0.0, 4.0);  set_region_notes(1, 2, 4, 36);
+        set_region(1, 5, 0.0, 4.0);  set_region_notes(1, 5, 4, 38);
+        set_track(1, 0, -1, 0, 0);          /* no identity, nothing playing */
+        paint_strip(1, 1);                  /* a clip IS being edited */
+
+        /* An EMPTY slot is selected — a clip is being made. The row must be
+         * the placeholder, never one of the two clips already in the file. */
+        fake_state.tracks[1].selected_slot = CLIP_SEL_EMPTY;
+        rc = call(1, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == LANE_SLOT_PENDING,
+              "an empty-slot selection resolved to row %d — a p-lock would "
+              "land on an existing clip", cs);
+        CHECK(fpv == 0, "the placeholder came with a fingerprint (fpv=%d)", fpv);
+
+        /* A POSITIVELY NAMED ROW IS NOT TRUSTED EITHER: Move paints the same
+         * colour on more than one pad, and naming a row put the contamination
+         * back through another door — it answered slot 2 while the user was
+         * elsewhere, the file had a clip at 2, and the lock landed on it. */
+        fake_state.tracks[1].selected_slot = 2;
+        rc = call(1, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == LANE_SLOT_PENDING,
+              "a decoded selection was used to NAME row %d", cs);
+
+        /* AND THE BLIND STATE HAS TO END, or the pending lane never adopts —
+         * which is how every permutation on a clean track failed. */
+        set_region(1, 6, 0.0, 4.0);  set_region_notes(1, 6, 4, 40);
+        fake_new_slot[1] = 6;
+        rc = call(1, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == 6, "the file caught up and the row is still %d", cs);
+        /* IDENTITY YES, PHASE NO. Nothing is playing, so there is no anchor —
+         * and rc == 0 with a valid fingerprint is exactly the tri-state this
+         * resolver exists to keep: "we know WHICH clip, not WHERE in it".
+         * Expecting rc == 1 here was the test being wrong, not the code. */
+        CHECK(rc == 0 && fpv == 1,
+              "the newly-named row came without an identity (rc=%d fpv=%d)",
+              rc, fpv);
+        fake_new_slot[1] = -1;
+
+        /* NOTHING ON SCREEN: with no strip there is no clip being edited to
+         * contradict the file, so its answer is used exactly as before. */
+        step_strip_reset();
+        reset_world();
+        set_region(1, 3, 0.0, 4.0);  set_region_notes(1, 3, 4, 36);
+        fake_regions.slots[1][3].is_playing = 1;
+        set_track(1, 0, -1, 0, 0);
+        fake_state.tracks[1].selected_slot = -1;
+        rc = call(1, &ph, &len, &cs, &fpv, fp);
+        CHECK(cs == 3,
+              "with one clip and no strip the file's answer was dropped "
+              "(cs=%d)", cs);
+        step_strip_reset();
+    }
 
     if (failures == 0) {
         printf("PASS: shadow_slot_clip_phase (%d checks)\n", checks);

@@ -2144,6 +2144,54 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
+
+                /* AND WHETHER A WRITE MAY USE THAT ROW.
+                 *
+                 * The row above is the PLAYING clip; a p-lock wants the clip
+                 * on screen. When a clip plays while the user edits a new
+                 * one, those differ and the lock landed on the playing clip.
+                 * Carried as a param rather than a new argument, because this
+                 * hand-off crosses the dlsym'd seam and appending to it is
+                 * what boot-looped a device once already.
+                 *
+                 * ON CHANGE ONLY: a per-block write would serve a param
+                 * request on every frame, which is the cost this file avoids
+                 * everywhere else. */
+                /* THE KILL SWITCH, pushed on change like everything else
+                 * here. Off by default: see SHIM_FLAG_LANES_ON. */
+                if (shadow_plugin_v2->set_param) {
+                    static int8_t last_en[SHADOW_CHAIN_INSTANCES];
+                    static int8_t en_seen[SHADOW_CHAIN_INSTANCES];
+                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_ON) ? 1 : 0;
+                    if (s < SHADOW_CHAIN_INSTANCES &&
+                        (!en_seen[s] || last_en[s] != en)) {
+                        last_en[s] = (int8_t)en;
+                        en_seen[s] = 1;
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:enabled", en ? "1" : "0");
+                    }
+                }
+
+                /* THE ROW A BLIND TAKE SHOULD ADOPT ONTO. Published by the
+                 * worker as the row that newly appeared in Song.abl, which is
+                 * the clip the user just made — as against the PLAYING row,
+                 * which is what adoption used and which belongs to a
+                 * different clip whenever something else is playing. */
+                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
+                    static uint32_t last_new_gen[SHADOW_CHAIN_INSTANCES];
+                    const uint32_t g = shadow_clip_new_generation();
+                    if (s < SHADOW_CHAIN_INSTANCES && last_new_gen[s] != g) {
+                        last_new_gen[s] = g;
+                        /* -1 IS FORWARDED TOO. The clear is the half that
+                         * matters: a row left standing from an old parse is
+                         * confidently wrong, and adoption would take it over
+                         * the clip the user just made. */
+                        char v[8];
+                        snprintf(v, sizeof(v), "%d", shadow_clip_new_slot(s));
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:new_row", v);
+                    }
+                }
             }
 
             /* Move's Record button, decoded from its LED (rec_arm.h). ON
@@ -2179,7 +2227,22 @@ static void shadow_inprocess_render_to_buffer(void) {
              * indistinguishable from one that simply failed. The flag is
              * consumed here, once per slot, because the gesture is a moment
              * and this loop is where a slot's instance is in hand. */
-            if (shadow_plugin_v2->set_param && lane_double_now)
+            /* ...AND ONLY ON THE TRACK MOVE ACTUALLY DOUBLED.
+             *
+             * This pushed to every slot in the loop, so one Shift+Step 15
+             * doubled the lanes of all FOUR tracks. The three that were not
+             * doubled got duplicate points one loop-length past their own
+             * window — dormant, and therefore invisible, until that clip is
+             * lengthened for its own reasons, at which point automation
+             * nobody recorded plays in the new bars.
+             *
+             * Move's gesture acts on the SELECTED track, which the shim
+             * already decodes for the strip observer (clip_selected_track).
+             * A track it cannot name doubles nothing, which is the right
+             * direction to fail in: a missed double is a gesture to repeat,
+             * a spurious one is automation that appears weeks later. */
+            if (shadow_plugin_v2->set_param && lane_double_now &&
+                clip_selected_track() == (int)s)
                 shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                             "lanes:double", "1");
 

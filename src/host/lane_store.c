@@ -469,7 +469,27 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * that differ by a bar. */
     if (!isfinite(recorded_len) || recorded_len <= 0.0) return 0;
     if (!isfinite(now_len) || now_len <= 0.0) return 0;
-    if (fabs(recorded_len - now_len) > 0.5) return 0;
+    /* A LENGTHENED CLIP IS STILL THE SAME CLIP.
+     *
+     * Equality alone refused Double Loop outright: the gesture doubles the
+     * clip, so a take recorded against 4 quarters met a clip of 8 and the
+     * lane stayed PENDING for good -- measured, `adopt=0 slot=-2`, and on the
+     * device it presented as the locks on a just-doubled new clip never
+     * playing.
+     *
+     * An integer MULTIPLE is accepted because that is what the lengthening
+     * gestures produce (Double Loop doubles; adding bars repeats), and
+     * because it barely widens the gate this check exists for: it stops a
+     * clip deleted and REMADE inside the save window inheriting the take, and
+     * a remade clip takes the DEFAULT length, which the old rule already
+     * accepted as equal. The take's points sit in the first repeat either
+     * way.
+     *
+     * Only LONGER. A clip shorter than the take is not this take's clip. */
+    const double mult = now_len / recorded_len;
+    const double near = mult - (double)(long)(mult + 0.5);
+    if (now_len + 0.5 < recorded_len) return 0;
+    if (fabs(recorded_len - now_len) > 0.5 && fabs(near) > 0.01) return 0;
     /* THE IDENTITY COMES WITH THE ROW, and only once the length has agreed.
      *
      * A gesture made blind has an ABSENT fingerprint -- there were no notes to
@@ -483,10 +503,11 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * no longer absent and the real clip could never bind. One gate, one
      * decision.
      *
-     * NO RE-ORIGIN, which is what makes this different from
-     * lane_adopt_fingerprint: a blind p-lock's phase came from the bar on
-     * Move's own strip and is already true clip time, so moving it would take
-     * the lock off the step that was pressed. */
+     * IT DOES RE-ORIGIN, and the comment that used to sit here said the
+     * opposite: "a blind p-lock's phase came from the bar on Move's own strip
+     * and is already true clip time". That is true only when the origin is 0,
+     * which is precisely what a blind clip cannot tell us — see the shift
+     * below. */
     /* BOTH HALVES, OR NEITHER. `slot_pending` is the only licence this lane
      * has to take an identity, and clearing it while the fingerprint is still
      * absent shuts the door behind it forever: lane_tick's adopt-on-edit
@@ -507,6 +528,33 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * still pending, exactly as before.) */
     if (lane_fp_absent(&ln->fp)) {
         if (!now_fp || lane_fp_absent(now_fp)) return 0;
+
+        /* RE-ORIGIN, because the take was stored against an ASSUMED origin.
+         *
+         * A blind clip has no `loop.start` to read, so chain_set_clip_phase
+         * hands the write side 0 and every point is laid down in 0-space. If
+         * the clip's real window does not start at bar 1, those phases are
+         * outside it — and lane_eval only plays points INSIDE the window, so
+         * the take is silent for good. Measured: a lock written at 1.5 on a
+         * clip whose window starts at 4 evaluates to nothing.
+         *
+         * The old comment here said a blind p-lock's phase "came from the bar
+         * on Move's own strip and is already true clip time". That holds only
+         * while the origin is 0, which is the very thing we could not read.
+         *
+         * Shifted once, on the single transition from "no identity" to "this
+         * clip", so it cannot be applied twice: `lane_fp_absent` is false
+         * afterwards and this branch is the only caller. A zero start leaves
+         * every phase untouched, which is the common case and stays exact. */
+        const double origin = now_fp->loop_start;
+        if (isfinite(origin) && origin != 0.0) {
+            for (int i = 0; i < ln->n; i++) {
+                if (!isfinite(ln->pts[i].phase)) continue;
+                ln->pts[i].phase += origin;
+            }
+            ln->reorigined++;
+        }
+
         ln->fp = *now_fp;
         ln->stale = 0;
         ln->adopted++;
@@ -577,7 +625,13 @@ int lane_double(lane_t *ln, double loop_start, double loop_len) {
     int copied = 0;
     for (int i = 0; i < n; i++) {
         if (ln->n >= LANE_POINTS_MAX) break;   /* as much as fits, in order */
-        lane_write(ln, src[i].phase + loop_len, src[i].value, src[i].hold);
+        /* SPAN CARRIED. The 4-argument form leaves `span` 0, which MEANS
+         * "hold until the next point" -- so the doubled half's p-locks
+         * widened from one step to the rest of the bar while the original
+         * half stayed correct, and the two halves of a doubled loop stopped
+         * sounding the same. That is the whole promise of Double Loop. */
+        lane_write_span(ln, src[i].phase + loop_len, src[i].value,
+                        src[i].hold, src[i].span);
         copied++;
     }
     return copied;

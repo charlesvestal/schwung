@@ -172,6 +172,38 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * Identity only. The PHASE still comes from a played clip's anchor, and
      * "selected but never played" has no phase -- which is correct and is
      * what the tri-state below already reports. */
+    /* The screen says a clip is selected that the FILE does not have: a clip
+     * made in the last few seconds. Raised below and consumed by the blind
+     * branch, which is the one honest answer for it. */
+    int screen_says_new_clip = 0;
+
+    /* A CLIP IS PLAYING AND A DIFFERENT ONE MAY BE UNDER EDIT.
+     *
+     * `cslot` at this point is the PLAYING clip. Move's bar strip says a clip
+     * is being edited, and the pad decode cannot confirm the two are the same
+     * — so a WRITE must not take this row. Measured: with a clip playing on
+     * row 7, p-locks aimed at a brand-new clip were keyed to row 7.
+     *
+     * Playback is untouched: it still gets the playing row, which is the
+     * question it is asking. */
+    /* NO `edit_unconfirmed`, and it is removed rather than tuned.
+     *
+     * It withheld the row from a WRITE when the screen said a different clip
+     * was being edited, to stop a p-lock landing on the playing clip. The
+     * signal cannot support it: clip_state decodes the selection from SESSION
+     * pad LEDs, and Move paints none in NOTE view — which is the only view a
+     * p-lock happens in. So the answer is always a LATCH from whenever the
+     * user was last in Session view, and acting on it withheld the row from
+     * gestures aimed squarely at the playing clip. Measured: `write_row=-2
+     * unconf=1` with the lane plainly on row 0, and `clear_param` reporting
+     * success having removed nothing.
+     *
+     * A rule that can only ever fire on stale data is not a rule. The
+     * new-clip case it was meant to serve is covered where it belongs: when
+     * the clip is not in the file the resolver answers with the PENDING
+     * placeholder and the write keys to that, with no guess about selection
+     * involved. */
+
     if (cslot < 0) {
         /* THE FILE'S ANSWER IS ONLY USABLE WHEN IT CANNOT BE AMBIGUOUS.
          *
@@ -195,13 +227,83 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
          * we say so rather than guess. A refused p-lock names its reason; a
          * p-lock on the wrong clip is silent, wrong, and contaminates a clip
          * the user never touched. */
-        int clips_on_track = 0;
-        if (rg && rg->valid) {
-            for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
-                if (rg->slots[slot][cs2].exists) clips_on_track++;
+        /* ASK THE SCREEN FIRST. Move paints the selected clip in a colour no
+         * other pad on that track has, and clip_state decodes it relatively
+         * (clip_state_selected_slot). That is POSITIVE EVIDENCE of the clip
+         * being edited, and it is exactly what the file cannot supply for a
+         * clip made seconds ago.
+         *
+         * Without it this fell through to the file's stale `isPlaying`, and
+         * the ambiguity gate below counts clips IN THE FILE -- which cannot
+         * see a new clip at all. So one old clip plus one brand-new one
+         * counted as "one clip, nothing to be wrong about" and every p-lock
+         * aimed at the new clip was keyed to the OLD one. Measured
+         * 2026-09-17: four of five new-clip permutations wrote to another
+         * clip's row, silently.
+         *
+         * A selected row the file does not know is a NEW clip, which is
+         * precisely what the PENDING placeholder is for -- so say so, instead
+         * of naming somebody else's row. */
+        /* THE FILE CAUGHT UP — ASKED FIRST, and the order is the bug this
+         * replaces. This test used to sit AFTER the selection branch, which
+         * had already raised `screen_says_new_clip`, so the exit never ran:
+         * the row stayed the placeholder for good and the pending lane never
+         * adopted. Caught by tests/host, not on the device.
+         *
+         * Once the worker says a row newly appeared and the file has it, that
+         * row IS the answer — there is nothing blind left to be honest about. */
+        const int made = shadow_clip_new_slot((int)slot);
+        if (made >= 0 && rg && rg->valid && rg->slots[slot][made].exists)
+            cslot = made;
+
+        /* NO SELECTION DECODE HERE, and it was removed rather than left
+         * looking load-bearing.
+         *
+         * A decode of the pads' base colour sat here — first NAMING a row,
+         * then (after that put the contamination back through another door)
+         * used only negatively, then special-casing an empty slot. Every one
+         * of those reduced to the SAME answer as the rule below: if Move's
+         * strip says a clip is being edited and the file cannot identify it,
+         * the honest row is the placeholder. Proven by removing the whole
+         * block with every test still green.
+         *
+         * The decode is kept (clip_state_selected_slot, tested in
+         * test_clip_state.c) because `g_edit_unconfirmed` above genuinely
+         * needs it: that is what stops a WRITE taking the playing row while
+         * a different clip is being edited. Here it decided nothing. */
+        if (cslot < 0 && !screen_says_new_clip) {
+            /* NO POSITIVE IDENTIFICATION. Two ways out, and the order matters.
+             *
+             * If Move's bar strip says a clip is being EDITED, then a clip
+             * exists on this track that we cannot name -- which is exactly
+             * what the PENDING placeholder means. Naming a DIFFERENT clip
+             * here is the failure this whole area has been chasing: measured
+             * 2026-09-17, four of five new-clip permutations wrote their
+             * p-locks onto another clip's row, silently, because the file's
+             * answer was taken when the file could not see the clip in front
+             * of the user.
+             *
+             * PENDING is strictly better than that. It is honest, it plays
+             * during the window, and lane_adopt_slot binds it to the real row
+             * the moment Song.abl names one. The cost is that identity waits
+             * for the file; the alternative is being confidently wrong about
+             * somebody else's clip, which is silent and permanent.
+             *
+             * The file's answer is still used when there is nothing on screen
+             * to contradict it -- no strip, so no clip being edited -- and
+             * only when it cannot be ambiguous. */
+            if (step_strip_segments_for_track((int)slot) > 0) {
+                screen_says_new_clip = 1;
+            } else {
+                int clips_on_track = 0;
+                if (rg && rg->valid) {
+                    for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
+                        if (rg->slots[slot][cs2].exists) clips_on_track++;
+                }
+                if (clips_on_track == 1)
+                    cslot = clip_regions_selected_slot(rg, (int)slot);
+            }
         }
-        if (clips_on_track == 1)
-            cslot = clip_regions_selected_slot(rg, (int)slot);
     }
     /* NEITHER SOURCE KNOWS THE ROW, AND THE SCREEN DOES.
      *
@@ -236,7 +338,12 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
         for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
             if (rg->slots[slot][cs2].exists) { track_has_clip_in_file = 1; break; }
     }
-    if (cslot < 0 && !track_has_clip_in_file &&
+    /* `screen_says_new_clip` widens this to a POPULATED track, and only on
+     * positive evidence: Move painted a selection on a row the file does not
+     * have. Without it the blind branch was reachable only for a track with
+     * no clips at all, so every new clip on a track that already had one fell
+     * through to another clip's row. */
+    if (cslot < 0 && (!track_has_clip_in_file || screen_says_new_clip) &&
         step_strip_segments_for_track((int)slot) > 0) {
         int segs = step_strip_segments_for_track((int)slot);
         double qpb = clip_regions_quarters_per_bar(rg, (int)slot, -1);
@@ -3888,11 +3995,6 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                 "lanes:plock", fwd);
     shadow_lanes_plock_confirm(slot);
-    /* The press is SPENT: it wrote a lock, so its release must not also be
-     * replayed to Move as a tap. A gesture under STEP_TAP_MS otherwise both
-     * locked a value and toggled the note off. */
-    shim_step_note_plock_key(key);
-    shim_step_mark_used(step);
     /* DID IT LAND? The caller suppresses the live write on a 1, so a refused
      * p-lock must never report one: an unknown parameter or a full store would
      * otherwise turn a knob into a dead knob -- no lock, no sound, no reason.
@@ -3900,7 +4002,22 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     char landed[8] = {0};
     int ln = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                                          "lanes:plocked", landed, sizeof(landed));
-    return (ln > 0 && landed[0] == '1');
+    if (!(ln > 0 && landed[0] == '1')) return 0;
+
+    /* THE PRESS IS SPENT, AND ONLY NOW.
+     *
+     * It wrote a lock, so its release must not also be replayed to Move as a
+     * tap -- a gesture under STEP_TAP_MS otherwise both locked a value and
+     * toggled the note off. But these two ran BEFORE the answer above, so a
+     * REFUSED lock spent the press as well: the knob correctly kept working
+     * and the step silently did not toggle its note. One gesture, two
+     * consumers, and the half that failed took the other half's input with
+     * it. Every refusal now leaves the press to Move, which is what a
+     * disarmed build needs to be genuinely inert and what an unknown
+     * parameter or a full store needed all along. */
+    shim_step_note_plock_key(key);
+    shim_step_mark_used(step);
+    return 1;
 }
 
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {

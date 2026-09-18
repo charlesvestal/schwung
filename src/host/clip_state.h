@@ -129,7 +129,23 @@ extern "C" {
 #define CLIP_ANCHOR_LAUNCH  2   /* a launch we witnessed                    */
 #define CLIP_ANCHOR_DERIVED 3   /* solved from Move's playhead + page       */
 
+/* `selected_slot` when Move's row shows NO clip selected — the user is on an
+ * EMPTY slot, which is how a new clip is made. Distinct from -1 ("we do not
+ * know"), because it is a positive observation and the two lead to opposite
+ * decisions: unknown falls back to the file, empty must NOT. */
+#define CLIP_SEL_EMPTY (-2)
+
+/* How long a row repaint may take, in transport pulses. Selecting a clip
+ * repaints the whole row within a couple of frames; anything older is a
+ * DIFFERENT picture and must not vote. Generous against the repaint, far
+ * short of anything a user could do in between. */
+#define CLIP_SEL_BURST_PULSES 24
+
 #define CLIP_UI_MODE_SESSION 1
+
+/* The selected clip on `track`, or -1 when it is not known. See
+ * clip_track_state_t::selected_slot -- this is the SELECTED clip, which is a
+ * different question from the playing one. */
 
 #define CLIP_CH_PLAYING 9
 #define CLIP_CH_QUEUED  14
@@ -144,6 +160,28 @@ typedef struct {
      * against -- so scoring a derived anchor is partly circular and must be
      * told apart from an anchor a Start or a launch produced independently. */
     int      anchor_source;   /* CLIP_ANCHOR_* */
+    /* WHICH CLIP IS SELECTED, decoded from the pads' BASE COLOUR.
+     *
+     * Not the same question as which clip is PLAYING, and conflating them is
+     * what sent a p-lock to the wrong clip: the write path wants the clip on
+     * SCREEN, the playback path wants the one sounding. `clip_slot` above
+     * answers the second; this answers the first.
+     *
+     * Decoded RELATIVELY and never from a constant. Move paints a track's row
+     * in per-track colour indices -- measured 2026-09-17: track 0 idle 17,
+     * selected 98 with nothing playing and 122 with a clip playing, while
+     * track 1 used 112/24 entirely. A decoder keyed on any of those numbers
+     * works on the track it was written against and misreads every other one,
+     * which is the trap this codebase already recorded for the "empty step"
+     * value.
+     *
+     * -1 = not known. An ambiguous repaint leaves it alone rather than
+     * guessing, because a wrong answer here silently edits somebody else's
+     * clip. */
+    int      selected_slot;
+    uint8_t  base_val[CLIP_SLOTS];   /* last base colour seen, per slot */
+    uint8_t  base_seen;              /* bitmask of slots with a base colour */
+    uint32_t base_pulse[CLIP_SLOTS]; /* when each was painted */
 } clip_track_state_t;
 
 typedef struct {
@@ -421,3 +459,7 @@ int clip_selected_track(void);
 }
 #endif
 #endif /* CLIP_STATE_H */
+
+/* The SELECTED clip on `track`, or -1 when not known — a different question
+ * from which clip is PLAYING. See clip_track_state_t::selected_slot. */
+int clip_state_selected_slot(const clip_state_t *st, int track);

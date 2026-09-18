@@ -417,6 +417,94 @@ int main(void) {
         }
     }
 
+    /* A PROVISIONAL LANE MUST NOT ROUND-TRIP.
+     *
+     * `slot` can be LANE_SLOT_PENDING (-2) during Move's ~10 s save window.
+     * Writing it produced a lane that reloaded keyed to -2 with its
+     * runtime-only `slot_pending` latch clear and its fingerprint absent —
+     * nothing could re-key it and nothing marks it stale (stale is only set
+     * where the fingerprint is valid, which the blind window is not). The
+     * next blind window on that track resolves to -2, the key matches, and
+     * last session's automation plays on a stranger's clip. Silent, and the
+     * one outcome this design forbids. */
+    {
+        lane_store_t ps; memset(&ps, 0, sizeof(ps));
+        lane_fingerprint_t pfp = { 0 }; pfp.first_note = -1;   /* absent */
+        lane_t *pl = lane_alloc(&ps, "synth", "ht_c_tune", 0,
+                                LANE_SLOT_PENDING, &pfp);
+        CHECK(pl != NULL, "pending lane_alloc refused");
+        lane_write(pl, 1.5, 0.5f, 0);
+
+        /* ...alongside an ordinary lane, so this proves the pending one is
+         * SKIPPED rather than that serialization simply failed. */
+        lane_fingerprint_t ok = { 0 }; ok.first_note = 36; ok.note_count = 4;
+        ok.loop_len = 4.0;
+        lane_t *keep = lane_alloc(&ps, "synth", "sd_c_tune", 0, 3, &ok);
+        CHECK(keep != NULL, "ordinary lane_alloc refused");
+        lane_write(keep, 0.5, 0.25f, 0);
+
+        char pbuf[4096];
+        int pn = lane_store_serialize(&ps, pbuf, sizeof(pbuf));
+        CHECK(pn > 0, "serializing a store with a pending lane failed");
+
+        lane_store_t back; memset(&back, 0, sizeof(back));
+        CHECK(lane_store_deserialize(&back, pbuf) >= 0, "parse of that document failed");
+
+        int pending_back = 0, ordinary_back = 0;
+        for (int i2 = 0; i2 < LANE_MAX; i2++) {
+            if (!back.lanes[i2].used) continue;
+            if (lane_slot_is_pending(back.lanes[i2].slot)) pending_back++;
+            else ordinary_back++;
+        }
+        CHECK(pending_back == 0,
+              "a PENDING lane round-tripped (%d came back) — it will match the "
+              "next blind window and play on a stranger's clip", pending_back);
+        CHECK(ordinary_back == 1,
+              "the ordinary lane did not survive (%d back) — the skip is too "
+              "wide", ordinary_back);
+    }
+
+    /* A BLIND TAKE THAT KNOWS ITS ROW MUST ALSO NOT BE WRITTEN.
+     *
+     * The row and the identity arrive by different routes: a clip seen in
+     * Session view gives a REAL row while Move still has not written the clip,
+     * so the take has slot >= 0 with an ABSENT fingerprint. Written, it
+     * reloads with its runtime latches gone and lands on stale = 1 on every
+     * tick — retained, silent, forever — and squats on the key, so a later
+     * take records into it and the fingerprint stamp revives it WITH the old
+     * points. */
+    {
+        lane_store_t bs; memset(&bs, 0, sizeof(bs));
+        lane_fingerprint_t absent = { 0 }; absent.first_note = -1;
+        lane_t *bl = lane_alloc(&bs, "synth", "cr_decay", 1, 4, &absent);
+        CHECK(bl != NULL, "blind-but-rowed lane_alloc refused");
+        lane_write(bl, 2.0, 0.4f, 0);
+
+        lane_fingerprint_t ok2 = { 0 }; ok2.first_note = 38; ok2.note_count = 3;
+        ok2.loop_len = 4.0;
+        lane_t *keep2 = lane_alloc(&bs, "synth", "hh_decay", 1, 4, &ok2);
+        CHECK(keep2 != NULL, "identified lane_alloc refused");
+        lane_write(keep2, 1.0, 0.6f, 0);
+
+        char bbuf[4096];
+        CHECK(lane_store_serialize(&bs, bbuf, sizeof(bbuf)) > 0,
+              "serializing the blind-but-rowed store failed");
+        lane_store_t back2; memset(&back2, 0, sizeof(back2));
+        CHECK(lane_store_deserialize(&back2, bbuf) >= 0, "parse failed");
+
+        int absent_back = 0, ident_back = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) {
+            if (!back2.lanes[i3].used) continue;
+            if (lane_fp_absent(&back2.lanes[i3].fp)) absent_back++;
+            else ident_back++;
+        }
+        CHECK(absent_back == 0,
+              "a lane with an ABSENT fingerprint round-tripped (%d back) — it "
+              "reloads permanently stale and squats on its key", absent_back);
+        CHECK(ident_back == 1,
+              "the identified lane did not survive (%d back)", ident_back);
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane state round-trip\n");
     return 0;

@@ -1293,6 +1293,170 @@ int main(void) {
                   "a lane that never recorded blind was re-keyed");
     }
 
+    /* WHICH ROW A LANE IS MATCHED AGAINST — lane_effective_slot.
+     *
+     * The defect: an unknown row (-1) was compared as if it were a row, so
+     * "we cannot name the clip" silenced lanes exactly like "a different clip
+     * is playing". */
+    CHECK(lane_effective_slot(3, 5) == 3,
+          "a known row did not win over the remembered one");
+    CHECK(lane_effective_slot(-1, 5) == 5,
+          "an unknown row did not fall back to the last known one");
+    /* PENDING is the row of a clip Move has not written yet. It must be held
+     * like any other answer, or leaving that track stops its automation. */
+    CHECK(lane_effective_slot(-1, LANE_SLOT_PENDING) == LANE_SLOT_PENDING,
+          "a pending row was not held when the row went unknown");
+    CHECK(lane_effective_slot(LANE_SLOT_PENDING, 4) == LANE_SLOT_PENDING,
+          "a live pending row was overridden by the remembered one");
+    /* Nothing ever known: stay unknown rather than inventing row 0, which is
+     * a real row and would play its automation unasked. */
+    CHECK(lane_effective_slot(-1, -1) == -1,
+          "an unknown row with nothing remembered invented a row");
+
+    /* DOUBLE LOOP MUST CARRY THE SPAN.
+     *
+     * `lane_write`'s 4-argument form leaves span 0, and span 0 MEANS "hold
+     * until the next point" — the legacy behaviour the span field was added
+     * to replace. So the doubled half's p-locks widened from one step to the
+     * rest of the bar while the original half stayed correct, and the two
+     * halves of a doubled loop stopped sounding the same, which is the entire
+     * promise of the gesture. */
+    {
+        lane_store_t ds; memset(&ds, 0, sizeof(ds));
+        lane_fingerprint_t dfp = { 0 }; dfp.first_note = 36; dfp.note_count = 2;
+        lane_t *dl = lane_alloc(&ds, "synth", "ht_c_tune", 0, 0, &dfp);
+        CHECK(dl != NULL, "lane_alloc refused for the double test");
+        /* a p-lock: a held point with a SPAN of one sixteenth */
+        lane_write_span(dl, 1.5, 0.75f, 1, 0.25);
+        const int before = dl->n;
+        const int made = lane_double(dl, 0.0, 4.0);
+        CHECK(made == 1, "lane_double copied %d points, wanted 1", made);
+        CHECK(dl->n == before + 1, "lane_double did not append one point");
+
+        /* find the copy — one loop later */
+        int found = -1;
+        for (int i2 = 0; i2 < dl->n; i2++)
+            if (fabs(dl->pts[i2].phase - 5.5) < 1e-9) { found = i2; break; }
+        CHECK(found >= 0, "the doubled point is not at phase 5.5");
+        if (found >= 0) {
+            CHECK(dl->pts[found].hold == 1,
+                  "the doubled point lost its hold flag");
+            CHECK(fabs(dl->pts[found].span - 0.25) < 1e-9,
+                  "the doubled point's span is %.4f, wanted 0.25 — span 0 means "
+                  "'hold to the next point', so this lock smears across the bar",
+                  dl->pts[found].span);
+        }
+    }
+
+    /* A LENGTHENED CLIP IS STILL THE SAME CLIP — lane_adopt_slot.
+     *
+     * The length check stops a clip deleted and REMADE inside Move's save
+     * window inheriting a take. Equality alone also refused DOUBLE LOOP,
+     * which doubles the clip: a take recorded against 4 quarters met a clip
+     * of 8 and the lane stayed PENDING for good — silent, permanent, and
+     * measured as the `double-loop` permutation failing. */
+    {
+        struct { const char *what; double rec, now; int want; } cs[] = {
+            { "same length",              4.0, 4.0, 1 },
+            { "Double Loop, 4 -> 8",      4.0, 8.0, 1 },
+            { "extended to three bars",   4.0, 12.0, 1 },
+            { "SHORTER than the take",    8.0, 4.0, 0 },
+            { "longer but not a multiple",4.0, 6.0, 0 },
+        };
+        for (unsigned i2 = 0; i2 < sizeof(cs)/sizeof(cs[0]); i2++) {
+            lane_store_t as; memset(&as, 0, sizeof(as));
+            lane_fingerprint_t absent = { 0 }; absent.first_note = -1;
+            lane_t *al = lane_alloc(&as, "synth", "ht_c_tune", 0,
+                                    LANE_SLOT_PENDING, &absent);
+            al->slot_pending = 1; al->pending_len = cs[i2].rec;
+            lane_write(al, 1.5, 0.5f, 0);
+            lane_fingerprint_t now = { 0 };
+            now.first_note = 36; now.note_count = 2; now.loop_len = cs[i2].now;
+            const int got = lane_adopt_slot(al, 0, 3, al->pending_len,
+                                            cs[i2].now, &now);
+            CHECK(got == cs[i2].want,
+                  "%s: adopt=%d wanted %d (rec %.1f, now %.1f) — a refusal "
+                  "leaves the lane PENDING for good",
+                  cs[i2].what, got, cs[i2].want, cs[i2].rec, cs[i2].now);
+        }
+    }
+
+    /* A BLIND TAKE MUST BE RE-ORIGINED ONTO THE CLIP'S REAL WINDOW.
+     *
+     * A clip Move has not written has no `loop.start` to read, so the write
+     * side is handed 0 and every point is laid down in 0-space. If the real
+     * window does not start at bar 1 those phases fall OUTSIDE it, and
+     * lane_eval only plays points inside — so the take was silent for good.
+     * Measured: a lock written at 1.5 on a clip whose window starts at 4
+     * evaluated to nothing. The comment on lane_adopt_slot asserted the
+     * opposite ("already true clip time"), which holds only when the origin
+     * is 0 — the one thing a blind clip cannot tell us. */
+    {
+        const double starts[] = { 0.0, 4.0, 8.0 };
+        for (unsigned i2 = 0; i2 < 3; i2++) {
+            const double st0 = starts[i2], len = 4.0;
+            lane_store_t rs; memset(&rs, 0, sizeof(rs));
+            lane_fingerprint_t absent3 = { 0 }; absent3.first_note = -1;
+            lane_t *rl = lane_alloc(&rs, "synth", "p", 0,
+                                    LANE_SLOT_PENDING, &absent3);
+            rl->slot_pending = 1; rl->pending_len = len;
+            lane_write_span(rl, 1.5, 0.75f, 1, 0.25);   /* stored in 0-space */
+
+            lane_fingerprint_t now3 = { 0 };
+            now3.first_note = 36; now3.note_count = 2;
+            now3.loop_start = st0; now3.loop_len = len;
+            CHECK(lane_adopt_slot(rl, 0, 3, rl->pending_len, len, &now3) == 1,
+                  "window at %.0f: adoption refused", st0);
+
+            float v = 0.0f;
+            CHECK(lane_eval(rl, st0 + 1.5, st0, len, 0, &v) == 1,
+                  "window at %.0f: the lock is outside the window — never "
+                  "heard", st0);
+            CHECK(fabs(v - 0.75f) < 1e-6,
+                  "window at %.0f: value %.3f, wanted 0.75", st0, v);
+            /* Exactly once, and not at all when the origin really is 0 — a
+             * second shift would move the lock off the step pressed. */
+            CHECK(rl->reorigined == (st0 != 0.0 ? 1 : 0),
+                  "window at %.0f: reorigined=%d", st0, rl->reorigined);
+        }
+    }
+
+    /* A LANE WITH A REAL ROW BUT NO FINGERPRINT MUST STILL BE ADOPTABLE.
+     *
+     * The row and the identity arrive by different routes: a clip seen PLAYING
+     * before Move saved it yields a real row with fp_valid 0 — which is what
+     * live-recording a new clip produces. Such a lane is adopted through
+     * lane_adopt_fingerprint, which refuses unless `origin_pending` is set;
+     * the p-lock path deliberately did not set it, on the belief that a lock's
+     * phase is "already true clip time". It is not: blind, the origin is
+     * assumed 0. So the lane fell to stale on every tick — retained, silent,
+     * forever, while writes kept landing. */
+    {
+        lane_store_t fs; memset(&fs, 0, sizeof(fs));
+        lane_fingerprint_t absent4 = { 0 }; absent4.first_note = -1;
+        lane_t *fl = lane_alloc(&fs, "synth", "p", 0, 4, &absent4);  /* REAL row */
+        CHECK(fl != NULL, "alloc refused");
+        fl->origin_pending = 1;                 /* what the write path now sets */
+        lane_write_span(fl, 1.5, 0.75f, 1, 0.25);
+
+        lane_fingerprint_t now4 = { 0 };
+        now4.first_note = 36; now4.note_count = 2;
+        now4.loop_start = 4.0; now4.loop_len = 4.0;
+        CHECK(lane_adopt_fingerprint(fl, &now4) == 1,
+              "a real-row blind lane was refused adoption — it goes stale and "
+              "silent for good");
+        float v = 0.0f;
+        CHECK(lane_eval(fl, 4.0 + 1.5, 4.0, 4.0, 0, &v) == 1 &&
+              fabs(v - 0.75f) < 1e-6,
+              "the adopted lock is not where the step was pressed (v=%.3f)", v);
+        CHECK(fl->origin_pending == 0, "the pending flag outlived its adoption");
+
+        /* AND NEVER TWICE. lane_adopt_slot stamps the fingerprint, after which
+         * this must refuse — a second shift would move the lock off its step. */
+        CHECK(lane_adopt_fingerprint(fl, &now4) == 0,
+              "an identified lane was re-origined a second time");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

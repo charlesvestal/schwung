@@ -112,6 +112,10 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
     { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
+    /* The lanes kill switch. Polled like the rest so arming it needs no
+     * restart, and so a user can turn the feature off again the moment it
+     * misbehaves. */
+    { "/data/UserData/schwung/lanes_on",             SHIM_FLAG_LANES_ON,     0 },
 };
 
 /* ---- SPI frame tally --------------------------------------------------- */
@@ -484,6 +488,16 @@ static volatile int      g_clip_copy_track = -1;
 static volatile int      g_clip_copy_src   = -1;
 static volatile int      g_clip_copy_dst   = -1;
 static volatile uint32_t g_clip_copy_gen;
+/* Per track, the row that newly appeared at the last re-parse, or -1. Handed
+ * to the chain so a blind take adopts onto the clip that was MADE rather than
+ * onto whatever happens to be playing. */
+static volatile int      g_clip_new_slot[CLIP_TRACKS] = { -1, -1, -1, -1 };
+static volatile uint32_t g_clip_new_gen;
+int shadow_clip_new_slot(int track) {
+    if (track < 0 || track >= CLIP_TRACKS) return -1;
+    return g_clip_new_slot[track];
+}
+uint32_t shadow_clip_new_generation(void) { return g_clip_new_gen; }
 
 uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
 uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
@@ -651,7 +665,28 @@ static void clip_regions_tick(void)
                     dst = s2; break;
                 }
             }
-            if (dst < 0) continue;
+            /* PUBLISH THE NEWLY-APPEARED ROW, whether or not it turns out
+             * to be a duplicate.
+             *
+             * A lane recorded blind carries the PENDING placeholder and has to
+             * be re-keyed when Song.abl finally names a row. It was handed
+             * `lane_clip_slot` — the clip that is PLAYING — so with one clip
+             * playing while the user made another, the take adopted onto the
+             * playing clip. The row that just APPEARED is the clip the user
+             * made, and this loop already knows it. */
+            /* CLEARED WHEN NOTHING NEW APPEARED, not only set when something
+             * did. Left standing, it went on naming a row from a parse long
+             * past, and the next blind take adopted onto THAT row instead of
+             * onto the clip just made — which is the same class of mistake as
+             * the stale `isPlaying` this whole area exists to stop trusting.
+             * A stale answer is worse than none, because none falls back to
+             * the playing row and a stale one is confidently wrong. */
+            if (t < CLIP_TRACKS) {
+                const int prev = g_clip_new_slot[t];
+                g_clip_new_slot[t] = dst;      /* dst is -1 when none appeared */
+                if (prev != dst) g_clip_new_gen++;
+            }
+            if (dst < 0) continue;   /* nothing new here: duplicate check skipped */
             const clip_region_t *d = &g_regions.slots[t][dst];
             for (int src = 0; src < CLIP_SLOTS; src++) {
                 if (src == dst || !before.slots[t][src].exists) continue;
@@ -1045,7 +1080,19 @@ static void clip_state_tick(void)
     const char *rec = !shadow_rec_arm_seen()  ? "?"     :
                       shadow_rec_arm_recording() ? "SOLID" :
                       shadow_rec_arm_flashing()  ? "FLASH" : "off";
-    fprintf(fp, "pul=%-7u rec=%-5s", pul, rec);
+    fprintf(fp, "pul=%-7u rec=%-5s ui=%d", pul, rec, cs->last_ui_mode);
+    /* THE DECODED SELECTION, per track, beside the playing clip — the two are
+     * different questions and the whole class of new-clip bugs came from
+     * answering one with the other. `sel=-1` is "not known" and `sel=E` is
+     * "an EMPTY slot is selected", which is how a new clip is made. */
+    fprintf(fp, " sel[");
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const int sv = cs->tracks[t].selected_slot;
+        if (sv == CLIP_SEL_EMPTY)  fprintf(fp, "E");
+        else if (sv < 0)           fprintf(fp, "?");
+        else                       fprintf(fp, "%d", sv + 1);
+    }
+    fprintf(fp, "]");
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);
