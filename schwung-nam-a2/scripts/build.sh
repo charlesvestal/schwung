@@ -92,6 +92,20 @@ echo "--- Phase 2: Compiling Nam A2 plugin ---"
 NA_LIB="build/neuralaudio/NeuralAudio/libNeuralAudio.a"
 RT_LIB=$(find build/neuralaudio -name "libRTNeural.a" | head -1)
 
+# Newer NeuralAudio versions declare the NeuralAudio CMake target as an
+# OBJECT library (no linkable .a of its own - just .o files under
+# CMakeFiles/NeuralAudio.dir/) rather than a STATIC one. Archive those
+# object files ourselves so Phase 2's direct g++ link line keeps working
+# whichever form the pinned deps/NeuralAudio checkout uses.
+if [ ! -f "$NA_LIB" ]; then
+    NA_OBJDIR="build/neuralaudio/NeuralAudio/CMakeFiles/NeuralAudio.dir"
+    NA_OBJS=$(find "$NA_OBJDIR" -name "*.o" 2>/dev/null)
+    if [ -n "$NA_OBJS" ]; then
+        echo "NeuralAudio built as an OBJECT library; archiving its .o files into $NA_LIB"
+        ${CROSS_PREFIX}ar rcs "$NA_LIB" $NA_OBJS
+    fi
+fi
+
 if [ ! -f "$NA_LIB" ]; then
     echo "ERROR: NeuralAudio library not found: $NA_LIB"
     find build/neuralaudio -name "*.a" 2>/dev/null
@@ -149,11 +163,16 @@ chmod +x dist/nam-a2/nam-a2.so
 # default - no models/cabs are bundled).
 mkdir -p dist/nam-a2/models dist/nam-a2/cabs
 
-if [ -d "src/models" ] && [ "$(ls -A src/models 2>/dev/null)" ]; then
-    cp src/models/* dist/nam-a2/models/
+# find, not a glob: src/models and src/cabs normally hold only a .gitkeep
+# placeholder (dotfile) so any bundled real models/cabs stay opt-in, and a
+# bare `src/models/*` glob doesn't match dotfiles - it matches nothing, so
+# on a .gitkeep-only tree the literal unexpanded pattern was passed to cp
+# and it failed with "cannot stat 'src/models/*'".
+if [ -d "src/models" ]; then
+    find src/models -maxdepth 1 -type f ! -name '.gitkeep' -exec cp {} dist/nam-a2/models/ \;
 fi
-if [ -d "src/cabs" ] && [ "$(ls -A src/cabs 2>/dev/null)" ]; then
-    cp src/cabs/* dist/nam-a2/cabs/
+if [ -d "src/cabs" ]; then
+    find src/cabs -maxdepth 1 -type f ! -name '.gitkeep' -exec cp {} dist/nam-a2/cabs/ \;
 fi
 
 # Create tarball for release

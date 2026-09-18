@@ -285,6 +285,12 @@ typedef struct {
     char module_dir[MAX_PATH_LEN];
 
     /* Model */
+    NeuralAudio::NeuralModelLoader *loader; /* owns load-mode config; CreateFromFile is
+                                              * an instance method as of NeuralAudio 0.1.x -
+                                              * heap-allocated (not a struct member) because
+                                              * this whole instance is calloc'd, which would
+                                              * skip NeuralModelLoader's constructor and its
+                                              * non-zero default member initializers. */
     NeuralAudio::NeuralModel *model;
     std::atomic<NeuralAudio::NeuralModel *> pending_model;
     std::atomic<bool> loading;
@@ -526,8 +532,7 @@ static void *model_loader_thread(void *arg) {
     snprintf(msg, sizeof(msg), "Nam A2: loading model %s", inst->model_path);
     plugin_log(msg);
 
-    NeuralAudio::NeuralModel *new_model =
-        NeuralAudio::NeuralModel::CreateFromFile(inst->model_path);
+    NeuralAudio::NeuralModel *new_model = inst->loader->CreateFromFile(inst->model_path);
 
     if (new_model) {
         snprintf(msg, sizeof(msg), "Nam A2: model loaded successfully (sample_rate=%.0f)",
@@ -768,10 +773,11 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     (void)config_json;
     plugin_log("Nam A2: creating instance");
 
-    NeuralAudio::NeuralModel::SetDefaultMaxAudioBufferSize(FRAMES_PER_BLOCK);
-
     nam_a2_instance_t *inst = (nam_a2_instance_t *)calloc(1, sizeof(nam_a2_instance_t));
     if (!inst) return nullptr;
+
+    inst->loader = new NeuralAudio::NeuralModelLoader();
+    inst->loader->SetDefaultMaxAudioBufferSize(FRAMES_PER_BLOCK);
 
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
     inst->model = nullptr;
@@ -869,6 +875,7 @@ static void v2_destroy_instance(void *instance) {
     NeuralAudio::NeuralModel *pending = inst->pending_model.load(std::memory_order_acquire);
     if (pending) delete pending;
     if (inst->model) delete inst->model;
+    delete inst->loader;
 
     free(inst->cab_ir);
     free(inst->cab_history);
