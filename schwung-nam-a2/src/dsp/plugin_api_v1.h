@@ -1,0 +1,225 @@
+/*
+ * Move Anything Plugin API v1 & v2
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Copyright (c) 2025-2026 Charles Vestal
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this file and associated documentation, to deal in the Software without
+ * restriction, including without limitation the rights to use, copy, modify,
+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ *
+ * ---
+ *
+ * This file is dual-licensed. Within the Move Everything host repository it is
+ * also covered by the repository-wide CC BY-NC-SA 4.0 license. External module
+ * authors may use, copy, and distribute this file under the MIT license above
+ * without any CC BY-NC-SA 4.0 obligations.
+ *
+ * ---
+ *
+ * Stable ABI for DSP modules loaded by the host runtime.
+ * Modules are .so files loaded via dlopen() and must export move_plugin_init_v1().
+ */
+
+#ifndef MOVE_PLUGIN_API_V1_H
+#define MOVE_PLUGIN_API_V1_H
+
+#include <stdint.h>
+
+#define MOVE_PLUGIN_API_VERSION 1
+
+/* Audio constants */
+#define MOVE_SAMPLE_RATE 44100
+#define MOVE_FRAMES_PER_BLOCK 128
+#define MOVE_AUDIO_OUT_OFFSET 256
+#define MOVE_AUDIO_IN_OFFSET (2048 + 256)
+#define MOVE_AUDIO_BYTES_PER_BLOCK 512
+
+/* MIDI source identifiers */
+#define MOVE_MIDI_SOURCE_INTERNAL 0
+#define MOVE_MIDI_SOURCE_EXTERNAL 2
+#define MOVE_MIDI_SOURCE_HOST 3  /* Host-generated (clock, etc) */
+#define MOVE_MIDI_SOURCE_FX_BROADCAST 4  /* Broadcast to audio FX only (skip synth) */
+
+/* Clock status identifiers for host_api_v1.get_clock_status() */
+#define MOVE_CLOCK_STATUS_UNAVAILABLE 0  /* Clock output not available/configured */
+#define MOVE_CLOCK_STATUS_STOPPED 1      /* Clock available, transport stopped */
+#define MOVE_CLOCK_STATUS_RUNNING 2      /* Clock available, transport running */
+
+/* Optional modulation callbacks for chain-owned runtime modulation buses.
+ * Sub-plugins can publish temporary modulation contributions without writing
+ * target base values directly.
+ */
+typedef int (*move_mod_emit_value_fn)(void *ctx,
+                                      const char *source_id,
+                                      const char *target,
+                                      const char *param,
+                                      float signal,
+                                      float depth,
+                                      float offset,
+                                      int bipolar,
+                                      int enabled);
+typedef void (*move_mod_clear_source_fn)(void *ctx, const char *source_id);
+
+/*
+ * Host API - provided by host to plugin during initialization
+ */
+typedef struct host_api_v1 {
+    uint32_t api_version;
+
+    /* Audio constants */
+    int sample_rate;
+    int frames_per_block;
+
+    /* Direct mailbox access (use with care) */
+    uint8_t *mapped_memory;
+    int audio_out_offset;
+    int audio_in_offset;
+
+    /* Logging */
+    void (*log)(const char *msg);
+
+    /* MIDI send functions
+     * msg: 4-byte USB-MIDI packet [cable|CIN, status, data1, data2]
+     * len: number of bytes (typically 4)
+     * Returns: bytes queued, or 0 on failure
+     */
+    int (*midi_send_internal)(const uint8_t *msg, int len);
+    int (*midi_send_external)(const uint8_t *msg, int len);
+
+    /* Clock status query for sync-aware plugins.
+     * Returns one of MOVE_CLOCK_STATUS_*.
+     */
+    int (*get_clock_status)(void);
+
+    /* Optional runtime modulation callbacks (NULL if unsupported). */
+    move_mod_emit_value_fn mod_emit_value;
+    move_mod_clear_source_fn mod_clear_source;
+    void *mod_host_ctx;
+
+    /* Tempo query — returns current BPM (120.0 default).
+     * Uses sampler_get_bpm() fallback chain: MIDI clock → set tempo → settings → 120.
+     * NULL if host does not support tempo. */
+    float (*get_bpm)(void);
+
+} host_api_v1_t;
+
+/*
+ * Plugin API - implemented by plugin, returned to host
+ */
+typedef struct plugin_api_v1 {
+    uint32_t api_version;
+
+    /* Lifecycle */
+
+    /* Called after dlopen, before any other calls
+     * module_dir: path to module directory (e.g., "/data/.../modules/sf2")
+     * json_defaults: JSON string from module.json "defaults" section, or NULL
+     * Returns: 0 on success, non-zero on failure
+     */
+    int (*on_load)(const char *module_dir, const char *json_defaults);
+
+    /* Called before dlclose */
+    void (*on_unload)(void);
+
+    /* Events */
+
+    /* Called for each MIDI message
+     * msg: 3 bytes [status, data1, data2]
+     * len: number of bytes (typically 3)
+     * source: MOVE_MIDI_SOURCE_INTERNAL or MOVE_MIDI_SOURCE_EXTERNAL
+     */
+    void (*on_midi)(const uint8_t *msg, int len, int source);
+
+    /* Set a parameter by name (stringly-typed for v1 simplicity)
+     * key: parameter name (e.g., "preset", "soundfont_path")
+     * val: parameter value as string
+     */
+    void (*set_param)(const char *key, const char *val);
+
+    /* Get a parameter by name
+     * key: parameter name
+     * buf: output buffer
+     * buf_len: size of output buffer
+     * Returns: length written, or -1 if not found
+     */
+    int (*get_param)(const char *key, char *buf, int buf_len);
+
+    /* Get error message if module is in error state
+     * buf: output buffer
+     * buf_len: size of output buffer
+     * Returns: length written, or 0 if no error
+     */
+    int (*get_error)(char *buf, int buf_len);
+
+    /* Audio rendering */
+
+    /* Render one block of audio
+     * out_interleaved_lr: output buffer for stereo interleaved int16 samples
+     *                     layout: [L0, R0, L1, R1, ..., L127, R127]
+     * frames: number of frames to render (always MOVE_FRAMES_PER_BLOCK)
+     */
+    void (*render_block)(int16_t *out_interleaved_lr, int frames);
+
+} plugin_api_v1_t;
+
+/*
+ * Plugin entry point - must be exported by all plugins
+ *
+ * host: pointer to host API struct (valid for plugin lifetime)
+ * Returns: pointer to plugin API struct (must remain valid until on_unload)
+ */
+typedef plugin_api_v1_t* (*move_plugin_init_v1_fn)(const host_api_v1_t *host);
+
+#define MOVE_PLUGIN_INIT_SYMBOL "move_plugin_init_v1"
+
+/*
+ * Plugin API v2 - Instance-based API for multi-instance support
+ *
+ * v2 plugins return an instance pointer from create_instance() and all
+ * subsequent calls pass that instance pointer. This allows multiple
+ * instances of the same plugin to coexist with independent state.
+ *
+ * Plugins can export BOTH v1 and v2 symbols during migration.
+ * Hosts should prefer v2 when available.
+ */
+
+#define MOVE_PLUGIN_API_VERSION_2 2
+
+typedef struct plugin_api_v2 {
+    uint32_t api_version;
+
+    /* Create instance - returns opaque instance pointer, or NULL on failure
+     * module_dir: path to module directory
+     * json_defaults: JSON string from module.json "defaults" section, or NULL
+     */
+    void* (*create_instance)(const char *module_dir, const char *json_defaults);
+
+    /* Destroy instance - clean up and free instance */
+    void (*destroy_instance)(void *instance);
+
+    /* All callbacks take instance as first parameter */
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    int (*get_error)(void *instance, char *buf, int buf_len);
+    void (*render_block)(void *instance, int16_t *out_interleaved_lr, int frames);
+
+} plugin_api_v2_t;
+
+typedef plugin_api_v2_t* (*move_plugin_init_v2_fn)(const host_api_v1_t *host);
+
+#define MOVE_PLUGIN_INIT_V2_SYMBOL "move_plugin_init_v2"
+
+#endif /* MOVE_PLUGIN_API_V1_H */

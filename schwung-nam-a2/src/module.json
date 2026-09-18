@@ -1,0 +1,137 @@
+{
+  "id": "nam-a2",
+  "name": "Nam A2",
+  "abbrev": "NA2",
+  "version": "0.1.0",
+  "description": "Neural Amp Modeler (A2) - neural amp emulation, cab IR, 3-band EQ and a solo FX chain",
+  "author": "Nam A2 contributors (based on schwung-nam by Charles Vestal / NeuralAudio by Mike Oliphant)",
+  "license": "MIT",
+  "dsp": "nam-a2.so",
+  "api_version": 2,
+  "capabilities": {
+    "chainable": true,
+    "component_type": "audio_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Nam A2",
+          "params": [
+            "input_level",
+            "output_level",
+            {
+              "key": "quality",
+              "short_name": "Qual",
+              "label": "Quality"
+            },
+            {
+              "key": "cab_bypass",
+              "short_name": "Bypass",
+              "label": "Cab Bypass"
+            },
+            { "level": "models", "label": "Choose Model" },
+            { "level": "cabs", "label": "Choose Cabinet" },
+            { "level": "eq", "label": "3-Band EQ" },
+            { "level": "doubler", "label": "Doubler" },
+            { "level": "echo", "label": "Echo" },
+            { "level": "reverb", "label": "Reverb" }
+          ],
+          "knobs": ["input_level", "output_level", "quality"]
+        },
+        "models": {
+          "label": "Model",
+          "items_param": "model_list",
+          "select_param": "model_index",
+          "children": null,
+          "knobs": [],
+          "params": []
+        },
+        "cabs": {
+          "label": "Cabinet",
+          "items_param": "cab_list",
+          "select_param": "cab_index",
+          "children": null,
+          "knobs": [],
+          "params": []
+        },
+        "eq": {
+          "label": "3-Band EQ",
+          "children": null,
+          "knobs": ["eq_low_gain", "eq_low_freq", "eq_mid_gain", "eq_mid_freq", "eq_high_gain", "eq_high_freq"],
+          "params": ["eq_low_gain", "eq_low_freq", "eq_mid_gain", "eq_mid_freq", "eq_high_gain", "eq_high_freq"]
+        },
+        "doubler": {
+          "label": "Doubler",
+          "children": null,
+          "knobs": ["doubler_mix"],
+          "params": [
+            { "key": "doubler_bypass", "short_name": "Bypass", "label": "Doubler Bypass" },
+            "doubler_mix"
+          ]
+        },
+        "echo": {
+          "label": "Echo",
+          "children": null,
+          "knobs": ["echo_time_ms", "echo_feedback", "echo_filter_hz", "echo_mix"],
+          "params": [
+            { "key": "echo_bypass", "short_name": "Bypass", "label": "Echo Bypass" },
+            "echo_time_ms",
+            "echo_feedback",
+            "echo_filter_hz",
+            "echo_mix",
+            { "key": "echo_tap", "short_name": "Tap", "label": "Tap Tempo" }
+          ]
+        },
+        "reverb": {
+          "label": "Reverb",
+          "children": null,
+          "knobs": ["reverb_room", "reverb_damping", "reverb_mix"],
+          "params": [
+            { "key": "reverb_bypass", "short_name": "Bypass", "label": "Reverb Bypass" },
+            "reverb_room",
+            "reverb_damping",
+            "reverb_mix"
+          ]
+        }
+      }
+    },
+    "chain_params": [
+      { "key": "input_level", "name": "Input", "type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.01 },
+      { "key": "output_level", "name": "Output", "type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.01 },
+      { "key": "quality", "name": "Quality", "type": "enum", "options": ["Full", "Lite"], "default": 0 },
+      { "key": "cab_bypass", "name": "Cab Bypass", "type": "int", "min": 0, "max": 1, "default": 0, "step": 1 },
+
+      { "key": "eq_low_gain", "name": "Low Gain", "type": "float", "min": -15.0, "max": 15.0, "default": 0.0, "step": 0.5, "unit": "dB" },
+      { "key": "eq_low_freq", "name": "Low Freq", "type": "float", "min": 40.0, "max": 500.0, "default": 100.0, "step": 5.0, "unit": "Hz" },
+      { "key": "eq_mid_gain", "name": "Mid Gain", "type": "float", "min": -15.0, "max": 15.0, "default": 0.0, "step": 0.5, "unit": "dB" },
+      { "key": "eq_mid_freq", "name": "Mid Freq", "type": "float", "min": 200.0, "max": 4000.0, "default": 800.0, "step": 25.0, "unit": "Hz" },
+      { "key": "eq_high_gain", "name": "High Gain", "type": "float", "min": -15.0, "max": 15.0, "default": 0.0, "step": 0.5, "unit": "dB" },
+      { "key": "eq_high_freq", "name": "High Freq", "type": "float", "min": 1000.0, "max": 10000.0, "default": 3000.0, "step": 100.0, "unit": "Hz" },
+
+      { "key": "doubler_bypass", "name": "Doubler Bypass", "type": "int", "min": 0, "max": 1, "default": 1, "step": 1 },
+      { "key": "doubler_mix", "name": "Doubler Mix", "type": "float", "min": 0.0, "max": 1.0, "default": 0.35, "step": 0.01 },
+
+      { "key": "echo_bypass", "name": "Echo Bypass", "type": "int", "min": 0, "max": 1, "default": 1, "step": 1 },
+      { "key": "echo_time_ms", "name": "Echo Time", "type": "float", "min": 50.0, "max": 2000.0, "default": 350.0, "step": 10.0, "unit": "ms" },
+      { "key": "echo_feedback", "name": "Echo Feedback", "type": "float", "min": 0.0, "max": 0.9, "default": 0.35, "step": 0.01 },
+      { "key": "echo_filter_hz", "name": "Echo Filter", "type": "float", "min": 400.0, "max": 8000.0, "default": 3000.0, "step": 50.0, "unit": "Hz" },
+      { "key": "echo_mix", "name": "Echo Mix", "type": "float", "min": 0.0, "max": 1.0, "default": 0.3, "step": 0.01 },
+      { "key": "echo_tap", "name": "Tap Tempo", "type": "int", "min": 0, "max": 1, "default": 0, "step": 1 },
+
+      { "key": "reverb_bypass", "name": "Reverb Bypass", "type": "int", "min": 0, "max": 1, "default": 1, "step": 1 },
+      { "key": "reverb_room", "name": "Reverb Room", "type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.01 },
+      { "key": "reverb_damping", "name": "Reverb Damping", "type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.01 },
+      { "key": "reverb_mix", "name": "Reverb Mix", "type": "float", "min": 0.0, "max": 1.0, "default": 0.3, "step": 0.01 }
+    ]
+  },
+  "assets": {
+    "path": ".",
+    "label": "Assets",
+    "extensions": [".nam", ".wav", ".ir"],
+    "allowFolders": true,
+    "ensure_dirs": ["models", "cabs"],
+    "description": "Manage NAM models (.nam) and cabinet IRs (.wav)",
+    "hint": "Find amp models at",
+    "hint_url": "https://tone3000.com",
+    "hint_url_label": "TONE3000"
+  }
+}

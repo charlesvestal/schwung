@@ -1,0 +1,98 @@
+{
+  "title": "Nam A2",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Neural Amp Modeler A2.",
+        "",
+        "Amp modeling, cab IR,",
+        "3-band EQ and a solo",
+        "FX chain in one",
+        "Signal Chain effect.",
+        "",
+        "Loads .nam model",
+        "files and optional",
+        ".wav cabinet IRs."
+      ]
+    },
+    {
+      "title": "Setup",
+      "lines": [
+        "Copy .nam model",
+        "files into models/",
+        "and .wav cabinet IRs",
+        "into cabs/ using the",
+        "Schwung manager at",
+        "move.local:7700.",
+        "",
+        "Find amp models at:",
+        "tone3000.com",
+        "",
+        "Subfolders are",
+        "supported for",
+        "organization."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Input",
+        "Knob 2: Output",
+        "Knob 3: Quality",
+        " Full or Lite - Lite",
+        " halves the neural",
+        " net's work if a",
+        " model is too heavy",
+        " for real-time.",
+        "",
+        "Cab Bypass, Choose",
+        "Model and Choose",
+        "Cabinet via the",
+        "navigation menu."
+      ]
+    },
+    {
+      "title": "3-Band EQ",
+      "lines": [
+        "Low/Mid/High bands,",
+        "each with its own",
+        "Gain and Freq knob.",
+        "",
+        "Low/High are shelf",
+        "filters, Mid is a",
+        "bell (peak) filter.",
+        "Sits after the cab",
+        "IR, before the FX",
+        "chain below."
+      ]
+    },
+    {
+      "title": "Solo FX Chain",
+      "lines": [
+        "Inspired by the",
+        "Solar Guitars",
+        "CHUG SOLO pedal.",
+        "",
+        "Doubler > Echo >",
+        "Reverb, each with",
+        "its own Bypass.",
+        "",
+        "Doubler: subtle",
+        "chorus to thicken",
+        "a single note.",
+        "",
+        "Echo: filtered",
+        "delay, slap-back",
+        "to ~2s. Hold and",
+        "tap Tap Tempo on",
+        "the beat twice or",
+        "more to set time.",
+        "",
+        "Reverb: small room",
+        "emulation with a",
+        "Mix knob."
+      ]
+    }
+  ]
+}
