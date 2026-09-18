@@ -17,25 +17,33 @@
 
 #include "host/lane_lookahead.h"
 
-/* WHICH ROW A WRITE IS KEYED TO.
+/* WHICH ROW A WRITE IS KEYED TO — CURRENTLY THE SAME ONE PLAYBACK USES.
  *
- * Playback uses `lane_clip_slot` — the clip that is PLAYING. A write wants
- * the clip on SCREEN, and when they cannot be confirmed to be the same the
- * only honest answer is the placeholder: keying a p-lock to the playing row
- * puts it on a clip the user is not editing, silently and permanently.
- * PENDING plays through the window and adopts when the file names a row. */
-/* EVERY SURFACE THE USER'S HAND DRIVES USES THIS, not just the writes.
+ * This is an identity function today, and the comment below described
+ * machinery that no longer exists: it substituted the PENDING placeholder
+ * when the playing clip and the clip on screen could not be confirmed equal,
+ * from a flag (`lane_edit_unconfirmed`) that was removed once the resolver
+ * itself started answering PENDING for an unidentifiable clip. The
+ * write-versus-playback distinction now lives entirely in
+ * shadow_slot_clip_phase, which hands one row to both.
  *
- * Fixing only the write paths made the feature asymmetric in the worst
- * direction: while a clip played and the user edited a new one, a lock landed
- * under the placeholder but `clear_point` still keyed to the PLAYING row — so
- * Delete + step aimed at the new clip DELETED the playing clip's lock, and
- * the lock map showed no mark on the clip in front of them. A destructive
- * edit to a clip the user is not looking at is worse than the bug the write
- * fix closed.
+ * Kept as a named seam rather than inlined, because it is where that
+ * distinction goes if it is ever needed again, and fifteen call sites
+ * otherwise say `inst->lane_clip_slot` with nothing recording that some of
+ * them meant "the row being EDITED". But do not read an invariant into it:
+ * the old text claimed a clear could not reach the playing row while a
+ * different clip was on screen, and nothing enforces that now.
  *
- * So the clears, the probe, the lock map and Double Loop all ask this. What
- * stays on `lane_clip_slot` is PLAYBACK (lane_tick, through
+ * WHAT ASKS THIS, from when the two could differ — the clears, the probe, the
+ * lock map and Double Loop. Fixing only the writes back then made the feature
+ * asymmetric in the worst direction: a lock landed under the placeholder
+ * while `clear_point` still keyed to the PLAYING row, so Delete + step aimed
+ * at the new clip DELETED the playing clip's lock, with no mark shown on the
+ * clip in front of the user. A destructive edit to a clip you are not looking
+ * at is worse than the bug the write fix closed, which is why the list below
+ * is worth keeping even while the function is an identity.
+ *
+ * What stays on `lane_clip_slot` explicitly: PLAYBACK (lane_tick, through
  * lane_effective_slot), the unarmed PUNCH — which suppresses the lane that is
  * currently driving, so it is a fact about playback — and the `clip`
  * diagnostic, which exists to report the playing row. */
@@ -1644,12 +1652,22 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
                         inst->clip_phase_valid ? inst->clip_phase_beats : -1.0);
 
     if (strcmp(sub, "diag") == 0) {
+        /* `disp` is lanes_adopt_displaced: how many takes this slot has
+         * dropped because two blind clips shared the one PENDING key. Its own
+         * comment says displacements "are COUNTED, because it drops somebody's
+         * points" -- and nothing served the number, so the count existed and
+         * the report did not. Same for the per-lane counters below. A field
+         * whose comment promises a diagnostic that was never wired up is the
+         * defect class this file keeps finding in itself. */
         int off = snprintf(buf, buf_len,
-                           "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d",
+                           "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d "
+                           "disp=%d prov=%d",
                            inst->clip_phase_beats, inst->clip_phase_valid ? 1 : 0,
                            inst->clip_loop_start, inst->clip_loop_len,
                            inst->lane_armed ? 1 : 0,
-                           lane_is_recording(inst) ? 1 : 0);
+                           lane_is_recording(inst) ? 1 : 0,
+                           inst->lanes_adopt_displaced,
+                           lane_store_provisional_count(&inst->lanes));
         for (int i = 0; i < LANE_MAX && off > 0 && off < buf_len; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used) continue;
@@ -1659,13 +1677,16 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             off += snprintf(buf + off, buf_len - off,
                             "\nL%d %s:%s t=%d row=%d pend=%d plen=%.3f "
                             "n=%d drv=%d punch=%d pph=%.4f "
-                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d",
+                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d "
+                            "opend=%d adopt=%d reorig=%d evict=%d full=%d",
                             i, ln->target, ln->param, ln->track, ln->slot,
                             ln->slot_pending, ln->pending_len,
                             ln->n, ln->driving,
                             ln->punch_until_wrap, ln->punch_phase,
                             ln->rec_active, ln->rec_last_phase, live,
-                            ln->stale, ln->orphaned);
+                            ln->stale, ln->orphaned,
+                            ln->origin_pending, ln->adopted, ln->reorigined,
+                            ln->evicted_orphan, ln->full_hits);
         }
         return off;
     }

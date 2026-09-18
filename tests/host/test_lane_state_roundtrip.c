@@ -448,7 +448,8 @@ int main(void) {
         CHECK(pn > 0, "serializing a store with a pending lane failed");
 
         lane_store_t back; memset(&back, 0, sizeof(back));
-        CHECK(lane_store_deserialize(&back, pbuf) >= 0, "parse of that document failed");
+        /* > 0, not >= 0: a refusal IS 0, so the old assertion could not fail. */
+        CHECK(lane_store_deserialize(&back, pbuf) > 0, "parse of that document failed");
 
         int pending_back = 0, ordinary_back = 0;
         for (int i2 = 0; i2 < LANE_MAX; i2++) {
@@ -490,7 +491,7 @@ int main(void) {
         CHECK(lane_store_serialize(&bs, bbuf, sizeof(bbuf)) > 0,
               "serializing the blind-but-rowed store failed");
         lane_store_t back2; memset(&back2, 0, sizeof(back2));
-        CHECK(lane_store_deserialize(&back2, bbuf) >= 0, "parse failed");
+        CHECK(lane_store_deserialize(&back2, bbuf) > 0, "parse failed");
 
         int absent_back = 0, ident_back = 0;
         for (int i3 = 0; i3 < LANE_MAX; i3++) {
@@ -503,6 +504,57 @@ int main(void) {
               "reloads permanently stale and squats on its key", absent_back);
         CHECK(ident_back == 1,
               "the identified lane did not survive (%d back)", ident_back);
+    }
+
+    /* A DOCUMENT WE DID NOT WRITE. The writer refuses to emit a provisional
+     * lane, but files written before it did still exist, and the reader
+     * assigned whatever two integers it found. Fed such a document, the
+     * loader must refuse the WHOLE thing and leave the live store alone --
+     * not load the half it understands, because a lane keyed to -2 is the
+     * un-re-keyable zombie that plays on the next blind clip. */
+    {
+        struct { const char *doc; const char *what; } bad[] = {
+            { "V 2\nL synth cutoff 0 -2 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "the pending placeholder as a stored row" },
+            { "V 2\nL synth cutoff 0 8 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "a clip row past the session grid" },
+            { "V 2\nL synth cutoff 4 0 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "a track past the four slots" },
+            { "V 2\nL synth cutoff -1 0 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n",
+              "the 'no row' sentinel as a stored key" },
+        };
+        for (unsigned bi = 0; bi < sizeof(bad) / sizeof(bad[0]); bi++) {
+            /* A store with real content, so a refusal that WIPED it would be
+             * caught here too rather than looking like a clean refusal. */
+            lane_store_t live; memset(&live, 0, sizeof(live));
+            lane_fingerprint_t lf = { 0.0, 8.0, 3, 60 };
+            lane_t *keep = lane_alloc(&live, "synth", "cutoff", 0, 1, &lf);
+            CHECK(keep != NULL, "live lane_alloc refused");
+            if (keep) lane_write(keep, 2.0, 0.25f, 0);
+
+            /* 0 IS the refusal here — see lane_store_deserialize. */
+            int r = lane_store_deserialize(&live, bad[bi].doc);
+            CHECK(r == 0, "%s was ACCEPTED (r=%d) — it keys a lane nothing can "
+                         "re-key and the next blind clip matches it",
+                  bad[bi].what, r);
+            int still = 0;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (live.lanes[i3].used) still++;
+            CHECK(still == 1,
+                  "%s: the refusal left %d lane(s) — a refused document must "
+                  "leave the live store untouched", bad[bi].what, still);
+        }
+
+        /* POSITIVE CONTROL: the same document with a real key loads, or every
+         * assertion above passes on a parser that refuses everything. */
+        lane_store_t good; memset(&good, 0, sizeof(good));
+        int gr = lane_store_deserialize(&good,
+            "V 2\nL synth cutoff 0 3 0.000000 8.000000 3 60 1\nP 1.000000 40.000000 0 0.000000\n");
+        CHECK(gr > 0, "a well-keyed document was refused too (r=%d) — the "
+                       "range check is rejecting everything", gr);
+        int loaded = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) if (good.lanes[i3].used) loaded++;
+        CHECK(loaded == 1, "the well-keyed document loaded %d lane(s)", loaded);
     }
 
     if (fails) { printf("%d failure(s)\n", fails); return 1; }

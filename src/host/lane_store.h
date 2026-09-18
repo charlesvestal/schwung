@@ -85,6 +85,22 @@ extern "C" {
  * `slot < 0` guard already in the code keeps treating it as "no clip". */
 #define LANE_SLOT_PENDING (-2)
 
+/* THE KEY SPACE, NAMED. Move's session grid is four tracks of eight clip
+ * rows, which this file has always stated in prose ("track 0..3, clip row
+ * 0..7") and nowhere in code -- so the DESERIALIZER checked neither and
+ * assigned whatever the document said. `lane_track` is the chain SLOT index,
+ * which is why the track bound is 4 and not Move's track count. */
+#define LANE_TRACKS 4
+#define LANE_ROWS   8
+
+/* A KEY THAT CAN ADDRESS A REAL CLIP. Deliberately excludes the pending
+ * placeholder: this is the test a document must pass, and a provisional take
+ * is never written to one (lane_serial.c). Runtime code asks
+ * lane_slot_usable() instead, which does accept it. */
+static inline int lane_key_in_range(int track, int slot) {
+    return track >= 0 && track < LANE_TRACKS && slot >= 0 && slot < LANE_ROWS;
+}
+
 static inline int lane_slot_is_pending(int slot) { return slot == LANE_SLOT_PENDING; }
 /* A row that can key a lane: a real one, or the pending placeholder. */
 static inline int lane_slot_usable(int slot) {
@@ -291,6 +307,25 @@ typedef struct {
 } lane_t;
 
 typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
+
+/* HOW BIG THIS IS ALLOWED TO GET, enforced rather than described.
+ *
+ * Two comments stated the size in prose and BOTH were wrong -- one said
+ * 18 KB, the other 37 KB, against a measured 53.2 KB; the first predates the
+ * LANE_MAX 16 -> 32 raise and the second predates something else. The number
+ * matters because a lane_store_t must never land on the SPI callback's frame
+ * (patch_info_t alone took that to 232 KB when SLOT_BUSES went 4 -> 8), and a
+ * prose number that drifts is exactly how it would: the next person sizes a
+ * temporary against 18 KB.
+ *
+ * So the constraint is a budget the build checks, not a figure to keep in
+ * sync. Raising LANE_MAX or LANE_POINTS_MAX past it fails HERE, where the
+ * decision is, with the reason attached. */
+#define LANE_STORE_MAX_BYTES (64 * 1024)
+_Static_assert(sizeof(lane_store_t) <= LANE_STORE_MAX_BYTES,
+               "lane_store_t is over budget: it must not sit on the SPI "
+               "callback's stack frame, and lane_store_swap keeps one as a "
+               "static for that reason");
 
 /* How many lanes a snapshot CANNOT hold — the ones lane_serial.c refuses to
  * write because their clip cannot yet be identified (a pending row, or a real
@@ -520,10 +555,21 @@ int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now);
  * refuses an absent fingerprint outright, so without taking it here the lane
  * is re-keyed correctly and then goes STALE the moment the clip appears.
  * Taken INSIDE the length check, so a clip that is not ours cannot leave its
- * identity behind; and WITHOUT re-origining, unlike lane_adopt_fingerprint,
- * because a blind p-lock's phase is already true clip time.
+ * identity behind.
  *
- * Returns 1 if the lane was re-keyed. */
+ * IT RE-ORIGINS, through the same lane_take_identity as
+ * lane_adopt_fingerprint. This said the opposite for a while -- "WITHOUT
+ * re-origining, because a blind p-lock's phase is already true clip time" --
+ * which holds only when the clip's origin is 0, and that is precisely what a
+ * clip Move has not written cannot tell us: chain_set_clip_phase hands the
+ * write side 0, so the lock lands in 0-space. The belief was measured false
+ * and fixed in the .c, and this half of the comment survived it; anyone
+ * reading only the header re-learned the disproven version with the disproof
+ * one file away.
+ *
+ * Returns 1 if the lane was re-keyed. A row that arrives WITHOUT a usable
+ * identity is refused rather than half-taken -- see the .c for why closing
+ * the pending latch early strands the lane silently forever. */
 int lane_adopt_slot(lane_t *ln, int track, int slot,
                     double recorded_len, double now_len,
                     const lane_fingerprint_t *now_fp);

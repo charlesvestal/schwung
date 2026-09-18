@@ -321,12 +321,22 @@ int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now) {
      * short of recording the pass again. Both live in the fingerprint for
      * diagnostics only, and the content half is what discriminates.
      *
-     * This costs nothing in the origin: phases are stored LOOP-RELATIVE
-     * (shadow_slot_clip_phase subtracts loop_start), and clip-relative storage
-     * was considered and rejected -- loop_start is observable by nothing for a
-     * clip just made and then edited (Song.abl is ~35 s stale, and the OLED bar
-     * strip does not show where the loop begins), so re-origining would have to
-     * guess, putting every value a bar out while looking healthy. */
+     * And ignoring the loop fields is what makes the CLIP-RELATIVE coordinate
+     * work. Phases are beats from the clip's start, not from its loop (see
+     * lane_store.h), so moving or growing the loop changes which points fall
+     * inside the window and changes NONE of their values -- extending a clip
+     * reveals what was recorded there, shrinking it makes the tail dormant,
+     * and nothing is rescaled. Comparing either loop field would go stale on
+     * exactly the edit the coordinate was chosen to survive.
+     *
+     * THIS PARAGRAPH DESCRIBED THE OTHER DESIGN. It said phases were stored
+     * loop-relative and that clip-relative storage "was considered and
+     * rejected" -- naming, as the rejected alternative, the one that shipped.
+     * Loop-relative came first and was replaced because it slid a sweep two
+     * bars when the loop moved and made a step p-lock unaddressable. Two
+     * coordinates are indistinguishable per point, which is why a V1 document
+     * is refused rather than migrated, and why a comment asserting the wrong
+     * one is worse here than no comment at all. */
     if (ln->fp.note_count != now->note_count) return 0;
     if (ln->fp.first_note != now->first_note) return 0;
     return 1;
@@ -451,6 +461,77 @@ int lane_pass_live_at(const lane_t *ln, double phase,
     return (travel >= 0.0 && travel <= LANE_PASS_GAP_BEATS) ? 1 : 0;
 }
 
+/* TAKING AN IDENTITY: the one operation, in one place.
+ *
+ * Both adoption paths do the same four things to a lane that was recorded
+ * blind -- shift every phase by the clip's real origin, move the recording
+ * pass's own anchor with them, stamp the fingerprint, and stop being stale --
+ * and they each carried their own copy of it. The copies had already drifted
+ * twice, in the direction that makes a copy dangerous rather than merely
+ * redundant:
+ *
+ *   * lane_adopt_slot did NOT move `rec_last_phase`, so a blind ARMED take
+ *     that adopted mid-pass kept an anchor in 0-space while its points moved
+ *     to clip space -- the next write of that take then erases from the wrong
+ *     place. Safe only by accident: lane_pass_travel refuses an out-of-window
+ *     `prev`, which is the same "saved by a guard somewhere else" the second
+ *     copy of an arithmetic rule always relies on.
+ *   * lane_adopt_slot checked only `isfinite(origin) && origin != 0.0`, so a
+ *     NEGATIVE origin shifted every point below zero; its sibling refused it
+ *     and waited for a better answer. Refusing is right -- the lane is still
+ *     fixable as it stands -- so that is what both do now.
+ *
+ * The two GUARDS stay with their callers: they answer different questions
+ * ("the row arrived" needs a length gate, "the identity arrived" does not).
+ * It is only the operation that is shared.
+ *
+ * Applied exactly once per lane: `lane_fp_absent` is false afterwards and
+ * both callers test it first, so it cannot shift twice. A zero origin leaves
+ * every phase untouched -- the common case, and exact. */
+static int lane_take_identity(lane_t *ln, const lane_fingerprint_t *now) {
+    if (!ln || !ln->used || !now) return 0;
+    /* Only a REAL fingerprint: adopting an absent one is a no-op that still
+     * clears the pending state, stranding the take at origin 0. */
+    if (lane_fp_absent(now)) return 0;
+    /* The origin must be a usable number. A NaN or negative loop_start would
+     * put every point somewhere unnameable. */
+    if (!isfinite(now->loop_start) || now->loop_start < 0.0) return 0;
+
+    /* RE-ORIGIN. The take was stored against an ASSUMED origin: a blind clip
+     * has no `loop.start` to read, so chain_set_clip_phase hands the write
+     * side 0 and every point is laid down in 0-space. If the clip's real
+     * window does not start at bar 1 those phases fall outside it, and
+     * lane_eval only plays points INSIDE the window -- so the take is silent
+     * for good. Measured: a lock written at 1.5 on a clip whose window starts
+     * at 4 evaluated to nothing.
+     *
+     * Points stay sorted: one constant added to every phase preserves order.
+     * A non-finite stored phase is left alone -- lane_eval already skips it,
+     * and moving it would invent a position for a point that has none. */
+    if (now->loop_start > 0.0) {
+        for (int i = 0; i < ln->n; i++) {
+            if (!isfinite(ln->pts[i].phase)) continue;
+            ln->pts[i].phase += now->loop_start;
+        }
+        if (ln->rec_active && isfinite(ln->rec_last_phase))
+            ln->rec_last_phase += now->loop_start;
+        ln->reorigined++;
+    }
+
+    ln->fp = *now;
+    /* Both licences are spent: the lane has an identity, so neither "this
+     * session recorded it blind" flag means anything any more. Leaving
+     * `origin_pending` set here was harmless only because the sibling's
+     * `lane_fp_absent` guard refuses afterwards -- a latch kept alive by
+     * somebody else's guard. */
+    ln->origin_pending = 0;
+    /* A lane that was stale only because it could not be identified is not
+     * stale any more -- it has just been identified. */
+    ln->stale = 0;
+    ln->adopted++;
+    return 1;
+}
+
 int lane_adopt_slot(lane_t *ln, int track, int slot,
                     double recorded_len, double now_len,
                     const lane_fingerprint_t *now_fp) {
@@ -527,37 +608,10 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * so this cannot wait forever on a note-free clip: no file entry, no row,
      * still pending, exactly as before.) */
     if (lane_fp_absent(&ln->fp)) {
-        if (!now_fp || lane_fp_absent(now_fp)) return 0;
-
-        /* RE-ORIGIN, because the take was stored against an ASSUMED origin.
-         *
-         * A blind clip has no `loop.start` to read, so chain_set_clip_phase
-         * hands the write side 0 and every point is laid down in 0-space. If
-         * the clip's real window does not start at bar 1, those phases are
-         * outside it — and lane_eval only plays points INSIDE the window, so
-         * the take is silent for good. Measured: a lock written at 1.5 on a
-         * clip whose window starts at 4 evaluates to nothing.
-         *
-         * The old comment here said a blind p-lock's phase "came from the bar
-         * on Move's own strip and is already true clip time". That holds only
-         * while the origin is 0, which is the very thing we could not read.
-         *
-         * Shifted once, on the single transition from "no identity" to "this
-         * clip", so it cannot be applied twice: `lane_fp_absent` is false
-         * afterwards and this branch is the only caller. A zero start leaves
-         * every phase untouched, which is the common case and stays exact. */
-        const double origin = now_fp->loop_start;
-        if (isfinite(origin) && origin != 0.0) {
-            for (int i = 0; i < ln->n; i++) {
-                if (!isfinite(ln->pts[i].phase)) continue;
-                ln->pts[i].phase += origin;
-            }
-            ln->reorigined++;
-        }
-
-        ln->fp = *now_fp;
-        ln->stale = 0;
-        ln->adopted++;
+        /* One shared operation -- see lane_take_identity, which also refuses
+         * an unusable origin rather than shifting every point below zero, and
+         * moves the recording pass's anchor with the points. */
+        if (!lane_take_identity(ln, now_fp)) return 0;
     }
     ln->slot = slot;
     ln->slot_pending = 0;
@@ -572,37 +626,9 @@ int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now) {
      * test is not redundant. */
     if (!lane_fp_absent(&ln->fp)) return 0;
     if (!ln->origin_pending) return 0;
-    /* And only a REAL fingerprint: adopting an absent one would be a no-op
-     * that still cleared the pending state, stranding the take at origin 0. */
-    if (lane_fp_absent(now)) return 0;
-    /* The origin must be a usable number. A NaN or negative loop_start would
-     * put every point somewhere unnameable, and the lane is still fixable as
-     * it stands -- so refuse and wait for a better answer. */
-    if (!isfinite(now->loop_start) || now->loop_start < 0.0) return 0;
-
-    /* RE-ORIGIN, then adopt. The take was recorded against an assumed origin
-     * of 0 (the blind window has no loop.start), so clip time is the recorded
-     * phase plus the real loop_start. Points stay sorted: one constant added
-     * to every phase preserves order. A non-finite stored phase is left alone
-     * -- lane_eval already skips it, and moving it would invent a position
-     * for a point that has none. */
-    if (now->loop_start > 0.0) {
-        for (int i = 0; i < ln->n; i++) {
-            if (!isfinite(ln->pts[i].phase)) continue;
-            ln->pts[i].phase += now->loop_start;
-        }
-        /* The recording pass's own mark moves with them, or the next write of
-         * a take still in progress erases from the wrong place. */
-        if (ln->rec_active && isfinite(ln->rec_last_phase))
-            ln->rec_last_phase += now->loop_start;
-    }
-    ln->fp = *now;
-    ln->origin_pending = 0;
-    /* A lane that was stale only because it could not be identified is not
-     * stale any more -- it has just been identified. */
-    ln->stale = 0;
-    ln->adopted++;
-    return 1;
+    /* Everything else -- the re-origin, the pass anchor, the stamp -- is the
+     * shared operation. The two guards above are this path's own question. */
+    return lane_take_identity(ln, now);
 }
 
 int lane_double(lane_t *ln, double loop_start, double loop_len) {
@@ -641,7 +667,8 @@ void lane_store_swap(lane_store_t *a, lane_store_t *b)
 {
     if (!a || !b) return;
     /* Three memcpys through a static rather than a stack temporary: a
-     * lane_store_t is 37 KB and this runs on the SPI callback, whose frame is
+     * lane_store_t is ~53 KB (measured; this line said 37 KB, and the one on
+     * chain_instance_t said 18) and this runs on the SPI callback, whose frame is
      * already the tightest budget in the system (patch_info_t took it to
      * 232 KB when SLOT_BUSES went 4 -> 8). Not reentrant, and does not need to
      * be: every caller is that one thread. */

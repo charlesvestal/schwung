@@ -901,7 +901,9 @@ typedef struct chain_instance {
      * struct is a STACK LOCAL on the SPI callback (v2_set_param's load_file)
      * and also sits MAX_PATCHES deep in this instance -- which is why raising
      * SLOT_BUSES from 4 to 8 took the callback frame from 194 KB to 232 KB.
-     * A lane_store_t is 18 KB and must land in neither multiplier. */
+     * A lane_store_t is ~53 KB (measured; LANE_STORE_MAX_BYTES is the budget
+     * the build enforces) and must land in neither multiplier. This said
+     * 18 KB, which was true before LANE_MAX went 16 -> 32. */
     lane_store_t lanes;
     int    lane_armed;            /* pushed from the shim: Move's Record button */
     /* How many lanes the last `lanes:clear` threw away, read back as

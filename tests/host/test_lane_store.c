@@ -1457,6 +1457,80 @@ int main(void) {
               "an identified lane was re-origined a second time");
     }
 
+    /* THE TWO ADOPTION PATHS DO THE SAME THING TO A LANE, and they did not.
+     *
+     * Both take an identity from a fingerprint; each carried its own copy of
+     * the arithmetic, and the copies had drifted. These pin the two places
+     * lane_adopt_slot was the weaker one, so a future re-split fails here
+     * rather than in the field.
+     *
+     * 1. THE RECORDING PASS'S ANCHOR MOVES WITH THE POINTS. A blind ARMED
+     *    take that adopts mid-pass otherwise keeps `rec_last_phase` in
+     *    0-space while every point moves to clip space, and the next write of
+     *    that same take erases from the wrong place. */
+    {
+        lane_store_t st2; memset(&st2, 0, sizeof(st2));
+        lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+        lane_t *rl = lane_alloc(&st2, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
+        CHECK(rl != NULL, "pending lane_alloc refused");
+        if (rl) {
+            rl->slot_pending = 1;
+            rl->pending_len = 8.0;
+            lane_write(rl, 1.0, 0.5f, 0);
+            rl->rec_active = 1;
+            rl->rec_last_phase = 1.0;
+
+            lane_fingerprint_t real = { 4.0, 8.0, 3, 60 };   /* origin 4 */
+            CHECK(lane_adopt_slot(rl, 0, 3, 8.0, 8.0, &real) == 1,
+                  "the row was not adopted");
+            CHECK(rl->pts[0].phase == 5.0,
+                  "the point was re-origined to %f, expected 5.0",
+                  rl->pts[0].phase);
+            CHECK(rl->rec_last_phase == 5.0,
+                  "the recording anchor stayed at %f while its points moved to "
+                  "clip space — the next write of this take erases from the "
+                  "wrong place", rl->rec_last_phase);
+            CHECK(rl->origin_pending == 0,
+                  "origin_pending outlived the adoption — a spent licence kept "
+                  "alive only by the sibling's own guard");
+        }
+    }
+
+    /* 2. AN UNUSABLE ORIGIN IS REFUSED, NOT APPLIED. A negative loop_start
+     *    would put every point below zero, where nothing plays and nothing
+     *    explains why; the lane is still fixable as it stands, so the answer
+     *    is to wait for a better one. lane_adopt_fingerprint always refused;
+     *    lane_adopt_slot checked only `isfinite && != 0.0`. */
+    {
+        lane_store_t st3; memset(&st3, 0, sizeof(st3));
+        lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+        lane_t *nl = lane_alloc(&st3, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
+        CHECK(nl != NULL, "pending lane_alloc refused");
+        if (nl) {
+            nl->slot_pending = 1;
+            nl->pending_len = 8.0;
+            lane_write(nl, 2.0, 0.5f, 0);
+
+            lane_fingerprint_t bad = { -4.0, 8.0, 3, 60 };
+            CHECK(lane_adopt_slot(nl, 0, 3, 8.0, 8.0, &bad) == 0,
+                  "a negative origin was ACCEPTED");
+            CHECK(nl->pts[0].phase == 2.0,
+                  "the point was shifted to %f by a refused adoption",
+                  nl->pts[0].phase);
+            CHECK(nl->slot_pending == 1 && lane_slot_is_pending(nl->slot),
+                  "a refused adoption spent the lane's pending licence — it can "
+                  "never be re-keyed now");
+
+            /* Positive control: a good origin on the same lane still lands. */
+            lane_fingerprint_t good = { 4.0, 8.0, 3, 60 };
+            CHECK(lane_adopt_slot(nl, 0, 3, 8.0, 8.0, &good) == 1,
+                  "the lane could not be adopted afterwards — the refusal above "
+                  "proves nothing if this lane was never adoptable");
+            CHECK(nl->pts[0].phase == 6.0,
+                  "re-origined to %f, expected 6.0", nl->pts[0].phase);
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

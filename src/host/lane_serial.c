@@ -177,6 +177,26 @@ static int parse_hdr(const char *line, lane_hdr_t *h) {
      * the wrong parameter. Mirrors lane_store.c's own rule. */
     if (strlen(t) >= sizeof(h->target) || strlen(p) >= sizeof(h->param)) return 0;
     if (!isfinite(ls) || !isfinite(ll)) return 0;
+    /* A KEY THAT CANNOT ADDRESS A CLIP IS A MALFORMED DOCUMENT.
+     *
+     * The writer skips a provisional lane (above), but that only protects
+     * documents WE wrote: this took any two integers and assigned them
+     * verbatim, so a file written by an older build -- one from before that
+     * skip existed -- still loaded a lane keyed to LANE_SLOT_PENDING with the
+     * `slot_pending` latch clear, which is the un-re-keyable zombie the skip
+     * was added to prevent, arriving by the other door. `stale` is only ever
+     * set where the fingerprint is valid, so nothing marks it, and the next
+     * blind window on that track resolves to -2 and MATCHES it: last
+     * session's automation on a stranger's clip, silently.
+     *
+     * Refused at the DOCUMENT level, like every other malformation here
+     * (a duplicate key, unsorted phases, a held point with no span), rather
+     * than dropped per-lane: the loader is all-or-nothing so a refusal leaves
+     * the live store untouched, and a silent per-lane drop is the lie the
+     * writer's own comment rejects. A file this reaches was written by
+     * something whose rules we do not know, so keeping the half we happen to
+     * understand is not the safe direction. */
+    if (!lane_key_in_range(track, slot)) return 0;
     memset(h, 0, sizeof(*h));
     snprintf(h->target, sizeof(h->target), "%s", t);
     snprintf(h->param, sizeof(h->param), "%s", p);

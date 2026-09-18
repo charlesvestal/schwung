@@ -267,10 +267,26 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
          * the honest row is the placeholder. Proven by removing the whole
          * block with every test still green.
          *
-         * The decode is kept (clip_state_selected_slot, tested in
-         * test_clip_state.c) because `g_edit_unconfirmed` above genuinely
-         * needs it: that is what stops a WRITE taking the playing row while
-         * a different clip is being edited. Here it decided nothing. */
+         * THE DECODE IS A DIAGNOSTIC NOW, AND NOTHING HERE MAY READ IT.
+         *
+         * This used to say it was kept "because `g_edit_unconfirmed` above
+         * genuinely needs it" -- and g_edit_unconfirmed was deleted by the
+         * same change that wrote those words, sixty lines further up. The
+         * decode survives only as the 1 Hz clip_state readout and the
+         * manager's /clip-state, which is the same posture step_strip has:
+         * measured, reportable, depended on by nothing.
+         *
+         * It is not merely unused, it is QUARANTINED. Its output has twice
+         * re-introduced wrong-clip contamination the moment something
+         * consumed it, and it only updates in SESSION view while p-locks are
+         * made in NOTE view -- so its answer is stale exactly when a writer
+         * would want it. The rule any future reader has to beat: a clip the
+         * file cannot identify is the PLACEHOLDER, never a guess at which row
+         * it is. Pinned by tests/host/test_selection_decode_not_navigated.sh,
+         * for the same reason `synth:last_note` needed a test asserting it is
+         * never read -- an available, tempting answer gets navigated on
+         * eventually, and the defect then looks like this feature being
+         * broken rather than like a lookup nobody should have made. */
         if (cslot < 0 && !screen_says_new_clip) {
             /* NO POSITIVE IDENTIFICATION. Two ways out, and the order matters.
              *
