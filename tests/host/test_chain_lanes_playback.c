@@ -1290,9 +1290,12 @@ int main(void) {
         }
     }
 
-    free(inst);
     /* AND THE SWITCH REALLY GATES IT: disarmed, a driving lane is RELEASED
-     * rather than left asserting an override the user cannot take back. */
+     * rather than left asserting an override the user cannot take back.
+     *
+     * This block used to sit AFTER `free(inst)` and read every field of it
+     * through the freed pointer. It passed, which is what a use-after-free
+     * does most of the time. */
     {
         inst->lanes_enabled = 0;
         lane_tick(inst);
@@ -1305,6 +1308,135 @@ int main(void) {
               "parameter is stuck where the clip left it", still_driving);
         inst->lanes_enabled = 1;
     }
+
+    /* WHICH VERBS THE SWITCH GATES, stated once and executably.
+     *
+     * It was defined by omission before: `lane_on_set_param` checked the flag
+     * and the three verbs that create lane content did not, so a disarmed
+     * build accepted a p-lock, reported it as landed, deadened the knob and
+     * wrote the lane to disk. The partition is the rule -- CREATION is
+     * refused, inspection and REMOVAL stay live so automation already on disk
+     * can still be found and cleared -- and both halves are asserted here so
+     * a verb added to either side has to choose one. */
+    {
+        chain_instance_t *g = calloc(1, sizeof(*g));
+        CHECK(g != NULL, "calloc for the gate fixture");
+        if (g) {
+            setup_fake_synth(g);
+            g->lane_track = 0;
+            g->lane_clip_slot = 2;
+            g->clip_loop_start = 0.0;
+            g->clip_loop_len = 8.0;
+            g->clip_fp_valid = 1;
+            g->clip_phase_beats = 1.0;
+            g->clip_phase_valid = 1;
+
+            /* Disarmed: none of the three creates anything. */
+            g->lanes_enabled = 0;
+            lane_param_set(g, "plock", "synth cutoff 4.0 77");
+            lane_param_set(g, "double", "1");
+            lane_param_set(g, "copy_clip", "2 3");
+            int used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 0,
+                  "disarmed, the creation verbs made %d lane(s) — a build with "
+                  "the feature off must not be able to key anybody's automation",
+                  used);
+
+            /* And the refusal has a NAME, not a silent nothing: `plocked` at 0
+             * for an unstated reason is what deadened the knob, because the
+             * host reads that same 0 to decide whether to pass the write on. */
+            char rb[32] = {0};
+            lane_param_get(g, "plock_refused", rb, sizeof(rb));
+            CHECK(strstr(rb, "disabled") != NULL,
+                  "disarmed plock refusal reported as '%s', not 'disabled'", rb);
+            char pb[8] = {0};
+            lane_param_get(g, "plocked", pb, sizeof(pb));
+            CHECK(pb[0] == '0',
+                  "disarmed plock reported as landed ('%s') — the host "
+                  "suppresses the live parameter write on that, so the knob "
+                  "goes dead with the feature off", pb);
+
+            /* Armed, the same three do work — or the assertion above would
+             * pass on a fixture that simply cannot p-lock. */
+            g->lanes_enabled = 1;
+            lane_param_set(g, "plock", "synth cutoff 4.0 77");
+            used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 1,
+                  "armed, the same p-lock made %d lane(s) — the disarmed "
+                  "assertion above proves nothing if this fixture cannot lock",
+                  used);
+
+            /* AND THE OTHER TWO CREATION VERBS, against a store that HAS
+             * content -- an empty one cannot show them refusing, because
+             * `double` and `copy_clip` both walk existing lanes and a walk
+             * over nothing is indistinguishable from a refusal. The armed
+             * p-lock above left exactly one lane on slot 2 to work with. */
+            {
+                int pts_before = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_before += g->lanes.lanes[i2].n;
+                CHECK(pts_before > 0, "the gate fixture has a point to double");
+
+                g->lanes_enabled = 0;
+                lane_param_set(g, "double", "1");
+                int pts_after = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_after += g->lanes.lanes[i2].n;
+                CHECK(pts_after == pts_before,
+                      "disarmed, `double` grew the store from %d to %d point(s)",
+                      pts_before, pts_after);
+
+                lane_param_set(g, "copy_clip", "2 3");
+                int on_dst = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used && g->lanes.lanes[i2].slot == 3)
+                        on_dst++;
+                CHECK(on_dst == 0,
+                      "disarmed, `copy_clip` put %d lane(s) on the duplicate",
+                      on_dst);
+
+                /* Armed, both do something — or the two assertions above pass
+                 * on a fixture that could never have doubled or copied. */
+                g->lanes_enabled = 1;
+                lane_param_set(g, "double", "1");
+                int pts_armed = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used) pts_armed += g->lanes.lanes[i2].n;
+                CHECK(pts_armed > pts_before,
+                      "armed, `double` left %d point(s) against %d — the "
+                      "disarmed assertion proves nothing if this fixture "
+                      "cannot double", pts_armed, pts_before);
+                lane_param_set(g, "copy_clip", "2 3");
+                on_dst = 0;
+                for (int i2 = 0; i2 < LANE_MAX; i2++)
+                    if (g->lanes.lanes[i2].used && g->lanes.lanes[i2].slot == 3)
+                        on_dst++;
+                CHECK(on_dst > 0,
+                      "armed, `copy_clip` put nothing on the duplicate — the "
+                      "disarmed assertion proves nothing");
+            }
+
+            /* REMOVAL STAYS LIVE WHILE OFF. This is the half that makes the
+             * switch usable rather than a trap: a user who armed it, recorded
+             * automation and switched it off must still be able to delete it. */
+            g->lanes_enabled = 0;
+            lane_param_set(g, "clear", "1");
+            used = 0;
+            for (int i2 = 0; i2 < LANE_MAX; i2++)
+                if (g->lanes.lanes[i2].used) used++;
+            CHECK(used == 0,
+                  "disarmed, `clear` left %d lane(s) — automation recorded "
+                  "before the switch was turned off would be unremovable",
+                  used);
+            free(g);
+        }
+    }
+
+    free(inst);
 
     if (fails) {
         printf("FAILURES: %d\n", fails);

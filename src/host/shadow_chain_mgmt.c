@@ -3995,11 +3995,6 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                 "lanes:plock", fwd);
     shadow_lanes_plock_confirm(slot);
-    /* The press is SPENT: it wrote a lock, so its release must not also be
-     * replayed to Move as a tap. A gesture under STEP_TAP_MS otherwise both
-     * locked a value and toggled the note off. */
-    shim_step_note_plock_key(key);
-    shim_step_mark_used(step);
     /* DID IT LAND? The caller suppresses the live write on a 1, so a refused
      * p-lock must never report one: an unknown parameter or a full store would
      * otherwise turn a knob into a dead knob -- no lock, no sound, no reason.
@@ -4007,7 +4002,22 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     char landed[8] = {0};
     int ln = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                                          "lanes:plocked", landed, sizeof(landed));
-    return (ln > 0 && landed[0] == '1');
+    if (!(ln > 0 && landed[0] == '1')) return 0;
+
+    /* THE PRESS IS SPENT, AND ONLY NOW.
+     *
+     * It wrote a lock, so its release must not also be replayed to Move as a
+     * tap -- a gesture under STEP_TAP_MS otherwise both locked a value and
+     * toggled the note off. But these two ran BEFORE the answer above, so a
+     * REFUSED lock spent the press as well: the knob correctly kept working
+     * and the step silently did not toggle its note. One gesture, two
+     * consumers, and the half that failed took the other half's input with
+     * it. Every refusal now leaves the press to Move, which is what a
+     * disarmed build needs to be genuinely inert and what an unknown
+     * parameter or a full store needed all along. */
+    shim_step_note_plock_key(key);
+    shim_step_mark_used(step);
+    return 1;
 }
 
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {

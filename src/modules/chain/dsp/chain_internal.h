@@ -538,6 +538,12 @@ enum {
     LANE_PLOCK_NO_CLIP,
     LANE_PLOCK_UNKNOWN_PARAM,   /* the module has no such parameter */
     LANE_PLOCK_STORE_FULL,
+    LANE_PLOCK_DISABLED,        /* the kill switch is off -- see lanes:enabled */
+    /* A COUNT, so the name table in lane_param_get cannot silently fall
+     * behind. The getter used to clamp against the LAST member, so a reason
+     * added here without a string landed out of range and was reported as
+     * "bad_request" -- a real refusal wearing another one's name. */
+    LANE_PLOCK_REASON_COUNT
 };
 
 typedef struct chain_instance {

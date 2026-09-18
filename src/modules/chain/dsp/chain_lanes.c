@@ -1038,6 +1038,29 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * the refusals of the step->phase translation. This names the
          * refusals of the WRITE. */
         inst->lanes_last_plocked = 0;
+
+        /* DISARMED, AND THE CHAIN IS WHAT MUST SAY SO.
+         *
+         * The switch gates the verbs that CREATE lane content and nothing
+         * else -- the clears, the reads and the undo stay live while it is
+         * off, so automation already on disk can be inspected and removed.
+         *
+         * Refusing it HERE rather than in the caller is the load-bearing
+         * part. The host suppresses the live parameter write when a lock
+         * LANDS, and it asks `lanes:plocked` to find out
+         * (shadow_lanes_plock_from_write). A disarmed build that accepted
+         * the lock answered 1 to that, so all of this happened with the
+         * feature off: the knob went dead, the confirm mark was drawn, the
+         * step press was spent, and a lane was created that lane_tick would
+         * never play -- and once the clip had a fingerprint, SERIALIZED to
+         * disk. Worse than the feature being on, and exactly the mis-keying
+         * the switch was added to make impossible. Refused here, `plocked`
+         * stays 0 and all four fall away together. */
+        if (!inst->lanes_enabled) {
+            inst->lanes_plock_refusal = LANE_PLOCK_DISABLED;
+            return;
+        }
+
         inst->lanes_plock_refusal = LANE_PLOCK_BAD_REQUEST;
         if (!val) return;
         char target[16] = {0}, param[32] = {0};
@@ -1232,6 +1255,8 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (strcmp(sub, "double") == 0) {
         /* Zeroed first, for the reason on copy_clip below. */
         inst->lanes_last_doubled = 0;
+        /* DISARMED: a creation verb. See the plock verb above. */
+        if (!inst->lanes_enabled) return;
         if (!val || atoi(val) == 0) return;
         if (!(inst->clip_loop_len > 0.0) || !(inst->clip_loop_start >= 0.0)) return;
         int total = 0;
@@ -1265,6 +1290,8 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * previous call's count in place makes a refusal read as a success --
          * which is the exact ambiguity these counters exist to remove. */
         inst->lanes_last_copied = 0;
+        /* DISARMED: a creation verb. See the plock verb above. */
+        if (!inst->lanes_enabled) return;
 
         /* RE-KEY BEFORE COPYING, or a blind take is never duplicated.
          *
@@ -1514,10 +1541,15 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     if (strcmp(sub, "plock_refused") == 0) {
         static const char *names[] = {
-            "ok", "bad_request", "no_clip", "unknown_param", "store_full"
+            "ok", "bad_request", "no_clip", "unknown_param", "store_full",
+            "disabled"
         };
+        /* The table and the enum are one fact in two places, so the build is
+         * what keeps them equal rather than the next reader. */
+        _Static_assert(sizeof(names) / sizeof(names[0]) == LANE_PLOCK_REASON_COUNT,
+                       "every LANE_PLOCK_* reason needs a name");
         int r = inst->lanes_plock_refusal;
-        if (r < 0 || r > LANE_PLOCK_STORE_FULL) r = LANE_PLOCK_BAD_REQUEST;
+        if (r < 0 || r >= LANE_PLOCK_REASON_COUNT) r = LANE_PLOCK_BAD_REQUEST;
         return snprintf(buf, buf_len, "%d %s", r, names[r]);
     }
 
