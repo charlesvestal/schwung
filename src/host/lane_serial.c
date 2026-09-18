@@ -37,7 +37,23 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
     for (int i = 0; i < LANE_MAX; i++) if (st->lanes[i].used) { used = 1; break; }
     /* NOTHING, not an empty document. The caller writes a file only for a
      * non-empty answer, so this is what keeps a slot with no automation from
-     * leaving one behind -- and from overwriting one. */
+     * leaving one behind -- and from overwriting one.
+     *
+     * THIS TEST IS NOT SUFFICIENT ON ITS OWN, and was the whole answer until
+     * the provisional skips below existed. It asks whether any lane is USED;
+     * the skips decide whether any lane is EMITTED, and those are different
+     * numbers for a store whose lanes are all provisional -- which is every
+     * store inside Move's 8-12 s save window, the exact case p-locking a
+     * brand-new clip produces. Such a store wrote "V 2\n" and returned 4, so
+     * the caller saw a non-empty answer and left a 4-byte file behind; the
+     * reader then refused it (a document with no lanes), which means
+     * lane_store_reset never ran and a set change into that slot kept the
+     * OUTGOING set's lanes loaded. Found by the writer/reader agreement
+     * sweep, not by reasoning about it.
+     *
+     * The real test is at the bottom of this function, where what was
+     * actually emitted is known. Keeping this one as well only saves the
+     * common case a walk. */
     if (!used) { buf[0] = '\0'; return 0; }
 
     int off = 0;
@@ -49,6 +65,7 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
         off += _r;                                                          \
     } while (0)
 
+    int emitted = 0;
     APPEND("V %d\n", LANE_SERIAL_VERSION);
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &st->lanes[i];
@@ -98,6 +115,7 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
          * written. Both halves of "blind" are covered now, not just the one
          * that shows up as -2. */
         if (lane_fp_absent(&ln->fp)) continue;
+        emitted++;
         /* stale / orphaned / driving / punch_* are deliberately absent: they
          * are recomputed from the live clip every block, and only a
          * fingerprint MATCH clears `stale`. Writing one down strands the lane
@@ -129,6 +147,15 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
         }
     }
 #undef APPEND
+    /* AND THE REAL EMPTINESS TEST, now that what was emitted is known.
+     *
+     * A header with no lanes is not a document the reader accepts, and it is
+     * not something the caller should put in a file: "no automation I can
+     * honestly store" and "no automation" are the same fact from the outside.
+     * Derived from what the loop actually wrote rather than restated as a
+     * second copy of the skip rules -- a new skip added above is covered by
+     * this without being mentioned here. */
+    if (!emitted) { buf[0] = '\0'; return 0; }
     return off;
 }
 
@@ -227,6 +254,7 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
     int nseen = 0;
     lane_hdr_t h;
     int have_hdr = 0;
+    int have_ver = 0;
     int lane_idx = 0;
     lane_t *cur = 0;
 
@@ -253,10 +281,23 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
              * Refusing is loud; there is nothing to migrate, because the
              * format never left this branch. */
             if (v != LANE_SERIAL_VERSION) return 0;
+            have_ver = 1;
             continue;
         }
 
         if (line[0] == 'L') {
+            /* THE VERSION LINE IS MANDATORY, AND MUST COME FIRST.
+             *
+             * Only a `V` line was ever CHECKED, so a document that simply did
+             * not have one was accepted and loaded as the current version --
+             * the version gate could be bypassed by omitting the version.
+             * That matters because the refusal it implements is not cosmetic:
+             * a V1 document's phases are loop-relative where V2's are
+             * clip-relative, and the two are indistinguishable per point, so
+             * loading one places every value somewhere wrong while looking
+             * perfectly healthy. Every document this writer has ever produced
+             * opens with the version line, so requiring it costs nothing. */
+            if (!have_ver) return 0;
             if (have_hdr && !hdr_close_ok(&h)) return 0;
             if (!parse_hdr(line, &h)) return 0;
             have_hdr = 1;
@@ -328,7 +369,21 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
     }
 
     if (have_hdr && !hdr_close_ok(&h)) return 0;
-    return have_hdr ? 1 : 0;
+    /* A VERSIONED DOCUMENT WITH NO LANES IS AN EMPTY STORE, not corruption.
+     *
+     * This returned 0 for it, which lane_store_deserialize reads as a refusal
+     * -- and a refusal deliberately leaves the live store untouched, so
+     * restoring such a file did not clear the slot: the OUTGOING set's lanes
+     * stayed loaded and played on the incoming set's clips. The same defect
+     * the "an absent file must CLEAR the slot" fix closed, coming back
+     * through a file that is present and says nothing.
+     *
+     * The writer no longer emits one, so this is for the files it already
+     * wrote. `have_ver` rather than a bare 1: a document with no version line
+     * at all is still corruption, and an empty STRING is refused earlier by
+     * lane_store_deserialize, which is a third thing again ("nothing was
+     * said"). */
+    return have_ver ? 1 : 0;
 }
 
 int lane_store_deserialize(lane_store_t *st, const char *doc) {
