@@ -69,4 +69,19 @@ grep -q 'UI_SET_OVERVIEW' "$K" || fail "the Set Overview guard no longer names t
 python3 -c "import ast,sys; ast.parse(open('$K').read())" \
   || fail "clipkit.py does not parse"
 
+# AND IMPORTING THE HARNESS MUST NOT ARM THE FEATURE. It used to call
+# arm_lanes(True) at module level, so reading any value through it switched
+# lanes on -- and testing the kill switch through it re-armed the flag between
+# the delete and the read, reporting "cannot disarm" for a switch that works.
+python3 - "$K" <<'PYARM' || fail "clipkit arms lanes at import -- the instrument changes what it measures, and it hides whether the kill switch can be turned off"
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+for node in tree.body:                       # module level only
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        fn = node.value.func
+        if isinstance(fn, ast.Name) and fn.id == "arm_lanes":
+            sys.exit("arm_lanes called at import")
+sys.exit(0)
+PYARM
+
 echo "PASS: the device harness models three pad modes and refuses an unconfirmed one"
