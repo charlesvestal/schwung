@@ -1380,6 +1380,60 @@ int main(void) {
         }
     }
 
+    /* DOUBLE LOOP INSIDE THE SAVE WINDOW KEEPS ONE CLIP IN ONE TAKE.
+     *
+     * `pending_len` identifies a blind take: it is how the next write finds
+     * the take it belongs to, and how adoption tells this clip from another.
+     * So doubling the clip's points and leaving that number behind splits one
+     * clip across two takes -- the next lock reads the new length off the
+     * strip, matches nothing, and opens a second take. Only the one whose
+     * length matches would then adopt, stranding the earlier lock.
+     *
+     * The previous code got this right by accident (one placeholder meant one
+     * take, and the later write simply overwrote the length); the take range
+     * is what makes it something to state. */
+    {
+        chain_instance_t *dl = calloc(1, sizeof(*dl));
+        CHECK(dl != NULL, "calloc for the double-in-window fixture");
+        if (dl) {
+            setup_fake_synth(dl);
+            dl->lanes_enabled = 1;
+            dl->lane_track = 0;
+            dl->lane_clip_slot = LANE_SLOT_PENDING;
+            dl->clip_loop_start = 0.0;
+            dl->clip_loop_len = 4.0;        /* one bar, brand new */
+            dl->clip_phase_beats = 1.0;
+            dl->clip_phase_valid = 1;
+
+            /* Lock one parameter on the new clip. */
+            lane_param_set(dl, "plock", "synth cutoff 1.0 55");
+            char pb[64] = {0};
+            lane_param_get(dl, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 1 0") == 0,
+                  "after the first lock, expected one take: got '%s'", pb);
+
+            /* Double Loop. The clip is two bars now, and so is the take. */
+            lane_param_set(dl, "double", "1");
+            dl->clip_loop_len = 8.0;
+            int pl = -99;
+            for (int i3 = 0; i3 < LANE_MAX; i3++)
+                if (dl->lanes.lanes[i3].used) pl = (int)dl->lanes.lanes[i3].pending_len;
+            CHECK(pl == 8,
+                  "the take's recorded length is %d after doubling, expected 8 "
+                  "— it identifies the take, so a stale value splits the clip",
+                  pl);
+
+            /* A second lock on the SAME clip must join the SAME take. */
+            lane_param_set(dl, "plock", "synth octave 2.0 3");
+            lane_param_get(dl, "pending", pb, sizeof(pb));
+            CHECK(strcmp(pb, "1 2 0") == 0,
+                  "expected '1 2 0' (ONE take holding two parameters), got "
+                  "'%s' — the doubled clip was split across two takes, and "
+                  "only the matching one would adopt", pb);
+            free(dl);
+        }
+    }
+
     /* A TAKE THAT CANNOT BE SAVED SAYS SO -- `lanes:pending`.
      *
      * The serializer refuses a provisional lane by design, so a slot holding

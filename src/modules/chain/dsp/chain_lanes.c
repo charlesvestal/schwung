@@ -1338,6 +1338,24 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
             if (ln->track != inst->lane_track || ln->slot != lane_write_slot(inst))
                 continue;
             total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
+            /* A BLIND TAKE'S RECORDED LENGTH DOUBLES WITH ITS POINTS.
+             *
+             * `pending_len` is what identifies the take -- it is how a write
+             * inside the save window finds the take it belongs to, and how
+             * adoption tells this clip from another. Doubling the clip and
+             * leaving that number behind splits one clip across two takes:
+             * the next lock on the SAME clip reads the new length off the
+             * strip, matches no existing take, and opens a second one. Only
+             * the take whose length matches then adopts, so the first lock is
+             * stranded and eventually reported stalled.
+             *
+             * Doubled from the LANE's own number rather than re-read from the
+             * strip: `lanes:double` is pushed when the shim sees the gesture,
+             * and the strip it would be read from may not have redrawn yet.
+             * lane_double copies the points into the second half, so twice is
+             * exactly right and does not depend on anyone else's timing. */
+            if (lane_slot_is_pending(ln->slot) && ln->pending_len > 0.0)
+                ln->pending_len *= 2.0;
         }
         inst->lanes_last_doubled = total;
         return;
