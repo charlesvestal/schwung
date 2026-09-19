@@ -481,6 +481,20 @@ function canvasPageParams(chainParams) {
             /* `preset_browser` merges this page WITH the level's preset browser
              * instead of adding a second one -- see the emission below. */
             presetBrowser: p.preset_browser === true || p.presetBrowser === true,
+            /*
+             * The page is a DOOR: click enters it, and while entered the jog
+             * and the click belong to the module.
+             *
+             * ⚠ NEVER on a preset browser. That page is already a door with
+             * every control spoken for -- the wheel browses, the knobs stay on
+             * the level so the sound is still editable, and click and Back are
+             * its own enter and exit. A second meaning of "enter" on the same
+             * page is a contradiction, not a preference, so it is refused here
+             * as well as rejected by the contract check: a module that declares
+             * both must not get a silently chosen winner.
+             */
+            enterable: (p.enterable === true) &&
+                       !(p.preset_browser === true || p.presetBrowser === true),
             script: typeof p.canvas_script === "string" ? p.canvas_script : "canvas.js",
             overlay: typeof p.canvas_overlay === "string" ? p.canvas_overlay
                    : (typeof p.overlay === "string" ? p.overlay : ""),
@@ -1136,7 +1150,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 /* What makes it custom. render_page hands the module this and
                  * the body band; everything else about the page is ordinary. */
                 canvas: { key: cp.key, script: cp.script, overlay: cp.overlay,
-                          extraKeys: cp.extraKeys },
+                          extraKeys: cp.extraKeys, enterable: cp.enterable },
             });
         }
 
