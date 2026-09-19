@@ -73,7 +73,6 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_fx_requires_continuous chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     chain_take_midi_tick_wake \
-    chain_set_clip_phase chain_set_clip_deleted \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then
