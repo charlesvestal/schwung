@@ -233,7 +233,6 @@ if needs_rebuild build/schwung-shim.so \
     src/host/rt_thread_audit.c src/host/rt_thread_audit.h \
     src/host/spi_tally.c src/host/spi_tally.h \
     src/host/align_capture.c src/host/align_capture.h \
-    src/host/lane_trace.c src/host/lane_trace.h \
     src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
@@ -284,7 +283,6 @@ if needs_rebuild build/schwung-shim.so \
         src/host/rt_thread_audit.c \
         src/host/spi_tally.c \
         src/host/align_capture.c \
-        src/host/lane_trace.c \
         src/host/shadow_shm_util.c \
         src/host/schwung_trace.c \
         src/host/shadow_test_stream.c \
@@ -568,27 +566,14 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
-    src/modules/chain/dsp/chain_lanes.c \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h \
     src/host/split_voices_parse.h src/host/bus_mix.h src/host/bus_route.h \
-    src/host/bus_voice_apply.h src/host/lane_store.c src/host/lane_store.h \
-    src/host/lane_serial.c src/host/lane_serial.h; then
+    src/host/bus_voice_apply.h; then
     echo "Building chain DSP..."
-    # lane_store.c and lane_serial.c are plain host sources shared with
-    # tests/host, so neither can wear chain_internal.h's CHAIN_INTERNAL.
-    # Compiled with the rest they put their lane_* symbols into dsp.so's
-    # dynamic table -- exactly the collision surface a dlopen'd sub-plugin must
-    # not be able to bind to, and what test_chain_host_file_split.sh's
-    # exported-symbol allowlist exists to catch. Separate hidden-visibility
-    # objects keep them callable inside dsp.so and invisible outside it.
-    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
-        -c src/host/lane_store.c -o build/modules/chain/lane_store.o -Isrc
-    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
-        -c src/host/lane_serial.c -o build/modules/chain/lane_serial.o -Isrc
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \
         src/modules/chain/dsp/chain_json.c \
@@ -598,10 +583,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_patch.c \
         src/modules/chain/dsp/chain_reorder.c \
         src/modules/chain/dsp/chain_bus.c \
-        src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
-        build/modules/chain/lane_store.o \
-        build/modules/chain/lane_serial.o \
         -o build/modules/chain/dsp.so \
         -Isrc \
         -lm -ldl -lpthread

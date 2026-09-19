@@ -103,19 +103,13 @@ EOF
 # --------------------------------------------------------------------------
 hdr=src/modules/chain/dsp/chain_internal.h
 lfo=src/host/lfo_common.h
-# lane_t is position-keyed too and lives HERE, which is half of why it was
-# missed: the derivation only scanned the two headers above, and
-# chain_instance_t holds lanes as a nested lane_store_t rather than as an
-# array of lane_t, so the member scan below could not see it either. A lane
-# recorded against fx3 therefore kept driving whatever slid into fx3.
-lanes_hdr=src/host/lane_store.h
 src=src/modules/chain/dsp/chain_reorder.c
 
 keyed=$(awk '
   /^typedef struct/ { buf=""; keyed=0 }
   { buf = buf $0 "\n"; if ($0 ~ /char[ \t]+target\[/) keyed=1 }
   /^\} [a-z_0-9]+_t;/ { if (keyed) { name=$2; sub(";","",name); print name } keyed=0 }
-' "$hdr" "$lfo" "$lanes_hdr" | sort -u)
+' "$hdr" "$lfo" | sort -u)
 
 [ -n "$keyed" ] || fail "could not derive the set of position-keyed types from $hdr"
 

@@ -354,7 +354,6 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -Isrc/host \
   -DFIXTURE_DIR="\"$work\"" \
   tests/host/test_master_fx_permute.c "$work/stubs.c" \
-  src/host/lane_trace.c \
   -lm -o "$bin"
 
 "$bin"
