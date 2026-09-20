@@ -52,6 +52,10 @@ typedef struct shadow_chain_slot_t {
      * load; slots that did not ask see no SysEx at all, which is the behaviour
      * every slot had before. */
     int wants_sysex;
+    /* 1 = the loaded sound generator asked to receive physical knob-touch
+     * edges directly from the hardware mailbox. This bypasses the UI/param
+     * round-trip for performance controls while remaining opt-in. */
+    int touch_observe;
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */

@@ -6261,6 +6261,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* One slot per frame learns whether its components want raw SysEx. */
     shadow_chain_refresh_wants_sysex_tick();
+    shadow_chain_refresh_touch_observe_tick();
 
     /* MIDI channel indicator: scan external (cable 2) MIDI_IN and MIDI_OUT for
      * note events and record the channels for the on-screen "i<IN> o<OUT>"
@@ -7347,7 +7348,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Reads the unfiltered hardware mailbox, so it is upstream of the
      * Move-facing filter, the shadow forward, the ring and every gate.
      */
-    if (shim_touch_trace_on && hw) {
+    if (hw) {
         const uint8_t *tsrc = (const uint8_t *)hw + MIDI_IN_OFFSET;
         for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t thead = tsrc[j];
@@ -7356,9 +7357,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t ttype = tstatus & 0xF0;
             uint8_t td1 = tsrc[j + 2];
             if ((ttype != 0x90 && ttype != 0x80) || td1 > 9) continue;
-            uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
-                            | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
-            touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+            /* The performance path is opt-in inside the dispatcher. It reads
+             * this unfiltered hardware slot before the UI process and its
+             * parameter queue, so touch release reaches DSP in this frame. */
+            shadow_chain_dispatch_touch_to_slots(&tsrc[j]);
+            /* Jog touch must reach a fullscreen canvas from this same raw
+             * edge. The later shadow-routing walk can be bypassed by co-run
+             * ownership, which left audio stopped while its waveform moved. */
+            if (td1 == 9 && shadow_ui_midi_shm)
+                shadow_ui_midi_publish(ttype == 0x90 ? 0x09 : 0x08,
+                                       tstatus, td1, tsrc[j + 3]);
+            if (shim_touch_trace_on) {
+                uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
+                                | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
+                touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+            }
         }
     }
 
@@ -9196,7 +9209,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
-                /* Forward knob touch notes (0-7) to shadow UI for peek-at-value */
+                /* Forward knob touch notes (0-7) to shadow UI for peek-at-value.
+                 * Jog touch (9) is published from the raw low-latency scan. */
                 if (d1 <= 7 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }

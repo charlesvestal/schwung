@@ -548,7 +548,8 @@ typedef struct chain_instance {
      *
      * Written on the SPI callback: a plain int store, nothing else. */
     int synth_last_note;
-    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */
+    int synth_touch_observe; /* capabilities.touch_observe on the synth */
 
     /* Voices this synth can render into separate buffers, in the module's own
      * declared order — the index here IS the voice_out[] index handed to

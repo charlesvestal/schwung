@@ -514,6 +514,33 @@ void shadow_chain_dispatch_sysex_to_slots(const uint8_t *slot8)
     }
 }
 
+void shadow_chain_dispatch_touch_to_slots(const uint8_t *slot8)
+{
+    static event_dedup_entry_t dedup[EVENT_DEDUP_RING_SIZE];
+    static int dedup_head = 0;
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi || !slot8) return;
+
+    uint8_t cin = slot8[0] & 0x0F;
+    uint8_t cable = (slot8[0] >> 4) & 0x0F;
+    uint8_t status = slot8[1];
+    uint8_t type = status & 0xF0;
+    uint8_t note = slot8[2];
+    if (cable != 0 || (cin != 0x08 && cin != 0x09) ||
+        (type != 0x80 && type != 0x90) || note > 9 || note == 8)
+        return;
+    if (event_dedup_check_and_record(dedup, &dedup_head, slot8)) return;
+
+    uint8_t msg[3] = { status, note, slot8[3] };
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (!host_chain_slots[i].touch_observe ||
+            !host_chain_slots[i].active || !host_chain_slots[i].instance)
+            continue;
+        pv2->on_midi(host_chain_slots[i].instance, msg, 3,
+                     MOVE_MIDI_SOURCE_HOST);
+    }
+}
+
 /* Broadcast a 1-byte system-realtime message to every active chain slot.
  * Realtime must NOT go through shadow_chain_dispatch_midi_to_slots: the
  * per-slot channel remap rewrites the status low nibble (0xF8 -> 0xF0|ch)

@@ -687,6 +687,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * voice in a list that no longer exists. */
     inst->synth_last_note = -1;
     inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
+    inst->synth_touch_observe = 0;              /* Default: no direct touch edges */
 
     /* Reset FIRST, unconditionally: an id from the previous module must never
      * name a voice in a list that no longer exists — the same rule as
@@ -780,6 +781,17 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                              || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
                             && wants) {
                             inst->synth_wants_sysex = 1;
+                        }
+                    }
+                    /* Performance controls may opt into the raw capacitive
+                     * touch edge. The shim delivers only notes 0-7 and only
+                     * to the slot that declared this capability. */
+                    {
+                        int wants = 0;
+                        if ((json_get_bool_in_section(json, "capabilities", "touch_observe", &wants) == 0
+                             || json_get_int_in_section(json, "capabilities", "touch_observe", &wants) == 0)
+                            && wants) {
+                            inst->synth_touch_observe = 1;
                         }
                     }
                     free(json);
@@ -1666,6 +1678,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             if (inst->midi_fx_wants_sysex[i]) want = 1;
         }
         return snprintf(buf, buf_len, "%d", want);
+    }
+    if (strcmp(key, "touch_observe") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->synth_touch_observe ? 1 : 0);
     }
     if (strcmp(key, "midi_fx:pre_capable") == 0) {
         /* Hint from the loaded MIDI FX's module.json. Aggregated as OR

@@ -578,6 +578,9 @@ int shadow_inprocess_load_chain(void);
 /* Round-robin refresh of per-slot capabilities.wants_sysex. Call once per
  * SPI frame; it advances one slot per call. */
 void shadow_chain_refresh_wants_sysex_tick(void);
+/* Refresh the opt-in direct knob-touch capability alongside other per-slot
+ * cached capabilities. */
+void shadow_chain_refresh_touch_observe_tick(void);
 
 /* --- UI requests --- */
 void shadow_inprocess_handle_ui_request(void);
