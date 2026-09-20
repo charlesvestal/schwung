@@ -19825,6 +19825,10 @@ function openCanvasPreview(paramKey, meta) {
         overlay: null,
         state: {},
         ctx: null,
+        liveKeys: meta && Array.isArray(meta.extra_keys) ? meta.extra_keys.slice(0, 4) : [],
+        liveIntervalMs: meta && Number(meta.fullscreen_live_ms) > 0
+            ? Math.max(50, Number(meta.fullscreen_live_ms)) : 0,
+        lastLiveReadMs: 0,
         error: ""
     };
 
@@ -19867,6 +19871,16 @@ function closeCanvasPreview(cancelled) {
 
 function tickCanvasPreview() {
     if (view !== VIEWS.CANVAS) return;
+    if (canvasRuntime && canvasRuntime.liveIntervalMs && canvasRuntime.liveKeys.length) {
+        const now = Date.now();
+        if (now - canvasRuntime.lastLiveReadMs >= canvasRuntime.liveIntervalMs) {
+            canvasRuntime.lastLiveReadMs = now;
+            const values = {};
+            for (const key of canvasRuntime.liveKeys)
+                values[key] = canvasRuntime.ctx.getParam(key);
+            invokeCanvasOverlayHook("onValues", { values, nowMs: now });
+        }
+    }
     invokeCanvasOverlayHook("tick", {});
 }
 
