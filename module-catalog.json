@@ -2226,6 +2226,18 @@
       "default_branch": "main",
       "asset_name": "simian-module.tar.gz",
       "min_host_version": "1.3.0"
+    },
+    {
+      "id": "trance-gate",
+      "name": "Trance Gate",
+      "description": "Rhythmic step gate locked to song position — pattern drawn on the pads, per-step ADSR, ties, 8 slots",
+      "author": "graebe",
+      "component_type": "audio_fx",
+      "subcategory": "modulation",
+      "github_repo": "graebe/schwung-trance-gate",
+      "default_branch": "main",
+      "asset_name": "trance-gate-module.tar.gz",
+      "min_host_version": "1.3.0"
     }
   ]
 }
