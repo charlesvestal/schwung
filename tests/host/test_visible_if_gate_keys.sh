@@ -71,13 +71,29 @@ Promise.all([
     if (bare === "engine") return engine;
     return values[bare] !== undefined ? values[bare] : null;
   };
-  const visible = (cond) => !cond || !cond.param ? true
-         : (String(cond.param).endsWith("engine") ? String(cond.equals) === engine : true);
+  /*
+   * THE EVALUATOR CONSULTS THE CONTROLLER\x27S CACHE FIRST, then falls back to a
+   * read — paramPagesCachedValue() then getSlotParamCached() in shadow_ui.js.
+   * Modelled faithfully here, and it is the whole point of the test: a fake
+   * that reads the device variable directly would follow the gate whether or
+   * not the controller ever read it, and would pass on main.
+   */
+  const live = { c: null };
+  const visible = (cond) => {
+    if (!cond || !cond.param) return true;
+    if (!String(cond.param).endsWith("engine")) return true;
+    const cached = live.c && live.c.state && live.c.state.values
+                 ? live.c.state.values.engine : undefined;
+    const v = cached !== undefined ? cached : engine;   /* cache, then read */
+    return String(cond.equals) === String(v);
+  };
 
   const reads = [];
   const io = { getParam: serve(hierarchy, reads), setParam: () => {}, visible };
+  engine = "0";
 
   const c = C.createController(io);
+  live.c = c;
   c.load({ slot: 0, component: "synth", prefix: "synth", visible });
   for (let i = 0; i < 5; i++) c.tick();
 
@@ -86,19 +102,100 @@ Promise.all([
     fail("the first plan should show Drum and not Cym, got: " + names());
   console.log("  ok  a gate with no cell still decides the first page set");
 
-  /* ---- 1 + 2: the gate is read off-page, and a change re-plans ---------- */
+  /* ---- 1: IDLE COSTS NOTHING ------------------------------------------
+     A gate whose value only moves because of a write from THIS grid already
+     re-plans through the write path, and the planner reads whatever else it
+     needs on demand. Polling every condition key would spend stops refreshing
+     values that were already right — echidna-fx has ~72 of them behind one
+     Cat knob — and slow the knobs sharing the rotation for nothing. */
   reads.length = 0;
   for (let i = 0; i < 40; i++) c.tick();
-  if (reads.indexOf("engine") < 0)
-    fail("the gate key was never read: " + [...new Set(reads)].join(","));
-  console.log("  ok  a gate key with no cell joins the page read rotation");
+  if (reads.indexOf("engine") >= 0)
+    fail("an idle grid polled the gate — it should be an EVENT, not a poll");
+  console.log("  ok  an idle grid does not poll gate keys");
 
-  engine = "1";
-  let swapped = false;
-  for (let i = 0; i < 60 && !swapped; i++) { c.tick(); swapped = /Cym/.test(names()); }
-  if (!swapped) fail("the page set never followed the gate, still: " + names());
-  if (/Drum/.test(names())) fail("the drum level should be gone, got: " + names());
-  console.log("  ok  a change to the gate re-plans the page set");
+  /* ---- 2b: A PAD PRESS DOES NOT WAIT FOR ITS TURN --------------- */
+  /* Once a pass is a fifth of a second on a full page — fine for a refresh,
+     far too slow for "I hit a hat, show me the hat pages", which is the whole
+     gesture an off-page gate serves. The vouch prioritises the next stop. */
+  {
+    /* A FULL page, deliberately. With two cells the ordinary rotation comes
+       round every four ticks and would pass this on its own — the whole point
+       is the page where waiting for your turn is slow. */
+    const big = ["k1","k2","k3","k4","k5","k6","k7","k8"];
+    const h3 = JSON.parse(JSON.stringify(hierarchy));
+    h3.focus_press_param = "live_press";
+    h3.levels.mix.knobs = big;
+    const cp3 = chainParams.concat(big.map((k) => (
+      { key: k, name: k, type: "int", min: 0, max: 100, default: 50 })));
+    for (const k of big) values[k] = "50";
+    engine = "0";
+    const reads3 = [];
+    const serve3 = (k) => {
+      const bare = k.indexOf(":") >= 0 ? k.slice(k.indexOf(":") + 1) : k;
+      reads3.push(bare);
+      if (bare === "ui_hierarchy") return JSON.stringify(h3);
+      if (bare === "chain_params") return JSON.stringify(cp3);
+      if (bare === "engine") return engine;
+      return values[bare] !== undefined ? values[bare] : null;
+    };
+    const c3 = C.createController({ getParam: serve3, setParam: () => {}, visible });
+    live.c = c3;
+    c3.load({ slot: 0, component: "synth", prefix: "synth", visible });
+    for (let i = 0; i < 60; i++) c3.tick();
+    if (!/Drum/.test(c3.state.pages.map((p) => p.name).join(" ")))
+      fail("setup: expected the drum pages");
+
+    /* Measure the READ, not the page swap. The swap can also come from a
+       periodic re-plan, whose evaluator falls back to a device read on a cache
+       miss — so timing the swap would pass with or without the priority stop.
+       Ticks-until-the-gate-is-read isolates exactly the thing being claimed. */
+    engine = "1";
+    const t0 = reads3.length;
+    if (!c3.vouchLivePress()) fail("the vouch was not taken — focus_press_param not seen");
+    let ticks = 0, sawGate = false;
+    while (ticks < 40 && !sawGate) {
+      c3.tick(); ticks++;
+      sawGate = reads3.slice(t0).indexOf("engine") >= 0;
+    }
+    if (!sawGate) fail("the gate was never read after the press");
+    /* The read lands on one tick and the re-plan it triggers on the next. */
+    c3.tick();
+    const names3 = () => c3.state.pages.map((p) => p.name).join(" ");
+    if (!/Cym/.test(names3())) fail("the pages did not follow the press: " + names3());
+    if (/Drum/.test(names3())) fail("the drum pages should be gone: " + names3());
+    console.log("  ok  the pages follow a pad press (gate read in " + ticks + " tick(s))");
+
+    /* ⚠ THE PRIORITY ITSELF IS PINNED AT THE SOURCE, not by timing.
+     *
+     * A fake device answers instantly, so "how many ticks" here measures the
+     * harness, not the rotation: the assertion passed with the priority stop
+     * REMOVED, which is exactly the kind of test that reports a feature it is
+     * not exercising. On the device the gate would wait its turn — a full
+     * rotation, ~200ms on a page of eight — and that is the cost this buys
+     * back. Same approach as test_grid_visible_if_context.sh: the ordering is
+     * the contract, so the contract is what gets checked. */
+    const pc = require("fs").readFileSync("src/shared/param_pages/page_controller.mjs", "utf8");
+    if (!/function vouchLivePress\(\)[\s\S]{0,1200}s\.gatesDue = true/.test(pc))
+      fail("a live pad press does not mark the gates due");
+    const iDue = pc.indexOf("if (s.gatesDue)");
+    const iWarm = pc.indexOf("const warm = neighbourPrefetch");
+    if (iDue < 0) fail("there is no gates-due stop");
+    if (!(iDue < iWarm)) fail("the gates-due stop does not run BEFORE the ordinary rotation stop");
+    if (!/s\.gatesDue = false/.test(pc))
+      fail("the gates-due flag is never cleared — every tick would be spent on gates");
+    console.log("  ok  a press marks the gates due, and that stop is served before the ordinary rotation");
+
+    /* The OTHER outside event: the module moves its own focus. A pad hit with
+       no transport running moves focus by the note, not the vouch, so pinning
+       only the press would leave that path dead. */
+    const iSync = pc.indexOf("function syncChildIndexFromModule");
+    const iDue2 = pc.indexOf("s.gatesDue = true", iSync);
+    const iEnd = pc.indexOf("\n    }", iSync);
+    if (iSync < 0 || iDue2 < 0 || iDue2 > iEnd)
+      fail("the module moving its own focus does not mark the gates due");
+    console.log("  ok  the module moving its own focus marks the gates due too");
+  }
 
   /* ---- 3: a gate that IS a cell is not read twice ----------------------- */
   const h2 = JSON.parse(JSON.stringify(hierarchy));
@@ -106,6 +203,7 @@ Promise.all([
   engine = "0";
   const reads2 = [];
   const c2 = C.createController({ getParam: serve(h2, reads2), setParam: () => {}, visible });
+  live.c = c2;
   c2.load({ slot: 0, component: "synth", prefix: "synth", visible });
   for (let i = 0; i < 5; i++) c2.tick();
   reads2.length = 0;
@@ -154,6 +252,6 @@ Promise.all([
     fail("a gate key was reported as unreachable: " + un.map((f) => f.message).join(" | "));
   console.log("  ok  a gate key is not reported as unreachable");
 
-  console.log("PASS: visible_if gate keys — a gate with no cell is read, re-plans the page set, is capped by the shared constant, and is not called unreachable");
+  console.log("PASS: visible_if gate keys — an off-page gate is read when something OUTSIDE the grid moves (a press, or the module\x27s own focus), never on an idle poll; the first plan resolves against the grid; a gate is not called unreachable");
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '

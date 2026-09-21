@@ -790,6 +790,10 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* A pad press just told us the module's mode may have moved — spend
+         * the next rotation stop on the gates rather than waiting for their
+         * turn. See vouchLivePress and the gate lane. */
+        gatesDue: false,
         /* A write touched a condition key; tick() owes one plan. Coalesced
          * because an encoder sweep is a burst of writes and each one used to
          * buy a full planPages. */
@@ -1831,6 +1835,10 @@ export function createController(io = {}) {
         if (i === null) return;                 /* tri-state: not an answer */
         if (i === childIndexFor(name)) return;  /* already there */
         s.childIndex[name] = i;
+        /* The module moved its own focus — a pad was hit, a preset loaded.
+         * Whatever its mode is gated on may have moved with it, and unlike a
+         * knob turn nothing on this grid wrote anything. See the gate stop. */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         dropChildLevelCache(name);
     }
 
@@ -1888,6 +1896,21 @@ export function createController(io = {}) {
         const k = livePressParam();
         if (!k) return false;
         setParam(`${s.prefix}:${k}`, "1");
+        /*
+         * ⭑ A PAD PRESS IS THE EVENT A GATE IS MOST LIKELY WAITING FOR.
+         *
+         * A gate read on the ordinary rotation gets its turn once a pass — a
+         * fifth of a second on a full page. That is fine for a refresh and
+         * far too slow for "I hit a hat, show me the hat's pages", which is
+         * the gesture the off-page gate exists to serve.
+         *
+         * This buys the latency back for nothing: it does not add a read, it
+         * PRIORITISES one. The next stop is spent on a gate instead of on the
+         * next knob value, so the answer lands in about a tick, and the knob
+         * it displaced simply comes round next time. The rotation is a refresh
+         * loop, not a sequence with meaning.
+         */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         return true;
     }
 
@@ -2264,68 +2287,54 @@ export function createController(io = {}) {
             }
         }
         /*
-         * A GATE KEY IS READ EVEN THOUGH IT HAS NO CELL.
+         * A GATE KEY IS READ WHEN SOMETHING OUTSIDE THE GRID MOVED.
          *
-         * `visible_if` hides a level whose condition is false, and the re-plan
-         * that reveals it again is driven by the condition's value CHANGING --
-         * which the controller only ever notices for keys it reads. Read what
-         * is on the page and nothing else, and a gate the user cannot turn is
-         * a gate that never moves: the page set is decided once, at entry, and
-         * frozen. A module whose mode lives outside the grid (a drum machine
-         * where the pad you hit selects a voice, and two voice types want
-         * different pages) could declare a perfectly correct visible_if and
-         * watch it do nothing.
+         * `visible_if` hides a level or a cell whose condition is false, and
+         * the re-plan that brings it back is driven by the condition's value
+         * CHANGING -- which the controller only notices for keys it reads.
          *
-         * So the gates join the SAME bounded rotation the canvas extras use.
-         * They are already deduped against the page's own cells above, and a
-         * gate that IS a cell costs nothing extra -- it is read anyway, and
-         * acceptValue re-plans on it. The cap is the SAME four the declared
-         * extras get, for the same measured reason: one read per stop, so an
-         * uncapped lane starves the knobs it shares the rotation with.
-         * `conditionKeys` comes from the planner's
-         * pre-pass over EVERY level, including the ones currently hidden, so a
-         * level that is off can still be switched back on.
+         * ⚠ IT IS AN EVENT, NOT A POLL, and that distinction is the whole
+         * design. A gate whose value only ever changes BECAUSE OF A WRITE
+         * FROM THIS GRID already re-plans: the write path calls
+         * replanIfCondition, and the planner's evaluator reads whatever else
+         * it needs on demand. echidna-fx is built that way -- 18 derived
+         * flags per slot, all downstream of one Cat knob that IS a cell --
+         * and polling its ~72 condition keys would spend four stops a page
+         * refreshing values that were already correct, slowing the knobs it
+         * shares the rotation with for nothing.
+         *
+         * What has no path today is a gate that moves with NO grid
+         * interaction at all: a module whose mode lives outside the grid,
+         * where the pad you hit selects the voice and two voice types want
+         * different pages. So the gates are marked due exactly when the grid
+         * learns of such a move -- a live pad press (vouchLivePress) or the
+         * module's own focus changing (syncChildIndexFromModule) -- and are
+         * read one per tick from the next stop. Idle, this costs nothing at
+         * all.
+         *
+         * `conditionKeys` comes from the planner's pre-pass over EVERY level,
+         * including hidden ones, so a level that is off can come back on.
          */
-        if (s.conditionKeys && s.conditionKeys.size) {
+        if (s.gatesDue) {
+            const due = [];
             for (const k of s.conditionKeys) {
-                if (!k || extraKeys.indexOf(k) >= 0) continue;
-                if (p.keys.indexOf(k) >= 0) continue;
-                if (extraKeys.length >= MAX_DECLARED_EXTRA_KEYS) break;
-                extraKeys.push(k);
+                if (!k || p.keys.indexOf(k) >= 0) continue;   /* a cell is read anyway */
+                due.push(k);
+                if (due.length >= MAX_DECLARED_EXTRA_KEYS) break;
+            }
+            const k = due[s.gateAt || 0];
+            if (!k) { s.gatesDue = false; s.gateAt = 0; }
+            else {
+                s.gateAt = (s.gateAt || 0) + 1;
+                if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
+                const gv = getParam(fullKey(k));
+                const before = s.values[k];
+                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                if (s.values[k] !== before) replanIfCondition(k);
+                return null;
             }
         }
-        /*
-         * THE NEIGHBOUR LANE — why the incoming page arrives populated.
-         *
-         * The rotation serves one key per tick, so a page of 8 knobs takes ~9
-         * ticks (~200ms) to fill. Jog to it and you watch it populate a cell at
-         * a time. This spends a stop on a key belonging to page ±1 that is not
-         * yet cached, so by the time you arrive it is already there.
-         *
-         * It PAIRS with observeLanded rather than replacing it. This stops the
-         * cells arriving one by one; that stops what arrives from animating.
-         * Neither covers the other: a warm page still has to not animate in
-         * (the lane cannot reach a component`s FIRST page — nothing is adjacent
-         * to a page set that does not exist yet), and a page that does not
-         * animate still fills in slowly without this.
-         *
-         * Bounded by construction: only UNCACHED keys, only the two adjacent
-         * pages, so it goes quiet on its own and stays quiet. A lane that kept
-         * reading would cost ~2.8ms per tick — more than the 1.68ms whole-page
-         * render it decorates — which is why the test counts reads rather than
-         * checking that the values are present. "The values are there" passes
-         * just as well with a lane that never stops.
-         *
-         * The stop is CONDITIONAL, so a warm neighbourhood costs nothing at
-         * all. That makes `stops` change by one as the lane opens and closes,
-         * which shifts `at` by one for a tick. Harmless: the rotation is a
-         * refresh loop, not a sequence with meaning — a key merely gets its
-         * turn one tick early or late.
-         *
-         * Blocking at jog time was rejected: up to eight uncached keys is
-         * ~22ms of dead time on a page's first visit, a visible hitch on the
-         * exact gesture this exists to smooth.
-         */
+
         const warm = neighbourPrefetch(p);
         const stops = p.keys.length + 1 + extraKeys.length + (warm ? 1 : 0);
         const at = s.cursor % stops;

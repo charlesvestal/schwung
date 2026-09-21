@@ -1698,10 +1698,17 @@ shape for a multi-engine instrument: a drum machine where the pad you hit
 selects the voice, and a cymbal wants different pages from a drum, publishes
 `ui_engine` and gates its two page sets on it.
 
-The gate keys of the WHOLE hierarchy are read, not just those of the level you
-are standing on — a level that is currently hidden must be able to come back.
-They share the cap and the budget of a canvas page's `extra_keys`: at most four
-per page, one read per stop.
+**It is an event, not a poll.** A gate whose value only moves because of a
+write from the grid already re-plans — the write path does it, and the planner
+reads whatever else the condition needs on demand. Nothing extra is read for
+those, so a module gated on one of its own knobs costs exactly what it costs
+today. The gates are read only when the grid learns of a move it did not
+cause: a live pad press, or the module changing its own focus.
+
+When that happens the gate keys of the WHOLE hierarchy are eligible, not just
+those of the level you are standing on — a level that is currently hidden must
+be able to come back. They share the cap and the budget of a canvas page's
+`extra_keys`: at most four, one read per stop.
 
 `validate.mjs` does not report a gate as `unreachable-params`. Having no cell
 is what it is for, and giving one to a derived value would only let the player
