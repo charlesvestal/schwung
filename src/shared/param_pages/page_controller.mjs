@@ -41,7 +41,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
          W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
+import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
@@ -2264,6 +2264,37 @@ export function createController(io = {}) {
             }
         }
         /*
+         * A GATE KEY IS READ EVEN THOUGH IT HAS NO CELL.
+         *
+         * `visible_if` hides a level whose condition is false, and the re-plan
+         * that reveals it again is driven by the condition's value CHANGING --
+         * which the controller only ever notices for keys it reads. Read what
+         * is on the page and nothing else, and a gate the user cannot turn is
+         * a gate that never moves: the page set is decided once, at entry, and
+         * frozen. A module whose mode lives outside the grid (a drum machine
+         * where the pad you hit selects a voice, and two voice types want
+         * different pages) could declare a perfectly correct visible_if and
+         * watch it do nothing.
+         *
+         * So the gates join the SAME bounded rotation the canvas extras use.
+         * They are already deduped against the page's own cells above, and a
+         * gate that IS a cell costs nothing extra -- it is read anyway, and
+         * acceptValue re-plans on it. The cap is the SAME four the declared
+         * extras get, for the same measured reason: one read per stop, so an
+         * uncapped lane starves the knobs it shares the rotation with.
+         * `conditionKeys` comes from the planner's
+         * pre-pass over EVERY level, including the ones currently hidden, so a
+         * level that is off can still be switched back on.
+         */
+        if (s.conditionKeys && s.conditionKeys.size) {
+            for (const k of s.conditionKeys) {
+                if (!k || extraKeys.indexOf(k) >= 0) continue;
+                if (p.keys.indexOf(k) >= 0) continue;
+                if (extraKeys.length >= MAX_DECLARED_EXTRA_KEYS) break;
+                extraKeys.push(k);
+            }
+        }
+        /*
          * THE NEIGHBOUR LANE — why the incoming page arrives populated.
          *
          * The rotation serves one key per tick, so a page of 8 knobs takes ~9
@@ -2412,7 +2443,15 @@ export function createController(io = {}) {
             const ek = extraKeys[at - p.keys.length - 1];
             if (!ek) return null;
             const ev = getParam(fullKey(ek));
+            const was = s.values[ek];
             if (ev !== null && ev !== undefined) s.values[ek] = ev;
+            /* This lane stores straight into s.values rather than going
+             * through acceptValue -- see the tri-state note above, which is
+             * deliberately different here. So the condition re-plan, which
+             * acceptValue would otherwise have fired, is made explicitly. A
+             * gate read on this lane is the whole reason a level hidden by
+             * `visible_if` can ever come back. */
+            if (s.values[ek] !== was) replanIfCondition(ek);
             return null;
         }
         const key = p.keys[at];

@@ -1689,6 +1689,24 @@ Supported condition fields:
 
 Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
+#### The gate does not need a cell
+
+A condition's `param` is read on the page's own staggered rotation whether or
+not it has a knob, so **a gate may be a value the player never turns** — a
+derived mode the module publishes and refuses writes to. That is the normal
+shape for a multi-engine instrument: a drum machine where the pad you hit
+selects the voice, and a cymbal wants different pages from a drum, publishes
+`ui_engine` and gates its two page sets on it.
+
+The gate keys of the WHOLE hierarchy are read, not just those of the level you
+are standing on — a level that is currently hidden must be able to come back.
+They share the cap and the budget of a canvas page's `extra_keys`: at most four
+per page, one read per stop.
+
+`validate.mjs` does not report a gate as `unreachable-params`. Having no cell
+is what it is for, and giving one to a derived value would only let the player
+disagree with whatever derives it.
+
 ### Parameter visualisations (`viz`)
 
 A knob page can draw a parameter *group* as a picture instead of separate
