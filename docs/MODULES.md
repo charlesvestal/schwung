@@ -1710,6 +1710,11 @@ those of the level you are standing on — a level that is currently hidden must
 be able to come back. They share the cap and the budget of a canvas page's
 `extra_keys`: at most four, one read per stop.
 
+**Four counts distinct gate PARAMS, not values or levels.** A drum machine
+with ten engines publishes one `ui_engine` taking ten values and gates every
+engine's pages on it — that is one key, however many levels read it. The cap
+only binds a module with more than four *independent* modes.
+
 `validate.mjs` does not report a gate as `unreachable-params`. Having no cell
 is what it is for, and giving one to a derived value would only let the player
 disagree with whatever derives it.
