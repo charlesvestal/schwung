@@ -28,7 +28,9 @@
  *
  *  - It cannot abandon an utterance. Interruption is a GENERATION: speak()
  *    bumps req_gen before publishing text, the callback answers eciDataAbort
- *    for any stale generation, the worker calls eciStop, and the reader
+ *    for any stale generation, the worker waits for the engine to finish the
+ *    message it is on (never eciStop -- a cross-thread stop crashed the
+ *    device; see worker_speak), and the reader
  *    holds silence until the worker publishes where the new utterance's
  *    audio starts in the ring, then jumps there.
  */
@@ -84,7 +86,6 @@ typedef void (*eci_register_callback_fn)(ECIHand, ECICallback, void *);
 typedef int (*eci_add_text_fn)(ECIHand, const void *);
 typedef int (*eci_synthesize_fn)(ECIHand);
 typedef int (*eci_speaking_fn)(ECIHand);
-typedef int (*eci_stop_fn)(ECIHand);
 typedef int (*eci_copy_voice_fn)(ECIHand, int, int);
 typedef int (*eci_set_voice_param_fn)(ECIHand, int, int, int);
 
@@ -98,7 +99,6 @@ static struct {
     eci_add_text_fn AddText;
     eci_synthesize_fn Synthesize;
     eci_speaking_fn Speaking;
-    eci_stop_fn Stop;
     eci_copy_voice_fn CopyVoice;
     eci_set_voice_param_fn SetVoiceParam;
 } eci;
@@ -129,7 +129,6 @@ static bool openevv_load_library(void) {
     RESOLVE(AddText, "eciAddText");
     RESOLVE(Synthesize, "eciSynthesize");
     RESOLVE(Speaking, "eciSpeaking");
-    RESOLVE(Stop, "eciStop");
     RESOLVE(CopyVoice, "eciCopyVoice");
     RESOLVE(SetVoiceParam, "eciSetVoiceParam");
 #undef RESOLVE
@@ -335,17 +334,18 @@ static void worker_speak(ECIHand h, const text_slot_t *slot) {
         return;
     }
 
+    /* NEVER eciStop here. It unwinds the engine from THIS thread while the
+     * rules are mid-walk on the engine's own, which openevv documents as not
+     * correct (docs/status.md, "a landing place jumped to from a thread that
+     * never planted it") -- on the device it was a SIGSEGV with a garbage pc
+     * on the engine's 128 KB thread stack, taking MoveOriginal with it, when
+     * the jog outran the speech. The callback already answers eciDataAbort
+     * for a stale generation, ON the engine's thread, and all three ways of
+     * cancelling cost the same because each waits for the current message to
+     * finish (docs/api.md, "Waiting and stopping"). So just wait. */
     const struct timespec tick = { 0, 5 * 1000 * 1000 };
-    bool stopped = false;
-    while (eci.Speaking(h)) {
-        if (!stopped &&
-            (gen != atomic_load_explicit(&req_gen, memory_order_acquire) ||
-             !atomic_load_explicit(&want_active, memory_order_acquire))) {
-            eci.Stop(h);                   /* finishes the current message */
-            stopped = true;
-        }
+    while (eci.Speaking(h))
         nanosleep(&tick, NULL);
-    }
 }
 
 static void *openevv_worker(void *arg) {
@@ -359,7 +359,8 @@ static void *openevv_worker(void *arg) {
             h = worker_open();
             applied_preset = -1;
         } else if (!active && h != NULL_ECI_HAND) {
-            eci.Stop(h);
+            /* No eciStop -- see worker_speak. want_active is already false,
+             * so the callback is answering eciDataAbort; wait it out. */
             while (eci.Speaking(h)) {
                 const struct timespec t = { 0, 5 * 1000 * 1000 };
                 nanosleep(&t, NULL);
