@@ -433,8 +433,9 @@ export function createDisplay() {
          * @param {function} frameBytes  () -> 1024-byte framebuffer. Called
          *        ONLY when a repaint is actually going out, so a caller can
          *        render lazily and a tick that owes nothing costs no drawing.
-         * @returns {"framebuffer"|"rings"|null} what went out, for tests and
-         *        for a caller that wants to log its send budget.
+         * @returns {"framebuffer"|"labels"|"rings"|"rect"|"scanline"|null}
+         *        what went out, for tests and for a caller that wants to log
+         *        its send budget.
          */
         tick(send, frameBytes, screen, nowMs) {
             const want = screen ? screen.kind : "framebuffer";
@@ -516,7 +517,9 @@ export function createDisplay() {
             return shownAt === null || nowMs === undefined ? null : nowMs - shownAt;
         },
         /* A replug wipes the panel, so what the device was told is no longer
-         * true. Forgetting it is what makes the presence edge resend. */
+         * true. Forgetting it is what makes the presence edge resend. If the
+         * mode itself is still trustworthy and only the PIXELS are suspect,
+         * invalidateBuf() below is the narrower tool -- see its comment. */
         forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
         /* Something happened that means what we BELIEVE is on the device
          * might be wrong, even though our own rendered content hasn't
@@ -1498,6 +1501,14 @@ export function createSurface(io) {
             const age = display.screenAge(t);
             if (age !== null && age >= SCREEN_HEARTBEAT_MS &&
                 settlePainted && !display.ringsPending) {
+                /* invalidateBuf() FIRST: this repaint's whole job is to
+                 * resend content that, as far as OUR buffer is concerned,
+                 * has not changed at all -- that is what a repair is. Every
+                 * other invalidate() call site in this file is fine leaving
+                 * lastSentBuf alone, because their content genuinely IS
+                 * different; without this line the diff engine would see no
+                 * difference here and correctly (for a real change) send
+                 * nothing, silently turning this heartbeat into a no-op. */
                 display.invalidateBuf();
                 display.invalidate();
             }
