@@ -345,7 +345,9 @@ export function createSysexAssembler(opts) {
  * caller's, so tests drive the whole thing with no device.
  * ---------------------------------------------------------------------------
  */
-import { framebufferMsg, labelsMsg, ringMsg } from "./e16_protocol.mjs";
+import { framebufferMsg, labelsMsg, ringMsg, scanlineMsg, rectangleMsg } from "./e16_protocol.mjs";
+import { diffFramebuffers } from "./e16_diff.mjs";
+import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
 
 export function createDisplay() {
     let fbOwed = false;
@@ -362,6 +364,28 @@ export function createDisplay() {
      * transition visible -- the same shape as the presence edge, one layer in.
      */
     let shownKind = null;
+    /*
+     * PARTIAL-UPDATE STATE. Built against a draft spec -- see
+     * docs/superpowers/specs/2026-09-22-e16-partial-oled-updates-design.md.
+     *
+     * lastSentBuf: what we believe the device's pixel buffer currently
+     * shows, or null if unknown (never shown a framebuffer-mode screen yet,
+     * or the device's state was invalidated -- a replug via forgetShown(),
+     * or a NACK). Only advances on a CONFIRMED emit, same discipline as
+     * fbOwed/shownKind above: a refused send must not update what we
+     * believe is on the device.
+     *
+     * pendingRegions / pendingBuf: a diff can describe up to MAX_REGIONS
+     * small updates, and this file's own "at most one message per tick"
+     * rule (see the PACED DISPLAY block above) means they can't all go out
+     * at once. pendingBuf is the buffer the pending regions were computed
+     * against -- later regions are packed from IT, not from a freshly
+     * re-rendered buffer, so a mid-drain repaint elsewhere in the surface
+     * can't invalidate the geometry of a region already queued.
+     */
+    let lastSentBuf = null;
+    let pendingRegions = [];
+    let pendingBuf = null;
     /* When the last screen actually went out, for the heartbeat below. */
     let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
@@ -413,45 +437,74 @@ export function createDisplay() {
          *        for a caller that wants to log its send budget.
          */
         tick(send, frameBytes, screen, nowMs) {
-            /*
-             * A screen is owed when the surface says so OR when the device is
-             * in the wrong MODE for what is being shown. The second half is
-             * not an optimisation: without it, dismissing the map leaves the
-             * framebuffer on the panel with every later value change going out
-             * as rings nobody can read a name for.
-             */
             const want = screen ? screen.kind : "framebuffer";
-            if (fbOwed || shownKind !== want) {
-                /* Rings deliberately wait: see rule 1. The screen is the
-                 * expensive send and it goes out alone. */
-                const bytes = want === "labels"
-                    ? labelsMsg(screen.title, screen.labels)
-                    : framebufferMsg(frameBytes());
-                if (emitMsg(send, bytes)) {
-                    fbOwed = false;
+            const screenOwed = fbOwed || pendingRegions.length > 0 || shownKind !== want;
+            if (!screenOwed) {
+                if (!rings.size) {
+                    if (!labelsOwed || want !== "labels") return null;
+                    if (!emitMsg(send, labelsMsg(screen.title, screen.labels))) return null;
                     labelsOwed = false;
-                    shownKind = want;
-                    /* Stamped on a COMPLETED send, which is what the
-                     * self-heal heartbeat measures its age from. A refused
-                     * send must not look like a fresh screen. */
+                    return "labels";
+                }
+                const chunks = Array.from(rings.values());
+                if (!emitMsg(send, ringMsg(chunks))) return null;
+                rings.clear();
+                return "rings";
+            }
+
+            if (want !== "framebuffer") {
+                /* Leaving framebuffer mode (or never entering it this tick)
+                 * -- any queued partial-update state describes a screen the
+                 * device is no longer being asked to show. */
+                pendingRegions = []; pendingBuf = null; lastSentBuf = null;
+                const bytes = labelsMsg(screen.title, screen.labels);
+                if (emitMsg(send, bytes)) {
+                    fbOwed = false; labelsOwed = false; shownKind = want;
                     if (nowMs !== undefined) shownAt = nowMs;
                     return want;
                 }
                 return null;
             }
-            if (!rings.size) {
-                if (!labelsOwed || want !== "labels") return null;
-                if (!emitMsg(send, labelsMsg(screen.title, screen.labels))) return null;
-                labelsOwed = false;
-                return "labels";
+
+            if (shownKind !== "framebuffer") {
+                /* Switching INTO framebuffer mode -- the device's last known
+                 * pixel state, if any, belongs to a mode we've left (or this
+                 * is the very first paint). A diff against it would describe
+                 * a screen that was never drawn. */
+                pendingRegions = []; pendingBuf = null; lastSentBuf = null;
             }
-            const chunks = Array.from(rings.values());
-            if (!emitMsg(send, ringMsg(chunks))) return null;
-            /* Cleared only on an ACCEPTED send. A refused ring message leaves
-             * the positions owed -- the same reason the lifecycle latches an
-             * owed EXIT rather than trusting the send. */
-            rings.clear();
-            return "rings";
+
+            if (pendingRegions.length === 0) {
+                const buf = frameBytes();
+                const diff = diffFramebuffers(lastSentBuf, buf);
+                if (diff.kind === "none") {
+                    fbOwed = false;
+                    shownKind = "framebuffer";
+                    return null;
+                }
+                if (diff.kind === "full") {
+                    if (!emitMsg(send, framebufferMsg(buf))) return null;
+                    fbOwed = false; shownKind = "framebuffer"; lastSentBuf = buf.slice();
+                    if (nowMs !== undefined) shownAt = nowMs;
+                    return "framebuffer";
+                }
+                pendingBuf = buf.slice();
+                pendingRegions = diff.regions.slice();
+                fbOwed = false;
+            }
+
+            const region = pendingRegions[0];
+            const bytes = region.kind === "scanline"
+                ? scanlineMsg(region.y, packRowMajor(pendingBuf, 0, region.y, E16_WIDTH, 1))
+                : rectangleMsg(region.x, region.y, region.w, region.h,
+                                packRowMajor(pendingBuf, region.x, region.y, region.w, region.h));
+            if (!emitMsg(send, bytes)) return null;
+            pendingRegions.shift();
+            shownKind = "framebuffer";
+            lastSentBuf = pendingBuf.slice();
+            if (nowMs !== undefined) shownAt = nowMs;
+            if (pendingRegions.length === 0) pendingBuf = null;
+            return region.kind;
         },
 
         /* Test seams. */
@@ -464,7 +517,17 @@ export function createDisplay() {
         },
         /* A replug wipes the panel, so what the device was told is no longer
          * true. Forgetting it is what makes the presence edge resend. */
-        forgetShown() { shownKind = null; },
+        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
+        /* Something happened that means what we BELIEVE is on the device
+         * might be wrong, even though our own rendered content hasn't
+         * changed -- an OLED UPDATE NACK (a later task), or a heartbeat
+         * repair (this file's own SCREEN_HEARTBEAT_MS: it exists to RESEND
+         * identical content because we don't trust the WIRE, only our own
+         * buffer). Narrower than forgetShown(): the device is still
+         * believed to be in framebuffer mode (shownKind untouched), only
+         * the PIXELS are suspect -- the next diff sees prev === null and
+         * sends a full repaint regardless of whether content changed. */
+        invalidateBuf() { lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
         get ringsPending() { return rings.size; },
     };
 }
@@ -1435,6 +1498,7 @@ export function createSurface(io) {
             const age = display.screenAge(t);
             if (age !== null && age >= SCREEN_HEARTBEAT_MS &&
                 settlePainted && !display.ringsPending) {
+                display.invalidateBuf();
                 display.invalidate();
             }
 

@@ -188,7 +188,15 @@ const mkSend = (accept) => { const log = [];
   const fn = (p) => { log.push(p); return accept === undefined ? true : accept(); };
   fn.log = log; return fn; };
 
-const frame = () => cv2.toBuffer();
+/* A mutable reference, not a bare `() => cv2.toBuffer()`, ONLY so the
+ * "navigation" block below can make `frame()` return genuinely different
+ * pixels between the priming send and the next one (a real navigation
+ * always redraws different content; this fixture otherwise never does).
+ * Every other call site below still sees the SAME bytes cv2 always held --
+ * this starts out pointing at exactly what `cv2.toBuffer()` returns and is
+ * never reassigned except by that one block. */
+let frameBuf = cv2.toBuffer();
+const frame = () => frameBuf;
 
 /*
  * THE DISPLAY IS A MODE MACHINE NOW, so every one of these starts by putting
@@ -228,6 +236,12 @@ eq("twenty detents on one encoder are one chunk each",
 /* Navigation is ONE framebuffer however many times it is asked for. */
 d = createDisplay(); send = mkSend();
 prime(d, send, PICTURE);
+/* A real navigation redraws different pixels; invert the whole screen so
+ * the diff engine sees a real, screen-spanning change (well past
+ * FULL_REPAINT_THRESHOLD) rather than "unchanged content" -- otherwise the
+ * new diff-aware tick() correctly sends nothing, which is not what this
+ * test is about. */
+frameBuf = frameBuf.map((b) => b ^ 0xFF);
 d.invalidate(); d.invalidate(); d.invalidate();
 eq("navigation sends a framebuffer", d.tick(send, frame, PICTURE), "framebuffer");
 eq("three invalidations are one repaint", send.log.length, 1);
@@ -376,6 +390,95 @@ prime(d, send, TEXT);
 d.ringChanged(ringFor(v, 8));
 eq("rings pending is visible to the caller that gates the heartbeat",
    d.ringsPending, 1);
+
+/* --------------------------------------------------------------------------
+ * PARTIAL OLED UPDATES. Built against a draft spec, not yet on hardware --
+ * see docs/superpowers/specs/2026-09-22-e16-partial-oled-updates-design.md.
+ * These are unit-level: a fresh createDisplay(), fake send/frameBytes, no
+ * device.
+ * ---------------------------------------------------------------------- */
+{
+  const WIDTH = 128, HEIGHT = 64;
+  const setPx = (buf, x, y) => { buf[(y >> 3) * WIDTH + x] |= (1 << (y & 7)); };
+  const mkSend = () => { const log = []; const fn = (p) => { if (fn.refuse) return false; log.push(p); return true; }; fn.log = log; fn.refuse = false; return fn; };
+  const unpackMsgId = (packets) => {
+    const out = [];
+    for (let i = 0; i < packets.length; i += 4) {
+      const cin = packets[i] & 0x0F; const n = cin === 0x05 ? 1 : cin === 0x06 ? 2 : 3;
+      for (let b = 0; b < n; b++) out.push(packets[i + 1 + b]);
+    }
+    return out.slice(6, 7);   /* the single id byte, per OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX=false */
+  };
+
+  const d1 = createDisplay();
+  const send1 = mkSend();
+  let buf1 = new Uint8Array(1024);
+  const frameBytes1 = () => buf1;
+  d1.invalidate();
+  const first = d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 0);
+  eq("first paint (prev unknown) is a full framebuffer", first, "framebuffer");
+
+  buf1 = new Uint8Array(1024);
+  setPx(buf1, 10, 10);
+  d1.invalidate();
+  const second = d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 100);
+  eq("single-pixel diff sends rect, not framebuffer", second, "rect");
+  eq("rect message id byte", unpackMsgId(send1.log[send1.log.length - 1]), [0x06]);
+
+  /* Two-region diff drains across two ticks. */
+  const d2 = createDisplay();
+  const send2 = mkSend();
+  let buf2 = new Uint8Array(1024);
+  const frameBytes2 = () => buf2;
+  d2.invalidate();
+  d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 0);   /* establish baseline */
+  buf2 = new Uint8Array(1024);
+  setPx(buf2, 0, 0);
+  setPx(buf2, WIDTH - 1, HEIGHT - 1);
+  d2.invalidate();
+  const r1 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 100);
+  const r2 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 101);
+  eq("two-region diff: first tick sends one region", r1, "rect");
+  eq("two-region diff: second tick sends the other", r2, "rect");
+  const r3 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 102);
+  eq("two-region diff: third tick has nothing left", r3, null);
+
+  /* A refused send changes nothing. */
+  const d3 = createDisplay();
+  const send3 = mkSend();
+  let buf3 = new Uint8Array(1024);
+  const frameBytes3 = () => buf3;
+  d3.invalidate();
+  d3.tick(send3, frameBytes3, { kind: "framebuffer" }, 0);
+  buf3 = new Uint8Array(1024);
+  setPx(buf3, 5, 5);
+  d3.invalidate();
+  send3.refuse = true;
+  const refused = d3.tick(send3, frameBytes3, { kind: "framebuffer" }, 100);
+  eq("refused send returns null", refused, null);
+  send3.refuse = false;
+  const retried = d3.tick(send3, frameBytes3, { kind: "framebuffer" }, 101);
+  eq("retry after refusal still sends the same diff", retried, "rect");
+
+  /* Switching to labels drops any queued regions and forces a full repaint
+   * on the way back to framebuffer mode. */
+  const d4 = createDisplay();
+  const send4 = mkSend();
+  let buf4 = new Uint8Array(1024);
+  const frameBytes4 = () => buf4;
+  d4.invalidate();
+  d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 0);
+  buf4 = new Uint8Array(1024);
+  setPx(buf4, 0, 0);
+  setPx(buf4, WIDTH - 1, HEIGHT - 1);
+  d4.invalidate();
+  d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 100);   /* first of two regions queued */
+  const toLabels = d4.tick(send4, frameBytes4, { kind: "labels", title: "T", labels: [] }, 101);
+  eq("switch to labels sends labels", toLabels, "labels");
+  d4.invalidate();
+  const backToFb = d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 102);
+  eq("switch back to framebuffer is a full repaint, not a stale region", backToFb, "framebuffer");
+}
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);

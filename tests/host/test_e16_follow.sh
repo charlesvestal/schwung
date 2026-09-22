@@ -51,7 +51,6 @@ const CHAIN = { slots: [
   { synth: "Hera" },
 ] };
 
-const PARAM_INK = (ctx) => { ctx.clear(); ctx.fillRect(0, 0, 128, 3, 1); };
 const mkSend = () => { const log = [];
   const fn = (p) => { log.push(p); return true; }; fn.log = log; return fn; };
 
@@ -63,6 +62,17 @@ function rig(opts) {
    * stands in for whatever shadow_ui.js is showing. The nav reads it; it must
    * never write it, which is rule 3 measured from the other end. */
   const src = { slot: 3, component: "fx1" };
+  /* Closes over `src` so the stub actually draws DIFFERENT pixels when the
+   * followed component differs -- a real renderParams draws the focused
+   * components own screen, so "the source changed" must repaint under the
+   * new diff-aware display too. A width fixed regardless of src.component
+   * (the old version of this stub) made every render byte-identical, which
+   * the diff engine correctly reads as "nothing to send" -- exactly wrong
+   * for what section 7 below is testing. */
+  const PARAM_INK = (ctx) => {
+      ctx.clear();
+      ctx.fillRect(0, 0, ((src.component || "").length + 1) * 8, 3, 1);
+  };
   const nav = createNav({
     display,
     chainOf: () => CHAIN,
