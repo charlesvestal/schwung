@@ -1239,6 +1239,9 @@ export function createSurface(io) {
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
             if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
+            /* invalidateBuf(), not forgetShown(): the device told us the
+             * PIXELS are wrong, not that it forgot what mode it's in --
+             * shownKind stays trusted, only lastSentBuf is suspect. */
             display.invalidateBuf();
             const t = now();
             if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
