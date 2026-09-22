@@ -57,6 +57,39 @@ const c2 = createCanvas();
 eq("textWidth agrees with print", c2.textWidth("cutoff"), c2.textWidth("CUTOFF"));
 eq("textWidth grows with text", c.textWidth("HHHH") > c.textWidth("H"), true);
 
+import { readPixel, packRowMajor } from "./src/shared/e16_canvas.mjs";
+
+/* readPixel must agree with setPixel'\''s own pinned bit positions above. */
+const rc = createCanvas();
+rc.fillRect(0, 0, 1, 1, 1);
+eq("readPixel (0,0)", readPixel(rc.toBuffer(), 0, 0), 1);
+eq("readPixel (0,1) unset", readPixel(rc.toBuffer(), 0, 1), 0);
+rc.clear();
+rc.fillRect(0, 8, 1, 1, 1);
+eq("readPixel (0,8)", readPixel(rc.toBuffer(), 0, 8), 1);
+eq("readPixel out of bounds", readPixel(rc.toBuffer(), 999, 999), 0);
+
+/* packRowMajor: a 2x3 region, MSB-first means bit 7 of byte 0 is the
+ * LEFTMOST column. Light (x=1,y=1) only inside a region starting at (1,1)
+ * of size (w=2,h=3) -> row 0 has bit7 set (leftmost of the region), rows 1-2
+ * are zero. */
+const pc = createCanvas();
+pc.fillRect(1, 1, 1, 1, 1);
+const packed = packRowMajor(pc.toBuffer(), 1, 1, 2, 3);
+eq("packRowMajor length", packed.length, Math.ceil(2 / 8) * 3);
+eq("packRowMajor row 0 (leftmost bit set)", packed[0], 0x80);
+eq("packRowMajor row 1 (empty)", packed[1], 0x00);
+eq("packRowMajor row 2 (empty)", packed[2], 0x00);
+
+/* A full-width row: bit positions run left to right across the whole row. */
+const pc2 = createCanvas();
+pc2.fillRect(0, 0, 1, 1, 1);   /* leftmost column */
+pc2.fillRect(127, 0, 1, 1, 1); /* rightmost column */
+const wide = packRowMajor(pc2.toBuffer(), 0, 0, 128, 1);
+eq("packRowMajor full row length", wide.length, 16);
+eq("packRowMajor leftmost bit", wide[0], 0x80);
+eq("packRowMajor rightmost bit", wide[15], 0x01);
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
