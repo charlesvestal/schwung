@@ -1,0 +1,45 @@
+{
+  "planPath": "docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: E16 protocol layer for partial OLED updates",
+      "status": "pending",
+      "description": "**Goal:** e16_protocol.mjs can build SCANLINE/RECTANGLE/CLEAR and parse OLED UPDATE ACK/NACK, pinned against the spec sheet's example bytes.\n\n**Files:**\n- Modify: src/shared/e16_protocol.mjs\n- Test: tests/host/test_e16_protocol.sh\n\n**Acceptance Criteria:**\n- [ ] scanlineMsg/rectangleMsg/clearMsg build correctly-framed SysEx\n- [ ] parseOledUpdateReply returns {ok,cmd,status,addr} for ACK/NACK, null otherwise (including the unrelated REMOTE MODE ENTERED ACK)\n- [ ] pack7/unpack7 round-trip\n- [ ] OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX is a single named exported constant\n- [ ] tests/host/test_e16_protocol.sh passes\n\n**Verify:** bash tests/host/test_e16_protocol.sh -> PASS\n\nSee docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md Task 1 for full code.\n\n```json:metadata\n{\"files\": [\"src/shared/e16_protocol.mjs\", \"tests/host/test_e16_protocol.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_protocol.sh\", \"acceptanceCriteria\": [\"scanlineMsg/rectangleMsg/clearMsg build correctly-framed SysEx\", \"parseOledUpdateReply returns ok/cmd/status/addr for ACK/NACK, null otherwise\", \"pack7/unpack7 round-trip\", \"OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX exported constant\", \"test_e16_protocol.sh passes\"], \"modelTier\": \"standard\"}\n```",
+      "activeForm": "Implementing E16 protocol layer for partial OLED updates"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: E16 canvas readPixel + packRowMajor",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** e16_canvas.mjs can read a single pixel from any 1024-byte page/column buffer and pack a sub-rectangle into row-major MSB-first format.\n\n**Files:**\n- Modify: src/shared/e16_canvas.mjs\n- Test: tests/host/test_e16_canvas.sh\n\n**Acceptance Criteria:**\n- [ ] WIDTH/HEIGHT exported\n- [ ] readPixel(buf,x,y) matches setPixel's pinned bit positions, out-of-bounds returns 0\n- [ ] packRowMajor(buf,x,y,w,h) produces ceil(w/8)*h bytes, row-major, MSB-first\n- [ ] tests/host/test_e16_canvas.sh passes\n\n**Verify:** bash tests/host/test_e16_canvas.sh -> PASS\n\nSee docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md Task 2 for full code.\n\n```json:metadata\n{\"files\": [\"src/shared/e16_canvas.mjs\", \"tests/host/test_e16_canvas.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_canvas.sh\", \"acceptanceCriteria\": [\"WIDTH/HEIGHT exported\", \"readPixel matches setPixel bit math\", \"packRowMajor row-major MSB-first output matches fixture\", \"test_e16_canvas.sh passes\"], \"modelTier\": \"standard\"}\n```",
+      "activeForm": "Implementing E16 canvas readPixel and packRowMajor"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: E16 row-run diff engine",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** New src/shared/e16_diff.mjs decides how to describe the difference between two framebuffers as 0-N small regions or a full repaint, using row-run clustering rather than a single global bounding box.\n\n**Files:**\n- Create: src/shared/e16_diff.mjs\n- Test: tests/host/test_e16_diff.sh\n\n**Acceptance Criteria:**\n- [ ] identical buffers -> {kind:\"none\"}\n- [ ] prev===null -> {kind:\"full\"}\n- [ ] single small change -> one rect region\n- [ ] full-width single-row change -> one scanline region\n- [ ] two far-apart changes (opposite corners) -> two SMALL regions, not one screen-sized box\n- [ ] more than MAX_REGIONS runs -> full\n- [ ] a region over FULL_REPAINT_THRESHOLD area -> full\n- [ ] MAX_REGIONS/FULL_REPAINT_THRESHOLD overridable via opts\n- [ ] tests/host/test_e16_diff.sh passes\n\n**Verify:** bash tests/host/test_e16_diff.sh -> PASS\n\nSee docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md Task 3 for full code.\n\n```json:metadata\n{\"files\": [\"src/shared/e16_diff.mjs\", \"tests/host/test_e16_diff.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_diff.sh\", \"acceptanceCriteria\": [\"none/full/regions kinds correct on fixtures\", \"opposite-corner case produces two small regions not one screen-sized box\", \"MAX_REGIONS and FULL_REPAINT_THRESHOLD caps enforced and overridable\", \"test_e16_diff.sh passes\"], \"modelTier\": \"standard\"}\n```",
+      "activeForm": "Implementing E16 row-run diff engine"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: Wire diff engine into createDisplay",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** createDisplay()'s tick() sends SCANLINE/RECTANGLE for a small diff, drains a multi-region diff one message per tick, and still falls back to a full FRAMEBUFFER for a full diff, unknown prior state, or a mode switch -- with no behavior change for existing callers when the diff is full.\n\n**Files:**\n- Modify: src/shared/e16_surface.mjs:348-470 (createDisplay + its import line)\n- Test: tests/host/test_e16_view.sh\n\n**Acceptance Criteria:**\n- [ ] single-region diff sends rect/scanline instead of framebuffer\n- [ ] two-region diff drains across two tick() calls, first region first\n- [ ] full diff / prev===null sends the whole framebuffer exactly as today\n- [ ] switching want from framebuffer to labels (or back) drops any queued regions and forces a full repaint on return\n- [ ] a refused send leaves lastSentBuf and the pending queue unchanged\n- [ ] tick() return value includes \"rect\"/\"scanline\"\n- [ ] all pre-existing test_e16_*.sh tests touching createDisplay still pass unmodified\n\n**Verify:** for t in tests/host/test_e16_*.sh; do bash \"$t\" || echo \"FAIL $t\"; done -> no FAIL lines\n\nSee docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md Task 4 for full code.\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"tests/host/test_e16_view.sh\"], \"verifyCommand\": \"for t in tests/host/test_e16_*.sh; do bash \\\"$t\\\" || echo FAIL $t; done\", \"acceptanceCriteria\": [\"small diff sends rect/scanline not framebuffer\", \"multi-region diff drains one per tick in row order\", \"full diff / unknown prior state / mode switch fall back to full framebuffer exactly as before\", \"refused send leaves state unchanged\", \"no regression in existing E16 tests\"], \"modelTier\": \"standard\"}\n```",
+      "activeForm": "Wiring the diff engine into createDisplay"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: NACK invalidates diff baseline; docs",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** An OLED UPDATE NACK invalidates lastSentBuf and drops queued regions so the next tick's diff falls back to a full repaint -- same recovery a replug already gets, no new timer or retry machinery. docs/E16_REMOTE.md documents the new opcodes.\n\n**Files:**\n- Modify: src/shared/e16_surface.mjs (createSysexAssembler dispatch in createSurface; new invalidateBuf() on createDisplay)\n- Modify: docs/E16_REMOTE.md\n- Test: tests/host/test_e16_wiring.sh\n\n**Acceptance Criteria:**\n- [ ] a NACK calls display.invalidateBuf(), nulling lastSentBuf and clearing pendingRegions/pendingBuf\n- [ ] an ACK is a no-op\n- [ ] NACK logging is rate-limited\n- [ ] neither ACK nor NACK is confused with the unrelated REMOTE MODE ENTERED ACK\n- [ ] docs/E16_REMOTE.md lists the 5 new opcodes, the header-byte ambiguity/decision, and the row-run diff strategy\n- [ ] tests/host/test_e16_wiring.sh passes\n\n**Verify:** bash tests/host/test_e16_wiring.sh -> PASS\n\nSee docs/superpowers/plans/2026-09-22-e16-partial-oled-updates.md Task 5 for full code.\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"docs/E16_REMOTE.md\", \"tests/host/test_e16_wiring.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_wiring.sh\", \"acceptanceCriteria\": [\"NACK invalidates lastSentBuf and pending regions\", \"ACK is a no-op\", \"NACK log line is rate-limited\", \"docs/E16_REMOTE.md updated\", \"test_e16_wiring.sh passes\"], \"modelTier\": \"standard\"}\n```",
+      "activeForm": "Wiring NACK handling and updating docs"
+    }
+  ],
+  "lastUpdated": "2026-09-22T00:00:00Z"
+}
