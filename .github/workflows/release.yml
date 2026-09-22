@@ -69,6 +69,8 @@ jobs:
           # it with no web UI and no way to update itself back out.
           tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-manager$' || {
             echo "schwung-manager is not in the tarball — refusing to publish this release"; exit 1; }
+          tar -tzf schwung.tar.gz | grep -q 'schwung/lib/libeci.so.1$' || {
+            echo "libeci.so.1 is not in the tarball — refusing to publish a release whose Eloquence engine silently falls back to eSpeak"; exit 1; }
           tar -tzvf schwung.tar.gz | head -20
 
       - name: Create Release

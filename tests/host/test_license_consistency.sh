@@ -226,6 +226,29 @@ else
   bad "a blanket 'nothing copyleft is linked' claim is back in:$denial -- schwung-shim.so links eSpeak NG (GPL-3.0+) in the default build"
 fi
 
+# ------------------------- 6b. openevv: dlopened, and its data is not ours
+#
+# lib/libeci.so.1 carries two things with different owners: openevv's MIT
+# engine and IBM's language data, which openevv's own NOTICE says nobody has
+# licensed. The document must say BOTH, and the shim must keep loading it with
+# dlopen -- a NEEDED libeci would make the "not linked" sentence false.
+if grep -qF 'openevv' THIRD_PARTY_LICENSES.md && \
+   grep -qiE 'IBM.*not licensed|not licensed.*IBM' THIRD_PARTY_LICENSES.md; then
+  ok "THIRD_PARTY_LICENSES.md documents openevv and says the IBM data is not licensed"
+else
+  bad "THIRD_PARTY_LICENSES.md must document openevv AND that its IBM language data is not licensed"
+fi
+if has scripts/build.sh 'SHIM_LIBS=.*-leci'; then
+  bad "build.sh links the shim against libeci -- the licence doc says it is dlopened"
+else
+  ok "the shim does not link libeci (dlopened, as documented)"
+fi
+if has scripts/build.sh 'OPENEVV_NOTICE\.txt' && has scripts/build.sh 'OPENEVV_LICENSE\.txt'; then
+  ok "build.sh stages openevv's LICENSE and NOTICE into licenses/"
+else
+  bad "build.sh must ship openevv's LICENSE and NOTICE beside libeci.so.1"
+fi
+
 # ---------------------------------------- 7. the vendored texts are present
 for t in licenses/GPL-2.0.txt licenses/GPL-3.0.txt; do
   if [ -s "$t" ]; then

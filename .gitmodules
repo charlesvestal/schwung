@@ -1,3 +1,6 @@
 [submodule "libs/link"]
 	path = libs/link
 	url = https://github.com/Ableton/link.git
+[submodule "libs/openevv"]
+	path = libs/openevv
+	url = https://github.com/Mudb0y/openevv.git

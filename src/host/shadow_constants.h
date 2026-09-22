@@ -279,7 +279,7 @@ typedef struct shadow_control_t {
     volatile float tts_speed;         /* TTS speed multiplier (0.5-6.0) */
     volatile uint8_t overlay_knobs_mode; /* 0=shift, 1=jog_touch, 2=off, 3=native */
     volatile uint8_t display_mirror;     /* 0=off, 1=on (stream display to browser) */
-    volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite */
+    volatile uint8_t tts_engine;         /* 0=espeak-ng, 1=flite, 2=openevv */
     volatile uint8_t pin_challenge_active; /* 0=none, 1=challenge detected, 2=submitted */
     volatile uint8_t display_overlay;     /* 0=off, 1=rect overlay on native, 2=fullscreen */
     volatile uint8_t overlay_rect_x;      /* Overlay rect left edge (pixels, 0-127) */
@@ -847,6 +847,23 @@ typedef struct shadow_control_t {
      * step_menu_len_c / step_menu_vel are the minimum, these the maximum. */
     volatile uint8_t step_menu_vel_max;
     volatile uint16_t step_menu_len_max_c;
+    /*
+     * openevv (Eloquence) voice, for tts_engine == 2. The shadow UI writes
+     * these, the shim hands them to tts_set_evv_voice() before each utterance
+     * (the same place tts_speed and tts_pitch are applied), and the openevv
+     * worker persists them to tts.json. `tts_evv_voice` is the ECI preset
+     * 1..8 the other six were last loaded from; those six are ECI's own
+     * 0..100 units, gender 0 = male, 1 = female.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t tts_evv_voice;
+    volatile uint8_t tts_evv_gender;
+    volatile uint8_t tts_evv_head;
+    volatile uint8_t tts_evv_pitch;
+    volatile uint8_t tts_evv_inflection;
+    volatile uint8_t tts_evv_rough;
+    volatile uint8_t tts_evv_breath;
 } shadow_control_t;
 
 #define SM_CELL_EMPTY 255

@@ -110,7 +110,8 @@ export const GLOBAL_ENUM_VALUES = {
     resample_bridge: [0, 2],
     skipback_shortcut: [0, 1],
     skipback_seconds: [30, 60, 120, 180, 240, 300],
-    screen_reader_engine: ["espeak", "flite"],
+    screen_reader_engine: ["espeak", "flite", "openevv"],
+    screen_reader_evv_voice: [1, 2, 3, 4, 5, 6, 7, 8],
     shadow_ui_trigger: [0, 1, 2],
     recall_quantize: [0, 1, 2, 3],
     metronome_mode: [0, 1, 2],
@@ -155,6 +156,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   screen_reader_pitch    | tts_get_pitch           | tts_set_pitch            | -       | -                      | -
  *   screen_reader_volume   | tts_get_volume          | tts_set_volume           | -       | -                      | -
  *   screen_reader_debounce | tts_get_debounce        | tts_set_debounce         | -       | -                      | -
+ *   screen_reader_evv_*    | tts_get_evv(field)      | tts_set_evv(field, v)    | -       | -                      | -
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
@@ -226,6 +228,16 @@ export const GLOBAL_ROUTING = {
     screen_reader_pitch:    { read: "tts.get_pitch",          write: "tts.set_pitch",          persist: null,   cache: null,                     modal: null },
     screen_reader_volume:   { read: "tts.get_volume",         write: "tts.set_volume",         persist: null,   cache: null,                     modal: null },
     screen_reader_debounce: { read: "tts.get_debounce",       write: "tts.set_debounce",       persist: null,   cache: null,                     modal: null },
+    /* openevv (Eloquence) voice. persist: null -- the openevv worker writes
+     * tts.json, off the SPI path. A Voice write also loads that preset into
+     * the six below; see EVV_PRESETS. */
+    screen_reader_evv_voice:      { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_gender:     { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_head:       { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_pitch:      { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_inflection: { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_rough:      { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
+    screen_reader_evv_breath:     { read: "tts.get_evv", write: "tts.set_evv", persist: null, cache: null, modal: null },
 
     set_pages_enabled:      { read: "set_pages.get",          write: "set_pages.set",          persist: null,   cache: null,                     modal: null },
     shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
@@ -516,6 +528,46 @@ export const AUDIO_PARAMS = [
 
 /* ------------------------------------------------------------ accessibility */
 
+/*
+ * openevv's US English voice presets, as lang/enus/enus.settings declares them
+ * (Voice1..Voice8: gender head pitch fluctuation roughness breathiness speed
+ * volume). Picking a Voice loads its first six into the rows below it, so the
+ * sliders always show what is being spoken; speed and volume stay on the
+ * shared rows, which every engine answers. ECI names them Adult Male 1,
+ * Adult Female 1, Child 1, Adult Male 2, Adult Male 3, Adult Female 2,
+ * Elderly Female 1 and Elderly Male 1 (eci.h); those overflow a list row,
+ * so the labels drop the "Adult" and the ones.
+ * tests/host/test_tts_evv_presets.sh holds this table to the settings file.
+ */
+export const EVV_PRESETS = [
+    { name: "Male 1",     short: "M1", gender: 0, head: 50, pitch: 65, inflection: 30, rough: 0,  breath: 0 },
+    { name: "Female 1",   short: "F1", gender: 1, head: 50, pitch: 81, inflection: 30, rough: 0,  breath: 50 },
+    { name: "Child",      short: "CH", gender: 1, head: 22, pitch: 93, inflection: 35, rough: 0,  breath: 0 },
+    { name: "Male 2",     short: "M2", gender: 0, head: 89, pitch: 52, inflection: 43, rough: 0,  breath: 0 },
+    { name: "Male 3",     short: "M3", gender: 0, head: 50, pitch: 69, inflection: 34, rough: 0,  breath: 0 },
+    { name: "Female 2",   short: "F2", gender: 1, head: 56, pitch: 89, inflection: 35, rough: 0,  breath: 40 },
+    { name: "Old Female", short: "OF", gender: 1, head: 45, pitch: 68, inflection: 30, rough: 3,  breath: 40 },
+    { name: "Old Male",   short: "OM", gender: 0, head: 30, pitch: 61, inflection: 44, rough: 18, breath: 20 },
+];
+
+/* The six voice fields a preset sets, key -> tts_set_evv field name. */
+export const EVV_VOICE_FIELDS = {
+    screen_reader_evv_gender: "gender",
+    screen_reader_evv_head: "head",
+    screen_reader_evv_pitch: "pitch",
+    screen_reader_evv_inflection: "inflection",
+    screen_reader_evv_rough: "rough",
+    screen_reader_evv_breath: "breath",
+};
+
+/* Shown only while that engine is the one chosen. The Hz pitch belongs to
+ * eSpeak and Flite; Eloquence's pitch is its own Base Pitch row. */
+const WHEN_EVV = { param: "screen_reader_engine", equals: "openevv" };
+const UNLESS_EVV = { param: "screen_reader_engine", not_equals: "openevv" };
+
+const evvLevel = (key, name, dflt) => ({ key, name, type: "int", min: 0, max: 100, step: 1,
+                                         default: dflt, visible_if: WHEN_EVV });
+
 export const ACCESSIBILITY_PARAMS = [
     /* Deliberately wider than its row: the full name matters more than
  * fitting, and it truncates by about one character. The exemption
@@ -523,17 +575,27 @@ export const ACCESSIBILITY_PARAMS = [
     Object.assign(bool("screen_reader_enabled", "Screen Reader", 0),
                   { preferFullName: true }),
     { key: "screen_reader_engine", name: "Engine", type: "enum",
-      options: ["eSpeak", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
+      options: ["eSpeak", "Flite", "Eloquence"], short_options: ["ESP", "FLI", "ELQ"], default: 0 },
     { key: "screen_reader_speed", name: "Speed", type: "float",
       min: 0.5, max: 6.0, step: 0.1, default: 1.0, unit: "x" },
     { key: "screen_reader_pitch", name: "Pitch", type: "int",
-      min: 80, max: 180, step: 5, default: 110, unit: "Hz" },
+      min: 80, max: 180, step: 5, default: 110, unit: "Hz", visible_if: UNLESS_EVV },
     /* max 100 with unit "%" reads the raw value and appends the sign — the
      * x100 scaling in param_format only applies to a 0..1 fraction. */
     { key: "screen_reader_volume", name: "Volume", type: "int",
       min: 0, max: 100, step: 5, default: 70, unit: "%" },
     { key: "screen_reader_debounce", name: "Speak Delay", type: "int",
       min: 0, max: 1000, step: 50, default: 300, unit: "ms" },
+    { key: "screen_reader_evv_voice", name: "Voice", type: "enum",
+      options: EVV_PRESETS.map((v) => v.name), short_options: EVV_PRESETS.map((v) => v.short),
+      default: 0, visible_if: WHEN_EVV },
+    { key: "screen_reader_evv_gender", name: "Gender", type: "enum",
+      options: ["Male", "Female"], short_options: ["M", "F"], default: 0, visible_if: WHEN_EVV },
+    evvLevel("screen_reader_evv_head", "Head Size", 50),
+    evvLevel("screen_reader_evv_pitch", "Base Pitch", 65),
+    evvLevel("screen_reader_evv_inflection", "Inflection", 30),
+    evvLevel("screen_reader_evv_rough", "Roughness", 0),
+    evvLevel("screen_reader_evv_breath", "Breathiness", 0),
 ];
 
 /* ---------------------------------------------- set pages / shortcuts / svc */
@@ -1004,6 +1066,27 @@ export function createGlobalGridIo(io) {
          * each key against an unserved `<key>:base`, read "" instead of null,
          * and hang the modulation tilde on every row. */
         isModulated() { return false; },
+
+        /*
+         * visible_if, resolved against THIS contract's own values. Without it
+         * the host's default evaluator binds to the list editor's slot and
+         * component, which are not Global Settings, and a condition it cannot
+         * read FAILS OPEN -- every engine's rows would show at once. Compares
+         * STORED values ("openevv", not the enum index), which is what the
+         * conditions are written in. A read that did not complete fails open
+         * too, deliberately: a row shown by mistake is recoverable, a setting
+         * hidden by mistake is not.
+         */
+        visible(condition) {
+            if (!condition || typeof condition !== "object") return true;
+            const k = condition.param || condition.key;
+            if (!k || !GLOBAL_ROUTING[k]) return true;
+            const v = io.readParam(k);
+            if (v === null || v === undefined) return true;
+            if (condition.equals !== undefined) return String(v) === String(condition.equals);
+            if (condition.not_equals !== undefined) return String(v) !== String(condition.not_equals);
+            return true;
+        },
 
         runAction(action) {
             if (io.runAction) return io.runAction(action);

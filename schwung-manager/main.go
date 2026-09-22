@@ -2942,10 +2942,18 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		values["display_mirror"] = app.shm.DisplayMirror()
 		values["overlay_knobs"] = float64(app.shm.OverlayKnobsMode())
 		values["screen_reader_enabled"] = app.shm.TTSEnabled()
-		if app.shm.TTSEngine() == 1 {
+		switch app.shm.TTSEngine() {
+		case 1:
 			values["screen_reader_engine"] = "flite"
-		} else {
+		case 2:
+			values["screen_reader_engine"] = "openevv"
+		default:
 			values["screen_reader_engine"] = "espeak"
+		}
+		for _, f := range TTSEvvFields {
+			if v, ok := app.shm.TTSEvv(f); ok {
+				values["screen_reader_evv_"+f] = float64(v)
+			}
 		}
 		values["screen_reader_speed"] = float64(app.shm.TTSSpeed())
 		values["screen_reader_pitch"] = float64(app.shm.TTSPitch())
@@ -3090,6 +3098,22 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/config", http.StatusSeeOther)
 }
 
+// ttsEvvPresets is openevv's US English Voice1..Voice8 from
+// lang/enus/enus.settings: gender, head, pitch, fluctuation, roughness,
+// breathiness (speed and volume are the shared rows). The same table is
+// EVV_PRESETS in src/shadow/shadow_ui_global_grid.mjs, and
+// tests/host/test_tts_evv_presets.sh holds both to the settings file.
+var ttsEvvPresets = [][6]uint8{
+	{0, 50, 65, 30, 0, 0},
+	{1, 50, 81, 30, 0, 50},
+	{1, 22, 93, 35, 0, 0},
+	{0, 89, 52, 43, 0, 0},
+	{0, 50, 69, 34, 0, 0},
+	{1, 56, 89, 35, 0, 40},
+	{1, 45, 68, 30, 3, 40},
+	{0, 30, 61, 44, 18, 20},
+}
+
 // applyShmSetting writes a config setting directly to shared memory for
 // instant effect. This bypasses the JS tick() path entirely, avoiding the
 // SIGABRT that occurred when syncSettingsFromConfigFile() was called from tick().
@@ -3107,10 +3131,38 @@ func (app *App) applyShmSetting(key, value string) {
 	case "screen_reader_enabled":
 		app.shm.SetTTSEnabled(value == "true")
 	case "screen_reader_engine":
-		if value == "flite" {
+		switch value {
+		case "flite":
 			app.shm.SetTTSEngine(1)
-		} else {
+		case "openevv":
+			app.shm.SetTTSEngine(2)
+		default:
 			app.shm.SetTTSEngine(0)
+		}
+	case "screen_reader_evv_voice":
+		// A preset loads all six of its values, exactly as the device menu
+		// does, so the sliders show what is spoken.
+		if v, err := strconv.Atoi(value); err == nil && v >= 1 && v <= len(ttsEvvPresets) {
+			app.shm.SetTTSEvv("voice", uint8(v))
+			p := ttsEvvPresets[v-1]
+			for i, f := range TTSEvvFields[1:] {
+				app.shm.SetTTSEvv(f, p[i])
+			}
+		}
+	case "screen_reader_evv_gender", "screen_reader_evv_head", "screen_reader_evv_pitch",
+		"screen_reader_evv_inflection", "screen_reader_evv_rough", "screen_reader_evv_breath":
+		if v, err := strconv.Atoi(value); err == nil {
+			hi := 100
+			if key == "screen_reader_evv_gender" {
+				hi = 1
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > hi {
+				v = hi
+			}
+			app.shm.SetTTSEvv(strings.TrimPrefix(key, "screen_reader_evv_"), uint8(v))
 		}
 	case "screen_reader_speed":
 		if v, err := strconv.ParseFloat(value, 32); err == nil {
