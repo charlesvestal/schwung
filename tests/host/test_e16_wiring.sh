@@ -325,6 +325,20 @@ function rig(opts) {
    * device must still be considered present (that ACK path is untouched). */
   ok(r.surface.present !== false, "a NACK does not knock the device out of present");
 
+  /* THE ACTUAL RECOVERY: a NACK with no other change happening must still
+   * force a screen resend on the VERY NEXT tick -- not "eventually, once
+   * something else invalidates, or the heartbeat gets around to it up to
+   * SCREEN_HEARTBEAT_MS later" (and the heartbeat is itself gated off while
+   * Move is transmitting, which is exactly when a NACK is most likely).
+   * invalidateBuf() alone only clears what the surface BELIEVES is shown;
+   * without a paired invalidate() nothing is ever marked OWED, and this is
+   * the specific bug the holistic review found: the NACK handler had the
+   * first call but not the second. */
+  const beforeRecovery = r.send.log.length;
+  r.ticks(1);
+  const recovered = r.send.log.slice(beforeRecovery).some(isScreen);
+  ok(recovered, "a NACK forces a screen resend on the very next tick");
+
   /* An ACK (reply.ok) is a no-op: feeding one must not throw either, and
    * nothing about presence tracking should react to it beyond the normal
    * ACK handling already covered above. */
