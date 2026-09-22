@@ -31,8 +31,8 @@
 import { fontWidth4x5, fontPrint4x5 } from "./param_pages/font4x5.mjs";
 import { asciiFold } from './param_pages/render_page.mjs';
 
-const WIDTH = 128;
-const HEIGHT = 64;
+export const WIDTH = 128;
+export const HEIGHT = 64;
 const BUFFER_SIZE = 1024; /* (WIDTH * HEIGHT) / 8 */
 
 /*
@@ -124,4 +124,40 @@ export function createCanvas() {
         fillRect, print, textWidth, drawLine, clear, setPixel,
         toBuffer,
     };
+}
+
+/*
+ * Read-only mirror of createCanvas()'s setPixel bit math, but taking any
+ * 1024-byte buffer rather than closing over one canvas instance -- the E16
+ * diff engine needs to read pixels out of TWO buffers (the last one sent and
+ * the one just rendered), neither of which is necessarily "the" live canvas.
+ * Out-of-bounds reads 0, matching setPixel's silent clip rather than
+ * throwing.
+ */
+export function readPixel(buf, x, y) {
+    x |= 0; y |= 0;
+    if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return 0;
+    const byteIdx = (y >> 3) * WIDTH + x;
+    const bit = y & 7;
+    return (buf[byteIdx] >> bit) & 1;
+}
+
+/*
+ * The SCANLINE/RECTANGLE wire format is ROW-MAJOR, MSB first, each row
+ * byte-aligned -- the transpose of this buffer's own page/column layout.
+ * This is the only place that conversion happens; e16_diff.mjs and
+ * e16_surface.mjs both call it rather than re-deriving the bit math.
+ */
+export function packRowMajor(buf, x, y, w, h) {
+    const rowBytes = Math.ceil(w / 8);
+    const out = new Uint8Array(rowBytes * h);
+    for (let ry = 0; ry < h; ry++) {
+        for (let rx = 0; rx < w; rx++) {
+            if (!readPixel(buf, x + rx, y + ry)) continue;
+            const byteIdx = ry * rowBytes + (rx >> 3);
+            const bit = 7 - (rx & 7);   /* MSB first */
+            out[byteIdx] |= (1 << bit);
+        }
+    }
+    return out;
 }
