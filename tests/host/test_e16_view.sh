@@ -478,6 +478,30 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   d4.invalidate();
   const backToFb = d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 102);
   eq("switch back to framebuffer is a full repaint, not a stale region", backToFb, "framebuffer");
+
+  /* invalidateBuf() IS THE HEARTBEAT'S FIX, DIRECTLY TESTED. Its only real
+   * caller is the self-heal heartbeat in createSurface (SCREEN_HEARTBEAT_MS),
+   * whose entire job is to resend BYTE-IDENTICAL content to repair
+   * corruption the surface cannot otherwise detect -- a plain invalidate()
+   * with UNCHANGED content is exactly the case diffFramebuffers correctly
+   * answers "none" (nothing to send) for, which would make the heartbeat a
+   * silent no-op. This asserts the fix directly, independent of the
+   * heartbeat's own timing/gating logic in createSurface. */
+  const d5 = createDisplay();
+  const send5 = mkSend();
+  const buf5 = new Uint8Array(1024);
+  setPx(buf5, 10, 10);
+  const frameBytes5 = () => buf5;   /* deliberately IDENTICAL every call */
+  d5.invalidate();
+  const primed = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 0);
+  eq("priming paint", primed, "framebuffer");
+  d5.invalidate();
+  const unchanged = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 100);
+  eq("plain invalidate() on unchanged content sends nothing", unchanged, null);
+  d5.invalidateBuf();
+  d5.invalidate();
+  const repaired = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 200);
+  eq("invalidateBuf() forces a full resend of the SAME content", repaired, "framebuffer");
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
