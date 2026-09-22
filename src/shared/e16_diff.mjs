@@ -50,11 +50,23 @@ function regionForRun(prev, next, yStart, yEnd) {
     let x0 = WIDTH, x1 = -1;
     for (let y = yStart; y <= yEnd; y++) {
         const b = rowXBounds(prev, next, y);
+        /* Every row in [yStart, yEnd] differs by construction -- that is what
+         * made it part of this run -- so b is never null here. The check
+         * stays because rowXBounds's null case is a real, load-bearing
+         * result elsewhere in this file (it is how a run BOUNDARY is found
+         * in the first place, in diffFramebuffers below); this call site
+         * just never sees it fire. */
         if (!b) continue;
         if (b.x0 < x0) x0 = b.x0;
         if (b.x1 > x1) x1 = b.x1;
     }
     const y = yStart, h = yEnd - yStart + 1, x = x0, w = x1 - x0 + 1;
+    /* STRICT full-width, not "close to" -- a run one pixel narrower than the
+     * screen stays a RECT. That is a safe simplification (never wrongly
+     * promotes a partial row into a message shape that describes MORE
+     * screen than actually changed), just a smaller win than "close to full
+     * width" would give; revisit only if that gap turns out to matter once
+     * this runs against real firmware. */
     if (h === 1 && w === WIDTH) return { kind: "scanline", y };
     return { kind: "rect", x, y, w, h };
 }
@@ -78,6 +90,11 @@ export function diffFramebuffers(prev, next, opts) {
 
     if (!prev || prev.length !== 1024 || next.length !== 1024) return { kind: "full" };
 
+    /* PASS 1: which rows differ, grouped into contiguous runs. O(width) per
+     * row via rowXBounds (up to ~2x that for a row that ends up inside a
+     * run, since pass 2 below re-scans it), so O(width*height) total --
+     * a few thousand bitwise reads for a 128x64 screen, negligible even at
+     * 60 Hz and only run when a repaint is actually owed, not every tick. */
     const runs = [];
     let runStart = -1;
     for (let y = 0; y < HEIGHT; y++) {
@@ -88,8 +105,14 @@ export function diffFramebuffers(prev, next, opts) {
     if (runStart !== -1) runs.push([runStart, HEIGHT - 1]);
 
     if (runs.length === 0) return { kind: "none" };
+    /* Checked BEFORE pass 2 computes any region -- a screen with many
+     * scattered small changes bails out on run COUNT alone, without paying
+     * for the x-bounds work on runs about to be discarded anyway. */
     if (runs.length > maxRegions) return { kind: "full" };
 
+    /* PASS 2: for each run, the tight x-bounds WITHIN that run only (never
+     * across runs -- that is the whole point, see the header) become one
+     * region; a region too big on its own still bails the whole diff. */
     const regions = [];
     for (const [yStart, yEnd] of runs) {
         const region = regionForRun(prev, next, yStart, yEnd);
