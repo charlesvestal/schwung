@@ -205,14 +205,25 @@ function decodeOledAddr(cmd, a) {
     if (cmd === OLED_RECTANGLE_ID) {
         return { x: opt(a[0]), y: opt(a[1]), w: opt(a[2]), h: opt(a[3]) };
     }
-    return {};   /* CLEAR, or an unrecognised command -- no address fields */
+    /* {} for CLEAR (genuinely no address fields) and for an unrecognised cmd
+     * (firmware answering with a command id this file doesn't know) are
+     * deliberately the same shape. A future cmd would need a new branch
+     * here regardless -- there's no address layout to decode without one --
+     * so there is nothing a caller could do differently for one case that
+     * it couldn't already do by checking `cmd` itself. */
+    return {};
 }
 
 /* Returns { ok, cmd, status, addr } for an OLED UPDATE ACK or NACK body, or
  * null for anything else -- including the unrelated REMOTE MODE ENTERED ACK,
  * which shares status byte 0x53 but never this length (it carries no
- * payload). Check isAck() first in a caller that cares about both, since
- * that's the hot path. */
+ * payload), AND a truncated/garbled reply whose payload doesn't unpack7 to
+ * exactly 6 bytes. That last case collapses "not an OLED reply" and "an OLED
+ * reply that arrived corrupted" into the same null -- deliberately, for now:
+ * this feature has no retry/timeout state (see the design doc), so a caller
+ * only ever asks "did this land or not", and both non-answers mean "no".
+ * Revisit if a future caller needs to tell them apart. Check isAck() first
+ * in a caller that cares about both ACK shapes, since that's the hot path. */
 export function parseOledUpdateReply(asm) {
     const h = oledReplyHeader(asm);
     if (!h) return null;
