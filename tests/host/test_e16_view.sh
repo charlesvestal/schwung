@@ -479,14 +479,14 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const backToFb = d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 102);
   eq("switch back to framebuffer is a full repaint, not a stale region", backToFb, "framebuffer");
 
-  /* invalidateBuf() IS THE HEARTBEAT'S FIX, DIRECTLY TESTED. Its only real
+  /* invalidateBuf() IS THE HEARTBEAT FIX, DIRECTLY TESTED. Its only real
    * caller is the self-heal heartbeat in createSurface (SCREEN_HEARTBEAT_MS),
    * whose entire job is to resend BYTE-IDENTICAL content to repair
    * corruption the surface cannot otherwise detect -- a plain invalidate()
    * with UNCHANGED content is exactly the case diffFramebuffers correctly
    * answers "none" (nothing to send) for, which would make the heartbeat a
    * silent no-op. This asserts the fix directly, independent of the
-   * heartbeat's own timing/gating logic in createSurface. */
+   * heartbeat own timing/gating logic in createSurface. */
   const d5 = createDisplay();
   const send5 = mkSend();
   const buf5 = new Uint8Array(1024);

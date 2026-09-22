@@ -29,7 +29,7 @@
  * machine with no device, no timers and no globals.  The host half is three
  * call sites in shadow_ui.js.
  */
-import { enterMsg, exitMsg, isAck, packetize } from "./e16_protocol.mjs";
+import { enterMsg, exitMsg, isAck, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
 
 /* Seeking cadence.  Slow enough to be free, fast enough that plugging a device
  * in feels immediate. */
@@ -1227,8 +1227,26 @@ export function createSurface(io) {
         onFocus: () => {},
     });
 
+    /* Rate-limited so a run of NACKs (unlikely, but the whole point of
+     * having them is to react to the unlikely) can't flood the log the way
+     * an unthrottled per-message line would. */
+    const NACK_LOG_RATE_MS = 1000;
+    let lastNackLogAt = -Infinity;
+
     const asm = createSysexAssembler({
-        onMessage: (body) => { lifecycle.onSysex(body, now()); },
+        onMessage: (body) => {
+            if (lifecycle.onSysex(body, now())) return;
+            const reply = parseOledUpdateReply(body);
+            if (!reply) return;
+            if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
+            display.invalidateBuf();
+            const t = now();
+            if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
+                lastNackLogAt = t;
+                console.log("e16: OLED update NACK, cmd=0x" + reply.cmd.toString(16) +
+                            " status=0x" + reply.status.toString(16));
+            }
+        },
     });
 
     function ensureController() {

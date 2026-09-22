@@ -293,6 +293,52 @@ function rig(opts) {
 }
 
 /* ===========================================================================
+ * OLED UPDATE NACK -- built against a draft spec, not yet on hardware. A
+ * NACK must invalidate the surfaces belief about whats on screen (so the
+ * NEXT repaint is a full one) without touching anything else -- not the
+ * lifecycles presence tracking, not a resend, no new timer.
+ * ========================================================================= */
+{
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1);
+  r.ack();
+  r.ticks(2);
+  /* Not asserting on the NACK path in detail here -- Tasks 1 and 4 already
+   * unit-test parseOledUpdateReply and display.invalidateBuf/tick in
+   * isolation. This just confirms the wiring does not throw when a NACK
+   * body is fed through the real feedMidi-shaped path, since that seam
+   * (asm.feed -> onMessage -> parseOledUpdateReply -> display.invalidateBuf)
+   * is exactly what the "tasks pass their own tests, the SEAM between files
+   * is what breaks" lesson (this files own header comment) is about. */
+  const { pack7 } = await import(R + "/src/shared/e16_protocol.mjs");
+  const nackRaw = [0x06, 0x02, 0xFF, 0xFF, 0xFF, 0xFF];   /* invalid bounds */
+  const nackBody = [0x00,0x21,0x5B,0x02,0x01,0x54].concat(pack7(nackRaw));
+  const nackBytes = [0xF0].concat(nackBody, [0xF7]);
+  let threw = false;
+  try {
+    for (const b of nackBytes) r.surface.feedMidi([b]);
+  } catch (e) { threw = true; console.log("  threw: " + e.message); }
+  ok(!threw, "feeding an OLED NACK through the surface does not throw");
+
+  /* And it must not be mistaken for the REMOTE MODE ENTERED ACK -- the
+   * device must still be considered present (that ACK path is untouched). */
+  ok(r.surface.present !== false, "a NACK does not knock the device out of present");
+
+  /* An ACK (reply.ok) is a no-op: feeding one must not throw either, and
+   * nothing about presence tracking should react to it beyond the normal
+   * ACK handling already covered above. */
+  const ackRaw = [0x06, 0x02, 0x00, 0x00, 0x00, 0x00];
+  const ackBody = [0x00,0x21,0x5B,0x02,0x01,0x53].concat(pack7(ackRaw));
+  const ackBytes = [0xF0].concat(ackBody, [0xF7]);
+  let threw2 = false;
+  try {
+    for (const b of ackBytes) r.surface.feedMidi([b]);
+  } catch (e) { threw2 = true; console.log("  threw: " + e.message); }
+  ok(!threw2, "feeding an OLED UPDATE ACK through the surface does not throw");
+}
+
+/* ===========================================================================
  * RULE 3 -- a turn arriving as RAW MIDI BYTES moves a parameter.
  *
  * onMidiMessageExternal to set_param, with nothing simulated in between.

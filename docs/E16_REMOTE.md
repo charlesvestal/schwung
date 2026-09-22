@@ -307,3 +307,52 @@ means the framebuffer.
 `shadow_control->external_surface` in SHM and never calls `features_json_set`,
 so every reboot turns the surface off — and a disabled surface emits *nothing*,
 which reads exactly like "the device stopped answering". Unfixed.
+
+## Partial updates (draft spec, not yet shipped)
+
+OXI shared a draft spec (2026-09-21) adding four more OLED opcodes and a
+reply pair, not yet in shipped firmware:
+
+| id | message | payload |
+|---|---|---|
+| `0x05` | OLED SCANLINE | Y (1 byte) + 16 bytes of one row, MSB first |
+| `0x06` | OLED RECTANGLE | x, y, w, h (1 byte each) + `ceil(w/8)*h` bytes, row-major, MSB first |
+| `0x07` | OLED CLEAR | none |
+| `0x53` | OLED UPDATE ACK (device to host) | original cmd, status 0x00, 4-byte address |
+| `0x54` | OLED UPDATE NACK (device to host) | original cmd, error status, 4-byte address |
+
+**Header ambiguity, unresolved without hardware.** Every other message's id
+is two bytes (`0x06 0xXX`) and its example bytes agree. These five list the
+same two-byte id in the ID column, but their EXAMPLE bytes in the sheet drop
+the `0x06`. We build against the literal examples (single-byte id, no
+`0x06`), gated behind `OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX` in
+`e16_protocol.mjs` so it's a one-line fix if wrong. Neither NACK error code
+0x03 (CRC mismatch) nor an actual CRC is used — the algorithm is
+undocumented.
+
+**RECTANGLE/SCANLINE are row-major; our framebuffer is page/column.**
+`e16_canvas.mjs`'s `packRowMajor` is the one place that transpose happens.
+
+**The diff clusters by row RUN, not one bounding box** — two far-apart
+changes (e.g. the map cursor jumping corner to corner) would otherwise
+produce one screen-spanning rectangle. See `e16_diff.mjs` and
+`docs/superpowers/specs/2026-09-22-e16-partial-oled-updates-design.md` for
+the full reasoning, including why row-runs and not full 2D clustering.
+
+**An OLED UPDATE NACK feeds the same self-heal path a replug already uses.**
+`e16_surface.mjs`'s `createSysexAssembler` dispatch tries `isAck()` first
+(via `lifecycle.onSysex`, the fast path for the unrelated REMOTE MODE
+ENTERED ACK) and only on a `false` falls through to `parseOledUpdateReply`.
+A NACK calls `display.invalidateBuf()` — nulling the display's belief about
+what's on the device without touching `shownKind` — so the next diff tick
+falls back to a full repaint, with no new timer or retry machinery. An ACK
+is a no-op: we already advanced optimistically on send. The two OLED reply
+bodies (13 bytes: 5-byte header + 1-byte id + 7-byte packed payload) can
+never be mistaken for the 7-byte REMOTE MODE ENTERED ACK body, since
+`isAck()` checks exact length first.
+
+**None of this closes the parked garbling bug** ([[e16_garble_is_move_note_interleave]]
+in project memory) — it shrinks the exposed window from ~130 SPI frames
+(a 394-packet FRAMEBUFFER) to typically 1-5, which should reduce collision
+odds, but the underlying single-cable sharing with Move's own note data is
+unchanged and unmeasurable until real firmware exists to test against.
