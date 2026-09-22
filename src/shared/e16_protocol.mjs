@@ -152,8 +152,18 @@ export function rectangleMsg(x, y, w, h, bits) {
     if (bits.length !== want) {
         throw new Error("rectangle payload must be " + want + " bytes, got " + bits.length);
     }
+    /* x is 0-127 (fits 0x7F) and y is 0-63 (fits 0x3F) -- both COORDINATES,
+     * genuinely bounded by those masks. w and h are DIMENSIONS whose spec
+     * range is 1-128 and 1-64 respectively -- w===128 and h===64 are both
+     * ordinary, reachable values (a full-width multi-row change, or a
+     * full-height single-column one), and 0x7F/0x3F are ONE BIT TOO NARROW
+     * for each: 128 & 0x7F === 0, 64 & 0x3F === 0, silently encoding a real
+     * region as a zero-sized one while still sending its real pixel bytes.
+     * pack7 already carries a full 0-255 byte correctly (bit 7 rides in its
+     * MSB group byte), so w/h need no masking at all here -- & 0xFF is a
+     * byte-width safety net, not a range clamp. */
     return msg(oledId(OLED_RECTANGLE_ID),
-               [x & 0x7F, y & 0x3F, w & 0x7F, h & 0x3F].concat(Array.from(bits)));
+               [x & 0x7F, y & 0x3F, w & 0xFF, h & 0xFF].concat(Array.from(bits)));
 }
 
 export function clearMsg() {

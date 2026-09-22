@@ -60,6 +60,21 @@ let threw = false;
 try { rectangleMsg(2, 3, 8, 2, [0x00]); } catch (e) { threw = true; }
 eq("rectangle wrong payload length throws", threw, true);
 
+/* FULL-EXTENT WIDTH AND HEIGHT ARE ORDINARY VALUES, NOT EDGE CASES: w=128 is
+ * a full-width multi-row change (e.g. a status bar), h=64 is a full-height
+ * single-column change (e.g. a cursor line). Both are one bit past what
+ * 0x7F/0x3F can hold -- decode the wire bytes back out and confirm neither
+ * silently becomes 0. */
+const wBits = new Array(Math.ceil(128 / 8) * 1).fill(0);
+const rectFullWidth = rectangleMsg(0, 0, 128, 1, wBits);
+const rawFullWidth = unpack7(rectFullWidth.slice(7, rectFullWidth.length - 1), 4 + wBits.length);
+eq("rectangle width 128 survives encoding, not truncated to 0", rawFullWidth[2], 128);
+
+const hBits = new Array(Math.ceil(1 / 8) * 64).fill(0);
+const rectFullHeight = rectangleMsg(0, 0, 1, 64, hBits);
+const rawFullHeight = unpack7(rectFullHeight.slice(7, rectFullHeight.length - 1), 4 + hBits.length);
+eq("rectangle height 64 survives encoding, not truncated to 0", rawFullHeight[3], 64);
+
 eq("clear bytes", clearMsg(), [0xF0,0x00,0x21,0x5B,0x02,0x01,0x07,0xF7]);
 
 /* pack7/unpack7 round-trip, arbitrary length including a short last group. */

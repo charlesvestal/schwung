@@ -1241,8 +1241,17 @@ export function createSurface(io) {
             if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
             /* invalidateBuf(), not forgetShown(): the device told us the
              * PIXELS are wrong, not that it forgot what mode it's in --
-             * shownKind stays trusted, only lastSentBuf is suspect. */
+             * shownKind stays trusted, only lastSentBuf is suspect. AND
+             * invalidate(): invalidateBuf() alone only clears what we
+             * believe is on the device -- it does not, by itself, mark a
+             * repaint OWED. Without this second call, a NACK'd screen with
+             * otherwise-unchanged content sits uncorrected until something
+             * else happens to invalidate() (a real change, or the heartbeat
+             * up to SCREEN_HEARTBEAT_MS later) -- silently defeating the
+             * exact recovery this handler exists to provide, the same
+             * mistake the heartbeat site above had to be fixed for. */
             display.invalidateBuf();
+            display.invalidate();
             const t = now();
             if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
                 lastNackLogAt = t;

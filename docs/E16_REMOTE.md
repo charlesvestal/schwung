@@ -344,8 +344,13 @@ the full reasoning, including why row-runs and not full 2D clustering.
 (via `lifecycle.onSysex`, the fast path for the unrelated REMOTE MODE
 ENTERED ACK) and only on a `false` falls through to `parseOledUpdateReply`.
 A NACK calls `display.invalidateBuf()` — nulling the display's belief about
-what's on the device without touching `shownKind` — so the next diff tick
-falls back to a full repaint, with no new timer or retry machinery. An ACK
+what's on the device without touching `shownKind` — **and** `display.invalidate()`,
+which is what actually marks a repaint owed; `invalidateBuf()` alone only
+clears the belief and would otherwise leave a NACK'd screen uncorrected
+until something else invalidates or the (also foreign-traffic-gated) heartbeat
+eventually fires. Both calls together force the very next diff tick to a
+full repaint, with no new timer or retry machinery — the same pairing the
+self-heal heartbeat needs and for the identical reason. An ACK
 is a no-op: we already advanced optimistically on send. The two OLED reply
 bodies (13 bytes: 5-byte header + 1-byte id + 7-byte packed payload) can
 never be mistaken for the 7-byte REMOTE MODE ENTERED ACK body, since
