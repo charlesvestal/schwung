@@ -81,6 +81,35 @@ eq("identical -> none", diffFramebuffers(same, same.slice()), { kind: "none" });
      diffFramebuffers(prev, next, { maxRegions: 1 }), { kind: "full" });
 }
 
+/* Exactly MAX_REGIONS runs (the boundary itself, not MAX_REGIONS+1) must
+ * NOT fall back to full on count alone -- the guard is ">", not ">=". */
+{
+  const prev = blank(), next = blank();
+  for (let i = 0; i < MAX_REGIONS; i++) setPx(next, 0, i * 2);
+  const d = diffFramebuffers(prev, next);
+  eq("exactly MAX_REGIONS runs -> regions, not full", d.kind, "regions");
+  eq("exactly MAX_REGIONS runs -> region count", d.regions.length, MAX_REGIONS);
+}
+
+/* A multi-row, partial-width rect -- distinct from both the 1x1 case and
+ * the full-width scanline case already covered above. */
+{
+  const prev = blank(), next = blank();
+  for (let y = 10; y <= 12; y++) for (let x = 20; x <= 25; x++) setPx(next, x, y);
+  const d = diffFramebuffers(prev, next);
+  eq("multi-row partial-width -> one rect", d,
+     { kind: "regions", regions: [{ kind: "rect", x: 20, y: 10, w: 6, h: 3 }] });
+}
+
+/* A malformed prev (wrong length) is treated the same as unknown -- full,
+ * not a thrown error or a diff against garbage. */
+{
+  const next = blank();
+  setPx(next, 0, 0);
+  eq("malformed prev length -> full",
+     diffFramebuffers(new Uint8Array(10), next), { kind: "full" });
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
