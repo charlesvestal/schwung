@@ -600,19 +600,19 @@ git commit -m "e16: row-run diff engine for partial OLED updates"
 - Test: `tests/host/test_e16_view.sh` (extend — it already builds `createDisplay` fixtures)
 
 **Acceptance Criteria:**
-- [ ] A small diff (single region) sends `"rect"` or `"scanline"` instead of `"framebuffer"`
-- [ ] A two-region diff sends the first region on one `tick()` call and the second on the next, in row order
-- [ ] A `"full"` diff (or `prev === null`, i.e. first paint / after `forgetShown()`) sends the whole framebuffer exactly as today
-- [ ] Switching `want` from `"framebuffer"` to `"labels"` (or back) drops any in-flight region queue and forces a full repaint on the next framebuffer request — a queued region describes a screen the device is no longer being asked to show
-- [ ] A refused send (the injected `send` returns `false`) leaves `lastSentBuf` and the pending region queue exactly as they were — mirrors the existing `fbOwed` refusal discipline
-- [ ] `tick()`'s return value includes `"rect"`/`"scanline"` alongside the existing `"framebuffer"`/`"rings"`/`"labels"`
-- [ ] All pre-existing `test_e16_*.sh` tests that touch `createDisplay` still pass unmodified (no behavior change for a `"full"`-diff caller, i.e. the pre-partial-updates test suite is a regression guard)
+- [x] A small diff (single region) sends `"rect"` or `"scanline"` instead of `"framebuffer"`
+- [x] A two-region diff sends the first region on one `tick()` call and the second on the next, in row order
+- [x] A `"full"` diff (or `prev === null`, i.e. first paint / after `forgetShown()`) sends the whole framebuffer exactly as today
+- [x] Switching `want` from `"framebuffer"` to `"labels"` (or back) drops any in-flight region queue and forces a full repaint on the next framebuffer request — a queued region describes a screen the device is no longer being asked to show
+- [x] A refused send (the injected `send` returns `false`) leaves `lastSentBuf` and the pending region queue exactly as they were — mirrors the existing `fbOwed` refusal discipline
+- [x] `tick()`'s return value includes `"rect"`/`"scanline"` alongside the existing `"framebuffer"`/`"rings"`/`"labels"`
+- [x] All pre-existing `test_e16_*.sh` tests that touch `createDisplay` still pass unmodified (no behavior change for a `"full"`-diff caller, i.e. the pre-partial-updates test suite is a regression guard)
 
 **Verify:** `for t in tests/host/test_e16_*.sh; do bash "$t" || echo "FAIL $t"; done` → no `FAIL` lines
 
 **Steps:**
 
-- [ ] **Step 1: Update the import line**
+- [x] **Step 1: Update the import line**
 
 In `src/shared/e16_surface.mjs`, change line 348:
 
@@ -628,7 +628,7 @@ import { diffFramebuffers } from "./e16_diff.mjs";
 import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
 ```
 
-- [ ] **Step 2: Add state and rewrite `tick()`**
+- [x] **Step 2: Add state and rewrite `tick()`**
 
 In `createDisplay()`, immediately after the existing `let shownKind = null;` (and its comment block — leave that comment as-is), add:
 
@@ -732,7 +732,7 @@ Then replace the entire `tick(send, frameBytes, screen, nowMs) { ... }` method (
         },
 ```
 
-- [ ] **Step 3: Make `forgetShown()` also clear the new state**
+- [x] **Step 3: Make `forgetShown()` also clear the new state**
 
 Find the existing method (it's just above the `/* Test seams. */` block's `ringsPending` getter):
 
@@ -746,7 +746,7 @@ Change it to:
         forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
 ```
 
-- [ ] **Step 4: Extend `tests/host/test_e16_view.sh`**
+- [x] **Step 4: Extend `tests/host/test_e16_view.sh`**
 
 Add before its final `console.log(fails ? ...)` block (move that block to the end):
 
@@ -841,15 +841,22 @@ Add before its final `console.log(fails ? ...)` block (move that block to the en
 }
 ```
 
-- [ ] **Step 5: Run all E16 tests**
+- [x] **Step 5: Run all E16 tests**
 
 Run: `for t in tests/host/test_e16_*.sh; do echo "=== $t ==="; bash "$t"; done`
 Expected: every file ends with `PASS`, no `FAIL` lines anywhere in the output
 
-- [ ] **Step 6: Commit**
+**AMENDMENT (found during implementation, applied as part of Task 4 rather than as written above):** the original Step 2 above introduced a real regression: `createSurface`'s self-heal heartbeat (`SCREEN_HEARTBEAT_MS`, the block that restates the screen periodically to repair on-the-wire corruption the surface can't detect) calls `display.invalidate()` — the SAME call every other repaint trigger uses. Under content-aware diffing, if the heartbeat's rendered content happens to be byte-identical to `lastSentBuf` (the common case — nothing actually changed, which is exactly when the heartbeat fires), `diffFramebuffers` correctly returns `kind: "none"` and NOTHING is sent, silently defeating the repair the heartbeat exists for. This was caught by two pre-existing tests failing for the right reason (`test_e16_view.sh` "three invalidations are one repaint", `test_e16_follow.sh` "a source change sends exactly one") — both used static render stubs that don't vary with the state under test, which is what let this design gap surface as a test failure rather than a silent behavior change.
+
+**Fix, folded into Task 4's own commit:**
+1. `createDisplay()` gains `invalidateBuf()` NOW (pulled forward from Task 5 below — Task 5 no longer defines it, it just calls it): nulls `lastSentBuf`, clears `pendingRegions`/`pendingBuf`, leaves `shownKind` untouched.
+2. The heartbeat block in `createSurface` (search `SCREEN_HEARTBEAT_MS`) calls `display.invalidateBuf(); display.invalidate();` instead of just `display.invalidate();` — forcing the next diff's `prev` to `null`, which `diffFramebuffers` always answers `{kind: "full"}` for, regardless of content. This restores byte-for-byte the pre-Task-4 heartbeat behavior (always resend, unconditionally).
+3. The two test stubs were fixed to actually vary with the state they're testing (`test_e16_view.sh`'s `frame()` now differs between the priming call and the later one in the one test block that needs it; `test_e16_follow.sh`'s `PARAM_INK` now depends on `src.component`) — a legitimate correction, since a stub that ignores the state under test was always a weaker test than one that doesn't, and the old `tick()`'s content-blindness is exactly what let that weakness go unnoticed.
+
+- [x] **Step 6: Commit**
 
 ```bash
-git add src/shared/e16_surface.mjs tests/host/test_e16_view.sh
+git add src/shared/e16_surface.mjs tests/host/test_e16_view.sh tests/host/test_e16_follow.sh
 git commit -m "e16: createDisplay sends partial OLED updates when the diff is small"
 ```
 
@@ -865,7 +872,7 @@ git commit -m "e16: createDisplay sends partial OLED updates when the diff is sm
 - Test: `tests/host/test_e16_wiring.sh` (extend — it's the end-to-end test)
 
 **Acceptance Criteria:**
-- [ ] A `parseOledUpdateReply` NACK arriving via `onMessage` calls a new `display.invalidateBuf()` that nulls `lastSentBuf` and clears `pendingRegions`/`pendingBuf`
+- [ ] A `parseOledUpdateReply` NACK arriving via `onMessage` calls `display.invalidateBuf()` (already added in Task 4, for the heartbeat's use — this task is its SECOND caller, not its origin)
 - [ ] An ACK is a no-op (no state change, no message sent)
 - [ ] A rate-limited log line fires on NACK (reuse the codebase's existing rate-limit helper if present; otherwise a simple "once per N ms" gate is acceptable — see step 1)
 - [ ] Neither ACK nor NACK is mistaken for the unrelated `REMOTE MODE ENTERED ACK` (already covered by Task 1's parser test, but re-asserted here at the wiring level)
@@ -876,27 +883,9 @@ git commit -m "e16: createDisplay sends partial OLED updates when the diff is sm
 
 **Steps:**
 
-- [ ] **Step 1: Add `invalidateBuf()` to `createDisplay()`'s returned object**
+- [ ] **Step 1: Confirm `invalidateBuf()` already exists**
 
-In `src/shared/e16_surface.mjs`, in the object `createDisplay()` returns, find:
-
-```javascript
-        /* A replug wipes the panel, so what the device was told is no longer
-         * true. Forgetting it is what makes the presence edge resend. */
-        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
-```
-
-(from Task 4, Step 3) and add immediately after it:
-
-```javascript
-        /* An OLED UPDATE NACK, or any other signal that what we believe is
-         * on the device might be wrong. Narrower than forgetShown(): the
-         * device is still in framebuffer mode as far as we know (shownKind
-         * is untouched), only the PIXELS we believe it holds are suspect --
-         * the next diff sees prev === null and sends a full repaint, same
-         * recovery forgetShown() already gives a replug. */
-        invalidateBuf() { lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
-```
+Task 4 added `invalidateBuf()` to `createDisplay()`'s returned object already (it turned out to be needed there too, to fix a self-heal heartbeat regression — see the amendment in Task 4's Step 5). Run `grep -n "invalidateBuf" src/shared/e16_surface.mjs` and confirm it's there before proceeding — this task only adds a SECOND caller (the NACK handler below), it does not define the method.
 
 - [ ] **Step 2: Find and check the log rate-limit convention**
 
