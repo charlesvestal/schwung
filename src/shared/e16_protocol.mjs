@@ -105,3 +105,120 @@ export function isAck(asm) {
     for (let i = 0; i < ACK_BODY.length; i++) if (asm[i] !== ACK_BODY[i]) return false;
     return true;
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * PARTIAL OLED UPDATES -- built against OXI's DRAFT spec (shared 2026-09-21,
+ * not yet shipped in firmware; see docs/superpowers/specs/2026-09-22-e16-
+ * partial-oled-updates-design.md). Nothing here has been verified on
+ * hardware.
+ *
+ * SPEC AMBIGUITY: the sheet's ID column lists every opcode as TWO bytes
+ * (0x06 0xXX), and the 8 existing messages' example bytes agree. The 5 NEW
+ * messages below (SCANLINE/RECTANGLE/CLEAR/ACK/NACK) list the same two-byte
+ * ID, but their EXAMPLE bytes drop the 0x06 (e.g. SCANLINE's worked example
+ * is "...02 01 05 [payload] F7", not "...01 06 05..."). A loose note at the
+ * top of the sheet -- "0x06 is the category message, no longer necessary
+ * once in REMOTE MODE" -- could explain this but doesn't clearly say it
+ * applies only to these five. We follow the literal example bytes (the more
+ * concrete evidence) behind this one flag so a wrong guess is a one-line fix
+ * once real firmware answers.
+ * ---------------------------------------------------------------------------
+ */
+export const OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX = false;
+
+const OLED_SCANLINE_ID = 0x05;
+const OLED_RECTANGLE_ID = 0x06;
+const OLED_CLEAR_ID = 0x07;
+const OLED_UPDATE_ACK_ID = 0x53;
+const OLED_UPDATE_NACK_ID = 0x54;
+
+function oledId(subId) {
+    return OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX ? [0x06, subId] : [subId];
+}
+
+/* rowBits: 16 bytes, left to right, MSB first; 1 = on. No CRC -- see the
+ * design doc; the field is optional in the spec and its algorithm is
+ * undocumented. */
+export function scanlineMsg(y, rowBits) {
+    if (rowBits.length !== 16) throw new Error("scanline row must be 16 bytes");
+    return msg(oledId(OLED_SCANLINE_ID), [y & 0x3F].concat(Array.from(rowBits)));
+}
+
+/* bits: ceil(w/8) * h bytes, row-major, MSB first, each row byte-aligned.
+ * No CRC, same reason as scanlineMsg. */
+export function rectangleMsg(x, y, w, h, bits) {
+    const want = Math.ceil(w / 8) * h;
+    if (bits.length !== want) {
+        throw new Error("rectangle payload must be " + want + " bytes, got " + bits.length);
+    }
+    return msg(oledId(OLED_RECTANGLE_ID),
+               [x & 0x7F, y & 0x3F, w & 0x7F, h & 0x3F].concat(Array.from(bits)));
+}
+
+export function clearMsg() {
+    return msg(oledId(OLED_CLEAR_ID), []);
+}
+
+/* Inverse of pack7: packed groups of <=8 bytes (1 MSB byte + up to 7 payload
+ * bytes) back to rawLen raw bytes. rawLen is required -- the packed stream
+ * carries no length of its own, and pack7's last group can be short. */
+export function unpack7(packed, rawLen) {
+    const out = [];
+    let pi = 0;
+    for (let done = 0; done < rawLen; ) {
+        const n = Math.min(7, rawLen - done);
+        const msbs = packed[pi++];
+        for (let k = 0; k < n; k++) {
+            const lo = packed[pi++] & 0x7F;
+            out.push(lo | (((msbs >> k) & 1) ? 0x80 : 0));
+        }
+        done += n;
+    }
+    return out;
+}
+
+/* asm holds everything between F0 and F7, as createSysexAssembler delivers
+ * it. Returns { id, payload } if asm starts with our header and carries an
+ * id of the expected width, else null -- payload is whatever pack7'd bytes
+ * follow, unparsed. */
+function oledReplyHeader(asm) {
+    const idLen = OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX ? 2 : 1;
+    if (asm.length < HDR.length + idLen) return null;
+    for (let i = 0; i < HDR.length; i++) if (asm[i] !== HDR[i]) return null;
+    if (idLen === 2) {
+        if (asm[HDR.length] !== 0x06) return null;
+        return { id: asm[HDR.length + 1], payload: asm.slice(HDR.length + 2) };
+    }
+    return { id: asm[HDR.length], payload: asm.slice(HDR.length + 1) };
+}
+
+/* cmd is the ORIGINAL COMMAND byte the device echoes back (its own SCANLINE/
+ * RECTANGLE/CLEAR id, not ours -- the spec's ACK/NACK payload names which
+ * update it is about). addr's four raw bytes decode per that command; 0xFF
+ * in a field means "not applicable to this command", decoded to null rather
+ * than the literal 255, per the tri-state read rule (CLAUDE.md: a filler
+ * value must never be read as data). */
+function decodeOledAddr(cmd, a) {
+    const opt = (v) => (v === 0xFF ? null : v);
+    if (cmd === OLED_SCANLINE_ID) return { y: opt(a[0]) };
+    if (cmd === OLED_RECTANGLE_ID) {
+        return { x: opt(a[0]), y: opt(a[1]), w: opt(a[2]), h: opt(a[3]) };
+    }
+    return {};   /* CLEAR, or an unrecognised command -- no address fields */
+}
+
+/* Returns { ok, cmd, status, addr } for an OLED UPDATE ACK or NACK body, or
+ * null for anything else -- including the unrelated REMOTE MODE ENTERED ACK,
+ * which shares status byte 0x53 but never this length (it carries no
+ * payload). Check isAck() first in a caller that cares about both, since
+ * that's the hot path. */
+export function parseOledUpdateReply(asm) {
+    const h = oledReplyHeader(asm);
+    if (!h) return null;
+    if (h.id !== OLED_UPDATE_ACK_ID && h.id !== OLED_UPDATE_NACK_ID) return null;
+    const raw = unpack7(h.payload, 6);
+    if (raw.length !== 6) return null;
+    const [cmd, status, a0, a1, a2, a3] = raw;
+    return { ok: h.id === OLED_UPDATE_ACK_ID, cmd, status, addr: decodeOledAddr(cmd, [a0, a1, a2, a3]) };
+}
