@@ -67,20 +67,61 @@ addendum or a hardware rig to reverse-engineer against.
   happens.
 
 **`src/shared/e16_diff.mjs`** (new, pure)
-- `diffFramebuffers(prev, next)` — `prev` is `null` or a 1024-byte buffer,
-  `next` is always a 1024-byte buffer. Returns:
-  - `{ kind: "none" }` — byte-identical
-  - `{ kind: "full" }` — `prev === null`, or the bounding box of differing
-    pixels covers more than `FULL_REPAINT_THRESHOLD` (0.4) of the 128x64
-    area — past that point RECTANGLE's header + packing overhead isn't
-    worth it over just sending FRAMEBUFFER
-  - `{ kind: "scanline", y }` — bounding box is exactly one row tall
-  - `{ kind: "rect", x, y, w, h }` — otherwise, tightest bounding box
-- No knowledge of MIDI, SysEx, or the display state machine — takes two
-  buffers, returns a decision. Tested with fixture buffers: identical,
-  one-pixel change, full-width one-row change, sparse-but-wide change (two
-  corners lit → should still pick `full` once the bounding box swallows the
-  whole screen), >40%-area change.
+
+A single bounding box over the whole diff is the wrong shape: two
+far-apart changes (e.g. the map cursor moving from a top-left cell to a
+bottom-right one — a plausible, ordinary navigation) produce a box
+spanning nearly the whole screen even though the actual changed pixels are
+a couple of percent of it. Naively that either sends one needlessly huge
+RECTANGLE or trips a whole-screen-area threshold and falls back to
+FRAMEBUFFER — defeating the point in exactly the case (fast navigation)
+partial updates are for.
+
+So `diffFramebuffers` clusters by **row runs**, not one global box:
+
+1. Compute a 64-entry boolean array — does this row differ at all.
+2. Group contiguous `true` rows into runs.
+3. For each run, take the tight *x*-bounds from only the pixels that
+   differ within that run's rows (not the whole screen) — this is what
+   keeps a run over the top-left cell from being dragged wide by a change
+   in the bottom-right cell; the two land in different runs entirely.
+4. Any run whose rect area exceeds `MAX_REGION_AREA` (see constants below)
+   invalidates the *whole* diff to `"full"` — a single run that large means
+   most of that row-band changed, and RECTANGLE's per-message overhead
+   stops paying for itself.
+5. More runs than `MAX_REGIONS` also invalidates to `"full"` — bounds the
+   worst case on *message count*, independent of how small each region is
+   (a screen with many scattered single-pixel changes is a redraw, not a
+   diff).
+6. A run that is exactly one row tall and spans (close to) the full width
+   becomes a `"scanline"` region instead of `"rect"` — cheaper on the wire
+   (18 raw bytes vs. RECTANGLE's coordinate + dimension header).
+
+`diffFramebuffers(prev, next, opts)` — `prev` is `null` (unknown device
+state → always `"full"`) or a 1024-byte buffer; `next` is always a
+1024-byte buffer; `opts` optionally overrides the two constants below.
+Returns:
+- `{ kind: "none" }` — byte-identical
+- `{ kind: "full" }` — `prev === null`, or region/area caps exceeded per
+  above
+- `{ kind: "regions", regions: [...] }` — 1 to `MAX_REGIONS` entries, each
+  `{ kind: "scanline", y }` or `{ kind: "rect", x, y, w, h }`, in row order
+
+Two adjustable constants, exported so a caller (or a test, or a future
+tuning pass once real hardware timing exists) can override them:
+- `MAX_REGIONS` (default 4) — caps message count per diff
+- `FULL_REPAINT_THRESHOLD` (default 0.4, as a fraction of 128×64) — caps
+  area per region; also used as the whole-diff fallback when `prev` is
+  unusable
+
+No knowledge of MIDI, SysEx, or the display state machine — takes two
+buffers (+ options), returns a decision. Tested with fixture buffers:
+identical; one-pixel change; full-width one-row change; two changes in
+different row-bands (must produce 2 *small* regions, not 1 screen-sized
+box — this is the case that motivated the row-run design, so it gets a
+named test); a diff wide enough in one row-band to become a `"scanline"`;
+more than `MAX_REGIONS` scattered changes (→ `"full"`); a single region
+over `FULL_REPAINT_THRESHOLD` (→ `"full"`); `prev === null` (→ `"full"`).
 
 **`src/shared/e16_surface.mjs` (`createDisplay`)** (modified)
 - New field `lastSentBuf` (`Uint8Array | null`), analogous to `shownKind`:
@@ -88,17 +129,37 @@ addendum or a hardware rig to reverse-engineer against.
   today. `forgetShown()` (already called on replug) also nulls it — after a
   power cycle we don't know what's on the device, so the next repaint must
   be a full one.
+- New field `pendingRegions` (array, possibly empty) — a diff can produce
+  up to `MAX_REGIONS` messages, and the file's existing "at most one
+  message per tick" rule (rule 1 of the PACED DISPLAY block) means they
+  can't all go out at once. Same shape as the existing `rings` coalescing:
+  a queue drained one entry per tick, never grown past what one un-acted
+  diff produced (a second diff before the queue empties *replaces* it
+  rather than appending — the newer picture is the one worth sending, and
+  an unbounded queue is how a busy screen turns into an ever-growing send
+  backlog).
 - Where `tick()` currently does
-  `fbOwed ? framebufferMsg(frameBytes()) : ...`, it now: renders once via
-  `frameBytes()`, calls `diffFramebuffers(lastSentBuf, buf)`, and dispatches
-  on `.kind` to `clearMsg`/`scanlineMsg`/`rectangleMsg`/`framebufferMsg`
-  (an all-zero `next` is `kind: "full"` with an all-zero box today, which
-  is fine — CLEAR is only reached if we add a special case for it later;
-  not doing that now, YAGNI).
-- On a confirmed emit, `lastSentBuf = buf.slice()` (a copy — `frameBytes()`
-  may return a live, mutable canvas buffer per `e16_canvas.mjs`'s own
-  contract: "Returns the LIVE buffer... callers that want a snapshot should
-  slice it themselves").
+  `fbOwed ? framebufferMsg(frameBytes()) : ...`:
+  - If `pendingRegions` is non-empty, send `scanlineMsg`/`rectangleMsg`
+    for `pendingRegions.shift()`'s region and stop — this drains ahead of
+    computing a fresh diff, so a multi-region diff finishes before
+    anything newer preempts it.
+  - Otherwise, when a repaint is owed: render once via `frameBytes()`,
+    call `diffFramebuffers(lastSentBuf, buf)`. `kind: "none"` sends
+    nothing. `kind: "full"` sends `framebufferMsg(buf)` as today.
+    `kind: "regions"` sends the *first* region now and sets
+    `pendingRegions` to the rest.
+- On any confirmed emit that is part of a diff (full or regional),
+  `lastSentBuf = buf.slice()` (a copy — `frameBytes()` may return a live,
+  mutable canvas buffer per `e16_canvas.mjs`'s own contract: "Returns the
+  LIVE buffer... callers that want a snapshot should slice it
+  themselves"). Advancing on the *first* region of a multi-region diff
+  (rather than waiting for the queue to drain) is deliberate and matches
+  the existing "believed state" discipline: each region is independently a
+  correct partial description of `buf`, so a NACK or a fresh diff request
+  arriving mid-drain reasons about a partially-updated `lastSentBuf`
+  exactly the way it already reasons about a partially-applied optimistic
+  send elsewhere in this file.
 - `tick()`'s return value gains two new kinds (`"scanline"`, `"rect"`)
   alongside the existing `"framebuffer"`/`"rings"`/`"labels"` for tests and
   logging.
@@ -108,12 +169,12 @@ addendum or a hardware rig to reverse-engineer against.
   check fails (it's a different body shape, so order doesn't matter for
   correctness, but ACK is checked first since it's the hot path).
 - ACK: no-op. We already advanced `lastSentBuf` optimistically on send.
-- NACK: null `lastSentBuf` entirely (not just the named region — NACKs
-  should be rare, and partial invalidation buys little for the complexity).
-  This makes the *next* tick's diff see `prev === null` → `kind: "full"`,
-  same recovery the replug case already uses. A rate-limited log line
-  records the NACK's status code, matching the house style for
-  `param-slow`.
+- NACK: null `lastSentBuf` **and** clear `pendingRegions` entirely (not
+  just the named region — NACKs should be rare, and partial invalidation
+  buys little for the complexity). This makes the *next* tick's diff see
+  `prev === null` → `kind: "full"`, same recovery the replug case already
+  uses. A rate-limited log line records the NACK's status code, matching
+  the house style for `param-slow`.
 - No new timer, no retry state, no in-flight tracking — this is the same
   "restate on next tick" discipline the file already uses for the
   heartbeat, just event-triggered as well as time-triggered now.
@@ -133,8 +194,11 @@ surface files. Host tests (`tests/host/test_e16_*.sh` pattern):
 - protocol builders pinned against the sheet's example bytes
 - `packRowMajor` against hand-worked fixtures (a few set pixels → known
   byte sequence)
-- `diffFramebuffers` against fixture buffer pairs (see above)
+- `diffFramebuffers` against fixture buffer pairs (see the named cases
+  above, including the two-row-bands-far-apart case)
 - `createDisplay` extended: a small diff sends `rect`/`scanline` instead of
-  `framebuffer`; a >40% diff still sends `framebuffer`; a NACK forces the
-  next tick to `framebuffer` again; a refused send leaves `lastSentBuf`
-  unchanged (mirrors the existing `fbOwed` refusal tests).
+  `framebuffer`; a two-region diff drains across two ticks, first region
+  first; a >`MAX_REGIONS` or >`FULL_REPAINT_THRESHOLD` diff still sends
+  `framebuffer`; a NACK forces the next tick to `framebuffer` again *and*
+  drops any queued regions; a refused send leaves `lastSentBuf` and
+  `pendingRegions` unchanged (mirrors the existing `fbOwed` refusal tests).
