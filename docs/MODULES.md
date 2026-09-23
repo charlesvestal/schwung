@@ -2596,6 +2596,9 @@ the user press Back afterwards is one gesture too many on the commonest path.
 It is not available from `draw` or `tick` (a screen must not tear itself down
 mid-render), and a host that predates it simply leaves the canvas up, so guard
 with `typeof ctx.close === "function"` if you care about older hosts.
+The close happens when your hook **returns**, not inside the call, so it is
+safe from `handleBack` too — return whatever you like after it; the host leaves
+exactly once.
 
 **`wantsPads: true`** on the overlay asks for hardware pad notes (68–99):
 
@@ -2626,7 +2629,7 @@ The eight knobs **stay with the level**, entered or not, exactly as they do
 inside every other door. A page that wants them will need a future
 `claims_knobs`; nothing has needed it yet.
 
-Two limits worth knowing before you declare it:
+Three things worth knowing before you declare it:
 
 - **`enterable` + `preset_browser` is refused.** A preset page is already a door
   with every control spoken for — the wheel browses, the knobs stay on the level
@@ -2637,6 +2640,12 @@ Two limits worth knowing before you declare it:
   is never somewhere a user can be stuck.
 - **Shift+jog pages out**, of a door and of a fullscreen dive alike, and is
   never offered to your module.
+
+- **`state` is shared between your hooks and `drawPage`**, per slot: what
+  `onMidi` puts in `ctx.state` arrives as `drawPage`'s `state` field. The hook
+  `ctx` carries the same non-drawing methods as a dive's (`getParam`,
+  `setParam`, `getValue`, `setValue`, `measureText`, `shiftHeld`, `now`,
+  `random`, `close`), so one script serves both routes.
 
 See `CANVAS_PAGES.md` for the model this belongs to.
 
@@ -2881,7 +2890,7 @@ nothing else, so a `"hidden": true` would be read by no one.)
 
 ```javascript
 globalThis.canvas_overlay = {
-    drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
+    drawPage(ctx, { values, base, keys, touched, nowMs, preset, state }) {
         /* ctx is frame-scoped to the BODY BAND. (0,0) is its top-left. */
     },
 };
