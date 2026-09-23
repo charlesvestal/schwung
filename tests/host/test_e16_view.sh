@@ -23,7 +23,7 @@ cd "$(dirname "$0")/../.."
 node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX,
-         mapRings, moduleRgb, renderEmptySlot, SLOT_RGB, SLOT_RGB_OTHER }
+         mapRings, moduleRgb, renderEmptySlot, SLOT_RGB, SLOT_RGB_OTHER, pageHasKnobs }
     from "./src/shared/e16_view.mjs";
 import { buildMap, setOrdinal } from "./src/shared/e16_map.mjs";
 import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
@@ -982,6 +982,24 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   let rest = 0; for (let y = 8; y < 32; y++) for (let x = 0; x < 128; x++)
     if (((plain.toBuffer()[(y >> 3) * 128 + x] ^ hinted.toBuffer()[(y >> 3) * 128 + x]) >> (y & 7)) & 1) rest++;
   eq("...and touches nothing but the headers", rest, 0);
+}
+
+/* THE E16 PAGES ONLY WHAT A KNOB CAN TURN. Over the whole captured fleet:
+ * every knob page is kept, and every preset browser, item list and trailing
+ * menu (My Presets, Module) is skipped -- presets stay on Move. */
+{
+  const fs = await import("fs");
+  const { planPages } = await import("./src/shared/param_pages/page_plan.mjs");
+  const fleet = JSON.parse(fs.readFileSync("tests/fixtures/module-contracts.json", "utf8")).modules;
+  const kinds = {};
+  for (const c of (Array.isArray(fleet) ? fleet : Object.values(fleet))) {
+    let r; try { r = planPages({ hierarchy: c.ui_hierarchy, chainParams: c.chain_params,
+      trailingMenus: [{ name: "My Presets", entries: [{ label: "Save", action: "save" }] }] }); } catch (e) { continue; }
+    for (const pg of (r.pages || [])) { const k = pg.kind; kinds[k] = kinds[k] || [0, 0]; kinds[k][pageHasKnobs(pg) ? 0 : 1]++; }
+  }
+  eq("every knob page is shown on the E16", kinds[PAGE_KNOBS] && kinds[PAGE_KNOBS][1], 0);
+  eq("...and every other kind (presets, items, menus) is skipped",
+     Object.entries(kinds).filter(([k]) => k !== PAGE_KNOBS).every(([, v]) => v[0] === 0), true);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
