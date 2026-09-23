@@ -1271,7 +1271,7 @@ export function createNav(opts) {
      * no page turn (see MAP_SHOW_DELAY_MS). Both derived from the timestamp,
      * so the delay needs no timer: tick() notices the change and repaints. */
     const mapVisible = (now) =>
-        held(now) && !turnedThisHold && (now - shiftDownAt) >= showDelayMs;
+        held(now) && !turnedThisHold && !mixerOn && (now - shiftDownAt) >= showDelayMs;
 
     const invalidate = () => { if (display) display.invalidate(); };
 

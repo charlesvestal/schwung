@@ -59,8 +59,15 @@ function fakeIo() {
   /* Send B of track 1 is 64: push kills it, push brings it back. */
   m.push(8, false);
   eq("push on a send takes it to 0", io.slots[0]["buses:main_send2"], "0");
+  eq("...drawn inverted, showing what a push brings back", m.cell(8), { label: "SndB", value: "50%", off: true });
   m.push(8, false);
   eq("...and the second push restores it", io.slots[0]["buses:main_send2"], "64");
+  eq("...no longer inverted", m.cell(8).off, undefined);
+  m.push(8, false); m.turn(8, 3, false);
+  eq("turning a switched-off send takes it out of the toggle", [m.cell(8).off, io.slots[0]["buses:main_send2"]], [undefined, "6"]);
+  m.push(8, false); m.push(8, false);
+  eq("...so the next push pair kills and restores the NEW value", io.slots[0]["buses:main_send2"], "6");
+  m.turn(8, 29, false);
   m.push(4, true);
   eq("Shift+push on a send throws it to 100%", [io.slots[0]["buses:main_send1"], m.cell(4).value], [String(SEND_MAX), "100%"]);
   m.turn(5, 3, false);
@@ -79,7 +86,8 @@ function fakeIo() {
   m.turn(15, -20, false);
   eq("turning left is a low-pass", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 40", "-0.400"]);
   m.push(15, false);
-  eq("push switches it off", [m.cell(15).value, io.glob["master_fx:filter"]], ["off", "0.000"]);
+  eq("push switches it off", io.glob["master_fx:filter"], "0.000");
+  eq("...drawn inverted, showing what a push brings back", m.cell(15), { label: "Filt", value: "LP 40", off: true });
   m.push(15, false);
   eq("...and the second push brings it back", m.cell(15).value, "LP 40");
   m.turn(15, 40, false);
@@ -129,6 +137,10 @@ function fakeIo() {
      (nav.handle({ type: "shift", down: true }, 5000), nav.handle({ type: "push", enc: 3 }, 5050)),
      { action: "mixerPush", enc: 3, shift: true });
   nav.handle({ type: "shift", down: false }, 5100);
+  nav.handle({ type: "shift", down: true }, 6000);
+  eq("holding Shift in the mixer never opens the slot map", nav.mapVisible(6000 + MAP_SHOW_DELAY_MS * 5), false);
+  eq("...and the mixer stays up", nav.mixer, true);
+  nav.handle({ type: "shift", down: false }, 6000 + MAP_SHOW_DELAY_MS * 5);
   tap(7000); nav.handle({ type: "shift", down: true }, 7200);
   eq("double-tap again leaves the mixer", nav.mixer, false);
   nav.handle({ type: "shift", down: false }, 7260);

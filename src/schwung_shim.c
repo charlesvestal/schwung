@@ -2903,9 +2903,24 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * track playing on its own, and dropping it here would make
                  * "stems" mean "only the tracks I happened to put a synth on"
                  * — silently, since the file would exist and be empty. */
-                shadow_stem_store(s, move_track, 1.0f);
+                /*
+                 * THE SLOT'S FADER STILL APPLIES. This passed Move's track at
+                 * unity, so an EMPTY slot ignored its own volume, mute, solo
+                 * and pan: muting track 3 did nothing while slot 3 held no
+                 * module, and a solo elsewhere left it playing (hardware,
+                 * 2026-09-24, the E16 Mixer). The same gain an occupied slot
+                 * gets -- effective volume and pan -- without the fade
+                 * envelope, which belongs to a loaded module (and sits at 0
+                 * with none).
+                 */
+                const float pass_vol = shadow_effective_volume(s);
+                float pass_l, pass_r;
+                shadow_pan_gains(s, &pass_l, &pass_r);
+                shadow_stem_store_slot(s, move_track, pass_vol);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)move_track[i];
+                    const float g = pass_vol * ((i & 1) ? pass_r : pass_l);
+                    int32_t mixed = (int32_t)mailbox_audio[i] +
+                        (g == 1.0f ? (int32_t)move_track[i] : (int32_t)lroundf((float)move_track[i] * g));
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
