@@ -277,8 +277,8 @@ export function validateContract({ id, hierarchy, chainParams, capabilities } = 
         /*
          * A GATE IS REACHED, JUST NOT BY A FINGER.
          *
-         * A key named by a `visible_if` is read on the page's own rotation
-         * (page_controller's gate lane), so it is doing its job precisely by
+         * A key named by a `visible_if` is read by page_controller's gate lane
+         * when something outside the grid moves, so it is doing its job precisely by
          * having no cell -- and giving it one would be the defect, since the
          * value is derived and turning it would only disagree with whatever
          * derives it. Reported as unreachable it reads as "your gate is
@@ -289,7 +289,11 @@ export function validateContract({ id, hierarchy, chainParams, capabilities } = 
         const gateKeys = new Set();
         for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
             if (!lvl || typeof lvl !== "object") continue;
-            const note = (c) => { if (c && c.param) gateKeys.add(String(c.param)); };
+            const note = (c) => {
+                /* The same three spellings the planner's noteCondition accepts. */
+                const k = c && (c.param || c.key || c.param_key);
+                if (k) gateKeys.add(String(k));
+            };
             note(lvl.visible_if);
             for (const item of lvl.params || []) if (item && typeof item === "object") note(item.visible_if);
         }

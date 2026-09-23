@@ -1691,8 +1691,8 @@ Visibility is evaluated dynamically; hidden entries are removed from list naviga
 
 #### The gate does not need a cell
 
-A condition's `param` is read on the page's own staggered rotation whether or
-not it has a knob, so **a gate may be a value the player never turns** — a
+A condition's `param` does not need a knob of its own, so **a gate may be a
+value the player never turns** — a
 derived mode the module publishes and refuses writes to. That is the normal
 shape for a multi-engine instrument: a drum machine where the pad you hit
 selects the voice, and a cymbal wants different pages from a drum, publishes
@@ -1707,7 +1707,9 @@ cause: a live pad press, or the module changing its own focus.
 
 When that happens the gate keys of the WHOLE hierarchy are eligible, not just
 those of the level you are standing on — a level that is currently hidden must
-be able to come back. They share the cap and the budget of a canvas page's
+be able to come back. A gate declared on a child level is read for the
+instance the grid is showing (`pad3_type` for a `{ "param": "type" }` on a
+`child_prefix: "pad"` level), exactly as the condition itself is evaluated. They share the cap and the budget of a canvas page's
 `extra_keys`: at most four, one read per stop.
 
 **Four counts distinct gate PARAMS, not values or levels.** A drum machine

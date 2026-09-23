@@ -925,6 +925,49 @@ export function createController(io = {}) {
         return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
     };
     const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
+    /*
+     * The wire key for a visible_if GATE, resolved the way the evaluator
+     * resolves it: against the level that DECLARES the condition, at that
+     * level's own child index.
+     *
+     * fullKey cannot do this. It resolves only a key that is a cell on the
+     * current page, and the gate lane reads exactly the keys that are not --
+     * so a per-pad gate (`{ param: "type" }` on a `child_prefix: "pad"` level)
+     * asked the wire for `synth:type` instead of `synth:pad0_type`, got the
+     * chain host's "" for an unknown key, and cached it under `type`: the very
+     * slot the evaluator consults first. One pad press and a gate that was
+     * right became wrong -- the "number read off the wrong parameter, cached
+     * under the bare key" the childResolve note above warns about.
+     *
+     * A key declared by two levels that resolve it DIFFERENTLY has no single
+     * answer; null, and the lane skips it rather than pick one. The evaluator
+     * still reads it on demand, which is what it did before the lane existed.
+     */
+    const gateLevelsOf = (key) => {
+        const out = [];
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        const names = (c) => c && typeof c === "object" && String(c.param || c.key || c.param_key || "") === key;
+        for (const name of Object.keys(levels)) {
+            const lvl = levels[name];
+            if (!lvl || typeof lvl !== "object") continue;
+            let hit = names(lvl.visible_if);
+            if (!hit && Array.isArray(lvl.params)) {
+                hit = lvl.params.some((p) => p && typeof p === "object" && names(p.visible_if));
+            }
+            if (hit) out.push(name);
+        }
+        return out;
+    };
+    const gateWireKey = (key) => {
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        let wire = null;
+        for (const name of gateLevelsOf(key)) {
+            const w = resolveChildKey(levels[name], childIndexFor(name), key) || key;
+            if (wire !== null && wire !== w) return null;
+            wire = w;
+        }
+        return `${s.prefix}:${wire === null ? key : wire}`;
+    };
     const page = () => s.pages[s.pageIndex] || null;
 
     /*
@@ -1793,6 +1836,20 @@ export function createController(io = {}) {
                 delete s.knobStates[k];
             }
         }
+        /* ...and the level's own per-instance GATES, which live on no page, so
+         * the loop above never sees them. The gate lane caches them under the
+         * generic key the evaluator asks for; left in place, the pad we just
+         * left would go on deciding what the new pad's pages are. Marked due
+         * so the new instance's answer is read rather than waited for. */
+        const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
+        if (lvlDef && s.conditionKeys) {
+            for (const k of s.conditionKeys) {
+                if (!resolveChildKey(lvlDef, 0, k)) continue;
+                if (gateLevelsOf(k).indexOf(levelName) < 0) continue;
+                delete s.values[k];
+                s.gatesDue = true;
+            }
+        }
         s.cursor = 0;
         /*
          * ...and read the new instance NOW, before anything is drawn.
@@ -2319,6 +2376,7 @@ export function createController(io = {}) {
             const due = [];
             for (const k of s.conditionKeys) {
                 if (!k || p.keys.indexOf(k) >= 0) continue;   /* a cell is read anyway */
+                if (gateWireKey(k) === null) continue;        /* ambiguous: evaluator reads it */
                 due.push(k);
                 if (due.length >= MAX_DECLARED_EXTRA_KEYS) break;
             }
@@ -2327,7 +2385,7 @@ export function createController(io = {}) {
             else {
                 s.gateAt = (s.gateAt || 0) + 1;
                 if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
-                const gv = getParam(fullKey(k));
+                const gv = getParam(gateWireKey(k));
                 const before = s.values[k];
                 if (gv !== null && gv !== undefined) s.values[k] = gv;
                 if (s.values[k] !== before) replanIfCondition(k);
@@ -2335,6 +2393,38 @@ export function createController(io = {}) {
             }
         }
 
+        /*
+         * THE NEIGHBOUR LANE — why the incoming page arrives populated.
+         *
+         * The rotation serves one key per tick, so a page of 8 knobs takes ~9
+         * ticks (~200ms) to fill. Jog to it and you watch it populate a cell at
+         * a time. This spends a stop on a key belonging to page ±1 that is not
+         * yet cached, so by the time you arrive it is already there.
+         *
+         * It PAIRS with observeLanded rather than replacing it. This stops the
+         * cells arriving one by one; that stops what arrives from animating.
+         * Neither covers the other: a warm page still has to not animate in
+         * (the lane cannot reach a component`s FIRST page — nothing is adjacent
+         * to a page set that does not exist yet), and a page that does not
+         * animate still fills in slowly without this.
+         *
+         * Bounded by construction: only UNCACHED keys, only the two adjacent
+         * pages, so it goes quiet on its own and stays quiet. A lane that kept
+         * reading would cost ~2.8ms per tick — more than the 1.68ms whole-page
+         * render it decorates — which is why the test counts reads rather than
+         * checking that the values are present. "The values are there" passes
+         * just as well with a lane that never stops.
+         *
+         * The stop is CONDITIONAL, so a warm neighbourhood costs nothing at
+         * all. That makes `stops` change by one as the lane opens and closes,
+         * which shifts `at` by one for a tick. Harmless: the rotation is a
+         * refresh loop, not a sequence with meaning — a key merely gets its
+         * turn one tick early or late.
+         *
+         * Blocking at jog time was rejected: up to eight uncached keys is
+         * ~22ms of dead time on a page's first visit, a visible hitch on the
+         * exact gesture this exists to smooth.
+         */
         const warm = neighbourPrefetch(p);
         const stops = p.keys.length + 1 + extraKeys.length + (warm ? 1 : 0);
         const at = s.cursor % stops;

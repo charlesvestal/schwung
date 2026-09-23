@@ -245,6 +245,56 @@ Promise.all([
     fail("the view test was replaced rather than widened — the hierarchy editor would inherit the grid\x27s context");
   console.log("  ok  the first plan resolves gates against the grid, and the list editor keeps its own context");
 
+  /* ---- 4c: A PER-PAD GATE IS READ FOR THE PAD ----------------------------
+   *
+   * A condition on a child level names the TEMPLATE ("type"), and the
+   * evaluator resolves it for the instance on screen ("pad0_type"). The gate
+   * lane first shipped reading it through fullKey, which resolves only a key
+   * that is a cell on the current page -- and the lane reads exactly the keys
+   * that are not. So it asked for `synth:type`, got the chain host\x27s "" for
+   * an unknown key, and cached "" under `type`, the slot the evaluator
+   * consults FIRST: one pad press turned a correct gate into a wrong one. */
+  {
+    const hp = { focus_press_param: "live_press", levels: {
+      root: { name: "Pads", child_prefix: "pad", child_count: 4, knobs: ["tune", "decay"],
+              params: [{ key: "tune" }, { key: "decay" },
+                       { key: "size", visible_if: { param: "type", equals: "1" } }] },
+    } };
+    const cpp = ["type", "tune", "decay", "size", "live_press"].map((k) =>
+      ({ key: k, name: k, type: "int", min: 0, max: 100 }));
+    for (const i of [0, 1, 2, 3]) for (const k of ["type", "tune", "decay", "size"])
+      cpp.push({ key: "pad" + i + "_" + k, name: k, type: "int", min: 0, max: 100 });
+    const padType = { pad0_type: "1", pad1_type: "0" };
+    let focus = "0";
+    const rp = [];
+    const sp = (k) => {
+      const b = k.slice(k.indexOf(":") + 1);
+      if (b === "ui_hierarchy") return JSON.stringify(hp);
+      if (b === "chain_params") return JSON.stringify(cpp);
+      rp.push(b);
+      if (b in padType) return padType[b];
+      if (/^pad\d_/.test(b)) return "5";
+      return "";              /* what the chain host serves for an unknown key */
+    };
+    const cpd = C.createController({ getParam: sp, setParam: () => {} });
+    cpd.load({ slot: 0, component: "synth", prefix: "synth", visible: () => true });
+    for (let i = 0; i < 20; i++) cpd.tick();
+    rp.length = 0;
+    if (!cpd.vouchLivePress()) fail("setup: the per-pad vouch was not taken");
+    for (let i = 0; i < 3; i++) cpd.tick();
+    if (rp.indexOf("type") >= 0)
+      fail("the gate lane read the bare template `type` -- a per-pad gate must be read for the pad: " + rp.join(","));
+    if (rp.indexOf("pad0_type") < 0)
+      fail("the gate lane never read the resolved key pad0_type: " + rp.join(","));
+    if (cpd.state.values.type !== "1")
+      fail("the cached gate is not pad 0\x27s answer: " + JSON.stringify(cpd.state.values.type));
+    console.log("  ok  a per-pad gate is read for the pad on screen, not as its bare template");
+  }
+
+  /* The NEIGHBOUR LANE note was replaced rather than joined in the first cut
+     of this change; it records why that lane is conditional and bounded. */
+  if (!/THE NEIGHBOUR LANE/.test(src)) fail("the neighbour-lane note was deleted");
+
   /* ---- 5: a gate is not an unreachable param ---------------------------- */
   const { findings } = V.validateContract({ id: "t", hierarchy, chainParams });
   const un = findings.filter((f) => f.rule === "unreachable-params");
