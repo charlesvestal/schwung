@@ -130,6 +130,16 @@ export const STRIP_H = 2;
 export const TICK_PACKET_BUDGET = 40;
 
 /*
+ * The budget FOLLOWS THE PACE. `e16_pace` (packets placed per SPI frame) is a
+ * runtime file the shim reads, and a fixed 40 would cap the surface below what
+ * a raised pace can drain -- or, at the shim's default of 3, feed it faster
+ * than it drains. A 60 Hz tick spans ~5.7 SPI frames; 5 per unit of pace
+ * leaves room for Move's own traffic. Pace 8 gives the measured 40.
+ */
+export const BUDGET_FRAMES_PER_TICK = 5;
+export const SHIM_DEFAULT_PACE = 3;
+
+/*
  * A region the device never answered is re-sent after this long.
  *
  * NACK repair covers a message that ARRIVED damaged. A message lost outright
@@ -479,7 +489,8 @@ function toStrips(regions) {
     return out;
 }
 
-export function createDisplay() {
+export function createDisplay(opts) {
+    const budgetOf = (opts && opts.budgetOf) || (() => TICK_PACKET_BUDGET);
     let fbOwed = false;
     /*
      * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
@@ -691,7 +702,7 @@ export function createDisplay() {
                     : rectangleMsg(region.x, region.y, region.w, region.h,
                                     packRowMajor(pendingBuf, region.x, region.y, region.w, region.h));
                 const packets = Math.ceil(bytes.length / 3);
-                if (first !== null && used + packets > TICK_PACKET_BUDGET) break;
+                if (first !== null && used + packets > budgetOf()) break;
                 if (!emitMsg(send, bytes)) break;
                 used += packets;
                 if (first === null) first = region.kind;
@@ -1271,7 +1282,12 @@ export function createSurface(io) {
     const foreignOf = o.foreignOf || (() => 0);
 
     const lifecycle = createLifecycle(o.lifecycle);
-    const display = createDisplay();
+    /* Injected like everything else; a host that says nothing gets the
+     * fixed budget, which is what every test without a pace expects. */
+    const paceOf = o.paceOf || null;
+    const display = createDisplay(paceOf ? {
+        budgetOf: () => (paceOf() || SHIM_DEFAULT_PACE) * BUDGET_FRAMES_PER_TICK,
+    } : undefined);
 
     let ctl = null;
     /* "<slot>:<component>" of the load the controller is currently holding.

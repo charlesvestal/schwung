@@ -10701,6 +10701,9 @@ function e16ReconcilePace() {
 
 const e16Surface = createE16Surface({
     now: () => Date.now(),
+    /* The shim's current pace, so the surface's per-tick packet budget
+     * follows it (0 = no file = the shim default). */
+    paceOf: () => e16PaceValue,
     send: e16Send,
     chainOf: e16ChainShape,
     followFocusOf: e16FollowFocus,
