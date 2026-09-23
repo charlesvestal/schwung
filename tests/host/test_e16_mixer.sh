@@ -89,15 +89,12 @@ function fakeIo() {
   m.turn(15, -20, false);
   eq("turning left is a low-pass", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 40", "-0.400"]);
   m.push(15, false);
-  eq("push switches the filter off", io.glob["master_fx:filter"], "0.000");
-  eq("...inverted, showing where it comes back", m.cell(15), { label: "Filt", value: "LP 40", off: true });
-  m.turn(15, -10, false);
-  eq("turning while off moves where it comes back, silently", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 60", "0.000"]);
-  m.push(15, false);
-  eq("...push switches it on there", io.glob["master_fx:filter"], "-0.600");
+  eq("push resets the filter to centre", [io.glob["master_fx:filter"], m.cell(15)], ["0.000", { label: "Filt", value: "off" }]);
+  eq("...and keeps nothing: a second push does nothing", m.push(15, false), false);
+  m.turn(15, 20, false);
+  eq("so the next sweep starts from off", m.cell(15).value, "HP 40");
   m.push(15, true);
-  eq("Shift+push resets it to off", m.cell(15).value, "off");
-  eq("...and forgets it (a push does not bring it back)", m.push(15, false), false);
+  eq("Shift+push resets it too", m.cell(15).value, "off");
   eq("the filter ring is bipolar, centred when off", [m.ringFor(15).bipolar, m.ringFor(15).amount], [true, Math.round(0.5 * 16383)]);
 
   const r = m.rings();
