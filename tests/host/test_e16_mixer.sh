@@ -20,7 +20,7 @@ const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
 function fakeIo() {
   const slots = [0, 1, 2, 3].map(() => ({ "slot:volume": "1", "slot:muted": "0", "slot:soloed": "0",
     "buses:main_send1": "0", "buses:main_send2": "64" }));
-  const glob = { "send1:return": "100", "send2:return": "127" };
+  const glob = { "send1:return": "100", "send2:return": "127", "master_fx:filter": "0.000" };
   const io = { slots, glob, reads: 0, writes: [], skipbacks: 0,
     getSlot: (s, k) => { io.reads++; return slots[s][k] === undefined ? null : slots[s][k]; },
     setSlot: (s, k, v) => { io.writes.push([s, k, v]); slots[s][k] = String(v); return true; },
@@ -35,7 +35,7 @@ function fakeIo() {
 {
   const io = fakeIo(); const m = createMixer(io);
   m.load();
-  eq("load reads every value once", io.reads, 4 * 5 + 2);
+  eq("load reads every value once", io.reads, 4 * 5 + 3);
   eq("level cell prints dB", m.cell(0), { label: "Vol", value: "0.0" });
   m.turn(0, 2, false);
   eq("a turn steps the level half a dB per detent", m.cell(0).value, "+1.0");
@@ -70,7 +70,20 @@ function fakeIo() {
   eq("Return B turns", io.glob["send2:return"], "117");
   m.push(14, false);
   eq("the capture knob saves Skipback on a push", io.skipbacks, 1);
-  eq("the filter knob does nothing yet", [m.turn(15, 3, false), m.push(15, false)], [false, false]);
+  eq("the filter starts off", m.cell(15).value, "off");
+  eq("a push on an off filter does nothing", m.push(15, false), false);
+  m.turn(15, -20, false);
+  eq("turning left is a low-pass", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 40", "-0.400"]);
+  m.push(15, false);
+  eq("push switches it off", [m.cell(15).value, io.glob["master_fx:filter"]], ["off", "0.000"]);
+  m.push(15, false);
+  eq("...and the second push brings it back", m.cell(15).value, "LP 40");
+  m.turn(15, 40, false);
+  eq("turning right through centre is a high-pass", m.cell(15).value, "HP 40");
+  m.push(15, true);
+  eq("Shift+push resets it to off", m.cell(15).value, "off");
+  eq("...and forgets it (a push does not bring it back)", m.push(15, false), false);
+  eq("the filter ring is bipolar, centred when off", [m.ringFor(15).bipolar, m.ringFor(15).amount], [true, Math.round(0.5 * 16383)]);
 
   const r = m.rings();
   eq("all sixteen rings", r.length, 16);

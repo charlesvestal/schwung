@@ -537,6 +537,7 @@ export const MASTER_KEY_PREFIX = "master_fx:";
  * site to remember.
  */
 export const MFX_MIDI_CHANNEL_KEY = MASTER_KEY_PREFIX + "midi_channel";
+export const MFX_FILTER_KEY = MASTER_KEY_PREFIX + "filter";
 export const MFX_MIDI_CHANNEL_ALL_WIRE = -1;
 export const MFX_MIDI_CHANNEL_OPTIONS = ["All"].concat(
     Array.from({ length: 16 }, (_, i) => String(i + 1)));
@@ -580,6 +581,12 @@ export const MASTER_GRID_PARAMS = [
      * 17 choices usable from a knob at all. */
     { key: MFX_MIDI_CHANNEL_KEY, name: "MIDI Ch", type: "enum",
       options: MFX_MIDI_CHANNEL_OPTIONS, default: 0 },
+    /* THE MASTER FILTER (src/host/master_filter.h): -1 low-pass .. 0 off ..
+     * +1 high-pass, on the final mix in both routing modes and in captures.
+     * The same value the E16 Mixer's filter knob turns, so it is never
+     * engaged where nothing on Move shows it. Not saved: it starts off. */
+    { key: MFX_FILTER_KEY, name: "Filter", type: "float",
+      min: -1, max: 1, step: 0.02, default: 0 },
 ];
 
 /** Actions, in the order they appear on the menu page. */

@@ -10766,7 +10766,8 @@ const e16Surface = createE16Surface({
             let ok = false;
             try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
             catch (e) { ok = false; }
-            if (ok) sendLevelsDirty = true;
+            /* Only the returns are saved levels; the filter is not saved. */
+            if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
             return ok;
         },
         /* Same save as Shift+Capture on Move. */
