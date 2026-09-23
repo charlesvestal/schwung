@@ -1150,6 +1150,20 @@ import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
  * surface; erring short costs one more press. */
 export const MAP_MAX_HOLD_MS = 10000;
 
+/*
+ * THE MAP APPEARS AFTER A SHORT HOLD, NOT ON THE PRESS.
+ *
+ * Shift is also the page modifier: Shift+turn steps the parameter pages. With
+ * the map drawn on the press, every page turn flashed the whole map first (a
+ * view switch and back -- two repaints for a gesture that wanted neither).
+ * Now the map is drawn only once Shift has been held this long with nothing
+ * turned; a turn inside the hold pages the parameters and SUPPRESSES the map
+ * for the rest of that hold. A push acts as if the map were up -- the slot
+ * row is a fixed position, so Shift+top-row switches slot without waiting to
+ * see it.
+ */
+export const MAP_SHOW_DELAY_MS = 250;
+
 /* The top row is the four slots; everything below is the selected slot's
  * content. Both halves of that split are already `e16_map.mjs`'s, and this is
  * the input side of the same fact. */
@@ -1163,6 +1177,7 @@ export function createNav(opts) {
     const renderParams = o.renderParams || (() => {});
     const pageCountOf = o.pageCountOf || (() => 1);
     const maxHoldMs = o.maxHoldMs === undefined ? MAP_MAX_HOLD_MS : o.maxHoldMs;
+    const showDelayMs = o.showDelayMs === undefined ? MAP_SHOW_DELAY_MS : o.showDelayMs;
     /*
      * FOLLOW FOCUS -- the second source for the ONE focus variable below.
      *
@@ -1179,6 +1194,9 @@ export function createNav(opts) {
     /* THE ONLY MODIFIER STATE. Null means no hold; a number is when it began.
      * Never a boolean -- see the header. */
     let shiftDownAt = null;
+    /* A page turn happened during this hold: the map stays hidden until the
+     * next press (see MAP_SHOW_DELAY_MS). */
+    let turnedThisHold = false;
 
     let slot = o.slot | 0;
     let component = o.component || "synth";
@@ -1217,8 +1235,14 @@ export function createNav(opts) {
      * with no answer to "who wins": Move drives the E16, and the E16 must not
      * be able to drive back.
      */
-    const mapVisible = (now) =>
+    /* The modifier is HELD (gestures mean map things) ... */
+    const held = (now) =>
         !follow && shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
+    /* ... and the map is SHOWN once it has been held MAP_SHOW_DELAY_MS with
+     * no page turn (see MAP_SHOW_DELAY_MS). Both derived from the timestamp,
+     * so the delay needs no timer: tick() notices the change and repaints. */
+    const mapVisible = (now) =>
+        held(now) && !turnedThisHold && (now - shiftDownAt) >= showDelayMs;
 
     const invalidate = () => { if (display) display.invalidate(); };
 
@@ -1274,21 +1298,23 @@ export function createNav(opts) {
                 if (ev.down) {
                     /* Deliberately not a re-arm: a repeat down while up leaves
                      * the original deadline standing (see the header). */
-                    if (mapVisible(now)) return null;
+                    if (held(now)) return null;
                     shiftDownAt = now;
+                    turnedThisHold = false;
                     mapPage = 0;
                     showBuses = false;
-                    invalidate();
-                    return { action: "map" };
+                    /* With a delay, no repaint yet: the map is drawn after
+                     * MAP_SHOW_DELAY_MS, by tick() noticing it is due. */
+                    if (mapVisible(now)) { invalidate(); return { action: "map" }; }
+                    return { action: "hold" };
                 }
-                if (!mapVisible(now)) {
-                    /* The hold already ended -- by a jump, or by expiring. A
-                     * repaint here would be a second framebuffer for a screen
-                     * that is already correct. */
-                    shiftDownAt = null;
-                    return null;
-                }
+                const wasShown = mapVisible(now);
                 shiftDownAt = null;
+                turnedThisHold = false;
+                /* Only a map that was actually up needs taking down. A tap, a
+                 * hold spent paging, or a hold that already ended (a jump, an
+                 * expiry) leaves a screen that is already correct. */
+                if (!wasShown) return null;
                 invalidate();
                 return { action: "params" };
             }
@@ -1300,7 +1326,16 @@ export function createNav(opts) {
             if (ev.type === "release") return null;
 
             if (ev.type === "push") {
-                if (!mapVisible(now)) return { action: "click", enc: ev.enc };
+                if (!held(now)) return { action: "click", enc: ev.enc };
+                if (!mapVisible(now)) {
+                    /* Held, map not drawn yet (or suppressed by a page turn):
+                     * a push asks for the map, so it appears NOW and the push
+                     * acts on it -- a blind slot switch would change nothing
+                     * the knobs drive, since that takes a module pick. */
+                    turnedThisHold = false;
+                    shiftDownAt = Math.min(shiftDownAt, now - showDelayMs);
+                    invalidate();
+                }
                 const enc = ev.enc | 0;
                 if (enc < SLOT_CELLS) {
                     if (enc === slot) {
@@ -1333,8 +1368,20 @@ export function createNav(opts) {
             }
 
             if (ev.type === "turn") {
-                if (!mapVisible(now)) {
+                if (!held(now)) {
                     return { action: "turn", enc: ev.enc, ticks: ev.ticks };
+                }
+                if (!mapVisible(now)) {
+                    /* SHIFT+TURN BEFORE THE MAP SHOWS PAGES THE PARAMETERS,
+                     * from any encoder, and keeps the map hidden for the rest
+                     * of this hold -- the hand is paging, not looking for a
+                     * module. */
+                    turnedThisHold = true;
+                    const next = pageStep(pageIndex, ev.ticks, pageCountOf());
+                    if (next === pageIndex) return { action: "page", pageIndex };
+                    pageIndex = next;
+                    invalidate();
+                    return { action: "page", pageIndex };
                 }
                 if ((ev.enc | 0) < SLOT_CELLS) {
                     /* The slot row owns the map's own list, so turning it pages

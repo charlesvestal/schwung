@@ -78,6 +78,9 @@ function rig(opts) {
     chainOf: () => CHAIN,
     renderParams: PARAM_INK,
     pageCountOf: () => 6,
+    /* The map on the PRESS: these tests are about what the map does, not when
+     * it appears -- MAP_SHOW_DELAY_MS has its own tests. */
+    showDelayMs: 0,
     onFocus: (s, c) => focused.push([s, c]),
     followFocusOf: () => (src.slot === null ? null : { slot: src.slot, component: src.component }),
     ...(opts || {}),

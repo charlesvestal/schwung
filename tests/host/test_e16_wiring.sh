@@ -313,11 +313,14 @@ function rig(opts) {
 
   /* RATE DISCIPLINE: never more than one framebuffer in flight. Three
    * invalidations inside one tick is ONE repaint. */
-  r.ticks(40);                              /* let any repaint in flight finish */
+  /* Let any repaint in flight finish AND the rig values finish arriving:
+   * each first read changes one value cell, which the 250 ms look repaints. */
+  r.ticks(200);
   const p0 = r.surface.display.paintsCompleted;
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map */
   r.surface.feedMidi([0x80, 0x10, 0x00]);   /* shift up    -> params */
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map again */
+  /* The map is drawn MAP_SHOW_DELAY_MS into the last hold, once. */
   r.ticks(30);
   eq("three invalidations in one tick are one repaint",
      r.surface.display.paintsCompleted - p0, 1);
