@@ -1845,6 +1845,10 @@ inline is how this file got to 151 KB.
 - `docs/DIAGNOSTICS.md` — **Measuring the device.** On-device E2E, OTLP tracing,
   the param tally, the SPI frame tally. Every switch is off by default.
 
+- `docs/CANVAS_PAGES.md` — **Enterable canvases.** A module-drawn screen you
+  navigate: `enterable` hands it the click, `handleBack` is the exit contract
+  (a way UP, never a way out), an `as_page` canvas becomes a door, and Shift+jog
+  always leaves. `ctx.close()` records a wish the host acts on after the hook.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging

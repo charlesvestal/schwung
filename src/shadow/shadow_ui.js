@@ -19894,17 +19894,28 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
     const ov = canvasPageOverlays[cacheKey];
     if (!ov || typeof ov[hook] !== "function") return undefined;
 
-    if (!canvasPageStates[cacheKey]) canvasPageStates[cacheKey] = {};
+    const state = canvasPageState(slot, cacheKey);
     const closed = { wanted: false };
     const prefix = getComponentParamPrefix(component);
     const full = (k) => (String(k).includes(":") ? String(k)
                         : (prefix ? `${prefix}:${k}` : String(k)));
+    /* The same non-drawing surface a dive's event hooks get, so one script
+     * really does serve both routes: a dive script calling shiftHeld() or
+     * getValue() from onMidi must not throw -- and be disabled -- on a page. */
     const ctx = {
         width: SCREEN_WIDTH, height: SCREEN_HEIGHT,
-        state: canvasPageStates[cacheKey],
+        state,
         getParam: (k) => getSlotParam(slot, full(k)),
         setParam: (k, v) => setSlotParam(slot, full(k), String(v)),
+        getValue: () => (canvas.key ? getSlotParam(slot, full(canvas.key)) || "" : ""),
+        setValue: (v) => (canvas.key ? setSlotParam(slot, full(canvas.key), String(v)) : false),
+        measureText: (text) => {
+            const t = String(text == null ? "" : text);
+            return typeof text_width === "function" ? text_width(t) : t.length * 6;
+        },
+        shiftHeld: () => isShiftHeld(),
         now: () => Date.now(),
+        random: () => Math.random(),
         /* "I am done" — the page's counterpart to the dive's ctx.close(). The
          * controller owns the door, so this only records the wish; the caller
          * reads it back and leaves the door on the module's behalf. */
@@ -19921,6 +19932,20 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
         debugLog(`canvas page ${cacheKey} disabled after throw in ${hook}: ${e}`);
         return undefined;
     }
+}
+
+/*
+ * A canvas page's `state`, shared by its hooks AND its drawPage.
+ *
+ * ⚠ PER SLOT. The drawer and overlay caches are keyed by script, which is right
+ * for code and wrong for state: two slots running the same module would share
+ * one cursor. And it must reach drawPage -- a cursor that onMidi moves in
+ * ctx.state and the draw cannot see is navigation nobody can watch.
+ */
+function canvasPageState(slot, cacheKey) {
+    const k = `${slot}|${cacheKey}`;
+    if (!canvasPageStates[k]) canvasPageStates[k] = {};
+    return canvasPageStates[k];
 }
 
 function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
@@ -19944,6 +19969,8 @@ function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
             preset: (payload && payload.preset) || null,
             nowMs: payload && typeof payload.nowMs === "number" ? payload.nowMs : Date.now(),
             width: band.w, height: band.h,
+            /* The object the page's hooks see as ctx.state. */
+            state: canvasPageState(slot, cacheKey),
         });
     } catch (e) {
         canvasPageDisabled[cacheKey] = true;
@@ -20022,6 +20049,9 @@ function createCanvasRuntimeContext() {
         if (key.includes(":")) return key;
         return prefix ? `${prefix}:${key}` : key;
     };
+    /* The runtime this ctx belongs to, captured so a close() from a stale ctx
+     * cannot mark a canvas opened after it. */
+    const rt = canvasRuntime;
 
     const canvasCtx = {
         width: SCREEN_WIDTH,
@@ -20090,8 +20120,15 @@ function createCanvasRuntimeContext() {
          * ⚠ STRIPPED FROM THE DRAW PATH along with the param accessors: a
          * screen that closed itself mid-render would be tearing down the very
          * thing being drawn. It is an action, and actions arrive at onMidi.
+         *
+         * ⚠ IT RECORDS THE WISH; THE CALLER LEAVES (consumeCanvasCloseRequest).
+         * Closing from inside the hook took the wrong exit twice: in co-run it
+         * ran unwrapped, so setView() moved the OUTER view off the running tool;
+         * and from handleBack it closed once here and again in the Back branch,
+         * whose second close overwrote the grid return with the list editor.
+         * The page route already worked this way (CANVAS_PAGE_CLOSE).
          */
-        close() { closeCanvasPreview(false); return true; },
+        close() { if (rt) rt.closeRequested = true; return true; },
         getValue() {
             if (!fullCanvasKey) return "";
             return getSlotParam(hierEditorSlot, fullCanvasKey) || "";
@@ -20214,6 +20251,7 @@ function dispatchCanvasMidi(data, source) {
     }
 
     invokeCanvasOverlayHook("onMidi", { source, data: midi });
+    consumeCanvasCloseRequest();
     return true;
 }
 
@@ -20264,6 +20302,7 @@ function openCanvasPreview(paramKey, meta) {
     const label = meta && (meta.label || meta.name) ? (meta.label || meta.name) : "Canvas";
     announce(`${label} canvas`);
     needsRedraw = true;
+    consumeCanvasCloseRequest();
 }
 
 function closeCanvasPreview(cancelled) {
@@ -20275,6 +20314,29 @@ function closeCanvasPreview(cancelled) {
     resetCanvasState();
     if (!closeOwnViewEditorToCaller()) setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
+}
+
+/*
+ * Act on a ctx.close() the module made during the hook that just returned.
+ * Returns true when it closed the canvas.
+ *
+ * ONE place leaves on the module's behalf, and it leaves the way the user's own
+ * gestures do: wrapped when the canvas is a co-run overlay (the outer view is
+ * the running tool, and an unwrapped setView() moves THAT), announced, once.
+ *
+ * ⚠ Only wrap when not already inside a wrapper. runCoRunChainEdit swaps
+ * `view` to CANVAS for its callback, and nesting a second one restores
+ * coRunView to CANVAS on the way out -- a closed canvas still "open".
+ */
+function consumeCanvasCloseRequest() {
+    if (!canvasRuntime || !canvasRuntime.closeRequested) return false;
+    canvasRuntime.closeRequested = false;
+    const wrap = view !== VIEWS.CANVAS && coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if (wrap) runCoRunChainEdit(function() { closeCanvasPreview(false); });
+    else closeCanvasPreview(false);
+    announce("Hierarchy Editor");
+    needsRedraw = true;
+    return true;
 }
 
 /* Fullscreen live values: ONE read per tick, never the whole set at once.
@@ -20330,6 +20392,8 @@ function tickCanvasPreview() {
     }
     tickCanvasLiveValues();
     invokeCanvasOverlayHook("tick", {});
+    /* onValues is an event and may close(); tick's ctx has no close. */
+    consumeCanvasCloseRequest();
 }
 
 function drawCanvasPreview() {
@@ -27013,10 +27077,7 @@ globalThis.onMidiMessageInternal = function(data) {
          * An enterable canvas owns the jog, the click and (until it declines)
          * Back, so a module whose own navigation is broken -- or simply deeper
          * than the user expected -- can make leaving feel like work: Back,
-         * Back, Back, however far in you are. Charles, reviewing this:
-         * "I worry about getting stuck in a page tho if you're more than one
-         * level in ... I'd just let it exit a dive and go to the next page or
-         * something."
+         * Back, Back, however far in you are.
          *
          * So Shift+jog closes the canvas and DOES NOT CONSUME THE TURN: the
          * event falls through to the screen underneath, which pages. Exit and
@@ -27065,9 +27126,12 @@ globalThis.onMidiMessageInternal = function(data) {
              * Offered ONLY to an enterable canvas. A visualiser has no levels to
              * climb, and asking it would make Back's meaning depend on a hook
              * nobody declared. */
-            if (canvasEnterable && canvasOverlayHookResult("handleBack") === true) {
-                needsRedraw = true;
-                return;
+            if (canvasEnterable) {
+                const up = canvasOverlayHookResult("handleBack");
+                /* A module that called ctx.close() from handleBack has already
+                 * been closed here -- falling through would close it AGAIN. */
+                if (consumeCanvasCloseRequest()) return;
+                if (up === true) { needsRedraw = true; return; }
             }
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
             else closeCanvasPreview(true);
