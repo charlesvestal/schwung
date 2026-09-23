@@ -22,8 +22,10 @@ cd "$(dirname "$0")/../.."
 
 node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
-         encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
+         encHalf, encSlot, ENCODERS, HALF_H, RING_MAX,
+         mapRings, componentRgb, renderEmptySlot, SLOT_RGB, SLOT_RGB_OTHER }
     from "./src/shared/e16_view.mjs";
+import { buildMap } from "./src/shared/e16_map.mjs";
 import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
          WINDOW_PX_START, WINDOW_PX_MIN, REORDER_LOSS, rectPackets, ATOMIC_MAX_PACKETS } from "./src/shared/e16_surface.mjs";
 import { unpack7 } from "./src/shared/e16_protocol.mjs";
@@ -136,14 +138,21 @@ for (let i = 512; i < 1024; i++) if (cv2.toBuffer()[i]) bottomInk2++;
 eq("a page pair inks the bottom half", bottomInk2 > 0, true);
 
 /* ---- 3. rings ---- */
-eq("ring count is occupied cells", ringsFor(v).length, 14);
+/* ALL SIXTEEN, empty ones DARK: the E16 keeps whatever a ring last showed,
+ * so a knob with nothing to drive must be told to go dark (a presets page,
+ * an empty slot, the view just left). */
+eq("every knob gets a ring, occupied or not", ringsFor(v).length, 16);
+eq("...14 of them lit", ringsFor(v).filter((r) => r.amount > 0 || r.r || r.g || r.b).length, 14);
 eq("bipolar read from a negative min", ringFor(v, 1).bipolar, true);
 eq("unipolar otherwise", ringFor(v, 8).bipolar, false);
 eq("centre of a bipolar range", ringFor(v, 1).amount, Math.round(RING_MAX / 2));
 eq("top of a unipolar range", ringFor(v, 8).amount, RING_MAX);
 eq("read-only ring is dimmer",
    ringFor(v, 9).g < ringFor(v, 8).g, true);
-eq("empty cell has no ring", ringFor(v, 15), null);
+eq("an empty cell is a DARK ring, not an omitted one", ringFor(v, 15),
+   { enc: 15, r: 0, g: 0, b: 0, amount: 0, bipolar: false });
+eq("a page with no knobs darkens all sixteen",
+   ringsFor(buildView([page("Presets", [])], 0, {})).every((r) => !r.r && !r.g && !r.b && !r.amount), true);
 
 /* ---- 4. a turn goes through the GRID s knob-turn path ---- */
 const calls = [];
@@ -903,6 +912,37 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   d.invalidateRegion(0, 0, 128, 64); d.invalidate();
   for (let i = 0; i < 40 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => label2, { kind: "framebuffer" }, 500 + i); answer(d, snd); }
   eq("a whole-screen REPAIR never CLEARs", snd.log.slice(n0).some((p) => unpack(p)[6] === 0x07), false);
+}
+
+/* COLOUR IS CONTINUITY. On the slot map the slot knobs are green and each
+ * module knob wears its module colour; the knob view of that module wears the
+ * same colour, so the knob you pressed and the knobs it opened match. */
+{
+  const chain = { slots: [{ midiFx: ["arp"], synth: "obxd", fx: ["freeverb", null, "tape"] }, {}, {}, {}] };
+  const m = buildMap(chain, { slot: 0 });
+  const rings = mapRings(m);
+  const rgb = (r) => [r.r, r.g, r.b];
+  eq("the map describes all sixteen knobs", rings.length, 16);
+  eq("the current slot knob is green, full", [rgb(rings[0]), rings[0].amount], [rgb(SLOT_RGB), RING_MAX]);
+  eq("...the other slots dim green", rgb(rings[1]), rgb(SLOT_RGB_OTHER));
+  const cells = m.cells.map((c, i) => [c, i]).filter(([c]) => c && c.kind !== "slot");
+  eq("each module knob wears its module colour",
+     cells.map(([c, i]) => JSON.stringify(rgb(rings[i])) === JSON.stringify(rgb(componentRgb(c.component)))), cells.map(() => true));
+  eq("...and no two modules in the slot share one",
+     new Set(cells.map(([c]) => JSON.stringify(componentRgb(c.component)))).size, cells.length);
+  eq("...and none of them is the slot green",
+     cells.some(([c]) => JSON.stringify(componentRgb(c.component)) === JSON.stringify(SLOT_RGB)), false);
+  eq("a knob with no cell on the map is dark", rings.slice(4 + cells.length).every((r) => !r.r && !r.g && !r.b && !r.amount), true);
+  /* The knob view of fx3 wears fx3 colour. */
+  const kv = buildView([page("P", ["a"])], 0, { metaOf: () => ({ min: 0, max: 1 }), valueOf: () => 1 });
+  eq("the knob view of a module wears the colour its map knob had",
+     rgb(ringFor(kv, 0, componentRgb("fx3"))), rgb(componentRgb("fx3")));
+  const ro = buildView([page("P", ["a"])], 0, { metaOf: () => ({ min: 0, max: 1, readOnly: true }), valueOf: () => 1 });
+  eq("...a read-only knob the same hue, dimmer",
+     ringFor(ro, 0, componentRgb("fx3")).b < componentRgb("fx3").b && ringFor(ro, 0, componentRgb("fx3")).b > 0, true);
+
+  const cv = createCanvas(); renderEmptySlot(cv, 2);
+  eq("an empty slot draws words, not a blank screen", Array.from(cv.toBuffer()).some((b) => b), true);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
