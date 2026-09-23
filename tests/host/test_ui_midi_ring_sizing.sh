@@ -45,15 +45,15 @@ grep -q 'SHM_SHADOW_UI_MIDI,$' "$SHIM" || grep -q 'SHM_SHADOW_UI_MIDI' "$SHIM" \
     || fail "$SHIM no longer creates the UI MIDI segment"
 grep -q 'SHADOW_UI_MIDI_BYTES, 1, 1' "$SHIM" \
     || fail "$SHIM does not CREATE the UI ring at SHADOW_UI_MIDI_BYTES"
-grep -q 'slot < SHADOW_UI_MIDI_BYTES' "$SHIM" \
-    || fail "shadow_ui_midi_publish does not scan the whole ring"
+grep -q 'ui_midi_ring_put(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES' "$SHIM" \
+    || fail "shadow_ui_midi_publish does not use the whole ring, in order (ui_midi_ring.h)"
 
 # Consumer: the attach, the wholesale clear, and the drain bound.
 grep -q 'SHM_SHADOW_UI_MIDI, SHADOW_UI_MIDI_BYTES' "$UI" \
     || fail "$UI does not ATTACH the UI ring at SHADOW_UI_MIDI_BYTES -- producer and \
 consumer disagreeing is a silent partial drain"
-grep -q 'i < SHADOW_UI_MIDI_BYTES' "$UI" \
-    || fail "process_shadow_midi does not drain the whole ring"
+grep -q 'ui_midi_ring_next(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES' "$UI" \
+    || fail "process_shadow_midi does not drain the whole ring, in order (ui_midi_ring.h)"
 grep -q 'memset(shadow_ui_midi_shm, 0, SHADOW_UI_MIDI_BYTES)' "$UI" \
     || fail "$UI clears only part of the ring"
 
