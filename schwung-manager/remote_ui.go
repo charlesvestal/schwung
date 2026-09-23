@@ -77,7 +77,7 @@ type RemoteUI struct {
 	// poller sees that component's module change), when it last pushed, whether
 	// a push is in flight, and the last value sent for each key.
 	extrasMu    sync.Mutex
-	extrasKeys  map[string][]string
+	extrasKeys  map[string]extrasDecl
 	extrasLast  map[string]time.Time
 	extrasBusy  map[string]bool
 	extrasValue map[string]string
@@ -718,7 +718,7 @@ func (ru *RemoteUI) broadcastInitialParamValues(ctx context.Context, slot uint8,
 		}
 		return
 	}
-	extraParams := ru.fetchExtraKeys(slot, comp)
+	extraParams := ru.fetchExtraKeysFrom(slot, comp, declared)
 	for _, c := range clients {
 		if len(hierParams) > 0 {
 			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: hierParams})
@@ -1973,13 +1973,73 @@ type chainParam struct {
 	// panel drew no chord slots and no add button — with nothing to say why,
 	// because an unfetched key is indistinguishable from an empty one.
 	Viz struct {
-		ExtraKeys []string `json:"extra_keys"`
+		ExtraKeys      []string `json:"extra_keys"`
+		ExtraKeysCamel []string `json:"extraKeys"`
 	} `json:"viz"`
+	// An `as_page` canvas param declares its extras on the param itself, not
+	// under viz (page_plan.mjs declaredCanvasExtraKeys). Same cap, same reads.
+	ExtraKeys      []string `json:"extra_keys"`
+	ExtraKeysCamel []string `json:"extraKeys"`
 }
 
-// extraKeysOf collects the distinct viz.extra_keys named across a component's
+// maxDeclaredExtraKeys is viz.mjs's MAX_DECLARED_EXTRA_KEYS, applied per
+// declaration exactly as the device applies it: the first four distinct names,
+// and the rest are ignored. The device cap is what bounds the read budget; a
+// browser reading more than the device would make an over-declared module cost
+// more here than on the hardware. remote_ui_extras_test.go pins the two values
+// together.
+const maxDeclaredExtraKeys = 4
+
+// maxRemoteExtraKeys bounds the union across a whole component. The device
+// only reads the extras of the page on screen; this path reads every page's
+// at once, twice a second, so it needs a ceiling of its own.
+const maxRemoteExtraKeys = 16
+
+// capExtraKeys is the device's declaredExtraKeys/declaredCanvasExtraKeys:
+// distinct, non-empty, first four.
+func capExtraKeys(raw []string) []string {
+	var out []string
+	for _, k := range raw {
+		if k == "" || containsString(out, k) {
+			continue
+		}
+		out = append(out, k)
+		if len(out) >= maxDeclaredExtraKeys {
+			break
+		}
+	}
+	return out
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredExtraKeysOf returns what one param declares, preferring the
+// snake_case spelling when present as the device does (`v.extra_keys ||
+// v.extraKeys`), from both places a declaration may live.
+func (p chainParam) declaredExtraKeys() [][]string {
+	pick := func(snake, camel []string) []string {
+		if snake != nil {
+			return snake
+		}
+		return camel
+	}
+	return [][]string{
+		capExtraKeys(pick(p.Viz.ExtraKeys, p.Viz.ExtraKeysCamel)),
+		capExtraKeys(pick(p.ExtraKeys, p.ExtraKeysCamel)),
+	}
+}
+
+// extraKeysOf collects the distinct extra keys named across a component's
 // chain_params, in declaration order, minus any key that already has a param
-// of its own (those are fetched by the main loop).
+// of its own (those are fetched by the main loop), capped at
+// maxRemoteExtraKeys.
 func extraKeysOf(params []chainParam) []string {
 	declared := make(map[string]bool, len(params))
 	for _, p := range params {
@@ -1990,12 +2050,17 @@ func extraKeysOf(params []chainParam) []string {
 	seen := make(map[string]bool)
 	var out []string
 	for _, p := range params {
-		for _, k := range p.Viz.ExtraKeys {
-			if k == "" || declared[k] || seen[k] {
-				continue
+		for _, list := range p.declaredExtraKeys() {
+			for _, k := range list {
+				if declared[k] || seen[k] {
+					continue
+				}
+				if len(out) >= maxRemoteExtraKeys {
+					return out
+				}
+				seen[k] = true
+				out = append(out, k)
 			}
-			seen[k] = true
-			out = append(out, k)
 		}
 	}
 	return out
@@ -2003,15 +2068,28 @@ func extraKeysOf(params []chainParam) []string {
 
 // fetchChainParams reads and parses a component's chain_params declaration.
 func (ru *RemoteUI) fetchChainParams(slot uint8, comp string) []chainParam {
+	params, _ := ru.readChainParams(slot, comp)
+	return params
+}
+
+// readChainParams is fetchChainParams that also says whether the answer is
+// DEFINITIVE — the read completed and parsed to a declaration. A failed read,
+// an empty answer (a module still loading serves "") and a truncated document
+// all return false: none of them is news about what the module declares.
+func (ru *RemoteUI) readChainParams(slot uint8, comp string) ([]chainParam, bool) {
 	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
+	return parseChainParams(raw, err)
+}
+
+func parseChainParams(raw string, err error) ([]chainParam, bool) {
 	if err != nil || raw == "" {
-		return nil
+		return nil, false
 	}
 	var params []chainParam
 	if json.Unmarshal([]byte(raw), &params) != nil {
-		return nil
+		return nil, false
 	}
-	return params
+	return params, true
 }
 
 // stateCoversParams reports whether a "state" snapshot is actually a map of
@@ -2079,37 +2157,63 @@ const extrasRefreshThrottle = 150 * time.Millisecond
 // chain_params for it on every change would double the cost of the one thing
 // this path exists to keep cheap. invalidateExtraKeys drops the entry when the
 // slot poller sees the component's module change, which is the only event that
-// can make it wrong.
+// can make a DEFINITIVE answer wrong.
+//
+// A non-definitive answer — the read timed out, or the module is still loading
+// and serves "" — is cached only for extrasRetryInterval. Caching it like the
+// real thing turned one busy frame into "this module declares nothing" until
+// the module was swapped: the pump went silent for the session, and the poller's
+// invalidation, which runs the moment the module id appears, is exactly when a
+// loading module cannot answer yet.
 func (ru *RemoteUI) declaredExtraKeys(slot uint8, comp string) []string {
 	k := fmt.Sprintf("%d|%s", slot, comp)
+	now := time.Now()
 
 	ru.extrasMu.Lock()
-	if ru.extrasKeys != nil {
-		if keys, ok := ru.extrasKeys[k]; ok {
-			ru.extrasMu.Unlock()
-			return keys
-		}
+	if e, ok := ru.extrasKeys[k]; ok && e.fresh(now) {
+		ru.extrasMu.Unlock()
+		return e.keys
 	}
 	ru.extrasMu.Unlock()
 
-	keys := extraKeysOf(ru.fetchChainParams(slot, comp))
+	params, definitive := ru.readChainParams(slot, comp)
+	e := extrasDecl{keys: extraKeysOf(params), definitive: definitive, at: now}
 
 	ru.extrasMu.Lock()
 	if ru.extrasKeys == nil {
-		ru.extrasKeys = make(map[string][]string)
+		ru.extrasKeys = make(map[string]extrasDecl)
 	}
 	// Cache the empty answer too: most components declare no extra keys, and
 	// re-asking them on every change is exactly the flood this avoids.
-	ru.extrasKeys[k] = keys
+	ru.extrasKeys[k] = e
 	ru.extrasMu.Unlock()
-	return keys
+	return e.keys
+}
+
+// extrasRetryInterval is how long a NON-definitive declaration is believed.
+const extrasRetryInterval = 5 * time.Second
+
+// extrasDecl is one cached answer to "which extra keys does this declare".
+type extrasDecl struct {
+	keys       []string
+	definitive bool
+	at         time.Time
+}
+
+func (e extrasDecl) fresh(now time.Time) bool {
+	return e.definitive || now.Sub(e.at) < extrasRetryInterval
 }
 
 func (ru *RemoteUI) invalidateExtraKeys(slot uint8, comp string) {
 	ru.extrasMu.Lock()
 	defer ru.extrasMu.Unlock()
-	if ru.extrasKeys != nil {
-		delete(ru.extrasKeys, fmt.Sprintf("%d|%s", slot, comp))
+	delete(ru.extrasKeys, fmt.Sprintf("%d|%s", slot, comp))
+	// The last-sent values belonged to the previous module.
+	prefix := fmt.Sprintf("%d|%s:", slot, comp)
+	for vk := range ru.extrasValue {
+		if strings.HasPrefix(vk, prefix) {
+			delete(ru.extrasValue, vk)
+		}
 	}
 }
 
@@ -2245,26 +2349,6 @@ func (ru *RemoteUI) extrasHeartbeatLoop(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// fetchExtraKeys is fetchExtraKeysFrom for a caller that has not parsed
-// chain_params — the "state" fast paths, which never look at it.
-//
-// EVERY path that completes an initial value send must call one of these.
-// There are three, and the first fix missed two: the fast path RETURNS EARLY
-// on a module whose "state" is a JSON object, which is precisely the shape
-// stacks has ({"s": "v6|..."}), so the streaming loop — and the extras with
-// it — never ran and the panel got exactly one key.
-func (ru *RemoteUI) fetchExtraKeys(slot uint8, comp string) map[string]string {
-	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
-	if err != nil || raw == "" {
-		return nil
-	}
-	var params []chainParam
-	if json.Unmarshal([]byte(raw), &params) != nil {
-		return nil
-	}
-	return ru.fetchExtraKeysFrom(slot, comp, params)
 }
 
 // pollSlot checks for module/hierarchy changes only (infrequent).

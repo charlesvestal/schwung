@@ -651,7 +651,16 @@ That means:
   blind without it. Every path that completes an initial value send fetches
   the extras — the `state` fast path returns early, so fixing only the
   streaming path is invisible — and sends them FIRST: they are what the panel
-  draws with; the ordinary controls can populate a beat later.
+  draws with; the ordinary controls can populate a beat later. It reads every
+  spelling the device reads (`viz.extra_keys`, `viz.extraKeys`, and an
+  `as_page` canvas param's own `extra_keys` / `extraKeys`) under the device's
+  cap of four per declaration, plus a ceiling of 16 per component because the
+  browser reads every page's extras at once. Slot components only — a Master
+  FX panel does not receive extras.
+- **A declaration read that did not ANSWER is not "declares nothing".** The
+  key list is cached per component, but a timed-out read or the `""` a module
+  serves while still loading is believed for 5 s, not until the next module
+  swap — otherwise the first read after a load latched the pump off.
 - **An extra key is DERIVED, so no write ever names it.** The notify ring
   carries the key that was written; a viz extra is computed from whatever
   edit landed. A change to any of a component's params therefore refreshes
