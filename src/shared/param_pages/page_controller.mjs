@@ -3302,7 +3302,38 @@ export function createController(io = {}) {
      * menuEntered, enterMenu, exitMenu, goToPage's enterIfDoor and the bracket
      * frame all follow from the one answer.
      */
+    /*
+     * A module-drawn page that declares `enterable`.
+     *
+     * ⚠ ASKED BEFORE THE PAGE_KNOBS LINE BELOW. A canvas page IS a PAGE_KNOBS
+     * page -- the module paints the body and the level's knobs stay on the
+     * encoders -- so the grid/list question would answer for it first and every
+     * canvas door would be inert.
+     */
+    function canvasDoor(p) {
+        return !!(p && p.canvas && p.canvas.enterable);
+    }
+
+    /*
+     * Send one decoded gesture to a canvas door's module, as the CC it was.
+     *
+     * ⭑ A module may answer "I am done" rather than a value -- picking the
+     * sample IS leaving the browser, and the consumer marks that on the result.
+     * Leaving the door here rather than making the module ask twice is the same
+     * courtesy the preset browser's click already pays.
+     */
+    function canvasPageMidi(p, data) {
+        if (!canvasDoor(p) || typeof io.canvasPageHook !== "function") return undefined;
+        const r = io.canvasPageHook(p.canvas, "onMidi", { source: "internal", data });
+        if (r && typeof r === "object" && r.close === true) {
+            s.menuEntered = null;
+            announcePageChange();
+        }
+        return r;
+    }
+
     function isDoor(p) {
+        if (canvasDoor(p)) return true;
         if (p && p.kind === PAGE_KNOBS) return knobsAsList(p);
         return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET
                         || p.kind === PAGE_ITEMS));
@@ -3321,6 +3352,9 @@ export function createController(io = {}) {
             if (!st || !st.list.length) return false;   /* nothing to choose from */
         }
         s.menuEntered = p.name;
+        /* A canvas door carries no cursor of ours -- the module owns its own —
+         * so none of the row bookkeeping below applies to it. */
+        if (canvasDoor(p)) { announcePageChange(); return true; }
         if (p.kind === PAGE_KNOBS) {
             /* Entering hands over the ROW cursor, never the value: an arrival
              * writes nothing, the same rule a preset browser follows. */
@@ -3346,6 +3380,21 @@ export function createController(io = {}) {
     /** Leave the menu without activating anything. */
     function exitMenu() {
         if (!menuEntered()) return false;
+        /*
+         * ⭐ THE EXIT CONTRACT. A canvas door's module gets Back first:
+         *
+         *     handleBack() === true   "I went up a level"    -> stay in the door
+         *     anything else           "I am at my top level" -> leave the door
+         *
+         * Without this, Back on an entered file browser would leave the BROWSER
+         * rather than the folder — the same bug the whole feature exists to fix,
+         * wearing the other half's clothes. The module writes one handleBack and
+         * it means the same thing here as it does on a fullscreen dive.
+         */
+        if (canvasDoor(page()) && typeof io.canvasPageHook === "function" &&
+            io.canvasPageHook(page().canvas, "handleBack", {}) === true) {
+            return true;
+        }
         /* Back steps out ONE level. Editing a value is inside the list, so the
          * first Back gives the jog back to the row cursor and the second leaves
          * the list — otherwise a mis-click would drop you off the page with the
@@ -3443,6 +3492,14 @@ export function createController(io = {}) {
         /* Entered knob list: the jog is the row cursor, or — once a row has
          * been opened for editing — the knob itself. Shift still pages out, so
          * the page set is never unreachable. */
+        /* Entered canvas door: the jog is the MODULE'S, handed over as the CC
+         * the hardware actually sent so one script serves a page and a dive
+         * without knowing which it is on. Shift still pages out. */
+        if (canvasDoor(mp) && menuEntered() && !shift) {
+            const d = delta > 0 ? Math.min(63, delta) : Math.max(-64, delta);
+            canvasPageMidi(mp, [0xB0, 14, d >= 0 ? d : 128 + d]);
+            return s.pageIndex;
+        }
         if (knobsAsList(mp) && menuEntered() && !shift) {
             if (s.knobEditing) knobEditStep(mp, delta);
             else stepKnobRow(mp, delta > 0 ? 1 : -1);
@@ -4124,6 +4181,19 @@ export function createController(io = {}) {
          *
          * Back still steps out in place, for when you were only looking.
          */
+        /*
+         * A canvas door: the first click ENTERS, and after that every click is
+         * the module's — handed over as CC 3, the byte the jog actually sends,
+         * so a script written for a fullscreen dive works here untouched.
+         *
+         * ⚠ BEFORE the kind branches below, because a canvas page IS a
+         * PAGE_KNOBS page and would otherwise dive the cell under your hand.
+         */
+        if (canvasDoor(mp)) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            canvasPageMidi(mp, [0xB0, 3, 127]);
+            return null;
+        }
         if (mp && mp.kind === PAGE_ITEMS) {
             if (!menuEntered()) { enterMenu(); return null; }
             commitItem();

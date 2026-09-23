@@ -2509,6 +2509,7 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
+- `enterable` (optional): The canvas has navigation inside it — see below (default `false`).
 - `extra_keys` (optional): Up to four additional parameter values used by an authored canvas page or bounded fullscreen live feed.
 - `fullscreen_live_ms` (optional): In fullscreen mode, refresh declared `extra_keys` at this interval and call `onValues(ctx, { values, nowMs })`. Clamped to at least 50 ms; omit it for no fullscreen reads. Keys are read one per tick and delivered together; a read that did not complete is `null`.
 
@@ -2519,6 +2520,125 @@ Behavior notes:
 - The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `onValues`, `tick`, `draw`, `onClose`, `onExit`.
 - `draw` and `tick` still receive no parameter accessors. Use the bounded
   `onValues` payload instead of reading on the draw path.
+
+##### `enterable`: a canvas you navigate, not just look at
+
+By default a canvas gets the jog **wheel** and the knobs, while the host keeps
+the jog **click** and **Back** as the two ways out. That suits a visualiser you
+glance at and leave — a scope, a meter, a waveform.
+
+It does not suit anything **nested**. A file browser needs "enter this folder"; a
+settings menu needs "open this submenu"; and the only gesture that means enter
+is the one the host spends on leave. So a canvas cannot express a hierarchy
+unless it says it has one:
+
+```json
+{ "key": "browse", "name": "Browse", "type": "canvas",
+  "canvas_script": "browser.js", "enterable": true }
+```
+
+With `enterable: true`:
+
+- **the jog click is yours.** It arrives at `onMidi` as an ordinary CC like the
+  wheel does. Nothing else changes about input.
+- **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
+  yours to intercept, and not something to design around. It is there for when
+  your navigation goes wrong, or when someone four levels in wants out.
+- **`ctx.measureText(text)`** returns the drawn width of a string in the device
+  font, for laying out your own chrome. Available on the draw path; it is a
+  glyph-table sum, not a round trip.
+
+**On fonts:** `ctx.print` draws in the device's 5×7. The host's own chrome — hint
+rows, headers, knob labels — is drawn in a 4×5 the canvas does not expose, so a
+footer you draw in the default font is legible but visibly foreign. If you want
+your chrome to match, **carry the font**: the table is data and the blitter needs
+only `fillRect`, which you already have. `schwung-dr32`'s `browser.js` does
+exactly this in about a hundred lines. That keeps a screen you own drawable by
+you alone, rather than pending a host release.
+- **`ctx.shiftHeld()`** tells you whether Shift is down. Ask it rather than
+  watching CC 49: the host reads Shift from shared memory and the CC does not
+  reliably reach a canvas. Available on the draw path, so a module drawing its
+  own footer can advertise the escape hatch only while it is live.
+
+If you draw your own chrome, set **`show_footer: false`** on the param and the
+host draws nothing at all — the screen is yours, including the bottom rows.
+- **Back asks you first**, through a `handleBack(ctx)` hook:
+
+```javascript
+globalThis.canvas_overlay = {
+    handleBack(ctx) {
+        if (atTopLevel()) return false;   // "I'm at my top" -> the host closes
+        goUpOneLevel();
+        return true;                      // "I handled it"  -> you stay inside
+    },
+    onMidi(ctx, msg) { /* the click is in here now */ },
+    draw(ctx) { /* ... */ },
+};
+```
+
+So you implement a way **up**, never a way **out**: return `false` (or omit the
+hook) once you have run out of levels and the host does what it would have done
+anyway. A hook that throws disables the overlay and cannot consume the press, so
+a script that dies mid-navigation still leaves on the next Back.
+
+Holding Back is not required, and there is no special escape gesture. A canvas
+that wrongly claims Back forever holds it on its own screen only — changing
+track, swapping the module and leaving the editor all take the user out without
+consulting it.
+
+##### Leaving, and hearing the pads
+
+Two more things an enterable canvas can do.
+
+**`ctx.close()`** dismisses the screen from inside a gesture. Use it when the
+job is finished — picking the sample *is* leaving a sample browser, and making
+the user press Back afterwards is one gesture too many on the commonest path.
+It is not available from `draw` or `tick` (a screen must not tear itself down
+mid-render), and a host that predates it simply leaves the canvas up, so guard
+with `typeof ctx.close === "function"` if you care about older hosts.
+
+**`wantsPads: true`** on the overlay asks for hardware pad notes (68–99):
+
+```javascript
+globalThis.canvas_overlay = { wantsPads: true, onMidi(ctx, msg) { /* ... */ } };
+```
+
+Opening a canvas leaves the knob grid, and the grid is what normally reconciles
+pad observation — so without this a canvas hears knob touches but not pads.
+It is **passive**: the pad still plays, and your screen is told as well. That
+matters for an audition, where the point of hitting the pad is to hear what you
+just loaded at the velocity you hit it with. The note is the raw pad number,
+which a sequencer cannot produce, so it means "a finger hit this pad".
+
+##### `enterable` on an `as_page` canvas: your page becomes a door
+
+The same flag on a page (`as_page: true`) makes that page a **door** — the host
+concept menus, preset browsers and items lists already use. It is not entered on
+arrival: you page onto it normally, the bracket frame shows it can be entered,
+and a click goes in.
+
+While entered, the jog and the click are delivered to your `onMidi` as **CC 14**
+and **CC 3** — the bytes the hardware actually sends — so one script serves a
+page and a fullscreen dive without knowing which it is on. Back takes the same
+`handleBack` contract, so one hook means one thing on both routes.
+
+The eight knobs **stay with the level**, entered or not, exactly as they do
+inside every other door. A page that wants them will need a future
+`claims_knobs`; nothing has needed it yet.
+
+Two limits worth knowing before you declare it:
+
+- **`enterable` + `preset_browser` is refused.** A preset page is already a door
+  with every control spoken for — the wheel browses, the knobs stay on the level
+  so the sound is still editable while you browse, and click and Back are its own
+  enter and exit. Declaring both leaves the page not enterable rather than
+  silently choosing a winner.
+- **Shift+click still opens the section picker** from inside a door, so a page
+  is never somewhere a user can be stuck.
+- **Shift+jog pages out**, of a door and of a fullscreen dive alike, and is
+  never offered to your module.
+
+See `CANVAS_PAGES.md` for the model this belongs to.
 
 #### Custom widgets (`drawCell`)
 
