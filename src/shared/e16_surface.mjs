@@ -489,18 +489,20 @@ function inkedStrips(buf) {
     return out;
 }
 
-/* Cut every region to at most STRIP_H rows, top to bottom, in order. A
- * scanline is already one row. */
-/* A full-width single row is a SCANLINE (10 packets), anything else a
- * RECTANGLE -- both fit the atomic limit. */
+/* EVERY strip is a RECTANGLE, full-width rows included. A full-width row
+ * used to go out as a SCANLINE to save ONE packet (10 vs 11); measured on
+ * hardware 2026-09-24, the only NACKs left after frame-atomic placement were
+ * both SCANLINEs (2 of 52) against 0 of 194 RECTANGLEs. One opcode is one
+ * thing to trust -- the packet it saved is not worth a second code path in
+ * the device's firmware. */
 function stripRegion(x, y, w, h) {
-    return (h === 1 && x === 0 && w === E16_WIDTH) ? { kind: "scanline", y }
-                                                    : { kind: "rect", x, y, w, h };
+    return { kind: "rect", x, y, w, h };
 }
 
 function toStrips(regions) {
     const out = [];
     for (const r of regions) {
+        if (r.kind === "scanline") { out.push(stripRegion(0, r.y, E16_WIDTH, 1)); continue; }
         if (r.kind !== "rect" || r.h <= STRIP_H) { out.push(r); continue; }
         for (let y = r.y; y < r.y + r.h; y += STRIP_H) {
             out.push(stripRegion(r.x, y, r.w, Math.min(STRIP_H, r.y + r.h - y)));

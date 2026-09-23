@@ -198,7 +198,7 @@ const kindOf = (packets) => { const b = unpack(packets);
 /* Tick until the repaint in flight has fully drained; returns what each tick
  * sent. A full repaint is eight 128x8 bands, a small one a single region. */
 const drain = (d, send, screen, t) => { const out = [];
-  for (let i = 0; i < 16; i++) { out.push(d.tick(send, frame, screen, t));
+  for (let i = 0; i < 40; i++) { out.push(d.tick(send, frame, screen, t));
     if (!d.repaintPending) break; }
   return out; };
 
@@ -231,7 +231,7 @@ const TEXT = { kind: "labels", title: "T", labels: new Array(16).fill("AB") };
 /* A repaint is up to EIGHT region messages now (a full one goes out as
  * 128x8 bands), so priming drains the whole repaint, not one tick. */
 const prime = (d, send, screen) => {
-  for (let i = 0; i < 16 && (i === 0 || d.repaintPending); i++) d.tick(send, frame, screen);
+  for (let i = 0; i < 40 && (i === 0 || d.repaintPending); i++) d.tick(send, frame, screen);
   send.log.length = 0; };
 
 /* A value change is ONE ring message and NO screen. */
@@ -274,8 +274,12 @@ eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
  * row changed, so every strip goes -- no CLEAR (that is for a screen we know
  * nothing about). One repaint, not three. */
 eq("...of exactly one set of changed strips, not three", send.log.length, STRIPS);
-eq("...only rows (RECTANGLE / SCANLINE): no CLEAR for a known screen, never a framebuffer",
-   send.log.every(p => kindOf(p) === "rect" || kindOf(p) === "scanline"), true);
+eq("...only RECTANGLEs: no CLEAR for a known screen, never a framebuffer",
+   send.log.every(p => kindOf(p) === "rect"), true);
+/* Full-width rows included: SCANLINE was the only opcode the device NACKed
+ * after frame-atomic placement (2 of 52 vs 0 of 194 rects, 2026-09-24). */
+eq("...and never a SCANLINE, even for a full-width row",
+   send.log.some(p => kindOf(p) === "scanline"), false);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
 eq("still one repaint on the wire", send.log.length, STRIPS);
 
