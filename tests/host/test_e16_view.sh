@@ -191,6 +191,7 @@ const kindOf = (packets) => { const b = unpack(packets);
   if (b[0] !== 0xF0) return "?";
   if (b[6] === 0x08) return "rect";
   if (b[6] === 0x07) return "clear";
+  if (b[6] === 0x05) return "scanline";
   const id = (b[6] << 8) | b[7];
   return id === 0x0602 ? "framebuffer" : id === 0x0604 ? "ring"
        : id === 0x0603 ? "labels" : "other"; };
@@ -273,8 +274,8 @@ eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
  * row changed, so every strip goes -- no CLEAR (that is for a screen we know
  * nothing about). One repaint, not three. */
 eq("...of exactly one set of changed strips, not three", send.log.length, STRIPS);
-eq("...only RECTANGLEs: no CLEAR for a known screen, never a framebuffer",
-   send.log.every(p => kindOf(p) === "rect"), true);
+eq("...only rows (RECTANGLE / SCANLINE): no CLEAR for a known screen, never a framebuffer",
+   send.log.every(p => kindOf(p) === "rect" || kindOf(p) === "scanline"), true);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
 eq("still one repaint on the wire", send.log.length, STRIPS);
 
@@ -287,7 +288,7 @@ eq("...within the packet budget this tick",
    send.log.reduce((a, p) => a + p.length / 4, 0) <= TICK_PACKET_BUDGET, true);
 drain(d, send);
 eq("...and drains completely before the rings",
-   send.log.every(p => kindOf(p) === "rect" || kindOf(p) === "clear"), true);
+   send.log.every(p => ["rect", "scanline", "clear"].includes(kindOf(p))), true);
 eq("rings follow once the repaint is complete", d.tick(send, frame), "rings");
 
 /* A REFUSED send stays owed; it must not queue a second copy. */
@@ -583,22 +584,27 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const b = new Uint8Array(1024); px(b, 40, 50); px(b, 45, 51);
   d.invalidate();
   for (let i = 0; i < 8 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
-  eq("full repaint = CLEAR + ONE strip for the only inked rows",
-     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08]);
-  eq("...that strip trimmed to its ink (x 40..45, rows 50-51)", addr(snd.log[1]), [40, 50, 6, 2]);
+  eq("full repaint = CLEAR + one row for each inked row",
+     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08, 0x08]);
+  eq("...each trimmed to its own ink", [addr(snd.log[1]), addr(snd.log[2])],
+     [[40, 50, 1, 1], [45, 51, 1, 1]]);
 
-  /* The device ACKs the CLEAR but never answers the strip. */
+  /* The device ACKs the CLEAR but never answers the rows. */
   d.acked({ cmd: 0x07, addr: {} });
-  eq("the unanswered strip is outstanding", d.outstandingCount, 1);
+  eq("the unanswered rows are outstanding", d.outstandingCount, 2);
   const n0 = snd.log.length;
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS - 50);
   eq("...not re-sent before ACK_TIMEOUT_MS", snd.log.length, n0);
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS + 10);
-  eq("...re-sent once it times out", snd.log.slice(n0).map(addr), [[40, 50, 6, 2]]);
-  eq("...and counted", d.ackTimeouts, 1);
+  /* The repair is re-DIFFED, so damage on adjacent rows merges into one
+   * row-run covering both marks (x 40..45), still cut to one row a message. */
+  const resent = snd.log.slice(n0).map(addr);
+  eq("...re-sent once they time out: rows 50 and 51, covering both marks",
+     resent, [[40, 50, 6, 1], [40, 51, 6, 1]]);
+  eq("...and counted", d.ackTimeouts, 2);
 
   /* An answered region is never re-sent. */
-  d.acked({ cmd: 0x08, addr: { x: 40, y: 50, w: 6, h: 2 } });
+  for (const [x, y, w, h] of resent) d.acked({ cmd: 0x08, addr: { x, y, w, h } });
   const n1 = snd.log.length;
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS * 4);
   eq("an ACKed region is not re-sent", snd.log.length, n1);
@@ -619,7 +625,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   d.invalidate();
   for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" });
   const ids = snd.log.slice(n0).map((p) => unpack(p)[6]);
-  eq("seven NACKed rows re-send seven strips", ids.length, 7);
+  eq("seven NACKed 2-row regions re-send exactly those rows", ids.length, 7 * 2 / STRIP_H);
   eq("...and never a CLEAR", ids.includes(0x07), false);
 }
 
@@ -630,7 +636,10 @@ eq("rings pending is visible to the caller that gates the heartbeat",
 {
   const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
   const d = createDisplay(); const snd = mkSend();
-  const b = new Uint8Array(1024).fill(0xFF);          /* every strip inked */
+  /* Every row inked, but only x 0..99, so each row is a RECTANGLE (a
+   * full-width row would be a SCANLINE). */
+  const b = new Uint8Array(1024);
+  for (let x = 0; x < 100; x++) for (let p8 = 0; p8 < 8; p8++) b[p8 * 128 + x] = 0xFF;
   d.invalidate();
   d.tick(snd, () => b, { kind: "framebuffer" });      /* CLEAR + first strips */
   const firstStrip = snd.log.map((p) => unpack(p)).find((u) => u[6] === 0x08);

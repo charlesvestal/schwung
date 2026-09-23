@@ -249,9 +249,9 @@ static void put_foreign(uint8_t *region, int slot)
 static void test_quiet_start_defers_into_a_dirty_mailbox(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
-    int n = packetize(msg, 24, pkts);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
     for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
 
     uint8_t region[REGION] = {0};
@@ -273,9 +273,9 @@ static void test_quiet_start_defers_into_a_dirty_mailbox(void)
 static void test_quiet_start_gives_up_rather_than_starving(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
-    int n = packetize(msg, 24, pkts);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
     for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
 
     /* A mailbox that is never clear. The screen must still update: the
@@ -303,9 +303,9 @@ static void test_collided_run_is_requeued_whole(void)
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
     const int before = ui_midi_carry_retry_count();
 
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)(i + 1);
-    int n = packetize(msg, 24, pkts);          /* 8 packets */
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)(i + 1);
+    int n = packetize(msg, 60, pkts);
     for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
 
     /* Frame 1: clear, opens the run and places `pace` packets. */
@@ -346,9 +346,9 @@ static void test_clean_run_is_not_requeued(void)
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
     const int before = ui_midi_carry_retry_count();
 
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
-    int n = packetize(msg, 24, pkts);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
     for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
 
     for (int f = 0; f < 12 && c.len > 0; f++) {
@@ -367,9 +367,9 @@ static void test_retry_is_capped(void)
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
     const int before = ui_midi_carry_retry_count();
 
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
-    int n = packetize(msg, 24, pkts);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
     for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
 
     /* Every frame collides. Without a cap this re-queues forever. */
@@ -406,6 +406,96 @@ static void test_retry_cap_is_bounded_and_on(void)
           "next real update");
 }
 
+
+/* ---------------------------------------------------------------------------
+ * FRAME-ATOMIC MESSAGES. A message that fits is placed WHOLE in one frame,
+ * only after Move's last cable-2 packet -- so a Move packet can never land
+ * inside it on the wire. The 2026-09-11 measurement this rests on: a message
+ * placed in a single frame arrived intact 78/78 under a flood of notes.
+ * ------------------------------------------------------------------------- */
+static void push_msg(ui_midi_carry_t *c, int bytes, uint8_t tag)
+{
+    uint8_t msg[64], pkts[96];
+    msg[0] = 0xF0;
+    for (int i = 1; i < bytes - 1; i++) msg[i] = (uint8_t)((tag + i) & 0x7F);
+    msg[bytes - 1] = 0xF7;
+    int n = packetize(msg, bytes, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(c, &pkts[i*4]);
+}
+
+static void test_atomic_small_message_goes_whole(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 1);                       /* a SCANLINE: 10 packets */
+    uint8_t region[REGION] = {0};
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 10, "a 10-packet message is placed WHOLE in one frame, above a pace of 3");
+    CHECK(c.len == 0, "...nothing of it is left for a later frame");
+}
+
+static void test_atomic_goes_after_moves_packet(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 2);
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 6);                    /* Move's note in slot 6 */
+    ui_midi_carry_drain(&c, region, REGION);
+    int before = 0;
+    for (int q = 0; q < 6; q++) if (region[q*4] && (region[q*4] >> 4) == 2) before++;
+    CHECK(before == 0, "no packet of ours is placed BEFORE Move's note in the same frame");
+    CHECK(region_used(region) == 11, "...all ten go after it");
+}
+
+static void test_atomic_waits_whole_rather_than_splitting(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 3);                       /* 10 packets */
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 14);                   /* only 5 slots after it */
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 0, "a message that does not fit after Move's packet WAITS whole");
+    memset(region, 0, REGION);
+    placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 10, "...and goes whole on the next clear frame");
+}
+
+/* THE PROPERTY, on a simulated wire: hundreds of frames, Move notes dropped into
+ * random slots, our small messages flowing through the carry. The cable-2 wire
+ * order is every frame's slots in index order, frame after frame. No Move
+ * packet may ever sit between one of our F0s and its F7. */
+static void test_atomic_no_note_ever_inside_a_message(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    unsigned seed = 12345;
+    int inside = 0, ours = 0, notes = 0, open = 0;
+    int sent = 0;
+    for (int f = 0; f < 600; f++) {
+        if (sent < 400 && c.len < 200) {
+            for (int k = 0; k < 3; k++, sent++)
+                push_msg(&c, 9 + (int)((seed = seed * 1103515245u + 12345u) >> 16) % 25, (uint8_t)sent);
+        }
+        uint8_t region[REGION] = {0};
+        seed = seed * 1103515245u + 12345u;
+        int nf = (seed >> 16) % 4;             /* 0-3 Move notes this frame */
+        for (int k = 0; k < nf; k++) {
+            seed = seed * 1103515245u + 12345u;
+            int sl = (seed >> 16) % 20;
+            put_foreign(region, sl);
+        }
+        ui_midi_carry_drain(&c, region, REGION);
+        for (int q = 0; q < REGION; q += 4) {                     /* the wire */
+            if (!region[q] || (region[q] >> 4) != 2) continue;
+            const int cin = region[q] & 0x0F;
+            if (cin == 0x09) { notes++; if (open) inside++; continue; }
+            ours++;
+            if (cin == 0x04 && region[q + 1] == 0xF0) open = 1;
+            if (cin >= 0x05 && cin <= 0x07) open = 0;
+        }
+    }
+    CHECK(ours > 1000 && notes > 300, "the simulation actually moved traffic (positive control)");
+    CHECK(inside == 0, "not ONE Move note landed inside one of our messages");
+}
+
 int main(void)
 {
     test_fits_in_one_frame();
@@ -423,6 +513,10 @@ int main(void)
 #endif
     test_clean_run_is_not_requeued();
     test_retry_cap_is_bounded_and_on();
+    test_atomic_small_message_goes_whole();
+    test_atomic_goes_after_moves_packet();
+    test_atomic_waits_whole_rather_than_splitting();
+    test_atomic_no_note_ever_inside_a_message();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");

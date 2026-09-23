@@ -115,7 +115,20 @@ export const PARTIAL_HEARTBEAT_MS = 30000;
  * is ~42 wire bytes, ~14 packets, one or two frames, and a loss costs two rows.
  * Every region -- full repaints and large diff regions alike -- is cut to it.
  */
-export const STRIP_H = 2;
+export const STRIP_H = 1;
+
+/*
+ * EVERY MESSAGE FITS ONE SPI FRAME -- the atomic limit of the outbound queue
+ * (UI_MIDI_CARRY_ATOMIC_MAX in ui_midi_out_carry.h). A message that fits is
+ * placed whole in a single frame after Move's own cable-2 packets, so Move's
+ * notes can never be spliced into it; one that does not straddles frames and
+ * can be. So: rows are one pixel tall (a full-width row is a 10-packet
+ * SCANLINE, a trimmed one an <=11-packet RECTANGLE), and rings go at most
+ * RING_CHUNKS_PER_MSG to a message (11 packets). STRIP_H was 2: a full-width
+ * 2-row strip is ~17 packets -- two frames, and every one of them spliceable.
+ */
+export const ATOMIC_MAX_PACKETS = 12;
+export const RING_CHUNKS_PER_MSG = 3;
 
 /*
  * PACKETS PER TICK, not messages per tick.
@@ -471,19 +484,26 @@ function inkedStrips(buf) {
             }
             if (on) { if (x0 < 0) x0 = x; x1 = x; }
         }
-        if (x0 >= 0) out.push({ kind: "rect", x: x0, y, w: x1 - x0 + 1, h: Math.min(STRIP_H, 64 - y) });
+        if (x0 >= 0) out.push(stripRegion(x0, y, x1 - x0 + 1, Math.min(STRIP_H, 64 - y)));
     }
     return out;
 }
 
 /* Cut every region to at most STRIP_H rows, top to bottom, in order. A
  * scanline is already one row. */
+/* A full-width single row is a SCANLINE (10 packets), anything else a
+ * RECTANGLE -- both fit the atomic limit. */
+function stripRegion(x, y, w, h) {
+    return (h === 1 && x === 0 && w === E16_WIDTH) ? { kind: "scanline", y }
+                                                    : { kind: "rect", x, y, w, h };
+}
+
 function toStrips(regions) {
     const out = [];
     for (const r of regions) {
         if (r.kind !== "rect" || r.h <= STRIP_H) { out.push(r); continue; }
         for (let y = r.y; y < r.y + r.h; y += STRIP_H) {
-            out.push({ kind: "rect", x: r.x, y, w: r.w, h: Math.min(STRIP_H, r.y + r.h - y) });
+            out.push(stripRegion(r.x, y, r.w, Math.min(STRIP_H, r.y + r.h - y)));
         }
     }
     return out;
@@ -616,10 +636,22 @@ export function createDisplay(opts) {
                     paintsCompleted++;
                     return "labels";
                 }
-                const chunks = Array.from(rings.values());
-                if (!emitMsg(send, ringMsg(chunks))) return null;
-                rings.clear();
-                return "rings";
+                /* At most RING_CHUNKS_PER_MSG to a message, so each fits one
+                 * frame; as many messages as the tick's budget allows, the
+                 * rest on the next tick. Sent chunks leave the map only once
+                 * their message is accepted. */
+                let usedR = 0, sentAny = false;
+                const all = Array.from(rings.values());
+                for (let i = 0; i < all.length; i += RING_CHUNKS_PER_MSG) {
+                    const part = all.slice(i, i + RING_CHUNKS_PER_MSG);
+                    const bytes = ringMsg(part);
+                    const packets = Math.ceil(bytes.length / 3);
+                    if (sentAny && usedR + packets > budgetOf()) break;
+                    if (!emitMsg(send, bytes)) break;
+                    usedR += packets; sentAny = true;
+                    for (const r of part) rings.delete(r.enc);
+                }
+                return sentAny ? "rings" : null;
             }
 
             if (want !== "framebuffer") {
@@ -1315,7 +1347,10 @@ export function createSurface(io) {
     const paceOf = o.paceOf || null;
     let lastFullLogAt = -Infinity;
     const display = createDisplay({
-        budgetOf: paceOf ? () => (paceOf() || SHIM_DEFAULT_PACE) * BUDGET_FRAMES_PER_TICK
+        /* The queue places at least one WHOLE message per frame (up to
+         * ATOMIC_MAX_PACKETS), whatever the pace, so the budget is sized to
+         * a frame's worth of the larger of the two. */
+        budgetOf: paceOf ? () => Math.max(paceOf() || SHIM_DEFAULT_PACE, 11) * BUDGET_FRAMES_PER_TICK
                          : () => TICK_PACKET_BUDGET,
         /* One line per visible blank, rate-limited, naming its cause. */
         onFull: (reason) => {
