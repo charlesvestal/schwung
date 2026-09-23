@@ -370,6 +370,16 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
                 if (typeof ctx.drawCanvasPageBody !== 'function') return;
                 ctx.drawCanvasPageBody(currentSlot, currentComponent, drawCtx, band, canvas, payload);
             },
+            /*
+             * One hook on that page's overlay, for a page the module can be
+             * ENTERED into. Same seam and same reason as drawCanvasPage above:
+             * the controller knows which page is on screen, and only the
+             * consumer knows which slot and component that page belongs to.
+             */
+            canvasPageHook: (canvas, hook, payload) => {
+                if (typeof ctx.canvasPageHook !== 'function') return undefined;
+                return ctx.canvasPageHook(currentSlot, currentComponent, canvas, hook, payload);
+            },
         }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
