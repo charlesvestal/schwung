@@ -162,7 +162,26 @@ export const SHIM_DEFAULT_PACE = 3;
  * 2026-09-24). Measured ACK latency is ~4 SPI frames (~12 ms); 250 ms leaves
  * room for a queued tick and the inbound path without retrying live traffic.
  */
-export const ACK_TIMEOUT_MS = 250;
+export const ACK_TIMEOUT_MS = 1000;
+
+/*
+ * LOSS IS DETECTED BY ORDER, and the clock is only the backstop.
+ *
+ * ACK_TIMEOUT_MS was 250 ms, from an idle measurement (~12 ms). Under a real
+ * repaint the device queues and answers take longer -- p90 ~380 ms on
+ * hardware, 2026-09-24 -- so live rows "timed out", were re-sent, and (since a
+ * timed-out row also left the in-flight window) the extra traffic deepened the
+ * queue until EVERY row timed out: the whole unchanged screen re-sent once a
+ * second, forever, 7886 of 7915 rows answered on the wire the whole time.
+ *
+ * The device answers in the order it receives (99% in that capture; the rest
+ * arrive at most 5 places early, and are then answered too). So a region is
+ * LOST once REORDER_LOSS regions sent after it have been answered without it
+ * -- TCP's duplicate-ACK rule. The clock remains for the tail (the LAST
+ * message lost has nothing after it to be answered), at a length no live
+ * answer reaches.
+ */
+export const REORDER_LOSS = 8;
 
 /*
  * FLOW CONTROL: PIXELS IN FLIGHT. The E16 draws each region before it takes
@@ -591,9 +610,51 @@ export function createDisplay(opts) {
      * messages, so counting sends would count bands, not pictures. The
      * refresh meter and the tests read this; nothing decides behaviour on it. */
     let paintsCompleted = 0;
-    /* Sent regions awaiting an ACK or NACK, keyed as the device echoes them. */
-    const outstanding = new Map();
+    /* Sent regions awaiting an ACK or NACK, IN SEND ORDER, keyed as the
+     * device echoes them. An answer matches the OLDEST entry with its key (a
+     * re-send can share a key with the original). */
+    const outstanding = [];
+    /* Pixels the belief must not be trusted for: re-sent by the next diff
+     * whatever lastSentBuf says. It used to be an XOR poison ON the belief,
+     * and two repairs of one row before its re-send cancelled each other --
+     * the repair vanished silently. A mask cannot cancel. */
+    const dirty = new Uint8Array(1024);
     let timeouts = 0;
+
+    /* A region the device will never answer (see REORDER_LOSS): out of the
+     * window, and re-sent. A lost CLEAR means nothing we believe holds. */
+    function lose(o) {
+        timeouts++;
+        if (o.region.kind === "clear") {
+            lastSentBuf = null; pendingRegions = []; pendingBuf = null; dirty.fill(0);
+            nullReason = "CLEAR never acknowledged";
+        } else if (o.region.kind === "scanline") markDirty(0, o.region.y, E16_WIDTH, 1);
+        else markDirty(o.region.x, o.region.y, o.region.w, o.region.h);
+        fbOwed = true;
+    }
+    function markDirty(x, y, w, h) {
+        /* No belief at all: nothing to repair against -- repaint. */
+        if (!lastSentBuf) { pendingRegions = []; pendingBuf = null; return; }
+        for (let yy = Math.max(0, y); yy < Math.min(64, y + h); yy++)
+            for (let xx = Math.max(0, x); xx < Math.min(E16_WIDTH, x + w); xx++)
+                dirty[(yy >> 3) * E16_WIDTH + xx] |= (1 << (yy & 7));
+    }
+    function clearDirty(x, y, w, h) {
+        for (let yy = Math.max(0, y); yy < Math.min(64, y + h); yy++)
+            for (let xx = Math.max(0, x); xx < Math.min(E16_WIDTH, x + w); xx++)
+                dirty[(yy >> 3) * E16_WIDTH + xx] &= ~(1 << (yy & 7));
+    }
+    /* The belief the diff compares against: lastSentBuf, except that a dirty
+     * pixel is taken to differ from the target, so it is always re-sent. */
+    function believed(target) {
+        if (!lastSentBuf) return null;
+        const b = lastSentBuf.slice();
+        for (let i = 0; i < 1024; i++) {
+            const d = dirty[i];
+            if (d) b[i] = (b[i] & ~d) | (~target[i] & d & 0xFF);
+        }
+        return b;
+    }
     /* When the last screen actually went out, for the heartbeat below. */
     let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
@@ -659,15 +720,10 @@ export function createDisplay(opts) {
              * 52 "timeouts" against 6 regions truly unanswered on the wire,
              * clustered on slot switches. */
             const ref = heardMs !== undefined ? heardMs : nowMs;
-            if (ref !== undefined && outstanding.size) {
-                for (const [k, o] of outstanding) {
-                    if (ref - o.at < ACK_TIMEOUT_MS) continue;
-                    outstanding.delete(k);
-                    timeouts++;
-                    if (o.region.kind === "clear") this.invalidateBuf("CLEAR never acknowledged");
-                    else if (o.region.kind === "scanline") this.invalidateRegion(0, o.region.y, E16_WIDTH, 1);
-                    else this.invalidateRegion(o.region.x, o.region.y, o.region.w, o.region.h);
-                    fbOwed = true;
+            if (ref !== undefined && outstanding.length) {
+                for (let i = 0; i < outstanding.length; ) {
+                    if (ref - outstanding[i].at < ACK_TIMEOUT_MS) { i++; continue; }
+                    lose(outstanding.splice(i, 1)[0]);
                 }
             }
             const want = screen ? screen.kind : "framebuffer";
@@ -747,7 +803,7 @@ export function createDisplay(opts) {
                  * about four whole-screen repaints a second. "Full" is now only
                  * for a screen we know nothing about (prev === null).
                  */
-                const diff = diffFramebuffers(lastSentBuf, buf,
+                const diff = diffFramebuffers(believed(buf), buf,
                     { maxRegions: Infinity, fullRepaintThreshold: Infinity });
                 if (diff.kind === "none") {
                     /* The device already shows this picture -- including when
@@ -784,7 +840,7 @@ export function createDisplay(opts) {
             let used = 0;
             let first = null;
             let inFlight = 0;
-            if (nowMs !== undefined) for (const o of outstanding.values()) inFlight += regionPx(o.region);
+            if (nowMs !== undefined) for (const o of outstanding) inFlight += regionPx(o.region);
             while (pendingRegions.length) {
                 const region = pendingRegions[0];
                 /* The window (see WINDOW_PX_START). Only where answers are
@@ -801,7 +857,7 @@ export function createDisplay(opts) {
                 used += packets;
                 if (first === null) first = region.kind;
                 if (nowMs !== undefined) {
-                    outstanding.set(regionKey(region), { region, at: nowMs });
+                    outstanding.push({ key: regionKey(region), region, at: nowMs, passed: 0 });
                     inFlight += regionPx(region);
                 }
                 pendingRegions.shift();
@@ -819,8 +875,9 @@ export function createDisplay(opts) {
                  * which is what the device really shows.
                  */
                 if (!lastSentBuf || region.kind === "clear") lastSentBuf = new Uint8Array(1024);
-                if (region.kind === "scanline") copyRect(lastSentBuf, pendingBuf, 0, region.y, E16_WIDTH, 1);
-                else if (region.kind === "rect") copyRect(lastSentBuf, pendingBuf, region.x, region.y, region.w, region.h);
+                if (region.kind === "clear") dirty.fill(0);
+                if (region.kind === "scanline") { copyRect(lastSentBuf, pendingBuf, 0, region.y, E16_WIDTH, 1); clearDirty(0, region.y, E16_WIDTH, 1); }
+                else if (region.kind === "rect") { copyRect(lastSentBuf, pendingBuf, region.x, region.y, region.w, region.h); clearDirty(region.x, region.y, region.w, region.h); }
                 if (nowMs !== undefined) shownAt = nowMs;
                 if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
             }
@@ -832,7 +889,7 @@ export function createDisplay(opts) {
         get labelsTextOwed() { return labelsOwed; },
         get shownKind() { return shownKind; },
         get paintsCompleted() { return paintsCompleted; },
-        get outstandingCount() { return outstanding.size; },
+        get outstandingCount() { return outstanding.length; },
         get ackTimeouts() { return timeouts; },
         get windowPx() { return windowPx; },
         get acks() { return acks; },
@@ -847,9 +904,16 @@ export function createDisplay(opts) {
             /* Returns false for an ACK of a CLEAR we never sent: a corrupted
              * message the device read as CLEAR -- it blanked ITSELF, and
              * nothing we believe about the screen holds. The caller repaints. */
-            const o = outstanding.get(k);
-            const known = outstanding.delete(k);
+            const idx = outstanding.findIndex((e) => e.key === k);
+            const known = idx >= 0;
+            const o = known ? outstanding.splice(idx, 1)[0] : null;
             if (known) {
+                /* Everything sent BEFORE this one and still unanswered was
+                 * passed over once more; REORDER_LOSS passes is a loss. */
+                for (let i = 0; i < idx && i < outstanding.length; ) {
+                    if (++outstanding[i].passed >= REORDER_LOSS) lose(outstanding.splice(i, 1)[0]);
+                    else i++;
+                }
                 /* Additive increase of about one row per WINDOW of answers
                  * (per answer: a share proportional to its size), not per
                  * answer -- per answer grew ~1000 px across one repaint and
@@ -871,7 +935,7 @@ export function createDisplay(opts) {
          * true. Forgetting it is what makes the presence edge resend. If the
          * mode itself is still trustworthy and only the PIXELS are suspect,
          * invalidateBuf() below is the narrower tool -- see its comment. */
-        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; dirty.fill(0);
                         nullReason = "forgetShown (replug / presence edge)"; },
         /* Something happened that means what we BELIEVE is on the device
          * might be wrong, even though our own rendered content hasn't
@@ -882,7 +946,7 @@ export function createDisplay(opts) {
          * believed to be in framebuffer mode (shownKind untouched), only
          * the PIXELS are suspect -- the next diff sees prev === null and
          * sends a full repaint regardless of whether content changed. */
-        invalidateBuf(reason) { lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+        invalidateBuf(reason) { lastSentBuf = null; pendingRegions = []; pendingBuf = null; dirty.fill(0);
                                 nullReason = reason || "invalidateBuf"; },
 
         /*
@@ -908,11 +972,7 @@ export function createDisplay(opts) {
              * it), so it times out and is re-sent by itself.
              */
             if (![x, y, w, h].every((v) => typeof v === "number")) return;
-            for (let yy = y; yy < Math.min(64, y + h); yy++) {
-                for (let xx = x; xx < Math.min(E16_WIDTH, x + w); xx++) {
-                    lastSentBuf[(yy >> 3) * E16_WIDTH + xx] ^= (1 << (yy & 7));
-                }
-            }
+            markDirty(x, y, w, h);
         },
         get ringsPending() { return rings.size; },
     };
