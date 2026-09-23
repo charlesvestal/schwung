@@ -799,7 +799,11 @@ void shadow_toggle_solo(int slot) {
 
     if (shadow_chain_slots[slot].soloed) {
         shadow_chain_slots[slot].soloed = 0;
+        /* Recounted, not zeroed: other slots may be soloed (the parameter
+         * path is additive). */
         shadow_solo_count = 0;
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            if (shadow_chain_slots[i].soloed) shadow_solo_count++;
         char msg[64];
         snprintf(msg, sizeof(msg), "Solo off: slot %d", slot);
         shadow_log(msg);
@@ -2927,16 +2931,15 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         return 1;
     }
     if (strcmp(key, "slot:soloed") == 0) {
-        int val = atoi(value);
-        if (val && !shadow_chain_slots[slot].soloed) {
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
-                shadow_chain_slots[i].soloed = 0;
-            shadow_chain_slots[slot].soloed = 1;
-            shadow_solo_count = 1;
-        } else if (!val && shadow_chain_slots[slot].soloed) {
-            shadow_chain_slots[slot].soloed = 0;
-            shadow_solo_count = 0;
-        }
+        /* ADDITIVE: soloing a slot leaves the others soloed, and un-soloing one
+         * keeps the rest -- several tracks can be soloed together (the E16
+         * Mixer, Slot Settings). Move's own Shift+Mute+Track combo stays
+         * exclusive (shadow_toggle_solo), because it solos Move's track too. */
+        shadow_chain_slots[slot].soloed = atoi(value) ? 1 : 0;
+        int n = 0;
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            if (shadow_chain_slots[i].soloed) n++;
+        shadow_solo_count = n;
         for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
             shadow_ui_state_update_slot(i);
         return 1;
