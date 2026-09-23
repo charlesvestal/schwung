@@ -180,9 +180,16 @@ const unpack = (p) => { const out = [];
   return out; };
 const kindOf = (packets) => { const b = unpack(packets);
   if (b[0] !== 0xF0) return "?";
+  if (b[6] === 0x08) return "rect";
   const id = (b[6] << 8) | b[7];
   return id === 0x0602 ? "framebuffer" : id === 0x0604 ? "ring"
        : id === 0x0603 ? "labels" : "other"; };
+/* Tick until the repaint in flight has fully drained; returns what each tick
+ * sent. A full repaint is eight 128x8 bands, a small one a single region. */
+const drain = (d, send, screen, t) => { const out = [];
+  for (let i = 0; i < 16; i++) { out.push(d.tick(send, frame, screen, t));
+    if (!d.repaintPending) break; }
+  return out; };
 
 const mkSend = (accept) => { const log = [];
   const fn = (p) => { log.push(p); return accept === undefined ? true : accept(); };
@@ -210,7 +217,11 @@ const frame = () => frameBuf;
  */
 const PICTURE = { kind: "framebuffer" };
 const TEXT = { kind: "labels", title: "T", labels: new Array(16).fill("AB") };
-const prime = (d, send, screen) => { d.tick(send, frame, screen); send.log.length = 0; };
+/* A repaint is up to EIGHT region messages now (a full one goes out as
+ * 128x8 bands), so priming drains the whole repaint, not one tick. */
+const prime = (d, send, screen) => {
+  for (let i = 0; i < 16 && (i === 0 || d.repaintPending); i++) d.tick(send, frame, screen);
+  send.log.length = 0; };
 
 /* A value change is ONE ring message and NO screen. */
 let d = createDisplay();
@@ -243,31 +254,38 @@ prime(d, send, PICTURE);
  * test is about. */
 frameBuf = frameBuf.map((b) => b ^ 0xFF);
 d.invalidate(); d.invalidate(); d.invalidate();
-eq("navigation sends a framebuffer", d.tick(send, frame, PICTURE), "framebuffer");
-eq("three invalidations are one repaint", send.log.length, 1);
-eq("...and it is a framebuffer", kindOf(send.log[0]), "framebuffer");
-eq("nothing more owed", d.tick(send, frame), null);
-eq("still one message on the wire", send.log.length, 1);
+/* An inverted screen is a FULL repaint: eight bands, once. Three
+ * invalidations must not make it 24. */
+eq("navigation repaints as bands", drain(d, send, PICTURE), new Array(8).fill("rect"));
+eq("three invalidations are ONE repaint (eight bands, not 24)", send.log.length, 8);
+eq("...every message a RECTANGLE, never a framebuffer",
+   send.log.every(p => kindOf(p) === "rect"), true);
+eq("nothing more owed", d.tick(send, frame, PICTURE), null);
+eq("still eight messages on the wire", send.log.length, 8);
 
-/* A framebuffer never shares its tick with rings. */
+/* A repaint never shares a tick with rings, and finishes before them: a
+ * half-drawn screen is worse than a ring that arrives a few ticks late. */
 d = createDisplay(); send = mkSend();
 d.invalidate(); d.ringChanged(ringFor(v, 8));
-eq("repaint goes out alone", d.tick(send, frame), "framebuffer");
+eq("repaint goes out alone", d.tick(send, frame), "rect");
 eq("...one message this tick", send.log.length, 1);
-eq("rings follow on the NEXT tick", d.tick(send, frame), "rings");
-eq("...two messages total", send.log.length, 2);
+eq("...and drains before the rings", drain(d, send), new Array(7).fill("rect"));
+eq("rings follow once the repaint is complete", d.tick(send, frame), "rings");
+eq("...nine messages total, one per tick", send.log.length, 9);
 
 /* A REFUSED send stays owed; it must not queue a second copy. */
 let accept = false;
 d = createDisplay(); send = mkSend(() => accept);
 d.invalidate();
 eq("refused repaint reports nothing sent", d.tick(send, frame), null);
-eq("...and stays owed", d.framebufferOwed, true);
+eq("...and stays owed", d.repaintPending, true);
 accept = true;
-eq("...going out once when accepted", d.tick(send, frame), "framebuffer");
-eq("...still only one framebuffer ever in flight",
-   send.log.filter(p => kindOf(p) === "framebuffer").length, 2 /*1 refused + 1 accepted*/);
-eq("...and nothing owed after", d.framebufferOwed, false);
+eq("...going out when accepted", d.tick(send, frame), "rect");
+eq("...the refused band is retried, not queued twice: two attempts at y=0",
+   send.log.filter(p => kindOf(p) === "rect" && unpack(p)[9] === 0).length, 2);
+drain(d, send);
+eq("...all eight bands, once each, after the retry", send.log.length, 9);
+eq("...and nothing owed after", d.repaintPending, false);
 
 /* A refused ring message keeps its positions owed for the same reason. */
 accept = false;
@@ -315,8 +333,8 @@ eq("the first tick paints, having told the device nothing yet",
    d.tick(send, frame, TEXT), "labels");
 eq("...and a second identical tick sends nothing",
    d.tick(send, frame, TEXT), null);
-eq("raising the map sends a FRAMEBUFFER with no invalidate at all",
-   d.tick(send, frame, PICTURE), "framebuffer");
+eq("raising the map repaints the drawn view with no invalidate at all",
+   drain(d, send, PICTURE)[0], "rect");
 eq("dismissing it owes LABELS back, though not one label changed",
    d.tick(send, frame, TEXT), "labels");
 eq("and then it settles again", d.tick(send, frame, TEXT), null);
@@ -410,25 +428,10 @@ eq("rings pending is visible to the caller that gates the heartbeat",
     return out.slice(6, 7);   /* the single id byte, per OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX=false */
   };
 
-  /* A partial-capable display (new firmware -- see createDisplay `partial`),
-   * primed: a full repaint is EIGHT 128x8 bands, one per tick. */
-  const mk = () => { const d = createDisplay(); d.setPartial(true); return d; };
+  /* A display, primed: a full repaint is EIGHT 128x8 bands, one per tick. */
+  const mk = () => createDisplay();
   const paintAll = (d, send, fb, t) => { const k = [];
     for (let i = 0; i < 8; i++) k.push(d.tick(send, fb, { kind: "framebuffer" }, t + i)); return k; };
-
-  /* NO REGION SUPPORT = THE OLD BEHAVIOUR, BYTE FOR BYTE. Old firmware ignores
-   * RECTANGLE silently, so a display that has not been told otherwise must
-   * send a whole FRAMEBUFFER for every repaint, small change or not. */
-  {
-    const d0 = createDisplay(); const s0 = mkSend();
-    let b0 = new Uint8Array(1024); const f0 = () => b0;
-    d0.invalidate(); eq("default display: first paint is a framebuffer",
-                        d0.tick(s0, f0, { kind: "framebuffer" }, 0), "framebuffer");
-    b0 = new Uint8Array(1024); setPx(b0, 10, 10);
-    d0.invalidate(); eq("default display: a one-pixel change is STILL a framebuffer",
-                        d0.tick(s0, f0, { kind: "framebuffer" }, 1), "framebuffer");
-    eq("partial is off by default", d0.partial, false);
-  }
 
   const d1 = mk();
   const send1 = mkSend();

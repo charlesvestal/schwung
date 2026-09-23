@@ -124,10 +124,13 @@ const LABELS      = [0x06, 0x03];
  * and the map is a FRAMEBUFFER -- they override each other on the device, so a
  * test that names one of them is really asserting which view happened to be up
  * rather than that anything was drawn at all. */
-const isScreen = (p) => j(msgId(p)) === j(LABELS) || j(msgId(p)) === j(FRAMEBUFFER);
+/* The drawn view goes out as RECTANGLE regions (0x08, one id byte) -- a full
+ * repaint is eight 128x8 bands -- never as a whole FRAMEBUFFER any more. */
+const isRegion = (p) => unpack(p)[6] === 0x08;
+const isScreen = (p) => j(msgId(p)) === j(LABELS) || isRegion(p);
 const RING = [0x06, 0x04];
 const EXIT = [0x06, 0x00];
-const ACK_BYTES = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x06, 0x53, 0xF7];
+const ACK_BYTES = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7]  /* the ENTER ack, as captured 2026-09-24 */;
 
 /* One rig: a surface with its own controller, plus a SEPARATE controller
  * standing in for the one the shadow UI holds for Move. */
@@ -249,8 +252,8 @@ function rig(opts) {
    * `screenModeOf` still returns "labels" on request, so the fallback is one
    * echo away and this asserts the DEFAULT, not the only possibility.
    */
-  ok(r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "...and the parameter view paints the FRAMEBUFFER by default");
+  ok(r.send.log.some(isRegion),
+     "...and the parameter view paints the drawn view (RECTANGLE regions) by default");
   ok(r.params.reads.length > readsBefore,
      "...and only then does it read the contract");
 
@@ -263,8 +266,7 @@ function rig(opts) {
   r.surface.feedMidi([0x90, 0x04, 0x7F]);   /* push encoder 4 -> its first component */
   r.ticks(3);
 
-  const sent = r.send.log.slice(before).map((p) => j(msgId(p)));
-  ok(sent.includes(j(FRAMEBUFFER)),
+  ok(r.send.log.slice(before).some(isRegion),
      "a component change produces a screen on the wire");
   eq("the surface followed the jump",
      [r.surface.slot, r.surface.component], [1, "synth"]);
@@ -290,38 +292,6 @@ function rig(opts) {
   r.ticks(1);
   const fbs = r.send.log.slice(b2).filter((p) => isScreen(p));
   eq("three invalidations in one tick are one repaint", fbs.length, 1);
-}
-
-/* ===========================================================================
- * THE ACK SHAPE IS THE CAPABILITY. Measured 2026-09-24: firmware with
- * SCANLINE/RECTANGLE answers ENTER with 53, older firmware with 06 53 -- and
- * the older firmware IGNORES the new opcodes without a word. So a new-shape
- * ack must turn region updates ON (a repaint goes out as 0x08 bands), and an
- * old-shape ack must leave the surface on whole FRAMEBUFFERs.
- * ========================================================================= */
-{
-  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
-  const rn = rig();
-  rn.surface.setEnabled(true);
-  rn.ticks(1);
-  rn.surface.feedMidi(NEW_ACK);
-  const b0 = rn.send.log.length;
-  rn.ticks(12);
-  const ids = rn.send.log.slice(b0).map((p) => unpack(p)[6]);
-  ok(ids.includes(0x08), "a NEW-firmware ack switches repaints to RECTANGLE bands");
-  ok(!rn.send.log.slice(b0).some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "...and no whole FRAMEBUFFER goes out");
-
-  const ro = rig();
-  ro.surface.setEnabled(true);
-  ro.ticks(1);
-  ro.ack();                                  /* the OLD 06 53 shape */
-  const b1 = ro.send.log.length;
-  ro.ticks(12);
-  ok(ro.send.log.slice(b1).some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "an OLD-firmware ack keeps whole FRAMEBUFFERs");
-  ok(!ro.send.log.slice(b1).some((p) => unpack(p)[6] === 0x08),
-     "...and never sends a RECTANGLE it would silently ignore");
 }
 
 /* ===========================================================================
@@ -443,15 +413,16 @@ function rig(opts) {
   ok(after.length > 0, "a raw CC turn reaches set_param");
   eq("it wrote the first key of page 0", after[after.length - 1].key, "p0");
 
-  /* And a VALUE CHANGE SENDS A RING, NEVER A FRAMEBUFFER -- the whole rate
-   * strategy. A repaint per detent measures fine in isolation and drops
-   * packets in use. */
+  /* And a VALUE CHANGE SENDS A RING, NEVER A WHOLE FRAMEBUFFER -- the rate
+   * strategy. The printed number now follows as a small region repaint too
+   * (it goes out a tick ahead of the ring, since a screen owed outranks it),
+   * so the ring is asserted within a few ticks rather than on the first. */
   const b2 = r.send.log.length;
-  r.ticks(1);
+  r.ticks(4);
   const kinds = r.send.log.slice(b2).map((p) => j(msgId(p)));
   ok(kinds.includes(j(RING)), "the moved encoders ring is sent");
   ok(!kinds.includes(j(FRAMEBUFFER)),
-     "a value change does NOT repaint the screen");
+     "a value change never sends a whole FRAMEBUFFER");
 }
 
 /* ===========================================================================
@@ -506,8 +477,7 @@ function rig(opts) {
   eq("a refused repaint sends nothing", r2.send.log.length, b);
   r2.send.refuse = false;
   r2.ticks(1);
-  const late = r2.send.log.slice(b).map((p) => j(msgId(p)));
-  ok(late.includes(j(FRAMEBUFFER)),
+  ok(r2.send.log.slice(b).some(isRegion),
      "the owed repaint goes out when the port frees up");
 
   /* Disabling gives the device back, exactly once, and stops everything. */
@@ -554,8 +524,7 @@ function rig(opts) {
   eq("a keepalive tick sends the keepalive ALONE", r.send.log.length - b, 1);
   eq("and it is the ENTER", msgId(r.send.log[b]), ENTER);
   r.ticks(1);
-  const after = r.send.log.slice(b + 1).map((p) => j(msgId(p)));
-  ok(after.includes(j(FRAMEBUFFER)),
+  ok(r.send.log.slice(b + 1).some(isRegion),
      "the deferred repaint goes out on the very next tick");
 
   /* Silence past LOSS_MS: the device is gone. Then it comes back. */

@@ -158,8 +158,8 @@ function recorder() {
   got.length = 0;
   asm.feed([0xF0, ACK_BODY[0], 0xF8]);
   asm.feed(ACK_BODY.slice(1, 4));
-  asm.feed([0xFE].concat(ACK_BODY.slice(4, 6)));
-  asm.feed([ACK_BODY[6], 0xF7]);
+  asm.feed([0xFE].concat(ACK_BODY.slice(4, 5)));
+  asm.feed([ACK_BODY[5], 0xF7]);
   eq("realtime bytes are skipped, not fatal", got.join("|"), ACK_BODY.join(" "));
 
   /* A message interrupted by a channel status byte is ABANDONED. Splicing the

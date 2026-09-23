@@ -35,15 +35,12 @@ function msg(id, raw) {
 export function enterMsg() { return msg([0x06, 0x55]); }
 export function exitMsg()  { return msg([0x06, 0x00]); }
 
-export const ACK_BODY = HDR.concat([0x06, 0x53]);
-/* The SAME acknowledgement from firmware that shipped the partial-update
- * opcodes (measured on hardware 2026-09-24 with the XMOS SysEx tap): the
- * device drops the 0x06 category byte from what it SENDS -- the sheet's
- * "0x06 is the category message, no longer necessary once in REMOTE MODE",
- * applied to its replies. Our ENTER still carries 0x06 and is still acked.
- * Accepting only the old form left the surface seeking forever against a
- * device that answered every single probe. */
-export const ACK_BODY_NO_CATEGORY = HDR.concat([0x53]);
+/* The ENTER acknowledgement. `53` with NO 0x06 category byte -- the sheet
+ * says `06 53`, which is what firmware before the single-port / partial-update
+ * release sent. Measured on hardware 2026-09-24 with the XMOS SysEx tap. The
+ * older firmware is not supported: it cannot reach Move at all without a
+ * hand-patched single-jack image, so there is nobody to keep it working for. */
+export const ACK_BODY = HDR.concat([0x53]);
 
 /* rings: [{enc, r, g, b, amount (0-16383), bipolar}] -- variable length, so a
  * single changed encoder costs one chunk rather than a whole-screen repaint.
@@ -114,21 +111,10 @@ function bodyIs(asm, want) {
     return true;
 }
 
-/* Both firmware generations -- see ACK_BODY_NO_CATEGORY. The new form is
- * 6 bytes and the OLED UPDATE ACK (same 0x53) is 13, so exact length is what
- * keeps them apart. */
+/* The ENTER ack is 6 bytes; the OLED UPDATE ack shares its 0x53 and is 13,
+ * so exact length is what keeps them apart. */
 export function isAck(asm) {
-    return bodyIs(asm, ACK_BODY) || bodyIs(asm, ACK_BODY_NO_CATEGORY);
-}
-
-/* Which firmware answered: "new" (has SCANLINE/RECTANGLE/CLEAR -- its ENTER
- * ack drops the category byte), "old" (06 53, framebuffer only), or null for
- * anything that is not an ENTER ack. The ack's shape is the only capability
- * signal the device gives: old firmware ignores the new opcodes SILENTLY. */
-export function ackFirmware(asm) {
-    if (bodyIs(asm, ACK_BODY_NO_CATEGORY)) return "new";
-    if (bodyIs(asm, ACK_BODY)) return "old";
-    return null;
+    return bodyIs(asm, ACK_BODY);
 }
 
 /*

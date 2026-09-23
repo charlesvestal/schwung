@@ -105,10 +105,14 @@ function rig(opts) {
    * most one message. Exactly the shape shadow_ui.js will call it in. */
   const frame = () => { nav.tick(now); return display.tick(send, () => {
     nav.render(cv, now); return cv.toBuffer(); }); };
-  const ev = (e) => { const r = nav.handle(e, now); frame(); return r; };
+  /* An action, then ticks until its repaint has fully drained. A repaint is
+   * one to eight region messages (a full one is eight 128x8 bands) and the
+   * real surface keeps ticking, so stopping after one tick would leave the
+   * screen half-drawn and the canvas holding an older picture. */
+  const ev = (e) => { const r = nav.handle(e, now); frame();
+    for (let i = 0; i < 16 && display.repaintPending; i++) frame(); return r; };
   return { nav, display, cv, send, focused, at, frame, ev,
-           now: () => now, fbCount: () => send.log.filter(
-             (p) => kindOf(p) === "framebuffer").length };
+           now: () => now, paints: () => display.paintsCompleted };
 }
 
 /* ---- 1. THE SCRIPTED SEQUENCE, AND ITS EXACT FRAMEBUFFER COUNT ---------- */
@@ -136,13 +140,13 @@ function rig(opts) {
   eq("shift up after a jump changes nothing",
      r.ev({ type: "shift", down: false }), null);
 
-  eq("three actions, three framebuffers", r.fbCount(), 3);
+  eq("three actions, three repaints", r.paints(), 3);
 
   /* Rule 4 in its sharpest form: a surface that repaints per tick passes every
    * assertion above and fails this one. */
   for (let i = 0; i < 20; i++) r.frame();
-  eq("twenty idle ticks add no framebuffer", r.fbCount(), 3);
-  eq("...and nothing is owed", r.display.framebufferOwed, false);
+  eq("twenty idle ticks add no repaint", r.paints(), 3);
+  eq("...and nothing is owed", r.display.repaintPending, false);
 }
 
 /* ---- 2. THE MAP IS DRAWN ON THE PRESS, IN PIXELS ------------------------ */
@@ -218,9 +222,9 @@ function rig(opts) {
   eq("...and the map is still up", r.nav.mapVisible(r.now()), true);
   eq("a big turn back clamps at page 0",
      r.ev({ type: "turn", enc: 9, ticks: -5 }), { action: "page", pageIndex: 0 });
-  const before = r.fbCount();
+  const before = r.paints();
   r.ev({ type: "turn", enc: 9, ticks: -1 });   /* already at 0 */
-  eq("...no repaint for a clamped detent", r.fbCount(), before);
+  eq("...no repaint for a clamped detent", r.paints(), before);
 }
 
 /* ---- 5. THE MAP`S OWN OVERFLOW ------------------------------------------ */
@@ -274,12 +278,12 @@ function rigMapPage(slot) {
   const r = rig();
   r.ev({ type: "shift", down: true });
   r.ev({ type: "push", enc: 2 });              /* slot 2: one synth only */
-  const before = r.fbCount();
+  const before = r.paints();
   eq("an empty lower cell is not a jump target",
      r.ev({ type: "push", enc: 9 }), null);
   eq("...it does not consume the hold", r.nav.mapVisible(r.now()), true);
   eq("...it moves no focus", r.focused, []);
-  eq("...and it repaints nothing", r.fbCount(), before);
+  eq("...and it repaints nothing", r.paints(), before);
 }
 
 /* ---- 8. A RELEASE IS NOT A SECOND PUSH ---------------------------------- */
@@ -287,9 +291,9 @@ function rigMapPage(slot) {
   const r = rig();
   r.ev({ type: "shift", down: true });
   r.ev({ type: "push", enc: 4 });              /* jumps, drops the map */
-  const before = r.fbCount();
+  const before = r.paints();
   eq("the button release is inert", r.ev({ type: "release", enc: 4 }), null);
-  eq("...and repaints nothing", r.fbCount(), before);
+  eq("...and repaints nothing", r.paints(), before);
   eq("...one focus move, not two", r.focused.length, 1);
 }
 

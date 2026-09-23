@@ -29,7 +29,7 @@
  * machine with no device, no timers and no globals.  The host half is three
  * call sites in shadow_ui.js.
  */
-import { enterMsg, exitMsg, isAck, ackFirmware, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
+import { enterMsg, exitMsg, isAck, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
 
 /* Seeking cadence.  Slow enough to be free, fast enough that plugging a device
  * in feels immediate. */
@@ -91,7 +91,7 @@ export const LOSS_MS = 6000;
 export const SCREEN_HEARTBEAT_MS = 1500;
 
 /*
- * The same restate on firmware that can draw regions -- far rarer, because
+ * The restate for the drawn view -- far rarer than LABELS' 1.5 s, because
  * the reason for 1.5 s is gone. That cadence existed because a corruption
  * could be neither prevented nor DETECTED. With regions, every update is
  * ACKed or NACKed (measured 2026-09-24: both corrupted rectangles in a 20 s
@@ -169,7 +169,7 @@ export const FOREIGN_QUIET_MS = 250;
 export const SETTLE_MS = 180;
 
 /*
- * On firmware that can draw regions, the settle is not a price worth paying.
+ * With region updates the settle alone is not a price worth paying.
  * It existed because a digit could only move by redrawing all 1024 bytes;
  * a changed value is now one small acknowledged RECTANGLE. So during a turn
  * the reading is redrawn LIVE, at most every LIVE_PAINT_MS -- not every tick,
@@ -181,7 +181,7 @@ export const SETTLE_MS = 180;
 export const LIVE_PAINT_MS = 80;
 
 /*
- * How often, on region-capable firmware, the surface re-renders and diffs
+ * How often the surface re-renders and diffs
  * against what the device shows, for changes that did NOT come from its own
  * encoders -- a knob turned on Move, an LFO, a preset load. Nothing else
  * repaints for those. It used to be covered by accident: the 1.5 s
@@ -379,7 +379,7 @@ export function createSysexAssembler(opts) {
  * caller's, so tests drive the whole thing with no device.
  * ---------------------------------------------------------------------------
  */
-import { framebufferMsg, labelsMsg, ringMsg, scanlineMsg, rectangleMsg } from "./e16_protocol.mjs";
+import { labelsMsg, ringMsg, scanlineMsg, rectangleMsg } from "./e16_protocol.mjs";
 import { diffFramebuffers } from "./e16_diff.mjs";
 import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
 
@@ -420,18 +420,11 @@ export function createDisplay() {
     let lastSentBuf = null;
     let pendingRegions = [];
     let pendingBuf = null;
-    /*
-     * CAN THIS DEVICE DRAW A REGION AT ALL? Off until proven.
-     *
-     * Only firmware that ships SCANLINE/RECTANGLE has them, and older
-     * firmware IGNORES them silently -- no NACK, nothing drawn -- so a surface
-     * that assumed support would leave an old E16 showing stale pixels
-     * forever. The proof is the ENTER ack's own shape (measured 2026-09-24):
-     * new firmware answers `53`, old answers `06 53`. Off means exactly the
-     * behaviour before partial updates existed: every repaint is one
-     * FRAMEBUFFER.
-     */
-    let partial = false;
+    /* Screens the DEVICE now shows in full: a region repaint counts when its
+     * LAST region is accepted, a LABELS screen when it is. One repaint is 1-8
+     * messages, so counting sends would count bands, not pictures. The
+     * refresh meter and the tests read this; nothing decides behaviour on it. */
+    let paintsCompleted = 0;
     /* When the last screen actually went out, for the heartbeat below. */
     let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
@@ -491,6 +484,7 @@ export function createDisplay() {
                     if (!labelsOwed || want !== "labels") return null;
                     if (!emitMsg(send, labelsMsg(screen.title, screen.labels))) return null;
                     labelsOwed = false;
+                    paintsCompleted++;
                     return "labels";
                 }
                 const chunks = Array.from(rings.values());
@@ -508,6 +502,7 @@ export function createDisplay() {
                 if (emitMsg(send, bytes)) {
                     fbOwed = false; labelsOwed = false; shownKind = want;
                     if (nowMs !== undefined) shownAt = nowMs;
+                    paintsCompleted++;
                     return want;
                 }
                 return null;
@@ -523,15 +518,13 @@ export function createDisplay() {
 
             if (pendingRegions.length === 0) {
                 const buf = frameBytes();
-                /* No region support: exactly the pre-partial behaviour -- the
-                 * whole screen, every time, content unexamined. */
-                const diff = partial ? diffFramebuffers(lastSentBuf, buf) : { kind: "full" };
+                const diff = diffFramebuffers(lastSentBuf, buf);
                 if (diff.kind === "none") {
                     fbOwed = false;
                     shownKind = "framebuffer";
                     return null;
                 }
-                if (diff.kind === "full" && partial) {
+                if (diff.kind === "full") {
                     /*
                      * A FULL REPAINT IS EIGHT ACKNOWLEDGED BANDS, NOT ONE
                      * FRAMEBUFFER. Measured on hardware 2026-09-24: every
@@ -548,11 +541,6 @@ export function createDisplay() {
                         pendingRegions.push({ kind: "rect", x: 0, y, w: E16_WIDTH, h: 8 });
                     }
                     fbOwed = false;
-                } else if (diff.kind === "full") {
-                    if (!emitMsg(send, framebufferMsg(buf))) return null;
-                    fbOwed = false; shownKind = "framebuffer"; lastSentBuf = buf.slice();
-                    if (nowMs !== undefined) shownAt = nowMs;
-                    return "framebuffer";
                 } else {
                     pendingBuf = buf.slice();
                     pendingRegions = diff.regions.slice();
@@ -570,7 +558,7 @@ export function createDisplay() {
             shownKind = "framebuffer";
             lastSentBuf = pendingBuf.slice();
             if (nowMs !== undefined) shownAt = nowMs;
-            if (pendingRegions.length === 0) pendingBuf = null;
+            if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
             return region.kind;
         },
 
@@ -578,6 +566,9 @@ export function createDisplay() {
         get framebufferOwed() { return fbOwed; },
         get labelsTextOwed() { return labelsOwed; },
         get shownKind() { return shownKind; },
+        get paintsCompleted() { return paintsCompleted; },
+        /* A repaint is in flight: some of its regions are still queued. */
+        get repaintPending() { return fbOwed || pendingRegions.length > 0; },
         /* Milliseconds since the screen last went out, or null if never. */
         screenAge(nowMs) {
             return shownAt === null || nowMs === undefined ? null : nowMs - shownAt;
@@ -597,17 +588,6 @@ export function createDisplay() {
          * the PIXELS are suspect -- the next diff sees prev === null and
          * sends a full repaint regardless of whether content changed. */
         invalidateBuf() { lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
-
-        /* Whether the device can draw regions -- see `partial`. A change in
-         * either direction forgets what we believe is shown: a different
-         * device may be on the cable now. */
-        setPartial(on) {
-            on = !!on;
-            if (on === partial) return;
-            partial = on;
-            lastSentBuf = null; pendingRegions = []; pendingBuf = null;
-        },
-        get partial() { return partial; },
 
         /*
          * The device NACKed ONE region and named it. Make only that area
@@ -1338,8 +1318,6 @@ export function createSurface(io) {
 
     const asm = createSysexAssembler({
         onMessage: (body) => {
-            const fw = ackFirmware(body);
-            if (fw) display.setPartial(fw === "new");
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
@@ -1469,17 +1447,11 @@ export function createSurface(io) {
                 if (moved) {
                     display.ringChanged(ringFor(viewNow(), act.enc));
                     /*
-                     * THE NUMBER FOLLOWS THE HAND, ONE REPAINT PER GESTURE.
-                     *
-                     * A framebuffer has no partial update, so the printed
-                     * value cannot move without redrawing all 1024 bytes --
-                     * 383 ms, which is not payable per detent and is what made
-                     * the screen feel frozen while the rings moved. Paying it
-                     * per GESTURE instead is the whole difference: the ring
-                     * tracks the value live at 46 ms while the hand is moving,
-                     * and the settle below redraws once the hand stops, so the
-                     * digits are correct whenever anybody is actually reading
-                     * them.
+                     * THE NUMBER FOLLOWS THE HAND. The ring moves on every
+                     * detent; the printed digits are a region repaint, owed
+                     * here and paid by the tick at most every LIVE_PAINT_MS
+                     * while turning, plus once more after the hand stops
+                     * (SETTLE_MS) so the final value is always drawn.
                      */
                     turnedAt = t;
                     settlePainted = false;
@@ -1577,7 +1549,7 @@ export function createSurface(io) {
              * next one. */
             if (!settlePainted) {
                 const still = t - turnedAt >= SETTLE_MS;
-                const live = display.partial && t - lastLivePaintAt >= LIVE_PAINT_MS;
+                const live = t - lastLivePaintAt >= LIVE_PAINT_MS;
                 if (still || live) {
                     display.invalidate();
                     lastLivePaintAt = t;
@@ -1624,11 +1596,11 @@ export function createSurface(io) {
                              ? (nav.mapVisible(t) ? mapScreen() : labelScreen())
                              : { kind: "framebuffer" });
 
-            /* THE LOOK -- see LOOK_MS. Region firmware and the drawn view only:
-             * on old firmware every invalidate() is a whole framebuffer, and
-             * LABELS mode does not diff. Skipped mid-gesture, where the live
+            /* THE LOOK -- see LOOK_MS. The drawn view only: LABELS mode does
+             * not diff, so a look there would resend the text every time.
+             * Skipped mid-gesture, where the live
              * repaint and the turn's own rings already carry the change. */
-            if (display.partial && !wantLabels && probe < 0 && settlePainted &&
+            if (!wantLabels && probe < 0 && settlePainted &&
                 t - lookAt >= LOOK_MS) {
                 lookAt = t;
                 display.invalidate();
@@ -1660,7 +1632,9 @@ export function createSurface(io) {
              * is worse than a garbled one that obviously is not.
              */
             const age = display.screenAge(t);
-            const heartbeatMs = display.partial ? PARTIAL_HEARTBEAT_MS : SCREEN_HEARTBEAT_MS;
+            /* LABELS is neither diffed nor acknowledged, so the text fallback
+             * keeps the old restate; the drawn view is repaired by its NACKs. */
+            const heartbeatMs = screenModeOf() === "labels" ? SCREEN_HEARTBEAT_MS : PARTIAL_HEARTBEAT_MS;
             if (age !== null && age >= heartbeatMs &&
                 settlePainted && !display.ringsPending) {
                 /* invalidateBuf() FIRST: this repaint's whole job is to
@@ -1686,6 +1660,7 @@ export function createSurface(io) {
              * the wire and the pacing together can go, with no parameter read
              * anywhere in it. */
             if (probe === 6) display.invalidate();
+            const paintsBefore = display.paintsCompleted;
             const sent = display.tick(oneSend, () => {
                 /* A layout probe overrides the view. See drawTestPattern:
                  * "the screen is garbled" cannot tell a wrong bit direction
@@ -1699,8 +1674,9 @@ export function createSurface(io) {
                 return canvas.toBuffer();
             }, screen, t);
 
-            /* A PAINT is a completed send, never an intent. */
-            if (sent === "framebuffer" || sent === "labels") {
+            /* A PAINT is a completed picture on the device, never an intent --
+             * the LAST region of a repaint, or a whole LABELS screen. */
+            if (display.paintsCompleted !== paintsBefore) {
                 paints++;
                 if (lastPaintAt !== null) {
                     const dt = t - lastPaintAt;

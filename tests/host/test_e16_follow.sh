@@ -201,15 +201,20 @@ function rig(opts) {
  * amid other traffic. */
 {
   const r = rig();
-  const fbCount = () => r.send.log.length;
+  /* A repaint is one to eight region messages now, so the unit counted is a
+   * COMPLETED picture on the device, not a send. */
+  const settle = () => { for (let i = 0; i < 16 && r.display.repaintPending; i++) r.frame(); };
+  const paints = () => r.display.paintsCompleted;
   r.nav.setFollow(true, r.now());
-  r.frame();
-  const after = fbCount();
+  r.frame(); settle();
+  const after = paints();
+  const sentAfter = r.send.log.length;
   for (let i = 0; i < 20; i++) r.frame();
-  eq("twenty frames on an unchanged source send nothing", fbCount(), after);
+  eq("twenty frames on an unchanged source repaint nothing", paints(), after);
+  eq("...and put nothing on the wire", r.send.log.length, sentAfter);
   r.src.component = "synth";
-  r.frame();
-  eq("...and a source change sends exactly one", fbCount(), after + 1);
+  r.frame(); settle();
+  eq("...and a source change is exactly one repaint", paints(), after + 1);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
