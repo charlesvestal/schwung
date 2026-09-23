@@ -763,7 +763,8 @@ function rig(opts) {
  * empty slot says so on screen, with every ring dark.
  * ========================================================================= */
 {
-  const { componentRgb, SLOT_RGB } = await import(R + "/src/shared/e16_view.mjs");
+  const { moduleRgb, SLOT_RGB } = await import(R + "/src/shared/e16_view.mjs");
+  const { setOrdinal } = await import(R + "/src/shared/e16_map.mjs");
   const ringState = (log) => { const st = {};
     for (const p of log) { if (j(msgId(p)) !== j(RING)) continue;
       const u = unpack(p); const packed = u.slice(8, u.length - 1);
@@ -790,12 +791,24 @@ function rig(opts) {
   r.surface.feedMidi([0x80, 0x10, 0x00]);        /* let go: the knob view */
   r.ticks(20);
   st = ringState(r.send.log.slice(b));
-  const want = rgbOf(componentRgb(r.surface.component));
+  const want = rgbOf(moduleRgb(setOrdinal(CHAIN, r.surface.slot, r.surface.component)));
   ok(Object.values(st).every((x) => !lit(x) || j(rgbOf(x)) === j(want) ||
        (x.r <= want[0] && x.g <= want[1] && x.b <= want[2])),
      "knobs: every lit ring wears the edited module colour (or its dim)");
   ok([0, 1, 2, 3].every((e) => !st[e] || !(st[e].g > 0 && !st[e].r && !st[e].b) || j(rgbOf(st[e])) === j(want)),
      "knobs: no slot green is left over from the map");
+
+  /* THE ECHO: the rings of a view change go out a second time, once, shortly
+   * after -- a lost unacknowledged ring heals in a fraction of a second. */
+  {
+    const { RING_ECHO_MS } = await import(R + "/src/shared/e16_surface.mjs");
+    r.ack();
+    const rb = r.send.log.length;
+    r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(Math.ceil((250 + RING_ECHO_MS) / 25) + 20);
+    const ringMsgs = r.send.log.slice(rb).filter((p) => j(msgId(p)) === j(RING)).length;
+    ok(ringMsgs >= 12, "a view change sends its sixteen rings twice (got " + ringMsgs + " ring messages)");
+    r.surface.feedMidi([0x80, 0x10, 0x00]); r.ticks(40);
+  }
 
   /* An empty slot: Shift, push slot 3, let go. */
   r.ack();

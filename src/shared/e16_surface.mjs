@@ -305,6 +305,10 @@ export const LOOK_MS = 250;
  */
 export const RING_RESTATE_MS = 3000;
 
+/* A view change's rings are sent again this long after, once (see the ring
+ * context in createSurface's tick). */
+export const RING_ECHO_MS = 400;
+
 /**
  * The seek / hold / release machine.
  *
@@ -793,6 +797,14 @@ export function createDisplay(opts) {
                     paintsCompleted++;
                     return "labels";
                 }
+                /* RINGS WAIT FOR AN IDLE DEVICE. A ring gets no ACK, so one
+                 * the device drops -- as it drops screen rows it is still
+                 * busy drawing ("interrupted") -- is never reported and never
+                 * repaired. Hardware, 2026-09-24: rings "corrupted" on the
+                 * knobs while every ring message on the wire was well
+                 * formed. So they go only when no screen update is awaiting
+                 * its answer, i.e. the device has drawn everything sent. */
+                if (nowMs !== undefined && outstanding.length) return null;
                 /* At most RING_CHUNKS_PER_MSG to a message, so each fits one
                  * frame; as many messages as the tick's budget allows, the
                  * rest on the next tick. Sent chunks leave the map only once
@@ -1138,7 +1150,7 @@ export function createDisplay(opts) {
  * a value can travel.
  * ---------------------------------------------------------------------------
  */
-import { buildMap } from "./e16_map.mjs";
+import { buildMap, setOrdinal } from "./e16_map.mjs";
 import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
 
 /* How long a Shift hold can live without a note-off.
@@ -1536,7 +1548,7 @@ export function createNav(opts) {
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
 import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
-         mapRings, componentRgb, renderEmptySlot }
+         mapRings, moduleRgb, renderEmptySlot }
     from "./e16_view.mjs";
 
 /**
@@ -1649,9 +1661,11 @@ export function createSurface(io) {
     const viewNow = () =>
         buildView(ctl ? ctl.pages : [], nav ? nav.pageIndex : 0, { metaOf, valueOf });
 
-    /* The knobs wear the colour of the module they edit (see componentRgb):
-     * the same colour its knob had on the slot map. */
-    const knobRgb = () => componentRgb(nav ? nav.component : null);
+    /* Each module in the set has its own colour (moduleRgb / setOrdinal);
+     * the knobs wear the colour of the module they edit -- the same colour
+     * its knob had on the slot map. */
+    const cellRgb = (cell) => moduleRgb(setOrdinal(chainOf(), cell.slot, cell.component));
+    const knobRgb = () => nav ? moduleRgb(setOrdinal(chainOf(), nav.slot, nav.component)) : moduleRgb(-1);
     /* The focused slot holds no module at all. */
     const slotEmpty = () => {
         if (!nav) return false;
@@ -1666,11 +1680,12 @@ export function createSurface(io) {
      * you just left would otherwise keep its old rings lit.
      */
     const desiredRings = (t) => (nav && nav.mapVisible(t))
-        ? mapRings(nav.map())
+        ? mapRings(nav.map(), cellRgb)
         : (slotEmpty() ? ringsFor(null) : ringsFor(viewNow(), knobRgb()));
     /* What the rings last described, so a change of view / slot / module /
      * page restates all sixteen at once rather than waiting for the look. */
     let ringContext = null;
+    let ringEchoAt = null;
 
     /*
      * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
@@ -2190,12 +2205,22 @@ export function createSurface(io) {
             if (probe < 0) {
                 const rctx = [nav.mapVisible(t), nav.slot, nav.component, nav.pageIndex,
                               nav.mapPage, nav.showBuses, loaded].join("|");
-                if (rctx !== ringContext) {
-                    ringContext = rctx;
+                const restate = () => {
                     for (const desc of desiredRings(t)) {
                         display.ringChanged(desc);
                         ringSeen.set(desc.enc, JSON.stringify(desc));
                     }
+                };
+                if (rctx !== ringContext) {
+                    ringContext = rctx;
+                    restate();
+                    ringEchoAt = t + RING_ECHO_MS;
+                } else if (ringEchoAt !== null && t >= ringEchoAt) {
+                    /* ONE ECHO after a view change: rings are unacknowledged,
+                     * so the set is sent again once, shortly after, rather
+                     * than leaving a lost one for the 3 s keepalive. */
+                    ringEchoAt = null;
+                    restate();
                 }
             }
             /*

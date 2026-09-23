@@ -72,40 +72,47 @@ export const HEADER_TEXT_W = WIDTH / 2;
  * Ring colours. A ring's JOB is to show a value; its HUE says WHOSE value.
  *
  * On the slot map the four slot knobs are green and each module knob wears
- * its module's colour; in the knob view every knob wears the colour of the
- * module being edited. The colour is keyed by the module's POSITION in the
- * slot (synth, midi_fx1, fx1..fx8, bus1..8), so the knob you pressed on the
- * map and the knobs it opens are the same colour -- continuity across the two
- * views. Green is reserved for slots. A read-only cell is the dim version, so
- * a readout is visibly not a control (the grid draws the same distinction as
- * a dotted stroke). Tuned by eye on hardware: change them HERE, in one table.
+ * its own colour; in the knob view every knob wears the colour of the module
+ * being edited, so the knob pressed on the map and the knobs it opens match.
+ * The colour follows the module's ORDER IN ITS SLOT (the order the map lists
+ * them): module 1 is always the first colour, module 2 the second, and no two
+ * modules of one slot share one. (Keying it by kind -- synth, fx1 -- gave two
+ * slots' different modules the same colour and every MIDI FX one colour.)
+ * Green is reserved for slots. A read-only cell is the dim version. Tuned by
+ * eye on hardware: change them HERE, in one table.
  */
 export const RING_RGB = { r: 0, g: 40, b: 40 };          /* no known module */
 export const RING_RGB_READONLY = { r: 0, g: 8, b: 8 };
 export const RING_DARK = { r: 0, g: 0, b: 0 };
 export const SLOT_RGB = { r: 0, g: 90, b: 0 };           /* the current slot */
 export const SLOT_RGB_OTHER = { r: 0, g: 18, b: 0 };
-const FX_PALETTE = [
-    { r: 100, g: 30, b: 0 },    /* orange  */
-    { r: 90, g: 0, b: 70 },     /* magenta */
-    { r: 50, g: 0, b: 100 },    /* purple  */
-    { r: 0, g: 70, b: 70 },     /* cyan    */
-    { r: 100, g: 0, b: 10 },    /* red     */
-    { r: 80, g: 80, b: 80 },    /* white   */
-    { r: 100, g: 40, b: 50 },   /* pink    */
-    { r: 110, g: 90, b: 40 },   /* warm    */
-];
-const SYNTH_RGB = { r: 0, g: 20, b: 100 };             /* blue    */
-const MIDI_FX_RGB = { r: 90, g: 70, b: 0 };            /* yellow  */
-
-/** The colour of a module position ("synth", "fx3", "midi_fx1", "bus2"). */
-export function componentRgb(component) {
-    const c = String(component || "");
-    if (c === "synth") return SYNTH_RGB;
-    if (c.startsWith("midi_fx")) return MIDI_FX_RGB;
-    const m = /^(fx|bus)(\d+)$/.exec(c);
-    if (m) return FX_PALETTE[((m[2] | 0) - 1 + FX_PALETTE.length) % FX_PALETTE.length];
-    return RING_RGB;
+/*
+ * Every module in the SET gets its own colour: the n-th module of the set
+ * (numbered slot by slot, see setOrdinal) takes hue n x 137.5 degrees -- the
+ * golden angle, so consecutive modules land far apart on the wheel and no hue
+ * ever repeats -- skipping the band around green, which is the slots'.
+ * Stable while the set's chains are; brightness kept near the old rings'.
+ */
+const GOLDEN_DEG = 137.50776;
+const GREEN_DEG = 120, GREEN_BAND = 50, MODULE_V = 100;
+/* Rotates the sequence so the FIRST module is orange (hue ~20). */
+const FIRST_OFFSET = 290.8;
+function hsvRgb(h, v) {
+    const c = v, x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+                    : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+}
+/** The colour of the set's `ordinal`-th module (-1: no module -> default). */
+export function moduleRgb(ordinal) {
+    const i = ordinal | 0;
+    if (i < 0) return RING_RGB;
+    /* Map the wheel minus the green band onto 0..360, then place by the
+     * golden angle, so the band is skipped without bunching two hues. */
+    const span = 360 - 2 * GREEN_BAND;
+    const t = (i * GOLDEN_DEG + FIRST_OFFSET) % 360 / 360 * span;
+    const h = (GREEN_DEG + GREEN_BAND + t) % 360;
+    return hsvRgb(h, MODULE_V);
 }
 
 /* A read-only cell's colour: the same hue, a fifth as bright. */
@@ -288,14 +295,15 @@ export function ringsFor(view, rgb) {
 
 /** All sixteen rings of the slot map: slot knobs green (the current slot
  * bright), each module knob full in its module's colour, the rest dark. */
-export function mapRings(map) {
+/** `rgbOf(cell)` names a module cell's colour (the caller knows the set). */
+export function mapRings(map, rgbOf) {
     const cells = (map && map.cells) || [];
     const out = [];
     for (let e = 0; e < ENCODERS; e++) {
         const cell = cells[e];
         if (!cell) { out.push(darkRing(e)); continue; }
         const c = cell.kind === "slot" ? (cell.current ? SLOT_RGB : SLOT_RGB_OTHER)
-                                       : componentRgb(cell.component);
+                                       : (rgbOf ? rgbOf(cell) : RING_RGB);
         out.push({ enc: e, r: c.r, g: c.g, b: c.b, amount: RING_MAX, bipolar: false });
     }
     return out;
