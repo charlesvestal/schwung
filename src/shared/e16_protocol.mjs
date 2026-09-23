@@ -36,6 +36,14 @@ export function enterMsg() { return msg([0x06, 0x55]); }
 export function exitMsg()  { return msg([0x06, 0x00]); }
 
 export const ACK_BODY = HDR.concat([0x06, 0x53]);
+/* The SAME acknowledgement from firmware that shipped the partial-update
+ * opcodes (measured on hardware 2026-09-24 with the XMOS SysEx tap): the
+ * device drops the 0x06 category byte from what it SENDS -- the sheet's
+ * "0x06 is the category message, no longer necessary once in REMOTE MODE",
+ * applied to its replies. Our ENTER still carries 0x06 and is still acked.
+ * Accepting only the old form left the surface seeking forever against a
+ * device that answered every single probe. */
+export const ACK_BODY_NO_CATEGORY = HDR.concat([0x53]);
 
 /* rings: [{enc, r, g, b, amount (0-16383), bipolar}] -- variable length, so a
  * single changed encoder costs one chunk rather than a whole-screen repaint.
@@ -100,10 +108,17 @@ export function packetize(bytes) {
 }
 
 /* asm holds everything between F0 and F7. */
-export function isAck(asm) {
-    if (asm.length !== ACK_BODY.length) return false;
-    for (let i = 0; i < ACK_BODY.length; i++) if (asm[i] !== ACK_BODY[i]) return false;
+function bodyIs(asm, want) {
+    if (asm.length !== want.length) return false;
+    for (let i = 0; i < want.length; i++) if (asm[i] !== want[i]) return false;
     return true;
+}
+
+/* Both firmware generations -- see ACK_BODY_NO_CATEGORY. The new form is
+ * 6 bytes and the OLED UPDATE ACK (same 0x53) is 13, so exact length is what
+ * keeps them apart. */
+export function isAck(asm) {
+    return bodyIs(asm, ACK_BODY) || bodyIs(asm, ACK_BODY_NO_CATEGORY);
 }
 
 /*
@@ -238,6 +253,11 @@ export function parseOledUpdateReply(asm) {
     const h = oledReplyHeader(asm);
     if (!h) return null;
     if (h.id !== OLED_UPDATE_ACK_ID && h.id !== OLED_UPDATE_NACK_ID) return null;
+    /* Exactly one pack7 group of 6: a 1-byte MSB byte + 6. Anything else is
+     * not an OLED reply -- notably the new-firmware ENTER ACK, which is this
+     * same header and id with NO payload, and would otherwise unpack7 into a
+     * plausible all-zero "ACK for command 0". */
+    if (h.payload.length !== 7) return null;
     const raw = unpack7(h.payload, 6);
     if (raw.length !== 6) return null;
     const [cmd, status, a0, a1, a2, a3] = raw;
