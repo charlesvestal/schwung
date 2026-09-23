@@ -691,7 +691,9 @@ function rig(opts) {
   eq("a keepalive tick sends the keepalive ALONE", r.send.log.length - b, 1);
   eq("and it is the ENTER", msgId(r.send.log[b]), ENTER);
   r.ticks(1);
-  ok(r.send.log.slice(b + 1).some(isRegion),
+  /* A view switch may lead with its CLEAR (see CLEAR_MIN_ROWS): that is the
+   * repaint going out. */
+  ok(r.send.log.slice(b + 1).some((p) => isRegion(p) || unpack(p)[6] === 0x07),
      "the deferred repaint goes out on the very next tick");
 
   /* Silence past LOSS_MS: the device is gone. Then it comes back. */
