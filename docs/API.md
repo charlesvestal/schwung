@@ -424,9 +424,11 @@ keys no faster than every 50 ms and calls
 for meters and transport displays. `draw()` and `tick()` intentionally have no
 parameter accessors because a synchronous read costs an SPI frame.
 
-Sound generators that need physical capacitive-touch edges may declare
-`capabilities.touch_observe: true`. Their DSP receives knob notes 0–7 and jog
-note 9 directly from the hardware mailbox; master-volume note 8 is excluded.
+The keys are read ONE PER TICK and `onValues` fires once all of them have
+answered, so with four keys the oldest value is about three frames old. A value
+whose read did not complete is `null` (see the three-answer rule for
+`shadow_get_param`). Nothing is read while the overlay has no `onValues` hook or
+has been disabled after a throw.
 
 ## Utility Functions
 

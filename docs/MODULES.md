@@ -105,7 +105,7 @@ for keys anywhere in `module.json`).
 | `audio_in` | Module uses audio input |
 | `midi_in` | Module processes MIDI input |
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
-| `touch_observe` | Sound generator receives raw capacitive touch edges for Knobs 1–8 (notes 0–7) and the jog wheel (note 9). Master-volume touch (note 8) is excluded. Opt in only for latency-sensitive performance control. |
+| `touch_observe` | Sound generator receives raw capacitive touch edges for Knobs 1–8 (notes 0–7) and the jog wheel (note 9) in `on_midi`, in the same SPI frame, with `source == MOVE_MIDI_SOURCE_TOUCH` (5). That source is how a touch is told apart from a played note 0–9. Touches go to the synth ONLY — never to the slot's MIDI FX, LFO retrigger, audio FX or Move's track. Master-volume touch (note 8) and external-cable notes are excluded. Opt in only for latency-sensitive performance control. |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
@@ -2439,7 +2439,7 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
 - `extra_keys` (optional): Up to four additional parameter values used by an authored canvas page or bounded fullscreen live feed.
-- `fullscreen_live_ms` (optional): In fullscreen mode, refresh declared `extra_keys` at this interval and call `onValues(ctx, { values, nowMs })`. Clamped to at least 50 ms; omit it for no fullscreen reads.
+- `fullscreen_live_ms` (optional): In fullscreen mode, refresh declared `extra_keys` at this interval and call `onValues(ctx, { values, nowMs })`. Clamped to at least 50 ms; omit it for no fullscreen reads. Keys are read one per tick and delivered together; a read that did not complete is `null`.
 
 Behavior notes:
 
