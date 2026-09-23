@@ -56,27 +56,27 @@ function fakeIo() {
   m.push(3, true);
   eq("Shift+push on a level solos", [io.slots[3]["slot:soloed"], m.cell(3).label], ["1", "SOLO"]);
 
-  /* Send B of track 1 is 64: push kills it, push brings it back. */
+  /* Send B of track 1 is 64. SWITCHED OFF IS A STATE, like mute. */
   m.push(8, false);
-  eq("push on a send takes it to 0", io.slots[0]["buses:main_send2"], "0");
-  eq("...drawn inverted, reading 0%", m.cell(8), { label: "SndB", value: "0%", off: true });
+  eq("push switches a send off: Move sees 0", io.slots[0]["buses:main_send2"], "0");
+  eq("...the cell is inverted and still shows its level", m.cell(8), { label: "SndB", value: "50%", off: true });
+  m.turn(8, 30, false);
+  eq("turning while off sets the level it comes back at, with no effect yet",
+     [m.cell(8), io.slots[0]["buses:main_send2"]], [{ label: "SndB", value: "98%", off: true }, "0"]);
   m.push(8, false);
-  eq("...and the second push restores it", io.slots[0]["buses:main_send2"], "64");
-  eq("...no longer inverted", m.cell(8).off, undefined);
-  m.push(8, false); m.turn(8, 3, false);
-  eq("turning a switched-off send takes it out of the toggle", [m.cell(8).off, io.slots[0]["buses:main_send2"]], [undefined, "6"]);
-  m.push(8, false); m.push(8, false);
-  eq("...so the next push pair kills and restores the NEW value", io.slots[0]["buses:main_send2"], "6");
-  m.turn(8, 29, false);
+  eq("push switches it on at that level", [m.cell(8).off, io.slots[0]["buses:main_send2"]], [undefined, "124"]);
+  m.push(8, false); io.slots[0]["buses:main_send2"] = "20";
+  for (let k = 0; k < 40; k++) m.refreshNext();
+  eq("a send switched off here but turned up elsewhere is on again", [m.cell(8).off, m.cell(8).value], [undefined, "16%"]);
   m.push(4, true);
   eq("Shift+push on a send throws it to 100%", [io.slots[0]["buses:main_send1"], m.cell(4).value], [String(SEND_MAX), "100%"]);
   m.turn(5, 3, false);
   eq("a send turns in steps", io.slots[1]["buses:main_send1"], "6");
 
   m.push(12, false);
-  eq("push on Return A takes it to 0", io.glob["send1:return"], "0");
+  eq("push switches Return A off", [io.glob["send1:return"], m.cell(12)], ["0", { label: "RtnA", value: "79%", off: true }]);
   m.push(12, false);
-  eq("...and back", io.glob["send1:return"], "100");
+  eq("...and back on at its level", io.glob["send1:return"], "100");
   m.turn(13, -5, false);
   eq("Return B turns", io.glob["send2:return"], "117");
   m.push(14, false);
@@ -86,12 +86,12 @@ function fakeIo() {
   m.turn(15, -20, false);
   eq("turning left is a low-pass", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 40", "-0.400"]);
   m.push(15, false);
-  eq("push switches it off", io.glob["master_fx:filter"], "0.000");
-  eq("...drawn inverted, reading off", m.cell(15), { label: "Filt", value: "off", off: true });
+  eq("push switches the filter off", io.glob["master_fx:filter"], "0.000");
+  eq("...inverted, showing where it comes back", m.cell(15), { label: "Filt", value: "LP 40", off: true });
+  m.turn(15, -10, false);
+  eq("turning while off moves where it comes back, silently", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 60", "0.000"]);
   m.push(15, false);
-  eq("...and the second push brings it back", m.cell(15).value, "LP 40");
-  m.turn(15, 40, false);
-  eq("turning right through centre is a high-pass", m.cell(15).value, "HP 40");
+  eq("...push switches it on there", io.glob["master_fx:filter"], "-0.600");
   m.push(15, true);
   eq("Shift+push resets it to off", m.cell(15).value, "off");
   eq("...and forgets it (a push does not bring it back)", m.push(15, false), false);
