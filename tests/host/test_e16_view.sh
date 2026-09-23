@@ -269,14 +269,14 @@ d.invalidate(); d.invalidate(); d.invalidate();
 const p0 = d.paintsCompleted;
 drain(d, send, PICTURE);
 eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
-/* A full repaint is ONE CLEAR, then one strip per inked STRIP_H rows. This
- * screen is inverted, so every strip holds ink: 1 + STRIPS messages. */
-eq("...of exactly one CLEAR plus one set of strips, not three", send.log.length, 1 + STRIPS);
-eq("...the CLEAR first", kindOf(send.log[0]), "clear");
-eq("...then only RECTANGLEs, never a framebuffer",
-   send.log.slice(1).every(p => kindOf(p) === "rect"), true);
+/* The screen was primed, so this is a DIFF against a known picture: every
+ * row changed, so every strip goes -- no CLEAR (that is for a screen we know
+ * nothing about). One repaint, not three. */
+eq("...of exactly one set of changed strips, not three", send.log.length, STRIPS);
+eq("...only RECTANGLEs: no CLEAR for a known screen, never a framebuffer",
+   send.log.every(p => kindOf(p) === "rect"), true);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
-eq("still one repaint on the wire", send.log.length, 1 + STRIPS);
+eq("still one repaint on the wire", send.log.length, STRIPS);
 
 /* A repaint never shares a tick with rings, and finishes before them: a
  * half-drawn screen is worse than a ring that arrives a few ticks late. */
@@ -602,6 +602,25 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const n1 = snd.log.length;
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS * 4);
   eq("an ACKed region is not re-sent", snd.log.length, n1);
+}
+
+/* NO ESCALATION LOOP. On hardware a handful of NACKed strips on different
+ * rows crossed the diff region cap, the diff called it "full", and the full
+ * repaint drew more NACKs -- four whole-screen repaints a second. Repairs of a
+ * KNOWN screen must stay repairs: exactly the damaged strips, never a CLEAR. */
+{
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024);
+  for (let x = 0; x < 128; x++) for (let y = 0; y < 64; y++) if ((x + y) % 5 === 0) b[(y >> 3) * 128 + x] |= (1 << (y & 7));
+  d.invalidate();
+  for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" });
+  const n0 = snd.log.length;
+  for (const y of [0, 10, 20, 30, 40, 50, 60]) d.invalidateRegion(0, y, 128, 2);   /* seven NACKs, seven rows */
+  d.invalidate();
+  for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" });
+  const ids = snd.log.slice(n0).map((p) => unpack(p)[6]);
+  eq("seven NACKed rows re-send seven strips", ids.length, 7);
+  eq("...and never a CLEAR", ids.includes(0x07), false);
 }
 
 /* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the
