@@ -415,6 +415,21 @@ unsupported-page fallback over them. Admit `PAGE_MENU` too.
 
 `host_get_module_metadata(id)` — returns the parsed `module.json` for the given module id, or `null` if the module isn't installed. Used by the feedback-protection gate to inspect `capabilities.audio_in` and `component_type`.
 
+### Fullscreen canvas live values
+
+A canvas parameter may combine up to four `extra_keys` with
+`fullscreen_live_ms`. While its fullscreen view is open, Schwung reads those
+keys no faster than every 50 ms and calls
+`canvas_overlay.onValues(ctx, { values, nowMs })`. This is the supported route
+for meters and transport displays. `draw()` and `tick()` intentionally have no
+parameter accessors because a synchronous read costs an SPI frame.
+
+The keys are read ONE PER TICK and `onValues` fires once all of them have
+answered, so with four keys the oldest value is about three frames old. A value
+whose read did not complete is `null` (see the three-answer rule for
+`shadow_get_param`). Nothing is read while the overlay has no `onValues` hook or
+has been disabled after a throw.
+
 ## Utility Functions
 
 ```javascript

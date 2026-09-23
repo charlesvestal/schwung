@@ -122,6 +122,12 @@
 #define MOVE_MIDI_SOURCE_EXTERNAL 2
 #define MOVE_MIDI_SOURCE_HOST 3  /* Host-generated (clock, etc) */
 #define MOVE_MIDI_SOURCE_FX_BROADCAST 4  /* Broadcast to audio FX only (skip synth) */
+/* A physical knob (notes 0-7) or jog (note 9) capacitive-touch edge, sent
+ * ONLY to a sound generator that declared capabilities.touch_observe. It skips
+ * the MIDI FX, the LFO retrigger, Pre-mode injection and the audio FX, so a
+ * touch is never mistaken for a played note 0-9 by anything else in the slot;
+ * this source value is how the generator tells the two apart. */
+#define MOVE_MIDI_SOURCE_TOUCH 5
 
 /* Clock status identifiers for host_api_v1.get_clock_status() */
 #define MOVE_CLOCK_STATUS_UNAVAILABLE 0  /* Clock output not available/configured */

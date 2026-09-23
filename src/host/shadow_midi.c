@@ -14,6 +14,7 @@
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
 #include "ui_midi_out_carry.h"  /* outbound packets that did not fit this frame */
 #include "shim_worker.h"        /* shim_ui_midi_out_drops */
+#include "touch_observe.h"      /* touch_observe_is_edge */
 
 static void shadow_chain_transpose_reset(void);
 
@@ -512,6 +513,26 @@ void shadow_chain_dispatch_sysex_to_slots(const uint8_t *slot8)
         uint8_t msg[3] = { slot8[1], slot8[2], slot8[3] };
         pv2->on_midi(host_chain_slots[i].instance, msg, n,
                      MOVE_MIDI_SOURCE_EXTERNAL);
+    }
+}
+
+void shadow_chain_dispatch_touch_to_slots(const uint8_t *slot8)
+{
+    static event_dedup_entry_t dedup[EVENT_DEDUP_RING_SIZE];
+    static int dedup_head = 0;
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi || !slot8) return;
+
+    if (!touch_observe_is_edge(slot8)) return;
+    if (event_dedup_check_and_record(dedup, &dedup_head, slot8)) return;
+
+    uint8_t msg[3] = { slot8[1], slot8[2], slot8[3] };
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (!host_chain_slots[i].touch_observe ||
+            !host_chain_slots[i].active || !host_chain_slots[i].instance)
+            continue;
+        pv2->on_midi(host_chain_slots[i].instance, msg, 3,
+                     MOVE_MIDI_SOURCE_TOUCH);
     }
 }
 

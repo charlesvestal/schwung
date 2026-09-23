@@ -20067,6 +20067,12 @@ function openCanvasPreview(paramKey, meta) {
         overlay: null,
         state: {},
         ctx: null,
+        liveKeys: meta && Array.isArray(meta.extra_keys) ? meta.extra_keys.slice(0, 4) : [],
+        liveIntervalMs: meta && Number(meta.fullscreen_live_ms) > 0
+            ? Math.max(50, Number(meta.fullscreen_live_ms)) : 0,
+        lastLiveReadMs: 0,
+        liveCursor: 0,
+        liveValues: {},
         error: ""
     };
 
@@ -20107,8 +20113,34 @@ function closeCanvasPreview(cancelled) {
     needsRedraw = true;
 }
 
+/* Fullscreen live values: ONE read per tick, never the whole set at once.
+ * A read is ~2.8 ms; four in one tick is an ~11 ms stall that lands on the
+ * frame every interval, which is a visible hitch on exactly the animated views
+ * this exists for. The cycle starts when the interval is due, takes one key per
+ * tick, and delivers onValues once every key has answered. Nothing is read for
+ * an overlay that cannot receive the answer -- none loaded, disabled after a
+ * throw, or no onValues hook. */
+function tickCanvasLiveValues() {
+    const rt = canvasRuntime;
+    if (!rt || !rt.liveIntervalMs || !rt.liveKeys.length || !rt.ctx) return;
+    if (!rt.overlay || rt.hookDisabled || typeof rt.overlay.onValues !== "function") return;
+    const now = Date.now();
+    if (rt.liveCursor === 0) {
+        if (now - rt.lastLiveReadMs < rt.liveIntervalMs) return;
+        rt.lastLiveReadMs = now;
+        rt.liveValues = {};
+    }
+    const key = rt.liveKeys[rt.liveCursor];
+    rt.liveValues[key] = rt.ctx.getParam(key);
+    rt.liveCursor++;
+    if (rt.liveCursor < rt.liveKeys.length) return;
+    rt.liveCursor = 0;
+    invokeCanvasOverlayHook("onValues", { values: rt.liveValues, nowMs: now });
+}
+
 function tickCanvasPreview() {
     if (view !== VIEWS.CANVAS) return;
+    tickCanvasLiveValues();
     invokeCanvasOverlayHook("tick", {});
 }
 
