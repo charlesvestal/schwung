@@ -2917,10 +2917,23 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 float pass_l, pass_r;
                 shadow_pan_gains(s, &pass_l, &pass_r);
                 shadow_stem_store_slot(s, move_track, pass_vol);
-                /* ITS SENDS, when above 0: the same arithmetic as the chain
-                 * drain (send level x fader, post-fader, pre-pan), from the
-                 * levels the shim keeps for an empty slot (empty_send). */
-                {
+                /* ITS SENDS, when above 0: send level x fader, post-fader,
+                 * pre-pan. A slot with no MODULE can still have a chain
+                 * INSTANCE (just not an active one) -- and that instance holds
+                 * the send levels Slot Settings and the Mixer write, so it is
+                 * drained exactly as an active slot is. Only a slot with no
+                 * instance at all uses the levels the shim keeps (empty_send).
+                 * Reading empty_send alone made sends need a module
+                 * (hardware, 2026-09-24). */
+                if (shadow_chain_slots[s].instance && shadow_chain_drain_main_send) {
+                    int16_t *send_targets[SEND_BUSES];
+                    for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+                    int vol127 = (int)lroundf(pass_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                    if (vol127 > 0)
+                        shadow_chain_drain_main_send(shadow_chain_slots[s].instance, send_targets,
+                                                     SEND_BUSES, move_track, MOVE_FRAMES_PER_BLOCK, vol127);
+                } else {
                     int vol127 = (int)lroundf(pass_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
                     if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
                     for (int sb = 0; sb < SEND_BUSES && sb < 2 && vol127 > 0; sb++) {

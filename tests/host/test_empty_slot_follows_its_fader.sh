@@ -22,6 +22,11 @@ if echo "$block" | grep -q "shadow_stem_store(s, move_track, 1.0f)"; then
 # the shim keeps them (empty_send) and the passthrough must use them.
 echo "$block" | grep -q "bus_mix_send(send_accum\[sb\], move_track" \
   || { echo "FAIL: the empty-slot passthrough feeds no send bus"; exit 1; }
+# A slot with no MODULE can still have a chain INSTANCE, which holds the send
+# levels the UI writes: it must be drained like an active slot, or sends need
+# a module (hardware, 2026-09-24).
+echo "$block" | grep -q "shadow_chain_drain_main_send(shadow_chain_slots\[s\].instance" \
+  || { echo "FAIL: an inactive slot with a chain instance does not drain its own send levels"; exit 1; }
 echo "$block" | grep -q "empty_send\[sb\]" \
   || { echo "FAIL: the empty-slot sends do not use the levels the shim keeps"; exit 1; }
 grep -q 'strcmp(key, "buses:main_send1") == 0) return 0;' src/host/shadow_chain_mgmt.c \
