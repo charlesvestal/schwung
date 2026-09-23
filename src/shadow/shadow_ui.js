@@ -289,6 +289,7 @@ import {
 } from './shadow_ui_presets.mjs';
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
+    paramPagesEntering,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
     paramPagesCachedValue, clearParamPagesTouch,
@@ -6345,7 +6346,13 @@ function evaluateVisibilityCondition(condition, levelDef) {
      * them, three pages deep. Reported from the device. On the grid, the
      * grid's identity is the context.
      */
-    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+    /* `paramPagesEntering()` covers the first plan, which happens inside
+     * enterParamPages BEFORE the view flips -- without it the grid's very
+     * first page set resolves every condition against the list editor's slot
+     * and fails open. The view test still carries every later re-plan, and
+     * still keeps the list editor out: a controller can outlive a hand-off to
+     * the hierarchy editor, and that screen must keep its own context. */
+    if ((view === VIEWS.PARAM_PAGES || paramPagesEntering()) && paramPagesActive()) {
         const comp = paramPagesComponent();
         const slot = paramPagesSlot();
         const gridPrefix = getComponentParamPrefix(comp);

@@ -41,7 +41,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
          W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
+import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
@@ -790,6 +790,10 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* A pad press just told us the module's mode may have moved — spend
+         * the next rotation stop on the gates rather than waiting for their
+         * turn. See vouchLivePress and the gate lane. */
+        gatesDue: false,
         /* A write touched a condition key; tick() owes one plan. Coalesced
          * because an encoder sweep is a burst of writes and each one used to
          * buy a full planPages. */
@@ -949,6 +953,49 @@ export function createController(io = {}) {
         return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
     };
     const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
+    /*
+     * The wire key for a visible_if GATE, resolved the way the evaluator
+     * resolves it: against the level that DECLARES the condition, at that
+     * level's own child index.
+     *
+     * fullKey cannot do this. It resolves only a key that is a cell on the
+     * current page, and the gate lane reads exactly the keys that are not --
+     * so a per-pad gate (`{ param: "type" }` on a `child_prefix: "pad"` level)
+     * asked the wire for `synth:type` instead of `synth:pad0_type`, got the
+     * chain host's "" for an unknown key, and cached it under `type`: the very
+     * slot the evaluator consults first. One pad press and a gate that was
+     * right became wrong -- the "number read off the wrong parameter, cached
+     * under the bare key" the childResolve note above warns about.
+     *
+     * A key declared by two levels that resolve it DIFFERENTLY has no single
+     * answer; null, and the lane skips it rather than pick one. The evaluator
+     * still reads it on demand, which is what it did before the lane existed.
+     */
+    const gateLevelsOf = (key) => {
+        const out = [];
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        const names = (c) => c && typeof c === "object" && String(c.param || c.key || c.param_key || "") === key;
+        for (const name of Object.keys(levels)) {
+            const lvl = levels[name];
+            if (!lvl || typeof lvl !== "object") continue;
+            let hit = names(lvl.visible_if);
+            if (!hit && Array.isArray(lvl.params)) {
+                hit = lvl.params.some((p) => p && typeof p === "object" && names(p.visible_if));
+            }
+            if (hit) out.push(name);
+        }
+        return out;
+    };
+    const gateWireKey = (key) => {
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        let wire = null;
+        for (const name of gateLevelsOf(key)) {
+            const w = resolveChildKey(levels[name], childIndexFor(name), key) || key;
+            if (wire !== null && wire !== w) return null;
+            wire = w;
+        }
+        return `${s.prefix}:${wire === null ? key : wire}`;
+    };
     const page = () => s.pages[s.pageIndex] || null;
 
     /*
@@ -1868,6 +1915,20 @@ export function createController(io = {}) {
                 delete s.knobStates[k];
             }
         }
+        /* ...and the level's own per-instance GATES, which live on no page, so
+         * the loop above never sees them. The gate lane caches them under the
+         * generic key the evaluator asks for; left in place, the pad we just
+         * left would go on deciding what the new pad's pages are. Marked due
+         * so the new instance's answer is read rather than waited for. */
+        const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
+        if (lvlDef && s.conditionKeys) {
+            for (const k of s.conditionKeys) {
+                if (!resolveChildKey(lvlDef, 0, k)) continue;
+                if (gateLevelsOf(k).indexOf(levelName) < 0) continue;
+                delete s.values[k];
+                s.gatesDue = true;
+            }
+        }
         s.cursor = 0;
         /*
          * ...and read the new instance NOW, before anything is drawn.
@@ -1910,6 +1971,10 @@ export function createController(io = {}) {
         if (i === null) return;                 /* tri-state: not an answer */
         if (i === childIndexFor(name)) return;  /* already there */
         s.childIndex[name] = i;
+        /* The module moved its own focus — a pad was hit, a preset loaded.
+         * Whatever its mode is gated on may have moved with it, and unlike a
+         * knob turn nothing on this grid wrote anything. See the gate stop. */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         dropChildLevelCache(name);
     }
 
@@ -1967,6 +2032,21 @@ export function createController(io = {}) {
         const k = livePressParam();
         if (!k) return false;
         setParam(`${s.prefix}:${k}`, "1");
+        /*
+         * ⭑ A PAD PRESS IS THE EVENT A GATE IS MOST LIKELY WAITING FOR.
+         *
+         * A gate read on the ordinary rotation gets its turn once a pass — a
+         * fifth of a second on a full page. That is fine for a refresh and
+         * far too slow for "I hit a hat, show me the hat's pages", which is
+         * the gesture the off-page gate exists to serve.
+         *
+         * This buys the latency back for nothing: it does not add a read, it
+         * PRIORITISES one. The next stop is spent on a gate instead of on the
+         * next knob value, so the answer lands in about a tick, and the knob
+         * it displaced simply comes round next time. The rotation is a refresh
+         * loop, not a sequence with meaning.
+         */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         return true;
     }
 
@@ -2343,6 +2423,56 @@ export function createController(io = {}) {
             }
         }
         /*
+         * A GATE KEY IS READ WHEN SOMETHING OUTSIDE THE GRID MOVED.
+         *
+         * `visible_if` hides a level or a cell whose condition is false, and
+         * the re-plan that brings it back is driven by the condition's value
+         * CHANGING -- which the controller only notices for keys it reads.
+         *
+         * ⚠ IT IS AN EVENT, NOT A POLL, and that distinction is the whole
+         * design. A gate whose value only ever changes BECAUSE OF A WRITE
+         * FROM THIS GRID already re-plans: the write path calls
+         * replanIfCondition, and the planner's evaluator reads whatever else
+         * it needs on demand. echidna-fx is built that way -- 18 derived
+         * flags per slot, all downstream of one Cat knob that IS a cell --
+         * and polling its ~72 condition keys would spend four stops a page
+         * refreshing values that were already correct, slowing the knobs it
+         * shares the rotation with for nothing.
+         *
+         * What has no path today is a gate that moves with NO grid
+         * interaction at all: a module whose mode lives outside the grid,
+         * where the pad you hit selects the voice and two voice types want
+         * different pages. So the gates are marked due exactly when the grid
+         * learns of such a move -- a live pad press (vouchLivePress) or the
+         * module's own focus changing (syncChildIndexFromModule) -- and are
+         * read one per tick from the next stop. Idle, this costs nothing at
+         * all.
+         *
+         * `conditionKeys` comes from the planner's pre-pass over EVERY level,
+         * including hidden ones, so a level that is off can come back on.
+         */
+        if (s.gatesDue) {
+            const due = [];
+            for (const k of s.conditionKeys) {
+                if (!k || p.keys.indexOf(k) >= 0) continue;   /* a cell is read anyway */
+                if (gateWireKey(k) === null) continue;        /* ambiguous: evaluator reads it */
+                due.push(k);
+                if (due.length >= MAX_DECLARED_EXTRA_KEYS) break;
+            }
+            const k = due[s.gateAt || 0];
+            if (!k) { s.gatesDue = false; s.gateAt = 0; }
+            else {
+                s.gateAt = (s.gateAt || 0) + 1;
+                if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
+                const gv = getParam(gateWireKey(k));
+                const before = s.values[k];
+                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                if (s.values[k] !== before) replanIfCondition(k);
+                return null;
+            }
+        }
+
+        /*
          * THE NEIGHBOUR LANE — why the incoming page arrives populated.
          *
          * The rotation serves one key per tick, so a page of 8 knobs takes ~9
@@ -2491,7 +2621,15 @@ export function createController(io = {}) {
             const ek = extraKeys[at - p.keys.length - 1];
             if (!ek) return null;
             const ev = getParam(fullKey(ek));
+            const was = s.values[ek];
             if (ev !== null && ev !== undefined) s.values[ek] = ev;
+            /* This lane stores straight into s.values rather than going
+             * through acceptValue -- see the tri-state note above, which is
+             * deliberately different here. So the condition re-plan, which
+             * acceptValue would otherwise have fired, is made explicitly. A
+             * gate read on this lane is the whole reason a level hidden by
+             * `visible_if` can ever come back. */
+            if (s.values[ek] !== was) replanIfCondition(ek);
             return null;
         }
         const key = p.keys[at];

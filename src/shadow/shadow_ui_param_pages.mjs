@@ -64,6 +64,24 @@ import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs'
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
+/*
+ * TRUE only inside enterParamPages, between the controller existing and the
+ * view flipping to PARAM_PAGES.
+ *
+ * ⚠ THE FIRST PLAN HAPPENS INSIDE THAT WINDOW. controller.load() below builds
+ * the page set, and evaluateVisibilityCondition decides whose slot a
+ * `visible_if` reads against by asking whether the grid is up -- which, on the
+ * way up, it is not yet. So the very first plan resolved every condition
+ * against the LIST editor's slot (-1 from here), read null, and took the
+ * fail-open branch: every gated level visible, exactly the bug
+ * test_grid_visible_if_context.sh pins, one step earlier in the lifecycle.
+ *
+ * setView is NOT moved ahead of the load to fix it: it closes the knob card
+ * and clears the touch set, and reordering those against the load is a much
+ * larger blast radius than saying plainly that the grid is the context while
+ * it is being built.
+ */
+let entering = false;
 
 /*
  * Whether the shim should be forwarding hardware pad notes to us. Reconciled
@@ -365,11 +383,16 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * editor slot/component, which is stale while the grid is up — fine for a
      * component (the grid and the list agree on which one), wrong for a
      * synthesised contract, so an io may carry its own. */
-    controller.load({
-        slot, component, prefix: prefix || component,
-        visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
-        paginate: paramPagesPaginate(),
-    });
+    entering = true;
+    try {
+        controller.load({
+            slot, component, prefix: prefix || component,
+            visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
+            paginate: paramPagesPaginate(),
+        });
+    } finally {
+        entering = false;
+    }
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. "List" is the same
      * engine with the knob page arranged as five rows (LAYOUT_LIST). The
@@ -469,6 +492,14 @@ export function paramPagesRevalue() {
 
 export function paramPagesActive() {
     return controller !== null;
+}
+
+/**
+ * Is the grid the context for a visible_if, even though the view has not
+ * flipped to it yet? True only while enterParamPages builds the first plan.
+ */
+export function paramPagesEntering() {
+    return entering;
 }
 
 /** Which component the grid is pointed at, for handing back to the list. */
