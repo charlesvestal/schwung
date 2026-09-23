@@ -5089,3 +5089,22 @@ void shadow_chain_refresh_wants_sysex_tick(void)
     buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
     shadow_chain_slots[i].wants_sysex = (atoi(buf) == 1);
 }
+
+void shadow_chain_refresh_touch_observe_tick(void)
+{
+    static int next = 0;
+    int i = next;
+    next = (next + 1) % SHADOW_CHAIN_INSTANCES;
+
+    if (!shadow_chain_slots[i].instance || !shadow_plugin_v2 ||
+        !shadow_plugin_v2->get_param) {
+        shadow_chain_slots[i].touch_observe = 0;
+        return;
+    }
+    char buf[8];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                          "touch_observe", buf, sizeof(buf));
+    if (len <= 0) { shadow_chain_slots[i].touch_observe = 0; return; }
+    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+    shadow_chain_slots[i].touch_observe = (atoi(buf) == 1);
+}
