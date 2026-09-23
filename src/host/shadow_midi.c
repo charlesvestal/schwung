@@ -588,43 +588,8 @@ void shadow_forward_external_cc_to_out(void)
  * See ui_midi_out_carry.h for why they now have somewhere to live. */
 static ui_midi_carry_t ui_midi_carry;
 
-void shadow_inject_ui_midi_out(void)
+static void ui_midi_out_ingest(shadow_midi_out_t *midi_out_shm)
 {
-    shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
-
-    if (!midi_out_shm) return;
-
-    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
-    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
-
-    /* Drain the carry FIRST, and unconditionally — before the emptiness check,
-     * not after it. The old early-return keyed the whole function to "did JS
-     * flush since last time", which is a 60 Hz question, while the mailbox
-     * empties at 344 Hz. Anything held over has to go out on frames where JS
-     * said nothing, or the extra frames buy us nothing at all. */
-    /* Pace from the control block when it names one. An int assignment, which
-     * is all this is, is safe on the callback; the FILE it ultimately comes
-     * from is read by shadow_ui, which is allowed to. */
-    {
-        /* Through host_shadow_control, the injected indirection this file
-         * already uses -- it has no `shadow_control` global of its own, and
-         * the shim's is a different translation unit. */
-        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
-        if (sc && sc->ui_midi_pace) ui_midi_carry_set_pace(sc->ui_midi_pace);
-    }
-    ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
-    shim_ui_midi_out_drops = ui_midi_carry.drops;
-    shim_ui_midi_out_placed = ui_midi_carry_placed_count();
-    shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
-    shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
-    {   /* Publish for the UI process: the E16 surface gates its self-heal
-         * restate on this. Same indirection the pace read above uses. */
-        shadow_control_t *sc_pub = host_shadow_control ? *host_shadow_control : NULL;
-        if (sc_pub) sc_pub->ui_midi_foreign = (uint32_t)ui_midi_carry_foreign_count();
-    }
-    shim_ui_midi_out_retries = ui_midi_carry_retry_count();
-    shim_ui_midi_out_unretryable = ui_midi_carry_unretryable_count();
-
     if (ui_midi_out_used(midi_out_shm) == 0) return;
 
     /* Backpressure: leave the SHM buffer alone while the carry is deep. It
@@ -693,6 +658,46 @@ void shadow_inject_ui_midi_out(void)
          * well-framed lie. One queue, one order. */
         ui_midi_carry_push(&ui_midi_carry, &local_buf[i]);
     }
+
+}
+
+void shadow_inject_ui_midi_out(void)
+{
+    shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
+
+    if (!midi_out_shm) return;
+
+    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
+    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
+
+    /*
+     * ONE DRAIN PER FRAME, after this frame's packets are taken in.
+     *
+     * The drain used to run TWICE here -- once up front (so held packets go
+     * out on frames where JS said nothing) and again after new packets were
+     * pushed. But every drain opens by clearing "last frame's" packets still
+     * in the mailbox, so they cannot be sent twice -- and on the second call
+     * the packets it found were the ones the FIRST call had placed a moment
+     * earlier, in this same frame. They were wiped before the transfer and
+     * never sent. Hardware, 2026-09-24: whole E16 rows (11 packets each, the
+     * "would have REPEATED" count) missing from the wire, never answered,
+     * healing only when re-sent -- the "dead lines". The second call also
+     * counted our own packets as Move's traffic and restarted the per-frame
+     * cap, letting one frame take up to 24 of the 20 slots' 12 we may use.
+     * The ingest below no longer returns out of the function; the one drain
+     * at the end runs on every frame, JS or no JS.
+     */
+    /* Pace from the control block when it names one. An int assignment, which
+     * is all this is, is safe on the callback; the FILE it ultimately comes
+     * from is read by shadow_ui, which is allowed to. */
+    {
+        /* Through host_shadow_control, the injected indirection this file
+         * already uses -- it has no `shadow_control` global of its own, and
+         * the shim's is a different translation unit. */
+        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc && sc->ui_midi_pace) ui_midi_carry_set_pace(sc->ui_midi_pace);
+    }
+    ui_midi_out_ingest(midi_out_shm);
 
     ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
     shim_ui_midi_out_drops = ui_midi_carry.drops;

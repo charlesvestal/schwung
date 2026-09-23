@@ -496,6 +496,33 @@ static void test_atomic_no_note_ever_inside_a_message(void)
     CHECK(inside == 0, "not ONE Move note landed inside one of our messages");
 }
 
+/*
+ * A SECOND DRAIN IN THE SAME FRAME WIPES THE FIRST ONE'S PACKETS.
+ *
+ * Every drain opens by clearing "last frame's" packets still in the mailbox
+ * (so nothing is sent twice). Called twice between two transfers, the second
+ * call finds the FIRST call's packets -- placed this frame, not yet sent --
+ * and clears them. This is what shadow_inject_ui_midi_out() did, and it is
+ * why it must drain exactly ONCE per frame (pinned by
+ * test_ui_midi_one_drain_per_frame.sh). Hardware, 2026-09-24: whole E16 rows
+ * never reached the wire.
+ */
+static void test_second_drain_in_a_frame_wipes_the_first(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t region[REGION] = {0};
+    push_msg(&c, 28, 1);
+    CHECK(ui_midi_carry_drain(&c, region, REGION) == 10, "first drain places a message");
+    CHECK(region_used(region) == 10, "...it is in the mailbox");
+    /* Same frame, new packets taken in -- exactly the old second call. */
+    const int before = ui_midi_carry_stranded_count();
+    push_msg(&c, 28, 2);
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(ui_midi_carry_stranded_count() - before == 10,
+          "a second drain in the SAME frame wipes all 10 of the first message's unsent packets "
+          "-- so the caller must drain once per frame");
+}
+
 int main(void)
 {
     test_fits_in_one_frame();
@@ -517,6 +544,7 @@ int main(void)
     test_atomic_goes_after_moves_packet();
     test_atomic_waits_whole_rather_than_splitting();
     test_atomic_no_note_ever_inside_a_message();
+    test_second_drain_in_a_frame_wipes_the_first();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");
