@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 node --input-type=module -e '
-import { createMixer, renderMixer, SEND_MAX, VOLUME_MAX, MIXER_ROW_RGB } from "./src/shared/e16_mixer.mjs";
+import { createMixer, renderMixer, SEND_MAX, VOLUME_MAX, MIXER_ROW_RGB, MIXER_OFF_RGB } from "./src/shared/e16_mixer.mjs";
 import { createNav, createDisplay, createSurface, DOUBLE_TAP_MS, MAP_SHOW_DELAY_MS } from "./src/shared/e16_surface.mjs";
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 
@@ -57,8 +57,11 @@ function fakeIo() {
   eq("Shift+push on a level solos", [io.slots[3]["slot:soloed"], m.cell(3).label], ["1", "SOLO"]);
 
   /* Send B of track 1 is 64. SWITCHED OFF IS A STATE, like mute. */
+  eq("a send at 0% reads inverted like a switched-off one", m.cell(4), { label: "SndA", value: "0%", off: true });
   m.push(8, false);
   eq("push switches a send off: Move sees 0", io.slots[0]["buses:main_send2"], "0");
+  eq("...its ring goes grey at the level it keeps",
+     [[m.ringFor(8).r, m.ringFor(8).g, m.ringFor(8).b], m.ringFor(8).amount > 0], [[MIXER_OFF_RGB.r, MIXER_OFF_RGB.g, MIXER_OFF_RGB.b], true]);
   eq("...the cell is inverted and still shows its level", m.cell(8), { label: "SndB", value: "50%", off: true });
   m.turn(8, 30, false);
   eq("turning while off sets the level it comes back at, with no effect yet",
