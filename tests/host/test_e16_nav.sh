@@ -349,6 +349,17 @@ console.log(fails ? "FAILED " + fails : "PASS");
   eq("hint stays through a Shift+turn", r.nav.turnHint(1000 + D * 4), true);
   r.at(1000 + D * 5); r.ev({ type: "shift", down: false });
   eq("no hint after release", r.nav.turnHint(1000 + D * 5), false);
+
+  /* PAGING KEEPS THE HOLD ALIVE: a Shift+turn session longer than
+   * MAP_MAX_HOLD_MS must not lose Shift mid-turn. */
+  r = rig({ showDelayMs: D });
+  r.at(1000); r.ev({ type: "shift", down: true });
+  let t = 1000 + D / 2;                  /* the first turn inside the delay */
+  r.at(t); r.nav.handle({ type: "turn", enc: 2, ticks: 1 }, t);
+  for (let k = 0; k < 4; k++) { t += MAP_MAX_HOLD_MS * 0.6; r.at(t);
+    r.nav.handle({ type: "turn", enc: 2, ticks: k % 2 ? -1 : 1 }, t); }
+  eq("still held after paging for longer than MAP_MAX_HOLD_MS", r.nav.turnHint(t + 10), true);
+  eq("...and it still expires once the turning stops", r.nav.turnHint(t + MAP_MAX_HOLD_MS + 1), false);
 }
 
 process.exit(fails ? 1 : 0);
