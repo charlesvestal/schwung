@@ -33,6 +33,9 @@ volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
 volatile int shim_usbc_out_replay = -1;
 volatile int shim_usbc_out_level = -1;
+volatile uint32_t shim_xmos_resend_lost = 0;
+volatile uint32_t shim_xmos_resend_sent = 0;
+volatile uint32_t shim_xmos_resend_gave_up = 0;
 volatile int shim_usbc_monitor = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
@@ -109,6 +112,9 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
     { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
+    /* The lanes kill switch. Polled like the rest so arming it needs no
+     * restart, and so a user can turn the feature off again the moment it
+     * misbehaves. */
 };
 
 /* ---- SPI frame tally --------------------------------------------------- */
@@ -398,8 +404,13 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+/* Defined in schwung_shim.c; see its comment. */
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during);
 #include <sys/stat.h>
 #include "clip_regions.h"
+#include "step_strip.h"
+#include "shadow_led_queue.h"
 extern int shadow_transport_pulses;
 extern int sampler_transport_playing;
 /* Is this thread alive at all? Three separate worker-driven diagnostics went
@@ -425,6 +436,73 @@ static void worker_heartbeat(void)
  * Worker thread only: this reads and parses a file over 1 MB. */
 static void clip_phase_check_reset(void);   /* defined below; used by the region reload */
 static clip_regions_t g_regions;
+
+/* Read by the SPI callback (shadow_slot_clip_phase) as well as by this
+ * worker. Returns the table itself rather than a copy: copying 1 MB of parse
+ * output per block is not realtime, and the caller only ever reads a handful
+ * of doubles out of it. */
+const clip_regions_t *shadow_clip_regions(void) { return &g_regions; }
+
+/* WHICH CLIPS WERE DELETED BY THE LAST RE-PARSE, and a counter saying it is
+ * news. The worker publishes; the SPI callback's per-slot loop reads and pushes
+ * it into each chain instance through chain_set_clip_deleted().
+ *
+ * The worker must NOT push it itself. v2_set_param is a module entry point --
+ * i.e. the SPI callback -- and the chain instance is only safe because RT is
+ * its single writer; reaching in from here races every reader the callback
+ * owns. This is the same crossing g_regions already uses, in the same
+ * direction.
+ *
+ * A GENERATION COUNTER, NOT A FLAG. chain_bus.c records why: a flag can be
+ * resurrected by a worker preempted between writing it and the consumer
+ * clearing it, and there is no clearing at all on this side. A counter is
+ * monotonic, so "have I seen this?" is a comparison the consumer answers out
+ * of its own state and the producer never has to unwrite.
+ *
+ * The mask is ASSIGNED, not accumulated, and the generation is bumped LAST:
+ * a generation the callback can see always has its own mask already in place.
+ * That ordering is also what makes the un-orphan rule sound -- g_regions no
+ * longer holds the deleted clip by the time the deletion is visible, so the
+ * position cannot report a fingerprint that would immediately un-orphan the
+ * lane. Deploying only means a batch is lost if two re-parses land inside one
+ * audio block; the re-parse poll is ~1.4 s and a block is ~2.9 ms. */
+static volatile uint32_t g_clip_deleted_mask;
+static volatile uint32_t g_clip_deleted_gen;
+
+/* A CLIP WAS DUPLICATED, so its automation should travel with it.
+ *
+ * Published the same way the deletion mask is -- fields first, generation
+ * last -- and consumed by the SPI callback's per-slot loop, which is the only
+ * place a chain instance is in hand.
+ *
+ * Recognised by what a duplicate IS: a clip that was not in this slot before,
+ * whose notes and geometry match one that was already on the same track. The
+ * Copy BUTTON is not used as the trigger, because a copy can be made in more
+ * than one way and a button press is a moment we might miss, while the file
+ * states the result. The cost is a false positive when a user builds a clip
+ * that matches another note for note and bar for bar -- at which point
+ * inheriting that clip's automation is not obviously wrong. */
+static volatile int      g_clip_copy_track = -1;
+static volatile int      g_clip_copy_src   = -1;
+static volatile int      g_clip_copy_dst   = -1;
+static volatile uint32_t g_clip_copy_gen;
+/* Per track, the row that newly appeared at the last re-parse, or -1. Handed
+ * to the chain so a blind take adopts onto the clip that was MADE rather than
+ * onto whatever happens to be playing. */
+static volatile int      g_clip_new_slot[CLIP_TRACKS] = { -1, -1, -1, -1 };
+static volatile uint32_t g_clip_new_gen;
+int shadow_clip_new_slot(int track) {
+    if (track < 0 || track >= CLIP_TRACKS) return -1;
+    return g_clip_new_slot[track];
+}
+uint32_t shadow_clip_new_generation(void) { return g_clip_new_gen; }
+
+uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
+uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
+uint32_t shadow_clip_copy_generation(void) { return g_clip_copy_gen; }
+int shadow_clip_copy_track(void) { return g_clip_copy_track; }
+int shadow_clip_copy_src(void)   { return g_clip_copy_src; }
+int shadow_clip_copy_dst(void)   { return g_clip_copy_dst; }
 
 /* Phase check tallies, per track. The step editor shows ONE track, so only
  * one of these should score highly -- which track it is falls out of the
@@ -553,7 +631,77 @@ static void clip_regions_tick(void)
      * deleted. Compared against the PREVIOUS parse so a newly copied clip --
      * also absent from the file until Move saves -- is not mistaken for one
      * that was removed. */
-    if (!set_changed) clip_regions_forget_deleted(&before, &g_regions, st);
+    if (!set_changed) {
+        uint32_t deleted = 0;
+        clip_regions_forget_deleted(&before, &g_regions, st, &deleted);
+        /* Only publish when something actually went away. A generation bumped
+         * on every re-parse would have the callback walk 32 bits on each of
+         * Move's periodic saves to discover nothing, and -- worse -- would make
+         * "a new generation" stop meaning "a clip was deleted", which is the
+         * only thing the consumer can act on.
+         *
+         * Mask first, generation last: see the declaration. */
+        if (deleted) {
+            g_clip_deleted_mask = deleted;
+            g_clip_deleted_gen++;
+        }
+
+        /* AND THE COMPLEMENT: a clip that ARRIVED, matching one already on the
+         * track -- a duplicate. Move's Copy lands in the next free slot, so
+         * the source is still there to compare against.
+         *
+         * Only one is published per re-parse. Two duplicates inside one save
+         * window is not a thing a hand does, and a queue here would be state
+         * to keep in sync for a case that does not occur; the second would be
+         * recognised on the next parse if it somehow did, since the shape of
+         * the test is "new slot, matching sibling" and that stays true. */
+        for (int t = 0; t < CLIP_TRACKS && g_clip_copy_gen == 0; t++) { (void)t; }
+        for (int t = 0; t < CLIP_TRACKS; t++) {
+            int dst = -1;
+            for (int s2 = 0; s2 < CLIP_SLOTS; s2++) {
+                if (g_regions.slots[t][s2].exists && !before.slots[t][s2].exists) {
+                    dst = s2; break;
+                }
+            }
+            /* PUBLISH THE NEWLY-APPEARED ROW, whether or not it turns out
+             * to be a duplicate.
+             *
+             * A lane recorded blind carries the PENDING placeholder and has to
+             * be re-keyed when Song.abl finally names a row. It was handed
+             * `lane_clip_slot` — the clip that is PLAYING — so with one clip
+             * playing while the user made another, the take adopted onto the
+             * playing clip. The row that just APPEARED is the clip the user
+             * made, and this loop already knows it. */
+            /* CLEARED WHEN NOTHING NEW APPEARED, not only set when something
+             * did. Left standing, it went on naming a row from a parse long
+             * past, and the next blind take adopted onto THAT row instead of
+             * onto the clip just made — which is the same class of mistake as
+             * the stale `isPlaying` this whole area exists to stop trusting.
+             * A stale answer is worse than none, because none falls back to
+             * the playing row and a stale one is confidently wrong. */
+            if (t < CLIP_TRACKS) {
+                const int prev = g_clip_new_slot[t];
+                g_clip_new_slot[t] = dst;      /* dst is -1 when none appeared */
+                if (prev != dst) g_clip_new_gen++;
+            }
+            if (dst < 0) continue;   /* nothing new here: duplicate check skipped */
+            const clip_region_t *d = &g_regions.slots[t][dst];
+            for (int src = 0; src < CLIP_SLOTS; src++) {
+                if (src == dst || !before.slots[t][src].exists) continue;
+                /* The match itself is clip_region_is_duplicate_of(), which is
+                 * where the note-less guard lives -- see clip_regions.h. It is
+                 * pure so tests/host can drive it; this loop owns only the
+                 * "was empty, now exists" half, which needs two parses. */
+                if (!clip_region_is_duplicate_of(&g_regions.slots[t][src], d))
+                    continue;
+                g_clip_copy_track = t;
+                g_clip_copy_src = src;
+                g_clip_copy_dst = dst;
+                g_clip_copy_gen++;        /* generation LAST, as above */
+                break;
+            }
+        }
+    }
 
     /* Only a REAL geometry change invalidates earlier samples. Resetting on
      * every re-parse wiped the tally on each of Move's periodic saves, so it
@@ -568,6 +716,11 @@ static void clip_regions_tick(void)
         g_set_change_valid = sampler_transport_playing ? 1 : 0;
         clip_phase_check_reset();
         memset(g_editor_bar, 0, sizeof(g_editor_bar));
+        /* Every cached bar count described the OLD set's clips. Keeping them
+         * would hand the next clip a length measured from a different song --
+         * and a wrong length is a wrong phase, which is the one failure this
+         * whole path exists to avoid. */
+        step_strip_reset();
     }
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
@@ -592,7 +745,15 @@ static void clip_regions_tick(void)
         if (!tr->identity_valid || tr->clip_slot < 0) continue;
         const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
         if (!r->exists || !r->have_scroll) continue;
-        g_editor_bar[t] = (int)(r->scroll_beats / 4.0) + 1;
+        /* THE BAR IS NOT ALWAYS FOUR QUARTERS. This divided by a literal
+         * 4.0, so on the 11/8 set it reported bar 2 for a scroll of 4.0 --
+         * which is page 2 of bar ONE. It feeds the bar-level column of the
+         * phase check, so a 4/4 assumption here shows up as that column
+         * disagreeing with a correct playhead and being believed. */
+        double qpb_b = clip_regions_quarters_per_bar(&g_regions, t,
+                                                     tr->clip_slot);
+        if (!(qpb_b > 0.0)) continue;
+        g_editor_bar[t] = (int)(r->scroll_beats / qpb_b) + 1;
     }
 }
 
@@ -688,7 +849,29 @@ static void clip_phase_check_tick(void)
                 }
             }
 
-            for (int t = 0; t < CLIP_TRACKS; t++) {
+            /* ONE TRACK IS SCORED: the selected one.
+             *
+             * The step editor shows a single track, so a playhead sighting
+             * describes that track's clip and nothing else. Walking all four
+             * and scoring each against this column measured the OTHER tracks
+             * against a playhead that was never theirs -- and it did not read
+             * as random, because clips start together, so a same-length
+             * neighbour agreed often enough to look like a real rate. It
+             * reported `seen 74, hit 21` (28%) on tracks 2 and 4 while track 1
+             * was selected, and that 28% was briefly offered as evidence about
+             * phase accuracy. Correctly attributed, the same instrument read
+             * 760/765 = 99.3%.
+             *
+             * The bar column already had this rule (it was gated on
+             * `t == clip_selected_track()`); the within-bar column did not.
+             * Both read the same `t` now, so there is no per-track loop left
+             * for the two halves to disagree in. Tracks other than the
+             * selected one simply stop accumulating -- their last diff is left
+             * where it was, which is the honest thing for a column nothing is
+             * measuring. */
+            {
+                const int t = clip_selected_track();
+                if (t < 0) continue;
                 const clip_track_state_t *tr = &cs->tracks[t];
                 if (!tr->identity_valid || tr->clip_slot < 0) continue;
                 const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
@@ -697,19 +880,50 @@ static void clip_phase_check_tick(void)
                                       r->loop_len, &ph))
                     continue;
                 g_ph_seen[t]++;
-                int step = (int)((ph - r->loop_start) / res + 0.5);
-                int pred = ((step % 16) + 16) % 16;
+                /* MOVE'S LIT STEP IS BAR-RELATIVE, THEN PAGE-WRAPPED, and it
+                 * took a measurement to see it:
+                 *
+                 *     idx = (step_in_CLIP mod steps_per_bar) mod 16
+                 *
+                 * The manual says the grid divides a BAR and that above 1/16 a
+                 * bar spans several pages of step buttons -- and an 11/8 bar
+                 * at 1/16 is 22 steps, so it pages 16 + 6 even at the default
+                 * grid. Collected 16 sightings on the 11/8 set: Move's index
+                 * was always our loop-relative step PLUS 10, and they arrived
+                 * in bursts of six with a ~43-step gap. The loop starts at
+                 * quarter 8.0 = 32 steps, 32 mod 22 = 10 -- it begins 10 steps
+                 * into bar 2, so only steps 10..15 of that bar's FIRST page
+                 * are ever displayed while the loop plays. Six sightings per
+                 * pass, offset by 10. The model reproduces all 16.
+                 *
+                 * Two earlier attempts failed for want of one term each: a
+                 * bare `% 16` (no bar), and `% steps_per_bar` with no page
+                 * wrap and a loop-relative step (which made it worse than
+                 * either). In 4/4 at 1/16 all three coincide, which is why a
+                 * 4/4 device reads 99.3% whatever this line says.
+                 *
+                 * `ph` is CLIP time now, so the clip step is ph/res directly
+                 * -- no loop_start term, which is the third thing that was
+                 * wrong before. */
+                const int steps_per_page = STEP_STRIP_STEPS_PER_PAGE;
+                double qpb_t = clip_regions_quarters_per_bar(&g_regions, t,
+                                                             tr->clip_slot);
+                int steps_per_bar = (int)(qpb_t / res + 0.5);
+                if (steps_per_bar < 1) steps_per_bar = steps_per_page;
+                int step = (int)(ph / res + 0.5);
+                int step_in_bar = ((step % steps_per_bar) + steps_per_bar)
+                                  % steps_per_bar;
+                int pred = step_in_bar % steps_per_page;
                 int diff = pred - (int)ev[i].idx;
-                if (diff > 8) diff -= 16;
-                if (diff < -8) diff += 16;
+                if (diff > steps_per_page / 2) diff -= steps_per_page;
+                if (diff < -steps_per_page / 2) diff += steps_per_page;
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
 
-                /* Record a disagreement, for the selected track only -- it is
-                 * the one whose playhead this is. */
-                if (diff != 0 && t == clip_selected_track()) {
+                /* Record a disagreement. */
+                if (diff != 0) {
                     double step_pulses = res * 24.0;
-                    double into = (ph - r->loop_start) / res;   /* in steps */
+                    double into = ph / res;                     /* clip steps */
                     double frac = into - (double)(long)into;    /* 0..1      */
                     int to_b = (int)((frac > 0.5 ? (1.0 - frac) : frac)
                                      * step_pulses + 0.5);
@@ -724,17 +938,18 @@ static void clip_phase_check_tick(void)
                     g_ph_miss_n++;
                 }
 
-                /* Bar level, and ONLY for the track the step editor is
-                 * showing -- a bar describes one clip's page, so comparing it
-                 * against another track's phase measures nothing. */
-                int bar = (t == clip_selected_track()) ? g_editor_bar[t] : 0;
+                /* Bar level: the same track's remembered page. */
+                int bar = g_editor_bar[t];
                 /* A DERIVED anchor was computed from this same playhead, so
                  * scoring it here measures the solver's arithmetic, not the
                  * phase. Excluded, or the bar column would read 100% by
                  * construction and stop being evidence. */
                 if (tr->anchor_source == CLIP_ANCHOR_DERIVED) bar = 0;
                 if (bar > 0) {
-                    int page = step / 16;
+                    /* The PAGE WITHIN THE BAR, which is what Move announces
+                     * as "Bar N" plus a page number -- and the bar is what
+                     * `g_editor_bar` carries, so compare bars. */
+                    int page = step / steps_per_bar;
                     g_bar_seen[t]++;
                     int bdiff = page - (bar - 1);
                     g_bar_lastdiff[t] = bdiff;
@@ -742,7 +957,7 @@ static void clip_phase_check_tick(void)
                     /* Tie the bar outcome to the step miss just recorded for
                      * this same event, so "did both columns fail together"
                      * is a fact rather than an inference from two rates. */
-                    if (diff != 0 && t == clip_selected_track() && g_ph_miss_n) {
+                    if (diff != 0 && g_ph_miss_n) {
                         ph_miss_t *m = &g_ph_miss[(g_ph_miss_n - 1) % PH_MISS_RING];
                         if (m->pulses == ev[i].pulses) {
                             m->bar_scored = 1;
@@ -754,6 +969,28 @@ static void clip_phase_check_tick(void)
         }
         if (n < 32) break;
     }
+}
+
+/* THE STEP TAP PATH, reported. Always on and silent unless a step moved --
+ * same shape as param_slow_tick, and for the same reason: the condition is
+ * rare, the cost of missing it is a user telling us their step buttons are
+ * dead, and arming a flag after the fact means asking them to reproduce it. */
+static void step_tap_tick(void)
+{
+    static int last_press, last_rel;
+    const int press = shim_step_press_seen, rel = shim_step_release_seen;
+    if (press == last_press && rel == last_rel) return;
+    last_press = press; last_rel = rel;
+    char msg[240];
+    snprintf(msg, sizeof(msg),
+             "step-tap: press=%d release=%d used_skip=%d nopress_skip=%d "
+             "queued=%d emitted=%d noroom=%d last_hold=%dms (tap<%dms) "
+             "last_plock_key=%s",
+             press, rel, shim_step_used_skip, shim_step_nopress_skip,
+             shim_step_tap_queued, shim_step_tap_emitted,
+             shim_step_tap_noroom, shim_step_hold_ms_last, 500,
+             shim_step_plock_key[0] ? shim_step_plock_key : "(none)");
+    LOG_DEBUG("shim", msg);
 }
 
 static void clip_state_tick(void)
@@ -772,7 +1009,27 @@ static void clip_state_tick(void)
     const clip_state_t *cs = clip_state_current();
     if (!cs) { fprintf(fp, "(no cable-0 scan yet)\n"); fclose(fp); return; }
     uint32_t pul = (uint32_t)shadow_transport_pulses;
-    fprintf(fp, "pul=%-7u", pul);
+    /* Move's Record button. Without this, "the arm never fired" and "the lane
+     * never recorded" are the same silence, and neither is distinguishable
+     * from the other by ear. SOLID is the only state that records; FLASH is
+     * armed or counting in; `?` means the button has never reported, which is
+     * not the same zero as off. */
+    const char *rec = !shadow_rec_arm_seen()  ? "?"     :
+                      shadow_rec_arm_recording() ? "SOLID" :
+                      shadow_rec_arm_flashing()  ? "FLASH" : "off";
+    fprintf(fp, "pul=%-7u rec=%-5s ui=%d", pul, rec, cs->last_ui_mode);
+    /* THE DECODED SELECTION, per track, beside the playing clip — the two are
+     * different questions and the whole class of new-clip bugs came from
+     * answering one with the other. `sel=-1` is "not known" and `sel=E` is
+     * "an EMPTY slot is selected", which is how a new clip is made. */
+    fprintf(fp, " sel[");
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const int sv = cs->tracks[t].selected_slot;
+        if (sv == CLIP_SEL_EMPTY)  fprintf(fp, "E");
+        else if (sv < 0)           fprintf(fp, "?");
+        else                       fprintf(fp, "%d", sv + 1);
+    }
+    fprintf(fp, "]");
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);
@@ -794,6 +1051,20 @@ static void clip_state_tick(void)
             }
         }
     }
+    /* Move's own step-editor reading, on the same line as the phases it is
+     * there to supply. `strip=-` is "no frame decoded as the editor", with the
+     * refusing gate in brackets, so a wrong bar count and a refusal are told
+     * apart at a glance rather than both reading as silence. */
+    {
+        step_strip_t ss;
+        int sst = -1;
+        step_strip_latest(&ss, &sst);
+        if (ss.valid)
+            fprintf(fp, " | strip T%d %dpg bold%d x=%d", sst + 1, ss.segments,
+                    ss.bold_segment, ss.playhead_col);
+        else
+            fprintf(fp, " | strip - (rej%d)", ss.reject);
+    }
     fprintf(fp, "\n");
     fclose(fp);
 
@@ -803,7 +1074,8 @@ static void clip_state_tick(void)
      * a 1 Hz file is plenty for a human watching along. */
     FILE *jf = fopen("/data/UserData/schwung/clip_state.json", "w");
     if (!jf) return;
-    fprintf(jf, "{\"pulses\":%u,\"beat\":%.2f,\"tracks\":[", pul, pul / 24.0);
+    fprintf(jf, "{\"pulses\":%u,\"beat\":%.2f,\"record\":\"%s\",\"tracks\":[",
+            pul, pul / 24.0, rec);
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         double el = tr->anchor_valid ? (double)(pul - tr->anchor_pulse) / 24.0 : 0.0;
@@ -865,7 +1137,98 @@ static void clip_state_tick(void)
                     m->to_boundary, m->bar_scored, m->bar_missed);
         }
     }
-    fprintf(jf, "],\"miss_total\":%u}}\n", g_ph_miss_n);
+    fprintf(jf, "],\"miss_total\":%u}", g_ph_miss_n);
+    /* MOVE'S OWN ANSWER, read off its step-editor screen (step_strip.h).
+     *
+     * Reported and NOT yet acted on, deliberately. The geometry is measured
+     * but the rejection gates are reasoned, and a false positive here is a
+     * wrong loop length -- so the first hardware pass reads this block: it
+     * must say `valid` with the right `bars` on the step editor, and refuse
+     * (with a `reject` naming which gate) on Move's other screens. Only then
+     * does anything get to depend on `segments_cache`, which is the fallback that
+     * closes "record on a clip I just made" (Song.abl is ~35 s late, so we
+     * have no length, so there is no phase, so recording refuses).
+     *
+     * `seq` moving is what says frames are arriving at all -- a stuck seq is
+     * the accumulator not being fed, not the decoder refusing. */
+    {
+        step_strip_t ss;
+        int sst = -1;
+        unsigned sseq = step_strip_latest(&ss, &sst);
+        /* A non-finite number prints as `nan` and makes the WHOLE document
+         * unparseable, so the one malformed field would take the live page
+         * down with it -- a broken instrument reads as a broken feature. */
+        double pf = (ss.phase_frac >= 0.0 && ss.phase_frac <= 1.0)
+                  ? ss.phase_frac : -1.0;
+        /* The bar count AS A LENGTH, which is the only thing anything would
+         * ever use it for -- and the one conversion that needs the time
+         * signature. An 11/8 bar is 5.5 quarters, so `bars * 4` is wrong
+         * twice over (the beats per bar AND the beat's unit), and it is
+         * reported beside the file's own `loop_len` on purpose: with the clip
+         * present the two must AGREE, which is what makes the conversion
+         * checkable before anything depends on it.
+         *
+         * The clip's own signature if the file has the clip, else the song's
+         * -- which is the case that matters, since a clip Move has not saved
+         * is absent from the file while the song is not. */
+        double qpb = 4.0;
+        double strip_quarters = -1.0;
+        double strip_quarters_min = -1.0;
+        double file_quarters = -1.0;
+        if (ss.valid && sst >= 0) {
+            int cslot = (cs && cs->tracks[sst].identity_valid)
+                      ? cs->tracks[sst].clip_slot : -1;
+            /* THE CONVERSION IS THE BAR, AND IT IS A CEILING.
+             *
+             * Move's manual: each line on this strip is a BAR. Measured on an
+             * 11/8 set, the only clip that separates bars from 16-step pages
+             * (16 quarters = 2.91 bars but exactly 4 pages) drew THREE
+             * segments -- bars, rounded up. So the strip answers a RANGE:
+             * 3 segments under 11/8 means (11.0, 16.5] quarters, exact only
+             * when the loop is a whole number of bars, which a clip Move
+             * created in the current signature is.
+             *
+             * `strip_quarters` is therefore the UPPER end, and the lower end
+             * is printed beside it so a comparison against the file cannot
+             * mistake a legal range for a disagreement. */
+            qpb = clip_regions_quarters_per_bar(&g_regions, sst, cslot);
+            strip_quarters = (double)ss.segments * qpb;
+            strip_quarters_min = (double)(ss.segments - 1) * qpb;
+            if (g_regions.valid && cslot >= 0 && cslot < CLIP_SLOTS &&
+                g_regions.slots[sst][cslot].exists)
+                file_quarters = g_regions.slots[sst][cslot].loop_len;
+        }
+        fprintf(jf, ",\"step_strip\":{\"seq\":%u,\"track\":%d,\"valid\":%s,"
+                    "\"reject\":%d,\"segments\":%d,\"bold_segment\":%d,\"playhead_col\":%d,"
+                    "\"evidence\":%d,\"phase_frac\":%.4f,"
+                    "\"quarters_per_bar\":%.4f,\"strip_quarters\":%.4f,"
+                    "\"strip_quarters_min\":%.4f,\"single_thin\":%d,"
+                    "\"file_quarters\":%.4f,\"sig\":\"%d/%d\","
+                    "\"grid\":\"%s\",\"segments_cache\":[%d,%d,%d,%d]}",
+                sseq, sst + 1, ss.valid ? "true" : "false", ss.reject,
+                ss.segments, ss.bold_segment, ss.playhead_col, ss.playhead_evidence, pf,
+                qpb, strip_quarters, strip_quarters_min, ss.single_thin,
+                file_quarters,
+                g_regions.sig_upper, g_regions.sig_lower,
+                g_regions.step_res_raw[0] ? g_regions.step_res_raw : "?",
+                step_strip_segments_for_track(0), step_strip_segments_for_track(1),
+                step_strip_segments_for_track(2), step_strip_segments_for_track(3));
+
+        /* THE GESTURE GATE, because a long press that opens nothing is silent
+         * in exactly the way a refused p-lock was: five terms, and from
+         * outside the device every one of them looks like "nothing
+         * happened". */
+        {
+            int g_shift = 0, g_vol = 0;
+            unsigned g_pend = 0, g_fired = 0, g_voldur = 0;
+            shim_gesture_state(&g_shift, &g_vol, &g_pend, &g_fired, &g_voldur);
+            fprintf(jf, ",\n \"gesture\": {\"shift_held\":%d,\"vol_touched\":%d,"
+                    "\"track_pending\":%u,\"track_fired\":%u,"
+                    "\"vol_during_press\":%u}",
+                    g_shift, g_vol, g_pend, g_fired, g_voldur);
+        }
+    }
+    fprintf(jf, "}\n");
     fclose(jf);
 }
 void shim_touch_trace_drain(void);
@@ -1283,6 +1646,29 @@ static void *worker_main(void *arg) {
             }
         }
 
+        /* Report MIDI_OUT losses of Move's XMOS control messages. This is the
+         * only place they can be reported: detection happens on the SPI
+         * callback, which may not log.
+         *
+         * A `lost` with no `gave_up` is the defence working — the message was
+         * dropped and put back. A `gave_up` means it stayed dropped, which is
+         * the silent USB-C failure this exists to close, and the one line that
+         * says so. */
+        {
+            static uint32_t last_lost = 0, last_gave_up = 0;
+            uint32_t lost = shim_xmos_resend_lost;
+            uint32_t gave = shim_xmos_resend_gave_up;
+            if (lost != last_lost || gave != last_gave_up) {
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "XMOS ctl msg: %u dropped from MIDI_OUT, %u re-sent, "
+                            "%u gave up (a 37-family message that never reached "
+                            "the wire is a silent setting change)",
+                            lost, (unsigned)shim_xmos_resend_sent, gave);
+                last_lost = lost;
+                last_gave_up = gave;
+            }
+        }
+
         /* Backstop: on a boot where Move never asserts at all, the gate would
          * otherwise stay closed and silently swallow every user change for the
          * rest of the session. Opening it persists nothing by itself. */
@@ -1332,6 +1718,7 @@ static void *worker_main(void *arg) {
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
             param_slow_tick();        /* always on; silent unless one overran */
+            step_tap_tick();          /* always on; silent unless a step moved */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;

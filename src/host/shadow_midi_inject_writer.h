@@ -123,6 +123,25 @@ shadow_midi_inject_peek(shadow_midi_inject_t *shm, uint8_t out[4])
     return 1;
 }
 
+/* shadow_midi_inject_peek_at — like _peek, but `ahead` packets past the head.
+ *
+ * For a consumer that must deliver the same packets TWICE in one frame without
+ * consuming them on the first pass: the shim's test-bus injection is read once
+ * before the ioctl (for the UI's feed, which is pre-ioctl) and once after (for
+ * every shim-side decoder), and only the second pass pops. `ahead` = 0 is
+ * exactly _peek. Single-consumer only. */
+static inline int
+shadow_midi_inject_peek_at(shadow_midi_inject_t *shm, uint8_t out[4], int ahead)
+{
+    if (ahead < 0 || ahead >= SHADOW_MIDI_INJECT_SLOTS) return 0;
+    uint32_t pos = __atomic_load_n(&shm->read_pos, __ATOMIC_RELAXED) + (uint32_t)ahead;
+    shadow_midi_inject_slot_t *slot = &shm->slots[pos & SHADOW_MIDI_INJECT_MASK];
+    uint32_t seq = __atomic_load_n(&slot->seq, __ATOMIC_ACQUIRE);
+    if ((int32_t)(seq - (pos + 1)) != 0) return 0;
+    memcpy(out, slot->pkt, 4);
+    return 1;
+}
+
 /* shadow_midi_inject_pop — consume the packet previously observed by _peek,
  * freeing its slot for a future lap. Single-consumer only. Call exactly once
  * per successful _peek that you decide to consume. */

@@ -39,6 +39,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
+         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
@@ -337,6 +338,10 @@ export const SETPARAM_THROTTLE_MS = 20;
  * them every block, and it would cost nothing per frame instead of 2.8ms.
  */
 export const MOD_FAST_READS_PER_TICK = 1;
+/* One rotation stop in this many goes to the modulation probe, for a consumer
+ * that injects no `isModulated`. Not a read budget -- it SPENDS a stop, so the
+ * budget stays exactly one read per tick; see the probe for why that matters. */
+export const MOD_PROBE_EVERY = 6;
 
 /**
  * How long the header keeps following a knob that was TURNED but is not held.
@@ -524,12 +529,90 @@ function pageHasKnobs(p) {
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
-    const setParam = io.setParam || (() => {});
+    const rawSetParam = io.setParam || (() => {});
+    /* Called AFTER a value is committed, with what was actually written.
+     *
+     * The p-lock gesture needs exactly this moment: "hold a step, turn a knob"
+     * has to record the value the knob produced, and only the commit knows it
+     * (the turn walks from a cached value through the parameter's own step and
+     * range). The host owns everything else -- which step is held, whether the
+     * page belongs to a chain slot -- so this stays one optional call rather
+     * than the controller learning about step buttons. */
+    const onValueWritten = io.onValueWritten || null;
+    /* WRAPPED, not hooked at one call site. A knob turn's write is DEBOUNCED --
+     * the turn sets a pending value and `flushDueWrites` writes it a moment
+     * later -- so hooking the immediate commit missed the very gesture this
+     * exists for: verified on the device, where the parameter moved and the
+     * hook never fired. There are six write sites and they will not stay six;
+     * wrapping is the only version that cannot drift. */
+    const setParam = (key, value) => {
+        const r = rawSetParam(key, value);
+        if (onValueWritten) onValueWritten(key, value);
+        return r;
+    };
     const announce = io.announce || (() => {});
-    /* Optional: is this param currently driven by a modulation source? The
-     * library cannot answer that — it is host state — so it is injected, and
-     * defaults to "no" for callers that have no modulation. */
-    const isModulated = io.isModulated || (() => false);
+    /*
+     * Optional: is this param currently driven by a modulation source?
+     *
+     * THE DEFAULT IS THE DEVICE'S OWN ANSWER, not "no", and that correction is
+     * the third instance of one blind spot. A module that binds this
+     * controller from its own `ui_chain.js` (9W9) supplies an io of
+     * getParam/setParam/announce and nothing else, so it took the old
+     * `() => false`: `modCache` was empty for every key, `refreshModulatedValues`
+     * had nothing to read, and the pointer showed the BASE while an LFO or an
+     * automation lane drove the parameter underneath it. Nothing was wrong on
+     * screen -- the knob simply never moved, which reads as "automation isn't
+     * playing" rather than as a missing hook. The same layer split hid the
+     * enum peek and the p-lock gesture from the same modules.
+     *
+     * `<key>:modulated` is served by the chain for every chain target, so the
+     * consumer that HAS a chain behind it gets the marks by existing, and one
+     * that does not answers "" and lands on false exactly as before. The host
+     * still injects its own (`isHierarchyParamModulated`), which adds a
+     * base-vs-live fallback for targets that do not implement `:modulated`;
+     * this default deliberately does not, because a guess belongs with the
+     * consumer that knows what its keys are.
+     *
+     * It costs ONE read per tick, on the value rotation that was already
+     * paying for that key -- never per draw. That distinction is what the
+     * comment at `modCache` is about.
+     */
+    const isModulated = io.isModulated || null;
+    /*
+     * WHICH STEP BUTTON IS HELD, 0..15, or -1.
+     *
+     * Asked of the device by default, because the alternative is another
+     * facility that only the host's io has -- the mistake that left 9W9 with
+     * no enum peek, no p-lock and no modulation marks. The shim publishes it
+     * as a byte in SHM (it decides the same question for the write side, so
+     * the value shown and the value a turn replaces cannot disagree), and
+     * reading a byte costs nothing, unlike a param round trip at ~2.8 ms.
+     *
+     * Injectable so tests can drive it, and `typeof`-guarded so the preview
+     * harness -- node, no device, no bindings -- simply sees no step held.
+     */
+    /* The shim's p-lock counter, bumped ONLY when a lock is confirmed to have
+     * landed. Optional: a module binding this controller from its own
+     * ui_chain.js supplies getParam/setParam/announce and nothing else, and
+     * falls back to the deferred read below. */
+    /*
+     * MOVE'S DELETE BUTTON, and whether the held press has become a HOLD.
+     *
+     * ASKED OF THE DEVICE BY DEFAULT, for the reason stated twice above and
+     * learned a third time here: a module that binds this controller from its
+     * own ui_chain.js -- 9W9 -- supplies getParam/setParam/announce and
+     * NOTHING ELSE. I put both of these on the host's component io, so on 9W9
+     * `io.deleteHeld` was undefined and the gesture could not fire. Traced on
+     * hardware: `[dk] touch slot=1 haveIo=undefined`.
+     *
+     * That is the same layer split that once left 9W9 with no enum peek, no
+     * p-lock and no modulation marks, and the comment on `isModulated` says so
+     * in as many words. I read it earlier today and still reached for the io.
+     *
+     * Both are SHM bytes, so the default costs nothing -- unlike a param round
+     * trip at ~2.8 ms -- and `typeof`-guarded so the preview harness (node, no
+     * device, no bindings) simply sees them false.
+     */
     /*
      * Optional: how the HOST wants a value read on a given surface.
      *
@@ -627,6 +710,15 @@ export function createController(io = {}) {
          * Only modulated keys are in here, and they get their own fast lane in
          * tick() because they are the only values that move on their own. */
         modValues: Object.create(null),
+        modProbeCursor: 0,
+        /* The step-held read: which step, what each key is locked to there,
+         * and how far round the page the reads have got. */
+        heldCursor: 0,
+        heldDecOwned: false,
+        /* One refusal read per held-step gesture, not per detent. */
+        /* Which step a pending write was made under, by key -- see sendPending. */
+        /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
+        /* Delete held while a step is: armed, and whether a knob was picked. */
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
@@ -1405,11 +1497,38 @@ export function createController(io = {}) {
      * Nothing else would ever write it out. Cheap when there is nothing
      * pending — the common case — since it is only object-key iteration.
      */
+    /* A write made under a held step goes out as a P-LOCK on THAT step,
+     * whenever it finally goes and whatever the shim currently thinks is held.
+     * See the stamp in the turn handler. */
+    /*
+     * THE ONE WRITER FOR A VALUE THE USER JUST MADE, and both branches of the
+     * turn go through it.
+     *
+     * A write made under a held step NAMES that step. The alternative -- a
+     * plain component write, converted shim-side from whatever step is held
+     * when it ARRIVES -- is a race the UI always loses on the release: the
+     * shim clears `held_step` on the SPI frame carrying the note-off, while
+     * the UI reacts to the detent up to a tick later. Stamping only the
+     * DEBOUNCED path fixed the long gaps and left the short ones: measured,
+     * every gap of 6 frames or more came clean while 0-5 still leaked, 5/5,
+     * because those take the immediate branch below. The discriminating
+     * experiment was two detents one frame apart -- the base carried detent
+     * ONE's value and the lock carried detent TWO's, which is precisely an
+     * unstamped immediate write beside a stamped pended one.
+     */
+    function writeUserValue(key, wire) {
+        setParam(fullKey(key), wire);
+    }
+
+    function sendPending(key) {
+        writeUserValue(key, s.pendingWrite[key]);
+    }
+
     function flushDueWrites() {
         const t = now();
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
-            setParam(fullKey(key), s.pendingWrite[key]);
+            sendPending(key);
                 replanIfCondition(key);
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
@@ -1420,7 +1539,7 @@ export function createController(io = {}) {
      * swap, visible_if re-plan) must never silently drop one. */
     function flushDueWritesUnconditionally() {
         for (const key in s.pendingWrite) {
-            setParam(fullKey(key), s.pendingWrite[key]);
+            sendPending(key);
                 replanIfCondition(key);
         }
     }
@@ -2109,6 +2228,9 @@ export function createController(io = {}) {
         if (!pageHasKnobs(p)) return null;
 
         refreshModulatedValues(p);
+        /* Before anything spends this tick's stop: which step is under the
+         * finger decides whether the held lane below runs at all, and it is a
+         * free SHM byte rather than a read. */
 
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
@@ -2199,6 +2321,50 @@ export function createController(io = {}) {
             maybeResettle(() => reloadIfChanged(s.lastLoadOpts));
         }
 
+
+        /*
+         * THE MODULATION PROBE, for a consumer that injects no predicate.
+         *
+         * `isModulated` is host state, so the library used to default to a
+         * flat "no" -- and a module that binds this controller from its own
+         * `ui_chain.js` (9W9) supplies getParam/setParam/announce and nothing
+         * else. Its `modCache` stayed empty, `refreshModulatedValues` had
+         * nothing to read, and the knob showed the BASE while an LFO or an
+         * automation lane drove the parameter underneath it. Not an error and
+         * not a missing page: the knob simply never moved, which reads as
+         * "automation isn't playing".
+         *
+         * IT SPENDS A STOP, it does not add a read. The cursor's budget is ONE
+         * read per tick and that is a frame-rate fact (an IPC round trip is
+         * ~2.8 ms against a 1.68 ms whole-page render), so probing alongside
+         * the value would have doubled it for exactly the consumers that own
+         * their own screen. One stop in MOD_PROBE_EVERY goes to the flag
+         * instead of to a value; a page is fully probed within
+         * keys * MOD_PROBE_EVERY ticks (~0.8 s for eight knobs at 60 Hz),
+         * which is the right timescale -- modulation starts and stops when a
+         * routing is edited or playback reaches a lane, never per frame.
+         *
+         * The host injects its own predicate and never reaches this: its reads
+         * happen inside the io, outside this budget, and it carries a
+         * base-vs-live fallback for targets that do not serve `:modulated`.
+         */
+        if (!isModulated && p.keys.length &&
+            s.tickCount % MOD_PROBE_EVERY === 0) {
+            const key = p.keys[s.modProbeCursor % p.keys.length];
+            s.modProbeCursor = (s.modProbeCursor + 1) % p.keys.length;
+            if (key) {
+                const m = getParam(fullKey(key) + ":modulated");
+                /* Tri-state as everywhere: "" is a channel that does not serve
+                 * the key (no modulation system behind this consumer) and null
+                 * is a read that did not complete. Neither is "not modulated
+                 * any more", so neither clears a flag. */
+                if (m === "1") s.modCache[key] = true;
+                else if (m === "0") s.modCache[key] = false;
+            }
+            return null;
+        }
+
+
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
@@ -2285,7 +2451,11 @@ export function createController(io = {}) {
          * animation drawn from that is a slideshow.
          */
         const _lm = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
-        s.modCache[key] = !!isModulated(fullKey(key)) || !!(_lm && _lm.live === true);
+        /* With no injected predicate the flag comes from the PROBE lane below,
+         * which spends a rotation stop rather than adding a read -- so leave
+         * whatever it last found rather than clearing it here. */
+        if (isModulated) s.modCache[key] = !!isModulated(fullKey(key));
+        if (_lm && _lm.live === true) s.modCache[key] = true;
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
@@ -3203,6 +3373,11 @@ export function createController(io = {}) {
      * identically here and in the list editor, writes through, and holds off
      * reads for that key until it settles.
      */
+    function cacheWritten(key, wire) {
+        s.values[key] = wire;
+        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+    }
+
     function onKnobTurn(slot, direction, nowMs, { fine = false } = {}) {
         if (s.hintLines) dismissHint();
         const key = keyAt(slot);
@@ -3239,6 +3414,25 @@ export function createController(io = {}) {
                 || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
             s.triggerKnobLastMs[key] = t;
             if (!startsGesture) return null;
+            /*
+             * A TRIGGER IS NOT LOCKED BY DEFAULT, and the default matters
+             * because arming one is a brush of a knob.
+             *
+             * Under a held step the write becomes a p-lock, so a momentary
+             * would re-fire at that step on EVERY pass -- measured on
+             * `palette`, whose Main page carries `rnd_macro` on a knob: one
+             * fire per loop, and twenty seconds later the patch had walked
+             * through four unrelated sounds with no undo and no base value to
+             * return to. Mechanically that is a per-step trig and it is right
+             * for a retrig or a sample re-fire; as the behaviour every
+             * write-only param gets for free, it is a trap, and the gesture
+             * that arms it is indistinguishable from the one that fires it.
+             *
+             * So it does NOTHING and says so. A module that wants the trig
+             * behaviour can ask for it later (`lockable: true`) -- opting in
+             * is the direction this codebase has repeatedly wished it had
+             * chosen.
+             */
             if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
             else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
             fireTrigger(key, meta, t);
@@ -3279,7 +3473,24 @@ export function createController(io = {}) {
              * case that reads here — and since that read IS from the device,
              * it is also allowed to settle the enum wire format, for a page
              * whose first gesture beats its first read. */
-            let raw = s.values[key];
+            /*
+             * A TURN CONTINUES FROM WHAT THE CELL IS SHOWING, and while a step
+             * is held that is the value LOCKED on that step -- not the base.
+             *
+             * This is the half that makes the gesture coherent rather than
+             * merely visible, and it is Elektron's model: holding a trig shows
+             * what that step will play, and an encoder turn edits THAT value.
+             * Seeding from the base would jump the knob on the first detent --
+             * from the lock you can see to a number you cannot -- and then
+             * p-lock the jumped value, so what you see would contradict what
+             * you get.
+             *
+             * An unlocked param under a held step still seeds from the base,
+             * which is also Elektron: the first turn CREATES a lock starting
+             * from what the track is doing.
+             */
+            const heldSeed = undefined;
+            let raw = heldSeed !== undefined ? heldSeed : s.values[key];
             if (raw === undefined) {
                 raw = getParam(fullKey(key));
                 learnEnumWireFormat(meta, raw);
@@ -3378,8 +3589,7 @@ export function createController(io = {}) {
             s.peek = null;
         }
 
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        cacheWritten(key, wire);
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
          * left in pendingWrite for tick() to flush once the window passes,
          * and onKnobTouch(false) flushes immediately on release. */
@@ -3387,7 +3597,7 @@ export function createController(io = {}) {
         if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
-            setParam(fullKey(key), wire);
+            writeUserValue(key, wire);
         replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
@@ -3433,8 +3643,7 @@ export function createController(io = {}) {
         const n = Array.isArray(meta.options) ? meta.options.length : 0;
         if (n > 0) i = Math.max(0, Math.min(n - 1, i));
         const wire = enumWireValue(meta, i);
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        cacheWritten(key, wire);
         s.lastWriteMs[key] = now();
         delete s.pendingWrite[key];
         delete s.knobStates[key];
@@ -3788,8 +3997,16 @@ export function createController(io = {}) {
         if (!key || !meta) return null;
 
         /* A TRIGGER fires — a click is the whole interaction, with no
-         * cooldown, because one press is one gesture. See fireTrigger. */
-        if (meta.writeOnly) { fireTrigger(key, meta, now()); return null; }
+         * cooldown, because one press is one gesture. See fireTrigger.
+         *
+         * Under a held step it refuses, for the reason the TURN does: the
+         * write would become a p-lock and the momentary would re-fire at that
+         * step on every pass. Both entry points need it -- guarding only the
+         * turn leaves the same trap one gesture away. */
+        if (meta.writeOnly) {
+            fireTrigger(key, meta, now());
+            return null;
+        }
 
         /*
          * A cell with no door of its own, drawn as part of a sample graphic,
@@ -4016,14 +4233,26 @@ export function createController(io = {}) {
 
     /** Copy (60) / Delete (119) / Undo (56). Returns whether the event was taken. */
     function onEditCc(cc, down) {
+        /* UNDO IS NOT HANDLED HERE, and the attempt is worth recording.
+         *
+         * Routing CC 56 to `lanes:undo` while a step is held looked right --
+         * the real automation undo is several screens away in Slot Settings --
+         * and the handler never ran: with a step held, Copy and Delete reach
+         * this function (235 and 176 bytes drawn on the panel) and Undo
+         * arrives nowhere, while Move does not get it either once the shim
+         * claims it. Rather than ship a button that does nothing, the shim no
+         * longer claims 56 and Undo is Move's again. Re-adding this branch
+         * without first explaining why 56 is forwarded differently from 60 and
+         * 119 will reproduce the dead button.
+         */
         if (cc === 56) {
             if (!down) return true;
             const u = s.editUndo;
-            if (!u) { notice("NOTHING TO UNDO"); return true; }
+            if (!u) { notice("Nothing to undo"); return true; }
             writeInstance(u.def, u.index, u.snap);
             s.editUndo = null;
             if (childIndexFor(u.level) === u.index) dropChildLevelCache(u.level);
-            notice("UNDONE " + childLabel(u.def, u.index).toUpperCase());
+            notice("Undone " + childLabel(u.def, u.index));
             announce("undone");
             return true;
         }
@@ -4047,11 +4276,11 @@ export function createController(io = {}) {
             /* Nothing is armed from a source we could not read. Arming anyway
              * would paste whatever partial answer arrived into every instance
              * picked afterwards, and report each one as a copy. */
-            if (!snap) { notice("READ FAILED"); announce("read failed"); return true; }
+            if (!snap) { notice("Read failed"); announce("read failed"); return true; }
         }
         s.editGesture = { kind, level: lvl.name, def: lvl.def, keys, from, last: from, snap };
         const label = childLabel(lvl.def, from).toUpperCase();
-        notice(kind === "copy" ? `COPY ${label}: PICK A TARGET` : "CLEAR: PICK A TARGET", 4000, true);
+        notice(kind === "copy" ? `Copy ${label}: pick a target` : "Clear: pick a target", 4000, true);
         announce(kind === "copy" ? `copy ${childLabel(lvl.def, from)}, pick a target` : "clear, pick a target");
         return true;
     }
@@ -4070,15 +4299,100 @@ export function createController(io = {}) {
          * named, and the gesture stays armed for the next pick. */
         const before = readInstance(g.def, idx, g.keys);
         const label = childLabel(g.def, idx).toUpperCase();
-        if (!before) { notice(label + ": READ FAILED", 4000); announce("read failed"); return; }
+        if (!before) { notice(label + ": read failed", 4000); announce("read failed"); return; }
         writeInstance(g.def, idx, g.kind === "copy" ? g.snap : clearedInstance(g.keys));
         s.editUndo = { level: g.level, def: g.def, index: idx, snap: before };
         dropChildLevelCache(g.level);               /* the grid is showing the instance just written */
-        notice((g.kind === "copy" ? "PASTED " : "CLEARED ") + label, 4000);
+        notice((g.kind === "copy" ? "Pasted " : "Cleared ") + label, 4000);
         announce((g.kind === "copy" ? "pasted " : "cleared ") + childLabel(g.def, idx));
     }
 
     /** A one-line floating notice, drawn over the page while it lasts. */
+    /* HOW LONG BEFORE A WRITE'S OUTCOME IS READABLE.
+     *
+     * The write crosses the param channel and is applied on the SPI callback;
+     * a frame is ~2.9 ms and a tick is ~23 ms, so one tick is already several
+     * frames. Three, because the cost of waiting is nothing (the user is still
+     * turning) and the cost of asking early is reading the PREVIOUS gesture's
+     * registers and calling a working parameter broken. */
+    const REFUSAL_JUDGE_TICKS = 3;
+    /* WITHOUT THE COUNTER THE DELAY IS ALL THERE IS, so it has to outlast the
+     * channel's own deadline. A param request gives up at 100 ms; a tick is
+     * ~23 ms, so three ticks (~70 ms) is INSIDE that window -- a write still
+     * in flight would be judged by the registers of the one before it, which
+     * is the bug this fixes, reappearing for exactly the consumers that
+     * cannot prove otherwise. A module binding this controller from its own
+     * ui_chain.js is in that position, so it waits longer instead. */
+    const REFUSAL_JUDGE_TICKS_NO_SEQ = 8;
+
+
+    /* THE REASON IN THE USER'S WORDS, not the enum's.
+     *
+     * The refusal codes are named for the code path that raised them, and one
+     * of them reached the device as "NOT LOCKED: UNKNOWN PARAM" -- which says
+     * nothing about what the user did or what to do instead, and reads as an
+     * internal error rather than as an answer. `unknown_param` means the chain
+     * has no such parameter to automate; `no_clip` means the step belongs to
+     * no clip; `store_full` means this lane is out of points.
+     *
+     * An unrecognised token is passed through rather than replaced: a code
+     * added later must still say SOMETHING, and a token is more use than a
+     * blank. */
+    const PLOCK_REFUSAL_TEXT = {
+        "unknown param": "can't automate this",
+        "no clip":       "no clip on this track",
+        "store full":    "lane is full",
+        "bad request":   "step not recognised",
+        "bad index":     "not a step on this grid",
+        "no bar":        "no bar on screen",
+        "no grid":       "step grid unknown",
+        "multi page":    "bar spans pages",
+        "outside clip":  "past the clip's end",
+        /* NOT "no clip on this track". A clip you just made is unnamed for the
+         * 8-12 s before Move writes Song.abl (measured), and telling the user
+         * there is no clip while they are looking at one reads as a broken
+         * feature rather than as a wait. */
+        "clip pending":  "new clip, try again in a moment",
+    };
+    function plockRefusalText(token) {
+        const t = String(token || "").trim().toLowerCase();
+        return PLOCK_REFUSAL_TEXT[t] || t;
+    }
+
+    /* WRAP AT THE FRAME, because a notice is a SENTENCE now.
+     *
+     * The old box was one line wide enough for its text or the frame, and it
+     * clipped in silence past that: "Step automation cleared" is ~138px in the
+     * 5x7 font against a 128px screen, so the last word simply was not there.
+     * Which is the same class of defect as the footer dropping a hint pair --
+     * a message that cannot say it did not fit.
+     *
+     * Greedy word wrap, measured with the caller's own textWidth so the answer
+     * is in PIXELS rather than characters; a single word too long for the line
+     * is left to overflow rather than broken mid-word, since every notice this
+     * draws is prose. Capped at three lines, which is 40px of a 64px screen --
+     * past that it is a screen, not a notice. */
+    const NOTICE_MAX_LINES = 3;
+    function noticeLines(ctx, text, maxW) {
+        const measure = (t) => (typeof ctx.textWidth === "function")
+            ? ctx.textWidth(t) : String(t).length * 6;
+        const words = String(text).split(/\s+/).filter(Boolean);
+        const lines = [];
+        let cur = "";
+        for (const w of words) {
+            const next = cur ? cur + " " + w : w;
+            if (cur && measure(next) > maxW) {
+                lines.push(cur);
+                cur = w;
+                if (lines.length === NOTICE_MAX_LINES) break;
+            } else {
+                cur = next;
+            }
+        }
+        if (cur && lines.length < NOTICE_MAX_LINES) lines.push(cur);
+        return lines.length ? lines : [String(text)];
+    }
+
     function drawNotice(ctx) {
         const n = s.notice;
         if (!n) return false;
@@ -4095,13 +4409,22 @@ export function createController(io = {}) {
         const W = fr && fr.w > 0 ? fr.w : (ctx.width || 128);
         const H = fr && fr.h > 0 ? fr.h : (ctx.height || 64);
         const text = String(n.text);
-        const tw = (typeof ctx.textWidth === "function") ? ctx.textWidth(text) : text.length * 6;
-        const w = Math.min(W - 4, tw + 8), h = 13;
+        const measure = (t) => (typeof ctx.textWidth === "function")
+            ? ctx.textWidth(t) : String(t).length * 6;
+        /* The widest line the box may hold: the frame less its border and the
+         * 4px of air on each side that `print` is offset by. */
+        const maxTextW = Math.max(8, W - 4 - 8);
+        const lines = noticeLines(ctx, text, maxTextW);
+        let widest = 0;
+        for (const l of lines) widest = Math.max(widest, measure(l));
+        const w = Math.min(W - 4, widest + 8);
+        const h = 5 + lines.length * 8;
         const x = fx + Math.floor((W - w) / 2), y = fy + Math.floor((H - h) / 2);
         ctx.fillRect(x, y, w, h, 0);
         ctx.fillRect(x, y, w, 1, 1); ctx.fillRect(x, y + h - 1, w, 1, 1);
         ctx.fillRect(x, y, 1, h, 1); ctx.fillRect(x + w - 1, y, 1, h, 1);
-        ctx.print(x + 4, y + 3, text, 1);
+        for (let i = 0; i < lines.length; i++)
+            ctx.print(x + 4, y + 3 + i * 8, lines[i], 1);
         return true;
     }
 
@@ -4132,6 +4455,8 @@ export function createController(io = {}) {
      * Skips a key that is being turned, for the same reason the value cursor
      * does (`settleUntil`): a read issued before the turn lands after it.
      */
+
+
     function refreshModulatedValues(p) {
         const modKeys = [];
         for (const k of p.keys) {
@@ -4267,7 +4592,7 @@ export function createController(io = {}) {
             const drawGrid = () => {
             if (knobsAsList()) { drawKnobsAsList(ctx, title, footer, pageChrome, footerBand); return; }
             renderPageMovy(ctx, {
-                page: page(), metaIndex: s.metaIndex, values: s.values,
+                page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
                 /* A custom UI page's body drawer — inert for every ordinary
@@ -4299,7 +4624,7 @@ export function createController(io = {}) {
                  * four cells cannot show which of the four is locked. Without
                  * this the lock marks would land on cells whose widget had been
                  * absorbed into a graphic. */
-                viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+                viz: vizEnabled ? vizGroupsForDecorations() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
                  * come from here: the renderer is pure and reads the clock off
@@ -4464,7 +4789,7 @@ export function createController(io = {}) {
 
         if (s.hintLines) {
             renderPage(ctx, {
-                page: page(), metaIndex: s.metaIndex, values: s.values,
+                page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: -1, layout: s.layout, rect,
                 drawCanvasPage: drawCanvasPageBody,
@@ -4477,7 +4802,7 @@ export function createController(io = {}) {
             return;
         }
         renderPage(ctx, {
-            page: page(), metaIndex: s.metaIndex, values: s.values,
+            page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
@@ -4492,7 +4817,7 @@ export function createController(io = {}) {
              * graphic replacing several slots with one picture would hide
              * which of them is locked, so graphics stand down while
              * decorations are active. */
-            viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+            viz: vizEnabled ? vizGroupsForDecorations() : [],
             /*
              * A CUSTOM UI PAGE's body drawer. Only a page carrying `canvas`
              * uses it, so this is inert for every ordinary page — and absent
@@ -4550,6 +4875,35 @@ export function createController(io = {}) {
      * base object untouched when nothing is live, so the common case allocates
      * nothing.
      */
+    /*
+     * THE VALUES A GRAPHIC DRAWS FROM WHILE A STEP IS HELD.
+     *
+     * Graphics no longer stand down (see vizGroupsForDecorations), and that is
+     * only right if they show the STEP's values: a picture covering four cells
+     * drawn from the track's values, under four bands reading the step's, is
+     * two answers to one question with the picture being the wrong one. It is
+     * also what the embed test caught -- a decoration stopped moving any pixel
+     * the moment the graphic it was covered by stayed on screen.
+     *
+     * Decorations only. The modulated values are handed to the renderers
+     * separately and have their own precedence there; folding those in here
+     * too let the live value beat the decoration in the Movy layout, which is
+     * the bug this comment exists to stop someone re-introducing.
+     */
+    function decoratedValues() {
+        if (!s.decorations) return s.values;
+        let out = null;
+        const p = page();
+        const keys = (p && p.keys) || [];
+        for (let i = 0; i < keys.length; i++) {
+            const d = s.decorations[i];
+            if (!d || d.value === undefined || d.value === null) continue;
+            if (!out) out = Object.assign({}, s.values);
+            out[keys[i]] = d.value;
+        }
+        return out || s.values;
+    }
+
     function liveValues() {
         for (const _k in s.modValues) return Object.assign({}, s.values, s.modValues);
         return s.values;
@@ -4643,9 +4997,68 @@ export function createController(io = {}) {
      * `ctx` is render()'s, plus `clearScreen`. Returns true when something was
      * drawn, so a caller that flushes conditionally can tell.
      */
+    /*
+     * GRAPHICS DO NOT STAND DOWN FOR A HELD STEP.
+     *
+     * They used to -- all of them -- on the argument written beside the old
+     * call site: "a graphic replacing several slots with one picture would
+     * hide which of them is locked". That reads plausibly and is not true.
+     * `drawLabelCell` is OUTSIDE render_page_movy's `covered[col]` guard, so
+     * every column draws its own label band whether or not a graphic covers
+     * its knob area -- and the band is exactly where a lock shows: inverted,
+     * carrying the locked value. A spanning graphic never hid the lock.
+     *
+     * What standing down DID hide was the module's own reading of the
+     * parameter -- a meter, a filter curve, a face -- at the moment the user
+     * is editing that parameter, replacing it with a generic dial. So the
+     * picture stays, the band says which cells are locked, and a one-cell
+     * widget draws the locked value itself (see liveValues).
+     *
+     * Kept as a named function rather than inlining `vizGroups()` at both call
+     * sites, so the next person to wonder about this finds the reasoning where
+     * the decision is, not in a commit message.
+     */
+    function vizGroupsForDecorations() {
+        return vizGroups();
+    }
+
+    /*
+
+    /*
+     * Sixteen cells across the width, one per step button: SOLID for a lock on
+     * a parameter of this page, a single pixel for one elsewhere in the slot
+     * -- "there is something here you cannot see from where you are" being the
+     * half that is missing entirely -- and the held step framed, so the panel
+     * also answers "which one am I on".
+     */
+    /*
+     * It RISES OVER THE FOOTER, and that is where the room is. The header is
+     * the held-knob readout -- the one line telling you which parameter you are
+     * changing -- and the grid is eight cells; covering either would take away
+     * what you are holding the step to see. The footer names gestures you
+     * already have your hands on, so for the length of the hold it is the
+     * cheapest nine rows on the screen.
+     *
+     * And it SLIDES, because appearing and disappearing in place over an
+     * existing band reads as a glitch: the motion is what says "this replaced
+     * the footer and the footer is coming back".
+     */
+    const LOCK_MAP_BOTTOM = FOOTER_Y + FOOTER_H;   /* 64 — the last row the footer owns */
+    const LOCK_MAP_H = LOCK_MAP_BOTTOM - RULE_Y;   /* 9 — the rule and the footer */
+    const LOCK_MAP_ANIM_MS = 110;
+    const LOCK_MAP_BLINK_MS = 620;
+
+
+
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
-        if (!peek) { const r = drawDeclaredCard(ctx); drawNotice(ctx); return r; }
+        if (!peek) {
+            const r = drawDeclaredCard(ctx);
+            /* Under the notice, over the card: a notice is a sentence about
+             * what just happened and must not be covered by a legend. */
+            drawNotice(ctx);
+            return r;
+        }
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
          * would leave it interleaved with the grid underneath -- two screens at
@@ -5044,6 +5457,13 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** The decorations in force -- a caller's own, or the step-held locks
+         *  this builds while a step is down. Read-only view, for the host's
+         *  screen reader and for tests: what the cells are showing is the only
+         *  honest assertion about a gesture whose whole purpose is display. */
+        get decorations() { return s.decorations; },
+        /** The step button under the finger, or -1. */
+
         /** Which instance of `level` is focused, zero-based. The editor
          *  hand-off needs it: without it the editor re-asks which child,
          *  when the grid already knows. */

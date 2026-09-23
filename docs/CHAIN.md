@@ -512,3 +512,988 @@ is 2026-03-04, `main` is 1696 commits ahead and the branch carries 864 of its
 own — so this is a re-implementation of its design on current `main`, not an
 independent invention of it. `send_fx_key.h` carries the same credit at the
 point the keys are parsed.
+
+### Automation lanes — a clip's knob moves, recorded and played back
+
+A **lane** records a parameter against the clip playing on a Move track and
+plays it back every loop. One lane is `(track, clip slot, target, param)` — the
+same `(target, param)` address the knob grid, the mod bus and the E16 surface
+already use — plus a *fingerprint* of the clip it was recorded against. Its
+content is an ordered list of breakpoints, each `(phase in beats from the
+clip's loop start, value in the parameter's own units)`.
+
+The pure model is `src/host/lane_store.{h,c}` (runnable from `tests/host/`); the
+`lanes:state` document is `src/host/lane_serial.{h,c}`; the glue that knows
+about `chain_instance_t`, parameter types and the mod bus is
+`src/modules/chain/dsp/chain_lanes.c`. `lane_tick` runs once per block from
+`render_block` **and** from the `mod:tick` branch on a silent slot — the shim
+skips `render_block` on a silent slot for 171 frames in 172, and a lane must
+keep playing through silence.
+
+#### It is ABSOLUTE, and that is why `chain_mod` grew an override class
+
+The lane *is* the value; the knob is the base underneath it. So
+`chain_mod_recompute_effective` computes
+
+```
+effective = clamp((override ? override : base) + Σ offset contributions)
+```
+
+One source per target may be flagged `is_override`. **LFOs still sum on top** of
+whatever the lane plays, exactly as they sum on top of the knob, and clearing a
+lane goes through the ordinary clear path (`chain_mod_emit_override` with
+`enabled = 0`), so the parameter **returns to the knob** with a forced write
+rather than sticking wherever the lane stopped. Nothing about write throttling,
+the change epsilon or base tracking on `set_param` is re-implemented: a lane is
+just another source.
+
+**An unarmed knob turn must not be inaudible.** Under an absolute lane a turn
+moves the base, which the override masks, and the encoder reads as broken. So an
+unarmed turn **punches through until the loop comes round** — per
+`(target, param)`, expiring when the phase wraps past where it started, so it
+survives a tempo change and needs no timer. An *armed* turn cancels any open
+punch on that lane, or the point just recorded would sit silent for a loop.
+
+#### VERIFIED END TO END ON HARDWARE (2026-09-13)
+
+Driven through the param channel with `schwung-testd`, against
+`bouba-kiki` in slot 0 — which is how recording and p-locks were verified
+without a hand on the device: a lane records from a **param write**, and an
+injected knob CC cannot produce one (the drain writes Move's mailbox, not
+Schwung's param channel).
+
+**A p-lock, with the transport STOPPED:**
+
+```
+SET_PARAM lanes:plock synth pinch 9.0 0.9   ->  lanes:plocked = 1
+GET_PARAM lanes:state                       ->  V 2
+                                                L synth pinch 0 2 8 12 3 50 1
+                                                P 9 0.899999976 1
+```
+
+Keyed to (track 0, slot 2) = T1 s3, the fingerprint matching the file's clip
+(loop 8..20, 3 notes, first note 50), one point, `hold = 1`.
+
+**And it reaches the synth, not just the mod bus.** `:effective` and
+`:modulated` prove only that an override is registered — this project has been
+burned by exactly that (`:effective` is the bus's own table). The independent
+witness is the plugin's own state blob:
+
+```
+synth:pinch            0.47   (the user's knob, untouched)
+synth:pinch:effective  0.9
+synth:pinch:modulated  1      <- the on-screen lane-driven mark reads this
+synth:state            {"pinch":0.9, ...}   <- the synth itself
+```
+
+`lanes:clear` then returned all four to 0.47 / 0 — the release reaches the
+plugin too.
+
+**Recording a pass**, armed by injecting Move's own Record button (`lanes:armed`
+went 0 → 1, LED `SOLID`), five writes ~0.7 s apart:
+
+```
+P 9.5416666666666679 0.100000001
+P 11.583333333333332 0.25
+P 13.625 0.400000006
+P 15.625 0.550000012
+P 17.583333333333336 0.699999988
+```
+
+**Those phases are CLIP time** — 9.54, not 1.54 — which is the clip-time change
+proving itself on the device rather than in a fixture. Playback interpolated
+along the curve (0.13 → 0.37 → 0.61 → 0.70, holding past the last point).
+
+Two things this also settled, both previously listed as unverified: the
+`:modulated` mark exists and reads 1, and the clip gained **no notes** from
+arming Record (`[50, 50, 60]`, loop 8..20 unchanged).
+
+#### Step p-locks: the arithmetic is done, the gesture is not
+
+A p-lock is **hold a step, turn a knob** — set a value *on* that step. Two
+pieces of it exist and are tested; the input plumbing is not written.
+
+- **A point can be a RECTANGLE.** `lane_point_t.hold` says "this value stands
+  until the next point" instead of ramping into it, because that is what a
+  p-lock is: under plain interpolation two neighbouring p-locks glide into each
+  other and sound like automation rather than a sequencer. It is **free** —
+  `{double, float}` is 12 bytes padded to 16 — and it is in the format now
+  precisely so nothing has to be migrated later. `stepped` (the parameter's
+  type) and `hold` (the point's own shape) are independent, and **the LEFT
+  point of a segment decides it**. A write within `LANE_MIN_POINT_BEATS`
+  replaces the shape along with the value, so recording a sweep over an old
+  p-lock produces a slope and p-locking over a recorded point produces a
+  rectangle. Serialized as an optional third field on the `P` line, absent
+  meaning 0, so an ordinary sweep's document is byte-identical to before.
+- **MOVE NAMES THE DISPLAYED PAGE ITSELF, and that is the whole mapping.**
+  `stepEditorScrollPosition` is the origin of the 16 buttons in quarters, per
+  clip, so a held step is `phase = scroll + step * step_resolution` —
+  `step_plock_phase_from_scroll()`. No bar, no signature, no page count: 4/4
+  and 11/8 are one code path.
+
+  It replaced a bar-and-page reconstruction that could only REFUSE a bar
+  spanning more than 16 buttons (`MULTI_PAGE`), which is every bar of an 11/8
+  set at 1/16 — 22 steps — so p-locks did not work at all there. The bar form
+  survives for a clip the file has never seen.
+
+  **The live strip is the cross-check**, because the scroll is as old as
+  Move's last save: where the strip names a bar the scroll must fall inside
+  it, and where they disagree the live reading wins. That check is what
+  correctly rejects a scroll sitting at the loop end — Move lets you page onto
+  the `+` beyond a clip, which is a bar that does not exist yet.
+- **A TRIPLET GRID DEACTIVATES EVERY FOURTH BUTTON**, so a page is 12 steps
+  across 16 buttons and `button != step` (button 4 is step 3, button 14 is
+  step 11; button 3 refuses). Measured: at 1/16t one right-arrow moved the
+  scroll 0 → 2.0, exactly 12 × (1/6). Carried as a flag beside the
+  resolution because the DURATION cannot reveal it — 1/16t and a straight
+  1/24 are both 1/6 of a quarter. Without it every value from the fourth
+  button on lands progressively early, which reads as "triplets drift".
+- **The Step Grid is GLOBAL PER SET** (Move's manual), so parsing it once at
+  song level is right and there is no per-clip grid to miss.
+- **A P-LOCK EDITS THE SELECTED CLIP, NOT THE PLAYING ONE.** The live identity
+  decodes PLAYBACK and says `clip_slot -1` for a stopped track — correct for a
+  lane's position gate, and wrong here, because step editing is mostly done
+  stopped. Move records the selection as **`isPlaying` on the clip**, which
+  survives a stop and names the clip `Shift+Step 14` just created:
+  `clip_regions_selected_slot()`. Prefer the live answer while something is
+  playing, the file only when nothing is.
+- **The bar strip's vocabulary** (manual): a **thick** segment is the selected
+  bar *in* the loop, a **thin** one is in the loop but not selected, and a
+  **`+`** is a bar *outside* it. A one-bar loop draws thin with no thickening,
+  so `bold_segment` is 0 there — which is also how the strip says "I cannot
+  name a bar". `step_strip_displayed_bar()` is the one place that tells those
+  apart, via `single_thin`; reading `bold_segment` directly refused every
+  single-bar clip.
+- **A refusal can name itself.** `lanes:plock_reason` reports the last refusal
+  per slot (`no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`,
+  `bad_request`, or `ok`). The translation runs on the SPI callback where
+  `shadow_log()` is a no-op, so without this a p-lock that did nothing offered
+  one bit — `lanes:plocked` staying 0 — for five distinct causes, and one
+  defect hid another.
+- **`lanes:plock_step` IS THE GESTURE'S KEY**, and the step→phase translation
+  happens **once**, shim-side, because every fact it needs lives there: the
+  displayed bar (the strip's `bold_segment`), the grid and signature
+  (`clip_regions`), and the clip's length. The UI passes only
+  `"<target> <param> <step> <value>"`, so neither it nor the chain carries a
+  copy of the arithmetic — this feature has already paid twice for computing
+  one fact in two places.
+  **Verified on hardware:** under 4/4, `lanes:plock_step synth pinch 4 0.81`
+  produced `P 1 0.810000002 1` — phase 1.0, keyed to the live clip with its
+  fingerprint — and under 11/8 the same call was refused, because 22 steps to
+  the bar is not placeable on 16 buttons.
+  **It must be translated in BOTH param paths.** The first version lived only
+  in `shadow_direct_set_param` (the web UI's ring buffer), so the key the
+  gesture will actually use went through the SHM handler, fell through to the
+  chain — which serves `lanes:plock`, not `plock_step` — and was dropped with
+  *no log line at all*, because the branch was never reached.
+- **The bar must come from a CURRENT reading of the SAME track.** The strip
+  reports whichever track's editor it last decoded, and a stale or foreign
+  `bold_segment` would place the p-lock on a bar the user is not looking at.
+- **THE GESTURE IS BUILT AND VERIFIED END TO END.** `step_observe` has the shim
+  forward Move's step notes to the UI; the UI remembers which is held and, on a
+  knob **commit**, writes `lanes:plock_step`. Driven entirely by the harness —
+  long-press Track 1, jog click into the component, hold note 20, turn CC 71 —
+  it produced `P 1 0.0350000001 1`: bar 1 step 5, the value the knob made, a
+  rectangle, keyed to the live clip. Under 11/8 the same gesture is refused and
+  the log names the reason.
+- **The forward is PASSIVE, so a p-lock also toggles a note.** Nothing is
+  withheld from Move (measured: a step press took the clip 3 notes → 4 → 3).
+  Withholding needs a latched both-edge swallow in the MIDI filter, whose
+  failure mode is a stuck button or a note Move never sees released. Undo fixes
+  a stray note; a stuck filter does not, so that is its own change — and it now
+  has a harness that can test it (`inject_as_hardware`).
+- **The write hook WRAPS `setParam`, it does not sit on one call site.** A knob
+  turn's write is DEBOUNCED through `flushDueWrites`, so hooking the immediate
+  commit missed the very gesture it exists for: the parameter moved on the
+  device and the hook never fired. Six write sites today, and six will not stay
+  six.
+- **A MODULE THAT DRAWS ITS OWN SCREEN COULD NOT P-LOCK, and the decision had
+  to move below the UI.** Both halves of the gesture lived in the host's
+  param-pages path: `onValueWritten` is part of the io the HOST builds, and
+  `reconcileStepObserve()` arms `step_observe` only while `VIEWS.PARAM_PAGES`
+  is up. A module binding the controller from its own `ui_chain.js` (9W9,
+  via `createController`) supplies its own io and runs in `COMPONENT_EDIT`, so
+  it had neither. **Recording worked there the whole time** —
+  `lane_on_set_param` intercepts every component write, whatever UI made it —
+  which is exactly what made this read as a module bug rather than ours. Same
+  shape as the enum peek, which lived in the same layer and was invisible to
+  the same modules.
+
+  So a component write made while **exactly one** step is held is also a
+  p-lock, decided in `shadow_lanes_plock_from_write()` where every write
+  already passes. The live write still happens first, so the knob sounds as it
+  would with no step held; this only adds the breakpoint.
+
+- **A RECORDING PASS IS NEVER CONVERTED, and that is why the first attempt was
+  reverted.** It added a p-lock after every component write while a step was
+  held. A p-lock writes a RECTANGLE at one phase; recording writes a SLOPE
+  across a span — into the same lane — so a stale or incidental held step
+  punched stepped points through a take as it was being recorded. The report
+  was not "the p-lock did nothing" but *"or even automation? worse than
+  before"*, which is the worse failure of the two. The guard asks the chain
+  `lanes:recording`, which IS the record branch's own condition
+  (`lane_is_recording`), never a host-side restatement of it; **a failed read
+  is not a "no"**.
+
+- **`no_bar` ON A MODULE'S OWN UI WAS A STATE ARTIFACT, not a structural
+  blocker** — and believing otherwise cost the revert. Measured with 9W9 up on
+  its own screen and its clip playing: `step_strip valid=true reject=0 track=1
+  segments=1 single_thin=1`, and `lanes:plock_step synth bd_c_drive 3 100`
+  landing as `P 0.75 100 1`. The strip is decoded from `pin_display_frame()` —
+  the PIN scanner's reassembly of MOVE's frame, upstream of Schwung's
+  compositor — so it survives Schwung owning the OLED. What it does NOT
+  survive is the selection: the strip shows ONE track, and it is only a bar
+  when that track is the slot's.
+
+- **THE GESTURE IS SILENT BY NATURE, so it needs a MARK.** A p-lock changes
+  nothing audible until the loop reaches that step, so "did that work?" had no
+  answer on any screen — and eight p-locks that landed correctly on hardware
+  were reported as the feature not working. That is worse than a refusal,
+  which at least names itself in `lanes:plock_reason`.
+
+  `shadow_control_t.plock_seq` is bumped once per **accepted** p-lock — asked
+  of the chain via `lanes:plocked`, never assumed from "we forwarded it", or
+  the mark would appear for an unknown param or a full store. All THREE write
+  paths confirm (write-time, SHM, direct/web) or the gesture reports itself on
+  some screens and not others. `drawPlockMark()` draws the knob grid's own
+  mod-dot plus, top right, for 600 ms, from the overlay block **after** the
+  view switch — which is what puts it over a module's own frame too. It is
+  read straight out of SHM: a `lanes:plocked` param read per frame is ~2.8 ms,
+  more than a whole page render.
+
+- **HOLD A STEP AND SEE WHAT IS LOCKED ON IT** — the READ half, which did not
+  exist while the write half worked. You could set a value on a step and never
+  see one again, which is most of why a working gesture was reported as broken.
+
+  `<target>:<param>:held` is answered by the SHIM, because the held step and
+  the step→phase arithmetic both live there and the chain knows only phases;
+  the chain evaluates its lane at that phase (`lanes:probe`) and answers
+  `"<value> <exact>"`. **`exact` is a separate fact**: it says a point SITS on
+  that step (within `LANE_MIN_POINT_BEATS`, the window `lane_write` replaces
+  in) rather than the curve merely passing through, so "turning here edits
+  this point" is what the mark means. Every kind of "no" — no step, two steps,
+  a step the strip cannot place, no lane, nothing at that phase — is the EMPTY
+  STRING, and none of them is the value 0.
+
+  **The window goes with the question.** `lane_eval` answers nothing for a
+  `loop_len` of 0, and the chain's live geometry IS 0 whenever the transport
+  is stopped — which is when step editing is mostly done, so the first version
+  read "nothing locked here" for every p-lock on a stopped clip. The host
+  passes `[0, clip_len)`, which it has already computed for the translation's
+  own OUTSIDE_CLIP bound. Verified on hardware, transport stopped: step 0 →
+  `101 1`, step 2 → `101 0` (the curve holds, no point there), step 4 →
+  `109 1`, a parameter with no lane → empty.
+
+- **THE GESTURE IS ELEKTRON'S, and two of its rules were missing.** Holding a
+  trig shows what that step will play; an encoder turn continues **from the
+  value on screen**; releasing returns the display to the track's values; and
+  **the track value is not what a trig-held turn changes.**
+  - The turn seeds from the lock (`heldValues`) rather than the base, or the
+    first detent jumps from a number you can see to one you cannot and then
+    p-locks the jumped value. An unlocked param under a held step still seeds
+    from the base — also Elektron: the first turn CREATES a lock from what the
+    track is doing.
+  - A landed p-lock **REPLACES** the live write rather than accompanying it.
+    The first version applied both, so one gesture silently changed two things
+    and the one you did not ask for is the one that plays on every other step.
+    Only a p-lock that LANDED suppresses the write: a refusal falls through to
+    the ordinary write, so a knob never goes dead for a reason nothing states.
+  - The optimistic value cache follows the same rule (`cacheWritten`), or the
+    base cache ends up holding a number that belonged to one step — and
+    nothing re-reads a key that already has a value until the cursor comes
+    round, so the knob would keep walking from it after the finger came off.
+  - `knobStates` for locked keys are dropped when the finger moves between
+    steps or comes off one, because the knob engine seeds once and then walks
+    its own state.
+
+  The display is the renderer's existing `decorations[slot] = {locked, value}`
+  — the sequencer parameter-lock path, whose own comment already said "on the
+  step-held view, where locks are read". **A caller's own decorations win**;
+  `heldDecOwned` is what lets the release clear only what the grid installed.
+
+- **Which step is held comes from the SHIM, not from an io hook**
+  (`shadow_control_t.held_step`, a byte; `shadow_get_held_step()`). The shim
+  already decides it for the write side, so the value shown and the value a
+  turn replaces cannot disagree — and a hook only the host's io supplied would
+  have been invisible to every module-drawn grid, which is the mistake this
+  feature has now made three times. Verified on hardware: step note 20 →
+  `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
+  guard).
+
+- **A P-LOCK ENDS AT ITS OWN STEP — "you're just editing a step".** A held
+  point used to stand until the next point, and the "before the first point"
+  rule held it BACKWARDS to the start, so one lock at step 4 was the whole
+  bar: measured on the device, all sixteen steps reported the locked value and
+  playback was already at it before phase 1. That is what an automation lane
+  does; it is not what locking a step means, and the in-product help promised
+  the second one.
+
+  `lane_point_t` carries a **`span`**, and a spanned point owns
+  `[phase, phase+span)` and nothing else. Outside every span the lane answers
+  as if the spanned points were not in the array — which is what lets a
+  recorded sweep keep playing underneath a lock, and what makes a lane of
+  nothing but locks go SILENT between them so the knob owns the parameter
+  again. **Zero is the legacy meaning** (hold until the next point), so every
+  lane already on disk behaves exactly as it did and a recorded sweep never
+  has a span at all.
+
+  **The step LENGTH comes from the host**, which is the only side that knows
+  the grid — the chain is told, never asked to work it out, the same split as
+  the phase. It rides in `lanes:plock` as an optional field BEFORE the value
+  (the value is whatever remains verbatim, since an enum option can contain
+  spaces), told apart from a value by requiring both a number there AND
+  something after it. Serialized as an optional FOURTH field on the `P` line,
+  written only when a held point has one.
+
+  Verified on hardware: `P 1 0.899999976 1 0.25` stored for step 4 of a 1/16
+  grid, `<key>:held` empty on steps 0, 2, 3, 5, 8 and 15, and in pixels —
+  holding the locked step changes 360 bytes of the panel, holding its
+  neighbour changes **zero**.
+
+- **A P-LOCK PLAYS ON THE FIRST PASS, and it used not to.** Reported from the
+  device as "they seemed to need a loop first", and that was exactly right:
+  `punch_until_wrap` hands a parameter to the knob until the clip wraps, and
+  it is set by an unarmed component write under an existing lane. The old
+  gesture wrote the VALUE and the LOCK, so the value write punched the lane
+  out and the lock — correctly stored — was silent until the loop came round.
+
+  A landed p-lock replaces the live write now, so nothing punches. A REFUSED
+  one still writes the value and still punches, which is the right way round:
+  no lock was stored, so the turn must be audible. Both directions are in
+  `tests/host/test_chain_lanes_playback.c`, including that an unarmed turn
+  still punches — without that control the first assertion could pass for
+  reasons having nothing to do with the punch.
+
+- **REMOVING ONE STEP'S AUTOMATION: hold DELETE, then PICK.** There was no
+  grain for this at all — `clear`, `clear_clip`, `clear_param` and
+  `clear_target` each take a whole lane or more, so getting rid of one bad
+  p-lock meant throwing away that parameter's entire automation.
+
+  Elektron removes a lock by **pressing the encoder** of that parameter, and
+  **Move has no encoder press** — the only press is the jog. So the gesture is
+  the one this grid already uses for instance copy/clear: with a step held,
+  **Delete arms**, a **knob touch picks** that parameter, and **releasing
+  without a pick takes the whole step**. The notice says so, because a gesture
+  nobody can discover is one nobody uses. The pick is on the TOUCH, not a
+  turn: a turn under a held step writes a p-lock, so asking for one would
+  create the thing it is meant to remove.
+
+  **Delete must be claimed even when the module has no child levels**, or it
+  falls through to Move, which deletes the CLIP. That check sits before
+  `instanceLevel()` for exactly that reason.
+
+  `lanes:clear_point` takes `"<phase>"` (every lane of the clip) or
+  `"<phase> <target> <param>"` (one), and the host translates the held step
+  through the SAME function the write uses, so a clear and a p-lock cannot
+  disagree about which step is which. A point is "on" the step within
+  `LANE_MIN_POINT_BEATS` — the window `lane_write` replaces in — and a
+  recorded point sitting there goes too: refusing exactly where a sweep
+  crosses a visible step would be worse than a curve with one fewer
+  breakpoint. **A lane emptied this way is freed and its override released**,
+  or the parameter stays stuck at the value it last drove instead of returning
+  to the knob. Undo takes the whole store, like every other clear verb.
+
+  **Verified on hardware:** two locks on step 9 and one on step 11; clearing
+  one parameter left the other's lock reading `55 1` and turned the cleared
+  one's answer to `55 0` (the curve still passes, no point there); clearing
+  the rest emptied it; step 11 still read `55 1`.
+
+- **A STEP IS TWO GESTURES AND THE RELEASE SAYS WHICH: tap toggles the note,
+  hold locks the parameter.** The grid withholds every bare step press so that
+  locking a value does not also write a note — and swallowing it outright took
+  Move's own step editing away for as long as the grid was on screen: while
+  Schwung was up you could not put a note on a step at all. Elektron splits the
+  same button the same way, so the press is DEFERRED rather than swallowed
+  (`step_note_withhold`, `STEP_TAP_MS` = 250). Under the threshold Move is
+  handed the press and release it never saw, synthesised into the free tail
+  **after** `shadow_midi_in_compact()` (where the slots are contiguous and
+  nothing above may still be pairing `sh[j]` with `hw[j]`), note-on in one
+  frame and note-off in the next. Over it, Move is told nothing: that is a
+  **lock trig** — automation on a step with no note.
+
+  Both swallow sites take the decision through one function, because a tap can
+  end *after* the grid is dismissed and is still a tap. A release with no
+  recorded press replays NOTHING, or a latch surviving a redeploy puts a note
+  on a step nobody touched.
+
+  **Verified on hardware** by counting notes in `Song.abl`: a 1.5 s hold left
+  the clip at 25 notes, a 90 ms tap took it to 24, and another tap restored it.
+
+- **THE WHOLE GESTURE IS VERIFIED IN PIXELS, ON BOTH KINDS OF GRID**, by
+  locking every parameter of a module at one step through the test bus,
+  holding that step, and diffing the OLED (`/dev/shm/schwung-display-live`):
+
+  | module | grid | bytes changed while held |
+  |---|---|---|
+  | hank (no `ui_chain.js`) | the HOST's `PARAM_PAGES` | 564 |
+  | 9W9 (`createController` from its own `ui_chain.js`) | its own | 278 |
+
+  In both the label bands become inverted strips carrying the locked value.
+  (The dials *jumped* to it at the time; see the next bullet for why they no
+  longer do.)
+
+- **A LOCK IS SHOWN THE WAY MODULATION IS: the pointer keeps the BASE and the
+  mark rides at the step's value.** The lock used to replace the pointer,
+  which made one picture mean two different things — while you held the step
+  the pointer was the step's value, and while the lane played it back the
+  pointer was the base with a mark at the driven value. Same cell, two
+  grammars, and the user has to know which mode they are in to read it.
+
+  Now they are the same picture. Rendered side by side, "an LFO is driving
+  this to 0.1" and "this step plays 0.1" are pixel-identical in the knob:
+  pointer at 0.9, mark at 0.1. What a held step adds is the corner mark and
+  the inverted band, which say *which step* rather than *what value*. **The
+  mark is also what moves as you turn**, because the value being set is the
+  step's, not the track's — and a widget that can only show one value shows
+  the lock, for the same reason it shows a modulated value. Both had to be checked: the host grid and a
+  module-drawn one differ in exactly the layer that has now hidden four
+  separate facilities from module-drawn grids.
+
+  **Locking 40 keys hit the store**: 31 landed and the rest were refused
+  `store_full` against `LANE_MAX` 32, which is the cap doing its job.
+
+- **`step_observe` HAD TO BE ARMED FOR A MODULE-DRAWN GRID TOO, and this is the
+  fourth instance of one blind spot.** It asked `view === VIEWS.PARAM_PAGES`
+  alone, so on 9W9 — which draws its grid in `COMPONENT_EDIT` from its own
+  `ui_chain.js` — no step was forwarded to the UI and **no step was withheld
+  from Move**. It fails silently in both directions: no p-lock gesture, and
+  every press toggling a note. Measured before the fix: a 1.5 s hold ADDED a
+  note and a tap removed one, i.e. Move receiving every press as if the grid
+  were not there. The condition is now the same "a module owns this screen"
+  test `reconcilePadBlock` uses, so the two cannot drift. A p-lock is a CHAIN
+  gesture — any component's parameter can be locked — so which UI draws the
+  knobs cannot decide whether a held step means "lock this".
+
+- **The shadow UI had no observable for its own view**, which is why driving it
+  from a harness was guesswork — and why a `ReferenceError` in a reconcile
+  (`currentView`; the variable is `view`) went unnoticed while it aborted every
+  tick. There is a throttled `ui_view:` line now, behind the debug flag.
+
+#### Recording on a clip Move has not saved yet
+
+The hole: make a clip, press Play, try to record automation — refused. `T1 -`,
+`loop_len 0.00`, `has_phase false`. The clip reaches `Song.abl` about **10 s**
+later (measured), and until then there is no length, so no phase, so nothing
+records.
+
+It closes with the two facts arriving from two places at two times:
+
+1. **The length, now, from Move's own screen.** `shadow_slot_clip_phase` falls
+   back to `step_strip_segments_for_track()` when the file has no entry for the
+   live clip: `loop_len = segments × quarters_per_bar`, `loop_start` **assumed
+   0**. Both limitations are real — bar resolution, and an origin the strip
+   cannot show — and honest for a clip just made, whose loop is a whole number
+   of bars starting at bar 1.
+2. **The identity and the true origin, later, from the file.** When the clip
+   appears, its notes identify it and its `loop.start` places it. A lane
+   recorded blind is **adopted**: every point is shifted by the real
+   `loop_start` and the fingerprint is stamped, in one step, with the number
+   that just arrived rather than a guess (`lane_adopt_fingerprint`).
+
+- **`fp_valid == 0 with a valid phase` IS the provisional signal**, and it
+  needs no new argument on a seam that cannot safely take one (`dlsym`, the
+  breakbeat drift). It is a state that could not otherwise occur: the
+  fingerprint is filled in *before* the anchor is even checked.
+- **Adoption is scoped to THIS SESSION's blind takes** (`origin_pending`, never
+  serialized). An absent fingerprint on disk and a blind take are the same
+  bytes and must not be the same decision — adopting the loaded one would bind
+  a lane to whatever clip later occupied its position and play it. The cost is
+  a reboot inside the 10 s window: that take stays at its assumed origin, goes
+  stale, and is silent until re-recorded.
+- **It refuses** an already-identified lane (structurally — the fingerprint is
+  no longer absent, so it is idempotent and cannot be hijacked), an absent
+  incoming fingerprint (a no-op that would still clear the pending state), and
+  a non-finite or negative `loop_start`. Every refusal leaves the lane exactly
+  as it was, still adoptable: a bad answer now must not cost the chance of a
+  good one later.
+- **A live pass's `rec_last_phase` moves with its points**, or the next write
+  erases a span the gesture never swept.
+- **A blind take PLAYS while it is unidentified.** That is not a hole in the
+  staleness rule: the lane is at the position that is playing and nothing else
+  can be there. Staleness is for a position holding a *different* clip, and
+  establishing that needs a fingerprint.
+- **No strip reading, no answer**, and no anchor, no answer. The fallback is a
+  reading, not a guess.
+- **THE PROVISIONAL LENGTH IS ±1 BAR, and that is bounded by WHEN it matters.**
+  The strip's count can exceed the loop by one (Move draws the next bar it
+  offers you), so a blind take's length can be a bar out. A length is only used
+  at the **wrap**: inside a single pass the phase is monotonic and correct
+  whatever the length is, and a clip younger than ~10 s at, say, 120 BPM has
+  usually not completed one pass. So a blind take recorded in the first pass is
+  right; a longer one can wrap early or late, and the honest remedy is to
+  record it again once the clip is in the file. Adoption fixes the ORIGIN, not
+  a length the points were already computed against.
+
+#### A point is CLIP TIME, and the loop is a WINDOW over it
+
+Measured in Move's own file (2026-09-12), a clip whose `region`/`loop` is
+`8.0 .. 20.0`:
+
+```
+"region": { "start": 8.0, "end": 20.0, "loop": { "start": 8.0, "end": 20.0 } }
+notes:    startTime 0.0, 9.5, 16.5      <- absolute from the CLIP's start
+```
+
+The note at 0.0 sits **outside** the loop and does not play. So notes are
+absolute clip time and the loop is a window over them — and a lane stored in
+that same coordinate makes *"the automation lines up with the notes"*
+definitional rather than something the host maintains.
+
+**Loop-relative storage was the first design, and it was wrong in two ways.** A
+sweep recorded one beat into that loop was stored as `1.0` instead of `9.0`, so
+opening the loop out to the whole clip replayed it at beat 1 — two bars early,
+on different notes. And a step p-lock has the same problem in reverse: *"bar 3,
+step 5"* cannot be turned into a loop-relative phase at all without knowing
+where the loop begins. The counter-argument — that `loop_start` is unobservable
+for a clip Move has not saved yet — holds only for the save latency, which is
+**10 s measured, not the ~35 s long assumed**.
+
+- **The unit is the QUARTER NOTE, and that is what makes it signature-proof.**
+  Changing the set to **11/8** changed not one number in `Song.abl`: the same
+  clip stayed `8..20`. An 11/8 bar is 5.5 quarters, so that 12-quarter loop is
+  ~2.18 bars. The signature is therefore needed **only to convert bars**, which
+  is the strip reader's problem alone (`quarters per bar = upper * 4 / lower`).
+  It lives in the file **per clip** *and* song-wide — and for a brand-new clip
+  the song-level one is available even though the clip is not.
+- **Points outside the window are dormant, never deleted** — the same rule as a
+  shrunk clip, generalised from a prefix to a window. A point *below*
+  `loop_start` is dormant too, which a prefix test `[0, loop_len)` got wrong.
+- **A recording pass wraps at the WINDOW.** The swept span is
+  `(prev, loop_start + loop_len)` then `[loop_start, phase)`. Erasing from 0
+  instead would delete automation on the bars *before* the loop — material the
+  gesture never touched, invisible from inside the loop, and audible the moment
+  the loop is opened out.
+- **`lane_pass_travel` checks window membership BEFORE direction.** A `prev`
+  outside the current loop cannot have been swept from inside it, and that is
+  just as true walking forward: prev 2.0 to phase 8.2 on a loop of 8..20 reads
+  as a tidy 6.2 beats, with only the gap threshold downstream stopping it from
+  erasing two bars.
+- **The seam did NOT grow an argument.** `chain_set_clip_phase` is dlsym'd, so
+  adding a parameter is the one change that cannot be made safely — a chain
+  `.so` and a shim disagreeing about a signature is the breakbeat header drift
+  that boot-looped a device, and the callee would read an uninitialised
+  register as a loop start. The window's start is taken from **`fp[0]`**, the
+  fingerprint's geometry half, already pushed in the same call from the same
+  parse. A valid phase implies `fp_valid`, so the window is never unknown while
+  the phase is known.
+- **The document is `V 2`, and a `V 1` one is REFUSED rather than migrated.**
+  That is a fact about this feature's history, not a policy: the format never
+  left this branch, so the only v1 documents in existence are the author's own
+  tests. The version is compared for **equality** so the refusal is loud — the
+  two coordinates are indistinguishable per point, so a tolerated v1 would
+  place every breakpoint wrong while looking healthy. If a migration is ever
+  needed it is exact: each lane's header line carries the `loop_start` it was
+  recorded against.
+
+#### Time-addressed, with no length of its own
+
+Clip length is mutable from Move's step editor and extending a clip by adding a
+note past the end is routine, so:
+
+- breakpoints are stored **unbounded**; the lane has no length, only the clip's;
+- playback wraps at the clip's **current** `loop_len`;
+- **nothing is ever rescaled.** Stretching a lane to a new length turns a filter
+  sweep into a different filter sweep — the musically wrong answer even though
+  it is the tidy-looking one;
+- evaluation considers **only points below `loop_len`**, and holds at both ends
+  rather than interpolating across the wrap. A dormant point past the end is
+  **retained** but cannot bend the audible curve — and in particular cannot do
+  so through wrap-around interpolation, which is how a hidden point would
+  otherwise become audible while appearing nowhere on screen.
+
+Growing a clip reveals what was recorded there; shrinking it hides the tail;
+neither loses data. Interpolation is linear for floats and **stepped for int and
+enum**, from the module's own `chain_param_info_t` rather than from anything the
+lane stored — a parameter that changed from float to enum must not keep ramping
+across its options.
+
+#### Move's clips carry no identity, so a lane can only be keyed to a POSITION
+
+A clip in `Song.abl` has `name` (usually `""`), `color`, `region`, `grooveId`,
+`stepEditorScrollPosition`, `notes` and `envelopes` — **no id, no uuid**. A lane
+therefore cannot be bound to "this clip". It is bound to a grid position plus
+evidence about what was there when it was recorded:
+
+```
+key         = (set, track, clip slot, target, param)
+fingerprint = (loop_start, loop_len, note count, first note)   at record time
+compared    = (note count, first note)                         only
+```
+
+**Only the content half is compared.** The note count catches a copy of a
+same-length clip; the first note catches a same-length same-density different
+clip. **Neither loop field is**, and that is the same decision twice: a clip
+that grew is the same clip, and so is a clip whose loop area the user dragged.
+Going stale on either is **silent** — the automation simply stops, with no
+gesture short of re-recording the pass that brings it back — and a moved loop
+costs the lane nothing, because phases are stored **loop-relative**
+(`shadow_slot_clip_phase` subtracts `loop_start`). Clip-relative storage was
+considered and rejected: `loop_start` is observable by nothing for a clip just
+made and then edited, so re-origining would have to guess and would put every
+value a bar out while looking healthy. Both loop fields are recorded for
+**diagnostics only**.
+
+**IDENTITY IS CONTINUITY; the fingerprint is the tiebreak for the
+discontinuous case.** A content mismatch while the lane is NOT orphaned is an
+EDIT — the lane re-stamps its fingerprint and plays on. That rule replaced
+"any content change is a replacement", which cost more than it bought:
+`note_count` plus `first_note` means **adding or deleting ONE note** read as a
+replacement, so a clip's automation went silent the moment anyone edited it.
+Measured on hardware — a lane driving at 0.9 with `:modulated` 1 read the
+knob's 0.47 and 0 after a single step press. Editing notes, copying a bar and
+deleting notes are most of what anyone does to a clip.
+
+A clip that was really replaced went through a **deletion**, which the worker's
+before/after parse reports as `orphaned` — and an orphaned lane still refuses a
+stranger, still comes back when the original clip does, and a lane carrying the
+**absent** fingerprint is excluded from re-stamping entirely (it was never
+identified, so there is nothing to call an edit of; those go through
+`lane_adopt_fingerprint`, which demands that this session recorded them blind).
+
+The hole this leaves, stated plainly: a clip deleted and recreated in the same
+slot **inside one save window (~10 s)** shows no deletion to the worker, so the
+lane treats it as an edit and plays on the new clip. That is worse than silence
+when it happens, and rarer than editing a note, which is the failure it
+replaces — and Move's own Copy lands in the next FREE slot rather than over an
+existing clip.
+
+On a mismatch of the kind that remains, the lane is **stale: retained, silent,
+and never guessed at.** A
+clip copied into a slot that once held automation does not inherit it. A match
+clears both `stale` and `orphaned` — the clip coming back is an undo, and there
+is no gesture in the UI that would otherwise un-strand a lane. A *mismatch* only
+ever sets `stale`, because `orphaned` is a statement about the clip's
+**existence** and only the worker's before/after parse can make it. No
+fingerprint at all is a third answer and marks nothing either way; the absent
+fingerprint is `{note_count: 0, first_note: -1}`, never all-zero, because note 0
+is a real note number and, with no loop field compared, a zeroed `first_note`
+plus a zeroed count would match the first clip the lane ever met.
+
+A **deleted clip orphans its lanes; it does not delete them.** Move saves
+`Song.abl` about 35 s after an edit, so "absent from the file" is a statement
+about the last save and not about the user's intent. Pruning is only ever an
+explicit `Clear Lanes`.
+
+(`envelopes[]` in `Song.abl` is **Move's own** clip automation. We never read or
+write it. Do not reuse the word "envelope" for a lane.)
+
+#### Phase is DLSYM'd into the chain, never a `host_api_v1_t` field
+
+`chain_set_clip_phase(instance, valid, phase_beats, loop_len, track, clip_slot,
+fp_valid, fp[4])` and `chain_set_clip_deleted(instance, track, slot)` are
+default-visibility exports of `dsp.so`, resolved in `shadow_chain_mgmt.c` and
+called from the shim's per-slot loop. **Not** fields on the host struct: the
+front of its `reserved` tail is **+120**, the offset a shipped breakbeat build
+over-reads and calls as `get_project_bpm()`, so a live pointer there boot-loops
+the device (`CLAUDE.md`, `src/host/plugin_api_v1.h`). The fingerprint crosses as
+four doubles so the shim never has to agree with `lane_store.h`'s layout.
+
+**Unknown phase refuses, and is never phase 0.** Phase has three answers — a
+number, "nothing is playing", and "I could not tell" — and the third reaches the
+chain as a refusal. It is stored as **NaN**, not as the caller's zeroed local:
+`0.0` is a legal phase (the loop start), so a reader that forgot the
+`clip_phase_valid` gate would otherwise play every lane's first breakpoint
+forever, in silence. With no phase, `lane_tick` releases everything it drives —
+once, which is what `driving` is for — and ends every recording pass.
+
+#### Recording: a pass ERASES the span it sweeps
+
+The arm is **Move's own Record button**, decoded from its LED on cable 0
+(`src/host/rec_arm.h`) and pushed to each slot as `lanes:armed` **on change
+only**. Three rules, measured on hardware 2026-09-12:
+
+- Record is **CC 86**. Not 118 — `schwung-spi` documents 118 as the same
+  physical button as Sample, and 118 never appeared in the arm sequence.
+- The **animation is carried in the channel nibble** (0x06–0x0F) and the value
+  byte is the colour it animates to. Any animation channel means *flashing* —
+  armed, or counting in — and records nothing, so no rate measurement and no
+  colour comparison is needed.
+- **Static alone does not mean recording.** The resting state is static and
+  non-zero too (122 and 124 were both observed). The discriminator is **full
+  brightness**, `d2 == 127`, read as a brightness rather than as a palette
+  index. And it is evaluated **once per frame, from the last CC 86 in it**:
+  Move writes the base colour statically and *then* applies the animation, so a
+  burst contains `static 127` immediately followed by `blink`, and acting on
+  each message in turn reports one frame of RECORDING every time a count-in
+  starts. One frame is enough to record a breakpoint.
+
+While armed *and* the phase is known, a write to a parameter that resolves
+through `find_param_by_key` creates a lane implicitly and records a breakpoint
+at the phase sampled **on the callback at the moment of the write** — a UI frame
+is ~23 ms and a knob sweep is faster than that, so frame-time phase would
+quantize a sweep into steps. A key too long for `lane_t`'s fields is **refused,
+not truncated** (two over-length keys would collide onto one stored string), and
+a full store records nothing rather than pretending to.
+
+**Playback cannot record itself**, structurally rather than by a flag:
+`chain_mod_set_param_string` writes the sub-plugin's `set_param` directly and
+never re-enters `v2_set_param`, which is the only caller of the recorder. If
+that ever stops being true a lane compounds its own curve every loop, silently
+and worse every bar; the unit test asserts it.
+
+**A second pass over an existing lane erases the span it swept.** That is
+`lane_record_point`, and it is *not* `LANE_MIN_POINT_BEATS`. The thinning window
+is ~5 ms at 120 BPM — below a knob detent's spacing — and for a while it was
+claimed to do punch's job as well. It cannot: a second pass's writes land tens
+of milliseconds from the first pass's, so they miss the window entirely and the
+two curves **interleaved** (20 → 90 → 40 → 91 → 60). The user heard it as
+"super jumpiness". Replacing a pass is a *swept region*, not a point window:
+everything strictly between the previous write of **this** pass and this one is
+deleted. The first write of a pass erases nothing, and neither does a gap wider
+than `LANE_PASS_GAP_BEATS` (one beat — a knob detent stream is an order of
+magnitude inside that, so a whole beat with no write is a hand that stopped). A
+wrapped sweep is one gesture: the swept span is `(prev, loop_len)` plus
+`[0, phase)`. Every pass therefore needs an **end** — `lane_record_end_all` on
+disarm, and `lane_record_end` when a lane stops being the one playing — or the
+first write of the next take erases back to wherever the last one happened to
+stop.
+
+#### The `lanes:` param surface, behind ONE dispatch
+
+| Key | Direction | Meaning |
+|---|---|---|
+| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was. |
+| `lanes:armed` | get / set | Move's Record button, pushed by the shim on change. Readable because the UI has no other source for it. Disarming releases nothing and clears nothing — a take must keep driving its parameter the moment Record goes out. |
+| `lanes:clear` | set | Throw this slot's automation away. Releases first, then resets. Guarded on a non-zero value so a stray `=0` cannot destroy a set's automation. |
+| `lanes:cleared` | get | How many lanes the last clear threw away. Written unconditionally, so a second press answers `0` rather than repeating the first take's number. |
+| `lanes:phase_valid` | get | **Why** a recording was refused. `0` is *unknown*, not phase zero. |
+| `lanes:clear_clip` | set | Throw away only the automation of the clip this slot is bound to — every parameter of every component, and no other clip. With nothing playing and nothing selected there is no clip to name, so it refuses and reports `0` rather than guessing at one. |
+| `lanes:clear_param` | set | `"<target> <param>"` — one knob on that clip. The finest grain, and the one that matches how the mistake is made. |
+| `lanes:clear_target` | set | `"<target>"` — one component's automation on that clip. What the module's own page offers, because that is where the knobs you automated are. |
+| `lanes:undo` | set | Put the last automation edit back — and press it again to redo, because the buffer is **swapped**, not copied back. One level. |
+| `lanes:undone` | get | `1` if the last undo did something. `0` when there was nothing to put back. |
+| `lanes:undoable` | get | Whether anything has been recorded into the undo buffer yet, so a row can say *Nothing to undo* without performing one. |
+| `lanes:clip` | get | Which clip this slot is bound to, `"<track> <slot>"` 0-based, or **empty** for none. The UI needs it to NAME what a clip-scoped action will act on: without it the row is a promise about a clip the user cannot see. |
+| `lanes:plock_reason` | get | Why the last p-lock was refused — `ok`, `no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`, `bad_request`. The translation runs on the SPI callback where `shadow_log()` is a no-op, so without this a p-lock that did nothing offered one bit (`lanes:plocked` staying 0) for five distinct causes, and one defect hid another. |
+
+**WHAT IT COSTS, measured 2026-09-13** — and the shape is the surprise. Four
+readings on one slot with a clip playing and the same synth loaded, taken from
+`/schwung-perf`'s `slot_render_avg` with the ONLY difference being the lanes:
+
+| lanes | breakpoints | slot render |
+|---|---|---|
+| 0 | 0 | 2.0 us |
+| 4 | 32 | 15.3 us |
+| 8 | 48 | 21.9 us |
+| 8 | 108 | 23.1 us |
+
+Fits **~6.7 us fixed + ~1.65 us per automated PARAMETER + ~0.02 us per
+breakpoint**. The last column is the point: sixty extra breakpoints cost
+**1.2 us between them**, so a lane's length is nearly free and its EXISTENCE
+is what costs — `find_param_by_key` is a strcmp scan run twice per lane per
+block, and that is the per-lane term.
+
+**MEASURE IT AGAINST THE WORK, NOT THE FRAME.** A 2134 us frame is mostly
+`ioctl` — 1845 us of idle IRQ wait, which is not our time — so "1% of a
+frame" flatters this badly. What Schwung actually spends per frame
+(`frame_pre + frame_post`) is **266 us with no automation and 287 us with
+eight automated parameters**: the same 21 us is **+8% of the work we do**.
+
+Scaled out: one slot at the `LANE_MAX` 32 is ~59 us (+22%), and all four
+slots full is ~236 us, which roughly **doubles** Schwung's per-frame work.
+That is still ~500 us against a 2134 us frame with ~1600 us idle, so it is
+not dangerous — but it is real, and it is per-PARAMETER.
+
+So of the two inefficiencies left unfixed on purpose so that a measurement
+could decide: caching the `chain_param_info_t *` on the lane is the one that
+would pay, because it IS the per-lane term. `lane_eval`'s rescan from index 0
+is **not worth fixing** — sixty extra breakpoints cost 1.2 us between them,
+which is the term the numbers say is already free.
+
+**THE STORE CANNOT CLEAR ANYTHING BY ITSELF**, which is why the three
+clip-scoped verbs live in the chain and `lane_store.h` only offers
+predicates (`lane_is_for_clip`, `lane_is_for_param`, `lane_clear_one`): a
+**driving** lane holds a modulation override, and dropping the lane without
+handing that back leaves the parameter pinned wherever the automation last
+wrote it, with nothing left to move it.
+
+**Undo is a SWAP, and that is the right shape for automation specifically.**
+The mistake is *heard*, not seen, so the real gesture is "put it back; no, the
+other one". It costs one extra `lane_store_t` on the instance (37 KB beside
+the 8 MB already there) and no allocation. The snapshot is taken before
+DISCRETE edits and once at the start of a recording pass — never per recorded
+point, which would be a 37 KB memcpy per breakpoint of a sweep on the SPI
+callback.
+
+**On-device surface.** The knob grid gives automation its own **section**
+(Main / Sends / LFO 1 / LFO 2 / **Automation** / Actions) holding *Clear This
+Clip*, *Clear All Clips* and *Undo Last Edit*; each component's **Module**
+page carries *Clear Automation* for that component alone. Both name the clip
+in the row's value (`C1`) — never the track, which `lane_track` makes equal to
+the slot index and which every breadcrumb already shows. **Undo is offered
+only at slot level**: one buffer per slot, shared by every module in it, so a
+module-scoped undo is not something it can honestly promise. The word on
+every row is *automation*; **lane** is this codebase's term for the store and
+means nothing to somebody reading a menu.
+
+All of them arrive through **one** branch in `v2_set_param` / `v2_get_param`
+that forwards the key past `lanes:` to `lane_param_set` / `lane_param_get`.
+That is not tidiness: `chain_host.c` is pinned under 2900 lines by
+`tests/host/test_chain_host_file_split.sh` and was sitting two under it, so a
+per-key ladder there would have made the next lane key a choice between the pin
+and the feature. An unknown subkey returns `-1` — the dispatch swallows the
+whole prefix, so there is nothing left to fall through to and it must say so
+rather than answer `""` and be believed.
+
+`stale`, `orphaned`, `driving` and the punch and pass fields are **runtime, not
+content**, and are not in the document. `lane_tick` recomputes the first two
+from the live clip every block, and only a *match* clears `stale` — a persisted
+`stale` would strand a lane whose clip is present with no gesture anywhere that
+un-strands it.
+
+Lanes ride with the **set**: `set_state/<uuid>/lanes_<i>.json`, written by the
+existing autosave (see `docs/SHADOW_UI.md`). A clip position means nothing in
+another set. There is no second serializer.
+
+#### Move's own screen carries the length, and we read it rather than model it
+
+Make a clip in Move's step editor, press Play, try to record automation:
+refused. `T1 -`, `loop_len 0.00`, `has_phase false`. The clip is not in
+`Song.abl` yet — Move saves about **35 s** after an edit — so there is no
+length; with no length there is no phase; with no phase, recording refuses
+rather than guessing. That is the hole, and Move's step-editor screen carries
+both missing facts.
+
+Measured on hardware 2026-09-12, a 5-bar loop (`src/host/step_strip.c`):
+
+```
+row 59       (1-23) (26-49) (52-74) (77-100) (103-126)   5 segments = 5 bars
+rows 58-60   thicker over one segment                    the DISPLAYED bar
+playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
+```
+
+- **Segments are 23–24 px with 2 px gaps**, and the 1 px playhead against a
+  2 px gap is what makes the two separable: a hole splits the strip into bars
+  only when it is **at least 2 wide**, so the playhead cannot inflate the bar
+  count. A playhead sitting *on* a boundary widens that gap to 3 — still one
+  boundary, and its column is then named by the stub alone.
+- **It is page-independent**, which is what makes it better than the step LEDs:
+  measured drawn at bars 3 and 4 while bar **5** was the displayed one. The LED
+  playhead is visible only while the displayed page IS the playing page, so on
+  a long clip it is dark for 15 bars in 16.
+- **It does not say where the loop BEGINS** — confirmed by eye. Which costs
+  nothing, because lane phases are **loop-relative**.
+- **Opportunistic, not a clock.** The bar count does not change while you
+  record, so a reading from ten seconds ago is as good as a live one; that is
+  what keeps this to one cached fact per track rather than a second position
+  pipeline. Phase stays with the existing anchor machinery.
+- **The decode runs where the frame COMPLETES** (the SPI callback, off
+  `pin_accumulate_slice`'s new completion return), because the frame is only
+  whole at that instant and because the selected track must be read *then* —
+  the editor shows one track, and pairing the reading with whatever is selected
+  200 ms later attributes a bar count to the wrong clip.
+- **Do NOT build a model of Move's sequencer UI.** Read Move's answer off the
+  screen; never track its modes, pages or loop points. Every time this work
+  drifted that way it produced a bug.
+- **A SEGMENT IS A BAR, ROUNDED UP — so the strip answers a RANGE.** Move's
+  manual, on this strip: *"Each line represents a bar… A thick line specifies
+  that the bar is selected and part of the loop… A plus icon signifies that the
+  bar is outside of the loop."* Measured on an 11/8 set (5.5 quarters/bar),
+  against the file:
+
+  | clip | file | bars (ceil) | 16-step pages | strip drew |
+  |---|---|---|---|---|
+  | T2 | 16 q | 2.91 → **3** | **4** | **3** |
+  | T1 | 12 q | 2.18 → 3 | 3 | 3 |
+  | T4 | 4 q | 0.73 → 1 | 1 | 1 (thin) |
+
+  T2 is the only clip that separates the two models, and it says bars. So
+  `quarters ≈ segments × quarters_per_bar`, as a **ceiling**: 3 segments under
+  11/8 means (11.0, 16.5], exact only when the loop is a whole number of bars
+  — which a clip Move created in the current signature is. Anything needing
+  better than bar resolution must wait for the file.
+  **Two wrong answers preceded this**, both from coincidences: `bars × 4` (a
+  4/4 assumption), then "a segment is a 16-step page", which came from T1
+  agreeing *exactly* through pages — 12 quarters is 3 pages **and** 3
+  bars-rounded-up. One coincidence, believed twice; T2 is what broke it.
+- **A ONE-BAR LOOP DRAWS A THIN LINE WITH NO THICKENING**, straight from the
+  manual — *"if a loop contains only one bar, a thin line is displayed
+  instead"* — and the displayed-bar gate therefore refused **every new clip**,
+  which is the case the reader exists for. The 1-bar T4 clip came back as gate
+  6 twice before the manual explained it. It is accepted now and **flagged**
+  (`single_thin`), because it is the one shape indistinguishable from an
+  unrelated full-width line; with two or more segments the thickening is still
+  required. Surveyed by driving Move through Menu, Loop Mode and the screen
+  Back lands on: row 59 empty on all three. Three screens is not proof, which
+  is what the flag is for.
+- **The step grid runs 1/8t to 1/64, so `stepEditorResolution` must parse a
+  TRIPLET suffix.** The old `sscanf("\"%d/%d\"")` accepted `"1/8t"` as a
+  straight eighth — its two `%d`s succeed and the trailing literal quote fails
+  without changing the return count — a silent 50% error in every step index.
+  Per the manual the grid divides a **bar**, and above 1/16 a bar spans several
+  pages of step buttons.
+- **Move's lit step is BAR-relative, then PAGE-wrapped** — and this is the
+  mapping a step p-lock needs:
+
+  ```
+  idx = (step_in_CLIP mod steps_per_bar) mod 16      steps_per_bar = qpb / res
+  ```
+
+  The manual says the grid divides a **bar**, and that above 1/16 a bar spans
+  several pages of step buttons — an 11/8 bar at 1/16 is 22 steps, so it pages
+  **16 + 6** even at the default grid. Measured: 16 sightings on the 11/8 set
+  where Move's index was always our loop-relative step **+10**, arriving in
+  bursts of six with a ~43-step gap. The loop starts at quarter 8.0 = 32 steps,
+  `32 mod 22 = 10` — it begins ten steps into bar 2, so only steps 10–15 of
+  that bar's *first* page are ever displayed while it plays. The model
+  reproduced all 16 offline, and on hardware the check went from 0/16 to
+  **26/26, 100%, zero misses**.
+  **Three attempts, each missing one term:** a bare `% 16` (no bar), then
+  `% steps_per_bar` with no page wrap *and* a loop-relative step — which was
+  worse than either, taking the page column from 16/16 to 0/18. In 4/4 at 1/16
+  all three coincide, which is why a 4/4 device reads 99.3% whatever this line
+  says. Grids coarser than 1/16 (a 4/4 bar is 8 steps at 1/8) are **not
+  measured**: the model predicts an index in 0–7 there, and nothing has
+  checked it.
+- **VALIDATED ON HARDWARE 2026-09-12.** With the editor open the reading
+  followed the selection across three tracks — 4, 5 and 3 bars — the decoded
+  displayed bar agreed twice with Move's *independently announced* "Bar N",
+  and the playhead swept 1→126 and wrapped while the displayed bar stayed put
+  (the page-independence claim, and one of the two committed fixtures is that
+  case in Move's own pixels: playhead in bar 2, bar 3 bold). Session and Set
+  Overview refused with "nothing on the row".
+- **A frame can be TORN, and the cache waits for a second reading because of
+  it.** The accumulator stitches six slices, so a frame can straddle two of
+  Move's screen updates. Paging and switching tracks each produced a *one-off*
+  refusal on a different gate (not-full-width, non-uniform, no-displayed-bar)
+  — which is what a half-drawn strip looks like, and refusing is the safe
+  direction. But a torn frame could in principle read uniform and WRONG, and a
+  wrong bar count is a wrong loop length, so `g_bars[]` commits only after
+  `STEP_STRIP_CONFIRM` consecutive readings agree (~33 ms at 30 fps). An
+  invalid frame breaks the run without clearing the cache.
+  **The refusing frame itself was NOT captured**: the dump trigger writes the
+  *next* complete frame, so by the time it landed the screen had moved on —
+  the file is a healthy editor screen, not the refusal. Capturing the frame a
+  decode rejected needs the copy taken inside the decode.
+- **The gates are the risky half, so this is a DIAGNOSTIC first.** The geometry
+  is measured; the rejection gates (full-width span, uniform segments, the
+  displayed-bar thickening) are reasoned, and a false positive is a *wrong loop
+  length*. So `clip_state.json`'s `step_strip` block and the manager's
+  `/clip-state` panel report it and **nothing depends on it**: the hardware
+  pass must see `valid` with the right bars on the editor and a named `reject`
+  on Move's other screens before the loop-length fallback is wired in. The
+  displayed-bar gate is load-bearing for the one-bar case — a 1-bar loop is a
+  single solid 126 px run with no gaps for the uniformity test to measure, so
+  without it any full-width line would read as a one-bar clip.
+
+#### The budgets are small, and knowingly too small
+
+`LANE_MAX` is **32** per slot — 8 clip slots × 4 parameters, because the key
+spans clips *and* parameters — and `LANE_POINTS_MAX` is **64** per lane
+regardless of loop length. The memory is irrelevant (a `lane_t` is ~1.1 KB and
+`lane_store_t` sits on `chain_instance_t`, **not** inside `patch_info_t`, which
+is a stack local on the SPI callback). **What caps it is the param contract:**
+`lanes:state` is served as one param value, so `LANE_SERIAL_MAX_BYTES` must stay
+under `SHADOW_PARAM_VALUE_LEN`, which a `_Static_assert` in `lane_serial.c`
+enforces. At 32 lanes the worst-case document is ~104 KB against a 128 KB
+ceiling, and ~40 lanes is the hard wall — so do not raise `LANE_MAX` without
+reading that assert.
+
+64 points is coarse for a long clip and 32 lanes is few for a kit. Scaling it —
+a **shared point pool** so a dense lane can borrow from an empty one, a point
+**density per beat** rather than per lane, and a **per-clip transfer key** so the
+document is fetched a clip at a time instead of whole — is designed and
+**deliberately deferred to a follow-up**. None of it exists today. A full lane
+degrades resolution rather than dropping the gesture (the write replaces its
+nearest point and counts a `full_hits`), because a lost write mid-sweep is a
+hole the user can neither see nor fix.

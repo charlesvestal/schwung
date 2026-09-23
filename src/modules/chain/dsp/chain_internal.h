@@ -189,6 +189,11 @@ typedef struct mod_source_contribution {
     int active;
     char source_id[32];
     float contribution;
+    /* An OVERRIDE carries an absolute value in `contribution` and replaces the
+     * base rather than adding to it. That is what an automation lane is: the
+     * lane IS the value, the knob is the base underneath it. Offsets from
+     * LFOs still sum on top, so the two compose. */
+    int is_override;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -801,6 +806,27 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
+    /* Clip phase, pushed by the shim once per block through the dlsym'd
+     * chain_set_clip_phase(). NOT read from host_api_v1_t: its `reserved` tail
+     * begins at +120, the exact offset a shipped breakbeat build calls as
+     * get_project_bpm(), so a live pointer there passes breakbeat's own
+     * if (host->fn) guard and SIGSEGVs on the SPI callback at slot restore --
+     * which boot-loops the device. Same reason move_plugin_render_split is
+     * dlsym'd rather than a field on plugin_api_v2_t. */
+    int    clip_phase_valid;      /* 0 = UNKNOWN. Not zero. Unknown. */
+    /* CLIP TIME, in quarter notes, which is the coordinate Move's own notes
+     * are in: measured 2026-09-12, a clip whose region/loop is 8..20 carries
+     * notes at startTime 0.0, 9.5 and 16.5 -- so notes are absolute from the
+     * clip's start and the loop is a WINDOW over them. Storing a lane in the
+     * same coordinate is what makes "the automation lines up with the notes"
+     * definitional instead of something we maintain.
+     *
+     * And the unit is the QUARTER, not the signature's beat: changing the set
+     * to 11/8 changed not one number in the file. So nothing here needs the
+     * time signature -- only converting BARS does, which is the strip reader's
+     * problem alone (quarters per bar = upper * 4 / lower). */
+    double clip_phase_beats;      /* quarters from the clip's start */
+
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
     float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
@@ -1178,6 +1204,7 @@ CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
+CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

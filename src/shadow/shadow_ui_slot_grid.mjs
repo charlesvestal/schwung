@@ -336,10 +336,9 @@ export const SLOT_GRID_ACTIONS = [
 export function slotGridHierarchy(hasPreset, hasSplits) {
     const have = { preset: !!hasPreset, splits: !!hasSplits };
     const menu = SLOT_GRID_ACTIONS
-        .filter((a) => !a.when || have[a.when])
-        .map((a) => ({ label: a.label, action: a.action }));
-    /*
-     * Page order is Main, Sends, LFO 1, LFO 2, Actions.
+        .filter((a) => !a.when || have[a.when]);
+
+    /* Page order is Main, Sends, LFO 1, LFO 2, Actions.
      *
      * The menu therefore lives on its OWN level rather than on root: a level
      * emits its menu straight after its own grids, before any level it
@@ -367,6 +366,7 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
     };
     Object.assign(levels, lfoLevels([1, 2]));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+
     return { modes: null, levels };
 }
 
@@ -435,7 +435,7 @@ export function createSlotGridIo(io) {
             if (k === "ui_hierarchy") {
                 return JSON.stringify(slotGridHierarchy(
                     !!io.hasPreset(),
-                    io.hasSplitVoices ? !!io.hasSplitVoices() : false));
+                    io.hasSplitVoices ? !!io.hasSplitVoices() : false,));
             }
             if (k === "chain_params") return JSON.stringify(allSlotGridParams());
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";

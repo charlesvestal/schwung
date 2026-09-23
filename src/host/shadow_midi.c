@@ -369,6 +369,7 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             host_slot_fx_silence_frames[i] = 0;
         }
 
+
         /* Send MIDI to this slot */
         if (pv2 && pv2->on_midi) {
             uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };

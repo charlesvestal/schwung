@@ -420,7 +420,12 @@ void flite_tts_set_speed(float speed) {
     }
 
     flite_clear_buffer();
-    tts_save_config();
+    /* flite_save_config, not the generic name that used to be here:
+     * that one is defined NOWHERE. A shared library links clean with an
+     * undefined symbol, so it built green and would have failed at the
+     * CALL -- the first time anybody changed the screen reader's speed
+     * or pitch. Line 405 already called the right one. */
+    flite_save_config();
 }
 
 void flite_tts_set_pitch(float pitch_hz) {
@@ -437,7 +442,12 @@ void flite_tts_set_pitch(float pitch_hz) {
     }
 
     flite_clear_buffer();
-    tts_save_config();
+    /* flite_save_config, not the generic name that used to be here:
+     * that one is defined NOWHERE. A shared library links clean with an
+     * undefined symbol, so it built green and would have failed at the
+     * CALL -- the first time anybody changed the screen reader's speed
+     * or pitch. Line 405 already called the right one. */
+    flite_save_config();
 }
 
 static void flite_clear_buffer(void) {

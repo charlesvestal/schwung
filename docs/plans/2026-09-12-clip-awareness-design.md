@@ -63,8 +63,19 @@ observation of it as having established the constant across tempos.
 
 ### The step LEDs carry a playhead, and it reveals Move's PAGE
 
-Notes 16–31, `d2=126` is the playhead; `122` vs `102` distinguishes step
-content from empty. The playhead advanced every 6 pulses — exactly 1/16 — over
+Notes 16–31, `d2=126` is the playhead; `122` marks step content.
+
+> **CORRECTED 2026-09-14, and the `102` here is wrong** — see
+> `docs/MOVE_UI_MAP.md`, which decoded this on firmware 2.1.0. There is no
+> fixed "empty" value: it is a **per-track colour index** (98, 112 and 124 all
+> observed, 124 with no clip). And `122` **follows the selected drum voice**,
+> so the same step flips as you change pads with the clip untouched.
+>
+> **Test `== 122`, never `122` against a fixed empty value.** A comparison
+> against `102` — or against `98`, which an earlier pass of this same work
+> reported before finding the per-track variation — reads "empty" on a track
+> whose index simply differs, and reads it consistently, which is what makes it
+> dangerous rather than flaky. The playhead advanced every 6 pulses — exactly 1/16 — over
 200 events with **zero out-of-sequence jumps**.
 
 The load-bearing observation is the *gaps*:
@@ -92,8 +103,27 @@ of the file.
 184 of 200 playhead events arrived with `move_ui_mode == 2`. This was the one
 finding that could have killed the whole approach — pads mean *clips* only in
 Session mode, so the fear was that leaving Session blinded us. It does not:
-clips **cannot be launched from Note mode at all**, so there is no launch to
-miss, and the step LEDs keep reporting regardless.
+a clip cannot be launched **by a pad** from Note mode, so there is no *pad*
+launch to miss, and the step LEDs keep reporting regardless.
+
+**CORRECTED (2026-09-12).** The claim as first written -- "clips cannot be
+launched from Note mode at all, so there is no launch to miss" -- is false,
+and it is the assumption that caused a real defect. Pressing **Play** starts
+each track's **selected** clip, in any view. A user built a clip in the step
+editor, pressed Play, and automation recording was refused: Note view kept the
+pad gate closed, so the track sat at `identity_valid` with `clip_slot == -1`,
+`clip_state_on_transport_start` had nothing to anchor, and
+`clip_state_anchor_pending` skips a track whose `clip_slot < 0`. Tracks that
+happened to have identity when `0xFA` arrived anchored at pulse 0 and were
+fine, which is why it looked like a per-track mystery rather than a hole in
+this paragraph.
+
+The fix is narrow and lives in `clip_regions_seed_state`: on a pending Start,
+seed identity from the file for a track that has nothing, and let
+`clip_state_anchor_pending` anchor it at pulse 0 / `CLIP_ANCHOR_START`. The
+Start is the discriminator -- a real event that really does start those clips
+-- so the mode gate and the file-vs-LED precedence are unchanged everywhere
+else.
 
 ### `"Bar N"` on D-Bus gives the page while STOPPED
 

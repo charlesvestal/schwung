@@ -41,6 +41,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
+#include "host/move_ui_mode_label.h"
 #include "host/shadow_test_stream.h"
 #include "host/shadow_metronome.h"
 #include "host/shadow_chain_types.h"
@@ -67,9 +68,11 @@ extern align_capture_t g_align_capture;
 #include "host/audio_in_restore.h"
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
+#include "host/step_strip.h"
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
+#include "host/xmos_resend.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
 #include "host/ext_midi_ring.h"
@@ -229,6 +232,10 @@ static int shadow_line_in_connected_known = 0; /* 1 once any CC 114 jack-detect 
 /* Last-observed XMOS audio-IO state (USB-C out source + route payload).
  * Written only by the SPI callback. */
 static xmos_audio_state_t xmos_audio_observed = XMOS_AUDIO_STATE_INIT;
+
+/* Re-send Move's XMOS control message when it did not reach the wire. See
+ * host/xmos_resend.h for why this is not the persistence retired in 1.3.2. */
+static xmos_resend_t xmos_resend = XMOS_RESEND_INIT;
 
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
@@ -880,6 +887,19 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 
 static struct timespec track_press_time[4];
 static uint8_t track_longpress_pending[4];
+
+/* WHY A GESTURE DID NOT FIRE, readable from the worker's clip_state.json.
+ *
+ * A long press that does not open anything is silent in exactly the way the
+ * p-lock refusal was: the gate has five terms (pending, not-already-fired,
+ * shift not held, volume not touched, not vol-touched-during-this-press) and
+ * from outside the device they all look identical -- nothing happened. Two
+ * sessions were spent guessing at which term it was.
+ *
+ * Read from the worker, written only here. Torn reads are not a concern: each
+ * is an independent byte and the consumer is a 1 Hz debug dump. */
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during);
 static uint8_t track_longpress_fired[4];
 /* Set if the volume knob is touched at any point while a Track button is held.
  * Once set, that track's long-press is suppressed for the remainder of the press,
@@ -934,10 +954,72 @@ static volatile int shadow_pads_held = 0;
  * that already held it.  Set/clear by note number is idempotent under both;
  * a counter drifts, and a drifted counter latches the scanner off forever. */
 static volatile uint32_t shadow_steps_held_mask = 0;
+
+/* THE HELD STEP A P-LOCK SHOULD LAND ON, or -1.
+ *
+ * The gesture is hold a step, turn a knob. Its UI half lived in the host's
+ * param-pages io (`onValueWritten`) and was armed only while `VIEWS.PARAM_PAGES`
+ * was up -- so a module that draws its OWN screen from `ui_chain.js` could not
+ * p-lock at all. 9W9 is one, and RECORDING worked there the whole time
+ * (lane_on_set_param intercepts every component write, whatever UI made it),
+ * which is what made the gap look like a module bug rather than ours. Exactly
+ * the shape of the enum peek, which lived in the same layer and was invisible
+ * to the same modules.
+ *
+ * So the decision moves BELOW the UI, to the one place every write already
+ * passes and the held steps are already tracked. Two conditions, both
+ * deliberate:
+ *
+ *  - EXACTLY ONE step. Two held steps name no single phase, and picking the
+ *    lowest would silently p-lock a step the user did not mean.
+ *  - The shadow display is UP. Otherwise Move owns the screen, a held step is
+ *    Move's own gesture, and a chain write that happens to coincide (a web UI
+ *    knob, say) would plant a breakpoint nobody asked for.
+ *
+ * NOT static, and do not make it so: shadow_chain_mgmt.c calls it. A shared
+ * library LINKS CLEAN with the symbol undefined, so marking it static builds
+ * green and then fails at LOAD -- which for an LD_PRELOAD shim means
+ * MoveOriginal does not start. Measured the hard way: a crash loop, ~7 s a
+ * cycle, with nothing in dmesg. */
+int shim_plock_held_step(void)
+{
+    if (!shadow_display_mode) return -1;
+    uint32_t m = shadow_steps_held_mask;
+    if (m == 0 || (m & (m - 1)) != 0) return -1;   /* none, or more than one */
+    for (int i = 0; i < 16; i++) if (m & (1u << i)) return i;
+    return -1;
+}
+
+
+
 /* Is jog encoder currently being touched? (note 9) */
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
+
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during)
+{
+    if (shift) *shift = shadow_shift_held ? 1 : 0;
+    if (vol)   *vol   = shadow_volume_knob_touched ? 1 : 0;
+    unsigned p = 0, f = 0, v = 0;
+    for (int i = 0; i < 4; i++) {
+        if (track_longpress_pending[i]) p |= (1u << i);
+        if (track_longpress_fired[i])   f |= (1u << i);
+        if (track_vol_touched_during_press[i]) v |= (1u << i);
+    }
+    if (pending) *pending = p;
+    if (fired) *fired = f;
+    /* The held-step mask rides in the top 16 bits: a p-lock that does not
+     * happen is otherwise silent, and "did the shim even see the step" is the
+     * first question. */
+    if (vol_during) *vol_during = v | ((shadow_steps_held_mask & 0xFFFFu) << 16);
+}
+
+/* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
+ * the per-slot lane push in the next pre-transfer. A flag rather than a direct
+ * call because the gesture is decoded in the post-ioctl scan, where a slot's
+ * plugin instance is not the thing in hand. */
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -1536,6 +1618,26 @@ volatile int shim_ext_midi_drops = 0;
 /* Packets the shadow_ui MIDI ring had no room for. Incremented on the SPI
  * callback by shadow_ui_midi_publish; reported by the worker (#358). */
 volatile int shim_ui_midi_drops = 0;
+volatile int shim_step_press_seen = 0;
+volatile int shim_step_release_seen = 0;
+volatile int shim_step_used_skip = 0;
+volatile int shim_step_nopress_skip = 0;
+volatile int shim_step_tap_queued = 0;
+volatile int shim_step_tap_emitted = 0;
+volatile int shim_step_tap_noroom = 0;
+volatile int shim_step_hold_ms_last = -1;
+char shim_step_plock_key[64] = {0};
+void shim_step_note_plock_key(const char *key)
+{
+    if (!key) return;
+    /* Last one wins, and it is only read by the worker's 1 Hz line -- a
+     * torn copy would misname a key, never crash, and the alternative is a
+     * lock on the SPI callback for a diagnostic. */
+    size_t n = strlen(key);
+    if (n >= sizeof(shim_step_plock_key)) n = sizeof(shim_step_plock_key) - 1;
+    memcpy(shim_step_plock_key, key, n);
+    shim_step_plock_key[n] = '\0';
+}
 
 /* Outbound counterpart: packets shadow_ui queued that the carry could not hold.
  * Before the carry existed this condition had no counter because it had no
@@ -1992,6 +2094,7 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
+
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
@@ -4299,6 +4402,32 @@ static void shadow_mix_audio(void)
     /* Increment shim counter for shadow's drift correction */
     shadow_control->shim_counter++;
 
+    /* THE AUTOMATION LAMP. Which slots have a lane driving something, for the
+     * UI to show while a clip plays -- the one thing a module drawing its own
+     * screen cannot report for itself. Every 16th frame (~46 ms): it is a
+     * lamp, not a value, and the poll walks four chains' lanes. */
+    if ((shadow_control->shim_counter % LANES_DRIVING_PUBLISH_FRAMES) == 0)
+
+    /* ...and the held step itself, EVERY frame, not on the lamp's cadence: it
+     * is one byte, and it is what the UI shows the locked value from. A press
+     * that took 46 ms to be noticed would read as the grid lagging the
+     * finger. */
+    {
+        int hs = shim_plock_held_step();
+        shadow_control->held_step = (hs >= 0 && hs < 16)
+                                  ? (uint8_t)hs : SHADOW_HELD_STEP_NONE;
+        /* ...AND WHETHER IT HAS BECOME A HOLD, from the same press timestamp
+         * the tap/hold split already uses. Published here rather than timed
+         * in the UI so STEP_TAP_MS stays one number in one place.
+         *
+         * A press with no timestamp is NOT a hold: `step_press_ms` is 0 when
+         * the press was never withheld (the grid was not up when it landed),
+         * and treating that as "held forever" would open the map on a press
+         * we cannot measure. */
+        shadow_control->held_step_is_hold =
+            (uint8_t)(shim_step_press_is_hold(hs) ? 1 : 0);
+    }
+
     /* Copy Move's audio to shared memory so shadow can mix it */
     if (shadow_movein_shm) {
         memcpy(shadow_movein_shm, mailbox_audio, AUDIO_BUFFER_SIZE);
@@ -5628,9 +5757,45 @@ void midi_monitor()
             continue;
         }
 
+        /* SHIFT + STEP 15 = Move's DOUBLE LOOP, which its own manual describes
+         * as doubling "notes and automation" -- so every lane on that clip
+         * copies its points one loop-length later (lanes:double).
+         *
+         * HERE, in the hotkey scan, because this is the only cable-0 walk that
+         * runs WHATEVER IS ON SCREEN. Three earlier placements each failed for
+         * the same kind of reason and each was measured rather than reasoned:
+         * inside the shadow-display branch (never runs with Move in front),
+         * inside the `type == 0xB0` branch (a note cannot match), and inside a
+         * second scan that turned out to be display-gated too. Every time, the
+         * clip doubled and the lane reported nothing.
+         *
+         * Never swallowed: Move must still perform its half. Step 15 is note
+         * 30 (steps are notes 16-31), and `shiftHeld` is this scan's own
+         * state, updated a few lines below -- so the gesture is read from the
+         * same place that defines what "Shift" means. */
+        if (cable == 0x00 && (midi_0 & 0xF0) == 0x90 && midi_1 == 30 &&
+            midi_2 > 0) {
+        }
+
         int controlMessage = 0xb0;
         if (midi_0 == controlMessage)
         {
+            /* DELETE'S HELD STATE, published for the grid's "Delete + a knob
+             * clears this knob's whole lane" gesture.
+             *
+             * HERE, beside Shift, because this scan runs in EVERY mode. The
+             * first version sat further down beside the Mute tracker, which is
+             * inside a branch that does not run while the shadow display is
+             * up -- so it worked when tested with the grid DOWN (injected, 0 ->
+             * 1 -> 0) and was never once true in the only state the gesture can
+             * be used in. Measured on hardware: a real press with the grid up
+             * left the byte at 0.
+             *
+             * PASSIVE: nothing is withheld, so Move keeps Delete and whatever
+             * it does with it. See shadow_control_t.delete_held. */
+            if (midi_1 == CC_DELETE && shadow_control) {
+                shadow_control->delete_held = (midi_2 > 0) ? 1 : 0;
+            }
             if (midi_1 == 0x31)
             {
                 if (midi_2 == 0x7f)
@@ -5822,6 +5987,114 @@ static uint64_t spi_last_frame_total_us = 0;
  * Contains all domain logic that was previously in the ioctl() pre-ioctl section:
  * MIDI monitoring, audio mixing, display compositing, LED injection, etc.
  * ============================================================================ */
+/* TEST BUS: deliver injected packets AS IF THE HARDWARE SENT THEM.
+ *
+ * Dormant unless shadow_control->inject_as_hardware is set (see its comment).
+ * The ordinary drain writes only the shadow mailbox, so an injected press
+ * drives Move and is invisible to Schwung's own scans -- which read the
+ * hardware one. Writing both puts the packet exactly where the library's
+ * hw->shadow copy just left the real ones: every filter, claim and swallow
+ * site downstream then treats it identically to a finger.
+ *
+ * IT RUNS IN BOTH HALVES OF THE FRAME, and that is not redundancy.
+ * `shadow_forward_midi()` -- the shadow UI's ONLY feed -- runs in
+ * shim_pre_transfer, *before* the ioctl, because the hardware clears the
+ * mailbox during the transaction. A packet delivered only in post_transfer
+ * therefore reached every shim-side decoder and NO UI: measured, injected jog
+ * turns and clicks moved nothing on screen while injected step notes updated
+ * `held_step` in the same run, which reads as "the UI ignores injected input"
+ * and is really "the UI was fed an hour earlier in the frame".
+ *
+ * So the PRE half PEEKS (`pop` = 0) into the shadow mailbox, which is what the
+ * UI forward reads, and the POST half POPS into both, which is what the shim's
+ * own scans read. One packet, both consumers, same frame -- and the pre-write
+ * is wiped by the hw->shadow copy before Move can see it twice.
+ *
+ * A zeroed MIDI_IN slot is a TERMINATOR, so a packet goes in the FIRST empty
+ * slot and nothing behind it moves. Bounded to four packets a frame and to
+ * SHADOW_MIDI_IN_BYTES; no allocation, no logging. */
+static void shim_inject_as_hardware(uint8_t *shadow, uint8_t *hw, int pop)
+{
+    if (!shadow_midi_inject_shm || !shadow) return;
+    uint8_t *shm_ = shadow + MIDI_IN_OFFSET;
+    uint8_t *hwm = hw ? hw + MIDI_IN_OFFSET : NULL;
+    for (int n = 0; n < 4; n++) {
+        uint8_t pkt[4];
+        /* The popping pass always takes the head (each pop advances it); the
+         * peeking pass walks forward instead, or it would deliver the same
+         * packet four times. */
+        if (!shadow_midi_inject_peek_at(shadow_midi_inject_shm, pkt, pop ? 0 : n))
+            break;
+        int off_sh = -1, off_hw = -1;
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+            if (shm_[j] == 0 && shm_[j+1] == 0 && shm_[j+2] == 0 && shm_[j+3] == 0) {
+                off_sh = j; break;
+            }
+        if (hwm) {
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+                if (hwm[j] == 0 && hwm[j+1] == 0 && hwm[j+2] == 0 && hwm[j+3] == 0) {
+                    off_hw = j; break;
+                }
+        }
+        /* Both buffers must have room, or the packet stays queued rather than
+         * landing in one and not the other -- half-delivered is a state no
+         * real press can produce. */
+        if (off_sh < 0 || (hwm && off_hw < 0)) break;
+        if (pop) shadow_midi_inject_pop(shadow_midi_inject_shm);
+        memcpy(shm_ + off_sh, pkt, 4);
+        memset(shm_ + off_sh + 4, 0, 4);      /* the timestamp half */
+        if (hwm) {
+            memcpy(hwm + off_hw, pkt, 4);
+            memset(hwm + off_hw + 4, 0, 4);
+        }
+    }
+}
+
+/* One slot dump, THREE VIEWS — and the third one is the point.
+ *
+ * PRE is early in shim_pre_transfer. PREEND is its last statement, immediately
+ * before the library's memcpy(hw, shadow, ...). POSThw reads the hardware
+ * mailbox after the ioctl. Together they bracket every writer:
+ *
+ *   present at PRE, gone at PREEND   -> overwritten by Schwung's own
+ *                                       pre-transfer work (~1100 lines of it)
+ *   present at PREEND, gone at POSThw -> it went during the ioctl: Move's other
+ *                                       threads, or the hardware
+ *
+ * PRE vs POSThw alone — all this logger could do before — cannot tell those
+ * apart, and that ambiguity is why this exists. Captured on hardware
+ * 2026-09-12: 9 of the 13 37-family XMOS control messages Move emitted were
+ * replaced in the mailbox by an RGB LED SysEx (3b 10) before the transfer, so
+ * Move's USB-C audio-out selection silently did nothing on those frames. The
+ * user-visible report is "Main Out stops working until a reboot".
+ *
+ * Writes from the SPI callback, like the rest of this logger, and armed only by
+ * log_xmos_sysex_on. */
+static void xmos_log_slots(const char *tag, const uint8_t *midi_out,
+                           int log_all_nonzero)
+{
+    if (xmos_log_fd < 0 || xmos_log_bytes >= XMOS_LOG_MAX_BYTES) return;
+
+    char line[128];
+    int any = 0;
+    for (int i = 0; i < 80; i += 4) {
+        uint8_t cin = midi_out[i] & 0x0F;
+        int all = log_all_nonzero && midi_out[i] != 0;
+        if (all || (cin >= 0x04 && cin <= 0x07)) {
+            int n = snprintf(line, sizeof(line),
+                "[f%u] %-6s slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                xmos_frame, tag, i, (midi_out[i] >> 4) & 0xF, cin,
+                midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
+            if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+            any = 1;
+        }
+    }
+    if (any) {
+        int n = snprintf(line, sizeof(line), "[f%u] %-6s end\n", xmos_frame, tag);
+        if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+    }
+}
+
 static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 {
     (void)ctx;
@@ -5918,6 +6191,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                  * here mislabelled every mid-session re-assert. */
                 shadow_log(replay ? "USB-C out: re-asserting Main Out"
                                   : "USB-C out: re-asserting Mic");
+            } else if (xmos_resend_take(&xmos_resend, pending[0])) {
+                /* A message Move wrote and the mailbox did not carry. These are
+                 * Move's own bytes, verbatim, from seconds ago — no stored
+                 * state is involved, which is what separates this from the
+                 * retired persistence above. Bounded by
+                 * XMOS_RESEND_MAX_ATTEMPTS inside the state machine. */
+                pending_count = 1;
+                pending_next = 0;
             } else if (shim_pending_sysex_inject >= 0) {
                 int val_byte = shim_pending_sysex_inject;
                 shim_pending_sysex_inject = -1;
@@ -5974,30 +6255,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                 if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
                 xmos_log_first_frame_written = 1;
             }
-            const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
-            int any = 0;
-            for (int i = 0; i < 80; i += 4) {
-                uint8_t cin = midi_out[i] & 0x0F;
-                /* First ~17s after arming: log EVERY nonzero slot, not just
-                 * SysEx framing — hunting the XMOS boot-LED-show stop, which
-                 * the cin 4..7 filter proved not to be (all six captured
-                 * boot SysEx messages were replayed on hardware; none
-                 * stopped it). Same write path and size cap; reverts to
-                 * SysEx-only after frame 6000. */
-                int log_all = (xmos_frame < 6000) && midi_out[i] != 0;
-                if (log_all || (cin >= 0x04 && cin <= 0x07)) {
-                    int n = snprintf(line, sizeof(line),
-                        "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
-                        xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
-                        midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
-                    if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-                    any = 1;
-                }
-            }
-            if (any) {
-                int n = snprintf(line, sizeof(line), "[f%u] PRE  end\n", xmos_frame);
-                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-            }
+            /* First ~17s after arming: log EVERY nonzero slot, not just SysEx
+             * framing — hunting the XMOS boot-LED-show stop, which the cin
+             * 4..7 filter proved not to be (all six captured boot SysEx
+             * messages were replayed on hardware; none stopped it). Reverts to
+             * SysEx-only after frame 6000. PREEND mirrors this rule so the two
+             * views that bracket Schwung's own work stay directly comparable. */
+            xmos_log_slots("PRE", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
             /* Scan MIDI_IN for jack-detect CCs (114/115) AND incoming SysEx
              * framing (cin 0x04..0x07) from XMOS. MIDI_IN events are 8 bytes
              * (4 USB-MIDI + 4 timestamp) at offset 2048. */
@@ -6092,6 +6356,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * "Move said this" from "we said this a moment ago" on the wire. That,
      * plus Move's own unconditional Mic assert at boot, is why this feature
      * was retired rather than trusting every observed change. */
+    /* Watch Move's 37-family messages so post_transfer can tell whether they
+     * actually went out. Here, not at the end of pre_transfer: a message lost to
+     * Schwung's OWN later writers has to be watched too, and by PREEND it would
+     * already be gone. */
+    xmos_resend_observe(&xmos_resend, shadow + MIDI_OUT_OFFSET, 80);
+
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
 
@@ -6216,6 +6486,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* NOTE: MIDI filtering moved to AFTER ioctl - see post-ioctl section below */
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
+
+    /* TEST BUS, the PEEK half: the UI's feed is this forward, and it runs
+     * before the ioctl, so a packet delivered only in post_transfer is
+     * invisible to every screen. See shim_inject_as_hardware(). */
+    if (shadow_control && shadow_control->inject_as_hardware) {
+        shim_inject_as_hardware(shadow, hardware_mmap_addr, 0);
+    }
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     TIME_SECTION_START();
@@ -6476,19 +6753,52 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                                  corun_owns_native_oled ||
                                  pin_challenge;
 
+    /* READING MOVE'S FRAME IS NOT THE SAME AS SHOWING IT.
+     *
+     * `global_mmap_addr` is the buffer MOVE writes, and Move does not know its
+     * screen has been replaced -- it keeps rendering while the shadow UI is up.
+     * The `native_display_visible` gate exists for the RESTORE/overlay job
+     * below (snapshot Move's screen so the volume overlay can be composited
+     * over it), and putting the accumulator behind it meant we declined to
+     * read a frame that was sitting right there.
+     *
+     * That cost a measurement: with the knob grid up, no complete frame ever
+     * accumulated, which read as "Move stopped rendering" when in fact we
+     * stopped looking. Move's step editor carries the clip's bar count and a
+     * loop-relative playhead -- the two facts Song.abl is ~35 s late with for
+     * a clip the user just made -- so this is the one path that can supply
+     * them during the workflow that needs them. */
+    if (global_mmap_addr) {
+        uint8_t *mem_any = (uint8_t *)global_mmap_addr;
+        uint8_t slice_any = mem_any[80];
+        if (slice_any >= 1 && slice_any <= 6) {
+            int idx = slice_any - 1;
+            if (pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172)) {
+                /* A WHOLE frame: decode Move's step-editor bar strip from it.
+                 *
+                 * Here rather than in the worker because the frame is only
+                 * whole at this instant -- the next slice overwrites it -- and
+                 * because the selected track must be read NOW: the editor
+                 * shows one track, and pairing the reading with whatever is
+                 * selected 200 ms later attributes a bar count to the wrong
+                 * clip. The decode is a scan of 128 columns in two pages, no
+                 * allocation and no I/O. See step_strip.h. */
+                step_strip_observe(pin_display_frame(), clip_selected_track());
+            }
+        }
+    }
+
     if (global_mmap_addr && native_display_visible) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
         uint8_t slice_num = mem[80];
 
-        /* Always capture incoming slices */
+        /* Snapshot for the restore/overlay path, which DOES need Move's screen
+         * to be the visible one. The accumulator above is deliberately outside
+         * this gate. */
         if (slice_num >= 1 && slice_num <= 6) {
             int idx = slice_num - 1;
-            int bytes = (idx == 5) ? 164 : 172;
             memcpy(captured_slices[idx], mem + 84, 172);
             slice_fresh[idx] = 1;
-
-            /* Always accumulate into PIN display buffer for dump trigger */
-            pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
         /* When volume knob touched (and no track, pad or step held), start
@@ -7128,6 +7438,16 @@ pre_done:
         memset(shadow + AUDIO_OUT_OFFSET, 0,
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
     }
+
+    /* LAST STATEMENT IN THIS FUNCTION, AND IT HAS TO STAY LAST.
+     *
+     * The library copies shadow->hw the instant we return (schwung_spi_lib.c,
+     * "Copy shadow → hardware"), so this is the final state of MIDI_OUT that
+     * Schwung can be held responsible for. Anything that changes between here
+     * and POSThw changed during the ioctl.
+     *
+     * Add a MIDI_OUT writer after this call and the log will exonerate it. */
+    xmos_log_slots("PREEND", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
 }
 
 /* === Cable-2 (external USB) MIDI channel remap ===
@@ -7293,7 +7613,148 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
 #define CLAIM_LATCH_NONE     0
 #define CLAIM_LATCH_RELEASED 1   /* last press was claimed; button is up */
 #define CLAIM_LATCH_HELD     2   /* claimed press delivered, release still owed */
+
+/* A STEP BUTTON WITHHELD FROM MOVE FOR THE P-LOCK GESTURE, per step 0..15.
+ *
+ * Set when a press is swallowed, cleared when its release is. It exists for
+ * the same reason the claim latch does: swallowing a press and letting its
+ * RELEASE through hands Move a button-up for a key it never saw go down, and
+ * Move acts on it. The gesture's own flag cannot answer "is a release still
+ * owed?" -- `step_observe` drops the moment the grid is left, which is
+ * routinely BETWEEN a press and its release. */
+static uint8_t step_swallow_latch[16];
+
+/* WHEN THE PRESS LANDED, and what it owes Move on the way out.
+ *
+ * TAP vs HOLD. The grid withholds every bare step press so that locking a
+ * value on a step does not also toggle a note in the clip -- but that took
+ * Move's own step editing away for as long as the grid was on screen: while
+ * Schwung was up you could not put a note on a step at all.
+ *
+ * Elektron settles this the same way, and it is the behaviour this copies: a
+ * TAP toggles the trig, a HOLD enters parameter-lock without toggling it. So
+ * the press is not so much swallowed as DEFERRED -- held back until the
+ * release says which gesture it was. Under STEP_TAP_MS, Move is handed the
+ * press and release it never saw, and the note toggles as it always did.
+ * Over it, the press stays swallowed and the step is a lock trig: automation
+ * on a step with no note, which is what "trigless" means here.
+ *
+ * The replay is EMITTED, not un-swallowed: by the time the release arrives the
+ * press's slot is long gone, so it is synthesised into the free tail after
+ * compaction, the way the knob-release injection already does.
+ *
+ * `step_press_vel` carries the original velocity because a replayed note must
+ * be the note that was played -- Move's steps carry velocity, and inventing
+ * 127 for a soft press would write a different note than the finger did. */
+/* 500, not 250.
+ *
+ * The first number was picked as "what a quick tap looks like", which is the
+ * wrong question: what matters is the SLOWEST press a user means as a tap,
+ * because every press past the threshold silently does nothing at all. A
+ * deliberate one -- looking at the grid, placing a note on the step you meant
+ * -- runs well past 250 ms, and reported from the device it read as the step
+ * buttons being dead rather than as a threshold being tight.
+ *
+ * The two errors are not equal, which is why it errs LONG. Too short loses a
+ * note the user asked for, with no feedback and nothing to do about it. Too
+ * long costs a lock gesture a note it did not want -- visible on the step
+ * LEDs and undone by tapping the step again. And the p-lock gesture does not
+ * depend on this at all: a press that WRITES is marked used and never
+ * replayed, whatever the stopwatch says, so locking quickly still leaves no
+ * note. The threshold only decides what a press that did NOTHING meant. */
+#define STEP_TAP_MS 500
+static uint64_t step_press_ms[16];
+static uint8_t  step_press_vel[16];
+/* 0 = nothing owed, 1 = owe Move the note-on, 2 = owe it the note-off. Two
+ * stages and two FRAMES: a press and release in the same 2.9 ms frame is not
+ * a tap any finger can produce, and Move is entitled to see a shape it could
+ * have received from hardware. */
+static uint8_t step_tap_replay[16];
+/* A press that DID something on the grid is not a tap, however short it was.
+ *
+ * The tap/hold split is a stopwatch, and a stopwatch cannot tell a quick
+ * gesture from a quick mistake: pressing a step, flicking a knob and letting
+ * go inside STEP_TAP_MS wrote a p-lock AND handed Move the tap, so one
+ * gesture locked a value and DELETED A NOTE. Measured: lock stored at phase
+ * 3.75 and Song.abl went 14 notes -> 13.
+ *
+ * Set by whatever consumed the press -- a landed p-lock, or arming the clear
+ * gesture -- and cleared with the latch. The stopwatch still decides for a
+ * press that did nothing else, which is the case it is good at. */
+static uint8_t step_used[16];
 static uint8_t claim_press_blocked[128];
+
+/* A withheld step press or release, and what it decides.
+ *
+ * Press: latch it and remember when (and how hard). Release: the latch is
+ * dropped, and a release inside STEP_TAP_MS queues the replay that gives Move
+ * the tap it never saw. Anything longer was a hold -- a lock trig -- and Move
+ * is told nothing at all, which is the whole point.
+ *
+ * Called from BOTH swallow sites (the gated one and the unconditional drain),
+ * so the answer cannot differ depending on whether the grid was still up when
+ * the finger came off. */
+/* "The step under the finger DID something" -- see step_used. Called by
+ * shadow_chain_mgmt.c when a p-lock lands, so the release cannot also be
+ * replayed to Move as a note toggle. */
+void shim_step_mark_used(int step)
+{
+    if (step >= 0 && step < 16) step_used[step] = 1;
+}
+
+int shim_step_press_is_hold(int step)
+{
+    if (step < 0 || step >= 16) return 0;
+    /* No timestamp is "cannot tell", not "held forever": step_press_ms is 0
+     * when the press was never withheld, i.e. the grid was not up when it
+     * landed. Opening the map on a press we cannot measure is the failure
+     * this whole flag exists to avoid. */
+    if (step_press_ms[step] == 0) return 0;
+    return (now_mono_ms() - step_press_ms[step]) >= STEP_TAP_MS;
+}
+
+static void step_note_withhold(uint8_t note, uint8_t vel)
+{
+    if (note < 16 || note > 31) return;
+    const int i = note - 16;
+    /* THE HELD-STEP MASK IS MAINTAINED HERE TOO, and without this the gesture
+     * eats itself.
+     *
+     * `shadow_steps_held_mask` is otherwise kept by midi_monitor(), which
+     * reads the HARDWARE mailbox -- and midi_in_swallow zeroes that mailbox
+     * along with Move's copy. So the moment a step is withheld, the tracker
+     * stops seeing it: `shim_plock_held_step()` answers -1, `held_step` reads
+     * NONE, no `<key>:held` resolves and no write becomes a p-lock. Measured
+     * on hardware the moment the swallow was armed for a module-drawn grid --
+     * the step was down and the shim reported 255.
+     *
+     * A mask, not a counter, so setting a bit that midi_monitor may also set
+     * (when the grid is not up and nothing is swallowed) cannot drift. */
+    if (vel > 0) shadow_steps_held_mask |= (1u << i);
+    else         shadow_steps_held_mask &= ~(1u << i);
+    if (vel > 0) {
+        step_swallow_latch[i] = 1;
+        step_press_ms[i] = now_mono_ms();
+        step_press_vel[i] = vel;
+        step_used[i] = 0;
+        shim_step_press_seen++;
+        return;
+    }
+    step_swallow_latch[i] = 0;
+    shim_step_release_seen++;
+    /* A press that was consumed by the grid is never replayed, whatever the
+     * stopwatch says. */
+    if (step_used[i]) { step_used[i] = 0; step_press_ms[i] = 0;
+                        shim_step_used_skip++; return; }
+    /* A press we never saw cannot have been a tap: `step_press_ms` of 0 means
+     * the latch was set by an older build or a lost press, and replaying then
+     * would put a note on a step nobody touched. */
+    if (step_press_ms[i] == 0) { shim_step_nopress_skip++; return; }
+    const uint64_t held_ms = now_mono_ms() - step_press_ms[i];
+    step_press_ms[i] = 0;
+    shim_step_hold_ms_last = (int)held_ms;
+    if (held_ms < STEP_TAP_MS) { step_tap_replay[i] = 1; shim_step_tap_queued++; }
+}
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
  * screen (Menu, Back, Shift), what the host routes itself (jog, the eight
@@ -7333,6 +7794,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * plausible-looking microsecond figure. */
         spi_tally_record(&shim_spi_tally,
                          tx_ns > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)tx_ns);
+    }
+
+    /* TEST BUS: deliver injected packets AS IF THE HARDWARE SENT THEM.
+     *
+     * See shim_inject_as_hardware(). This half POPS, and is what every
+     * post-ioctl consumer sees -- the gesture decoders, midi_monitor, the
+     * held-step tracker. The UI's own feed is served by the peek in
+     * shim_pre_transfer. */
+    if (shadow_control && shadow_control->inject_as_hardware && hw) {
+        shim_inject_as_hardware(shadow, (uint8_t *)hw, 1);
     }
 
     /*
@@ -7396,25 +7867,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * comparison reveals slot stomping or stale replay. Dormant unless
      * /data/UserData/schwung/log_xmos_sysex_on exists; honors the same
      * size cap as the pre-transfer block. */
-    if (xmos_log_fd >= 0 && xmos_log_bytes < XMOS_LOG_MAX_BYTES) {
-        int any = 0;
-        char line[128];
-        for (int i = 0; i < 80; i += 4) {
-            uint8_t cin = hw[i] & 0x0F;
-            if (cin >= 0x04 && cin <= 0x07) {
-                int n = snprintf(line, sizeof(line),
-                    "[f%u] POSThw slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
-                    xmos_frame, i, (hw[i] >> 4) & 0xF, cin,
-                    hw[i], hw[i+1], hw[i+2], hw[i+3]);
-                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-                any = 1;
-            }
-        }
-        if (any) {
-            int n = snprintf(line, sizeof(line), "[f%u] POSThw end\n", xmos_frame);
-            if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-        }
-    }
+    xmos_log_slots("POSThw", hw + MIDI_OUT_OFFSET, 0);
+
+    /* Did Move's 37-family message actually go out? Same bytes the logger just
+     * dumped, so a capture and the re-send can never disagree about what was on
+     * the wire. Pure buffer work; the counters are published for the worker,
+     * which is where any logging happens. */
+    xmos_resend_confirm(&xmos_resend, hw + MIDI_OUT_OFFSET, 80);
+    shim_xmos_resend_lost    = xmos_resend.lost;
+    shim_xmos_resend_sent    = xmos_resend.resent;
+    shim_xmos_resend_gave_up = xmos_resend.gave_up;
 
     /* Sync output regions from hardware→shadow.
      * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
@@ -7839,13 +8301,73 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * held, and a claim dropping mid-hold delivers Move an
                              * orphan release. */
                             if (d2 > 0) {
+                                /* THE EDIT BUTTONS BELONG TO THE GRID WHILE A
+                                 * STEP IS HELD, whatever the module claims --
+                                 * ALL THREE, not just the one with a job.
+                                 *
+                                 * Claiming only Delete cost a DUPLICATED CLIP.
+                                 * Delete was claimed because it deletes clips;
+                                 * Copy was not, so Copy on a held step reached
+                                 * Move, duplicated the clip AND made the copy
+                                 * the SELECTED one -- so every p-lock after it
+                                 * silently addressed a different clip slot
+                                 * than the lane being edited. Undo was the
+                                 * same shape: it reached Move and undid a NOTE
+                                 * edit. A modifier gesture has to take the
+                                 * whole row of buttons its neighbours sit in,
+                                 * or the ones left behind keep doing whatever
+                                 * MOVE does with them.
+                                 *
+                                 * UNDO (56) IS DELIBERATELY NOT IN THIS LIST,
+                                 * and that is a measured retreat rather than
+                                 * an oversight. Claimed, it was swallowed from
+                                 * Move and then delivered to NOBODY -- a dead
+                                 * button. Measured with a step held: Copy drew
+                                 * 235 bytes on the panel and Delete 176, while
+                                 * Undo changed ZERO, and a note toggled on
+                                 * immediately before stayed toggled, so Move
+                                 * never saw it either. Copy and Delete are
+                                 * claimed because unclaimed they DUPLICATE and
+                                 * DELETE clips; Undo unclaimed merely does
+                                 * Move's own undo, which is surprising but not
+                                 * destructive. A known gap beats a dead
+                                 * button. The automation undo lives in Slot
+                                 * Settings until the forwarding difference is
+                                 * understood.
+                                 *
+                                 * That is the clear-this-step gesture (hold a
+                                 * step, Delete, pick a knob), and it is host
+                                 * vocabulary rather than a module's -- neither
+                                 * 9W9 nor hank declares `claims_edit_ccs`, so
+                                 * without this the button they are told to
+                                 * press reaches MOVE, which DELETES THE CLIP.
+                                 * A destructive miss, on a gesture the notice
+                                 * on screen invites.
+                                 *
+                                 * Decided in the shim rather than by widening
+                                 * the JS claim set, because a claim reconciled
+                                 * on the UI tick can arrive a frame after the
+                                 * press it is meant to cover, and one leaked
+                                 * press is a lost clip. Bounded to exactly the
+                                 * gesture: a step must be DOWN and the grid
+                                 * must be watching steps, so Move keeps Delete
+                                 * everywhere else.
+                                 *
+                                 * Shift is excluded by the same term that
+                                 * excludes it for a module, so Shift+Delete is
+                                 * still the host's snapshot recall. */
+                                const int step_owns_edit_cc =
+                                    (d1 == 60 || d1 == 119) &&
+                                    shadow_steps_held_mask != 0 &&
+                                    shadow_control && shadow_control->step_observe;
                                 /* Shift+<button> is the host's own vocabulary
                                  * (Shift+Copy / Shift+Delete = snapshot and
                                  * recall, handled and swallowed in the post-ioctl
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
                                 claim_press_blocked[d1] =
-                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held)
+                                    ((claim_cc_set(d1) || step_owns_edit_cc) &&
+                                     !claim_denied_cc(d1) && !shadow_shift_held)
                                         ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
                             if (claim_press_blocked[d1]) filter = 1;
@@ -8309,8 +8831,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
+                    /* Set by any block below that swallows this press from
+                     * Move's MIDI_IN. A press Move never sees cannot have
+                     * changed Move's view, so it must not relabel
+                     * move_ui_mode — see src/host/move_ui_mode_label.h for
+                     * the hardware failure this caused. */
+                    int withheld_from_move = 0;
                     shadow_update_held_track(d1, pressed);
-                    if (pressed && shadow_control) shadow_control->move_ui_mode = 2; /* NOTE */
 
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
@@ -8352,6 +8879,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
                             midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                            withheld_from_move = 1;
                         }
 
                         /* "Stay in Schwung": a plain Track tap while the shadow
@@ -8390,6 +8918,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
                         }
+                    }
+
+                    /* MOVE'S VIEW, INFERRED FROM A PRESS MOVE ACTUALLY GOT.
+                     *
+                     * No announcement reports a track selection, so this press
+                     * is the only evidence that Move has put a track's
+                     * instrument under the pads (= NOTE). But it is evidence
+                     * only if Move received it: Shift+Vol+Track opens the
+                     * shadow UI and is swallowed above, so it leaves Move
+                     * exactly where it was. Relabelling on it lied, nothing
+                     * cleared the lie (only the exact "Session Mode"
+                     * announcement does, and that never arrives when the user
+                     * was already in Session), and clip_state_on_led's
+                     * Session-only gate then rejected every pad event — so
+                     * clip identity FROZE on the clip playing when the UI
+                     * opened instead of going invalid. Found on hardware by
+                     * switching clips with Schwung's UI up.
+                     *
+                     * Runs after the gesture blocks because only they know
+                     * whether the press was withheld. */
+                    if (move_ui_mode_track_press_relabels(pressed, withheld_from_move) &&
+                        shadow_control) {
+                        shadow_control->move_ui_mode = MOVE_UI_MODE_NOTE;
                     }
 
                     /* Long-press detection for Track buttons */
@@ -8446,6 +8997,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 if (d1 == CC_MUTE) {
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
                 }
+
 
                 /* Menu button long-press detection */
                 if (d1 == CC_MENU && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
@@ -9171,6 +9723,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     if (d2 == 0) claim_press_blocked[d1] = CLAIM_LATCH_NONE;
                 }
+                /* THE STEP GESTURE'S OWED RELEASES, same rule and same reason.
+                 * A step whose press was withheld keeps its latch across the
+                 * grid being left or the display closing, so the release is
+                 * withheld too and Move is never handed half a press. Runs
+                 * unconditionally -- the latch, not the flag, is what says a
+                 * release is owed. */
+                if (d1 >= 16 && d1 <= 31 && step_swallow_latch[d1 - 16]) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    /* The SAME decision as the gated site, because a tap can
+                     * end after the grid is left -- press on the grid, dismiss,
+                     * release -- and that is still a tap the user expects to
+                     * have toggled the note. One function, so the two sites
+                     * cannot disagree about what a tap is. */
+                    step_note_withhold(d1, d2);
+                }
 
                 /* Mute (CC 88) is passed through to Move firmware unconditionally,
                  * even while the shadow UI is shown, so Move-native Mute+Pad
@@ -9236,6 +9803,71 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 if (shadow_control && shadow_control->pad_observe &&
                     d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
+                }
+
+                /* Forward STEP notes (16-31) to the shadow UI while it is
+                 * watching them (shadow_control->step_observe) -- the p-lock
+                 * gesture's half of the input: hold a step, turn a knob.
+                 *
+                 * NOT passive, unlike pad_observe directly above -- and this
+                 * comment said it was for as long as it was true. The press is
+                 * WITHHELD and the release decides what Move is told: a TAP
+                 * (under STEP_TAP_MS) is replayed to Move after compaction, so
+                 * the note toggles exactly as it always did; a HOLD is never
+                 * replayed, so locking a value on a step does not also write a
+                 * note there. See step_note_withhold().
+                 *
+                 * Swallowing it outright -- which is what the first version of
+                 * this did -- fixed the stray note and took Move's own step
+                 * editing away for as long as the grid was on screen. Elektron
+                 * splits the same button the same way, and this follows it.
+                 *
+                 * The UI needs the RAW step number, which is why this cannot
+                 * be reconstructed downstream: Move turns the press into an
+                 * ordinary note before anything else sees it. */
+                /* A BARE STEP ONLY. Shift+step belongs to MOVE -- Double
+                 * Loop (15), quantize (16), new clip (14), the Workflow,
+                 * Tempo, Groove, Keys and Repeat menus -- and the p-lock
+                 * gesture is a bare step plus a knob. Swallowing a Shift+step
+                 * took those shortcuts away whenever Schwung's grid was on
+                 * screen, which is how this was found: Shift+Step 14 stopped
+                 * creating clips. Worse for Double Loop, where the lane would
+                 * have doubled while Move never doubled the notes. */
+                /* AND ONLY WHILE OUR SCREEN IS UP. `step_observe` is written
+                 * by shadow_ui, whose `view` outlives a dismiss, so the flag
+                 * could sit at 1 with Move on screen and every bare step press
+                 * was withheld from the sequencer -- taps replayed, holds gone.
+                 * The UI owns the flag and now tests the display itself; this
+                 * is the backstop, because the cost of the flag being wrong is
+                 * the user's step buttons, and a UI that lags, wedges or dies
+                 * must not be able to take them away. The owed-release drain
+                 * above stays unconditional, so a press begun on the grid is
+                 * still completed correctly after a dismiss. */
+                if (shadow_control && shadow_control->step_observe &&
+                    shadow_display_mode &&
+                    d1 >= 16 && d1 <= 31 && !shadow_shift_held &&
+                    shadow_ui_midi_shm) {
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08,
+                                           status, d1, d2);
+                    /* AND WITHHELD FROM MOVE. Holding a step to set a value
+                     * must not also toggle a note in the clip -- it did, and
+                     * that is a defect rather than a cost: the gesture is
+                     * "set this parameter ON this step", and the clip's notes
+                     * are not part of it.
+                     *
+                     * midi_in_swallow silences BOTH buffers; zeroing only the
+                     * hardware mailbox is a no-op for Move and plants a
+                     * terminator in front of our own scans. Latched, because
+                     * the release must follow the press even if the grid is
+                     * left in between -- a button-up for a key Move never saw
+                     * go down is one Move acts on.
+                     *
+                     * `continue` because the event is GONE: nothing below --
+                     * capture rules, DSP routing -- may act on a press that
+                     * Move itself will never see. */
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    step_note_withhold(d1, d2);
+                    continue;
                 }
 
                 /* Check capture rules for focused slot.
@@ -9395,6 +10027,43 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * so Move doesn't think knobs are still being held.
      * This MUST happen AFTER filtering to avoid being zeroed out — and after
      * the compaction above, so the free slots are a contiguous tail. */
+    /* === POST-IOCTL: HAND MOVE THE TAP IT NEVER SAW ===
+     *
+     * A step press held for less than STEP_TAP_MS was a TAP, and a tap is
+     * Move's gesture: it toggles a note on that step. The press itself was
+     * withheld (so that a HOLD can lock a parameter without also writing a
+     * note), so the tap is synthesised here instead -- note-on in one frame,
+     * note-off in the next, because a press and release inside the same 2.9 ms
+     * frame is not a shape any finger produces and not one Move should be
+     * asked to interpret.
+     *
+     * AFTER the compaction, like the knob-release injection below it and for
+     * the same two reasons: the free slots are a contiguous tail there, and
+     * nothing above may move a slot while the index-paired swallows run.
+     *
+     * Deliberately NOT gated on the display or the grid. The gesture is
+     * decided by the finger, and a tap that ends after the grid is dismissed
+     * is still a tap the user expects to have toggled the note. */
+    if (global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        int j = 0;
+        for (int i = 0; i < 16; i++) {
+            if (!step_tap_replay[i]) continue;
+            const int on = (step_tap_replay[i] == 1);
+            for (; j < SHADOW_MIDI_IN_BYTES; j += SHADOW_MIDI_IN_STRIDE)
+                if (shadow_midi_in_slot_empty(&src[j])) break;
+            if (j >= SHADOW_MIDI_IN_BYTES) { shim_step_tap_noroom++; break; }
+            src[j]     = on ? 0x09 : 0x08;          /* CIN, cable 0 */
+            src[j + 1] = on ? 0x90 : 0x80;
+            src[j + 2] = (uint8_t)(16 + i);
+            src[j + 3] = on ? step_press_vel[i] : 0;
+            memset(&src[j + 4], 0, 4);              /* synthetic: no timestamp */
+            j += SHADOW_MIDI_IN_STRIDE;
+            shim_step_tap_emitted++;
+            step_tap_replay[i] = on ? 2 : 0;
+        }
+    }
+
     if (shadow_inject_knob_release && global_mmap_addr) {
         shadow_inject_knob_release = 0;
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;

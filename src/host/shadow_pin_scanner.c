@@ -58,9 +58,11 @@ void pin_scanner_init(const pin_scanner_host_t *h) {
  * Slice accumulation
  * ============================================================================ */
 
-void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
+const uint8_t *pin_display_frame(void) { return pin_display_buf; }
+
+int pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
 {
-    if (idx < 0 || idx >= 6) return;
+    if (idx < 0 || idx >= 6) return 0;
     memcpy(pin_display_buf + idx * 172, data, bytes);
     pin_display_slices_seen[idx] = 1;
 
@@ -73,17 +75,36 @@ void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
         pin_display_complete = 1;
         memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
 
-        /* File-triggered display dump: touch /tmp/dump_display to capture */
-        if (access("/tmp/dump_display", F_OK) == 0) {
-            unlink("/tmp/dump_display");
-            FILE *f = fopen("/tmp/pin_display.bin", "w");
+        /* File-triggered display dump.
+         *
+         * THIS IS MOVE'S FRAME, NOT THE PANEL'S. The scanner reassembles what
+         * MOVE draws, upstream of the shim's compositor, so when the shadow UI
+         * owns the OLED this file still shows Move underneath it. Dumping it
+         * to check a Schwung screen therefore reports "the shadow UI did not
+         * open" no matter what is actually lit, and that misreading cost most
+         * of a session: a long-press was fired, display_mode was 1, shadow_ui
+         * was running, and every screenshot showed Move.
+         *
+         * For what is ON THE PANEL read /dev/shm/schwung-display-live, which
+         * is the composited frame, same 1024-byte 128x64 1-bit layout.
+         *
+         * NOT /tmp. The device's root FS is ~463 MB and usually 100% full, and
+         * /tmp lives on it -- a dump that lands there fails silently or fills
+         * the last free block. Everything armed or written on the device goes
+         * under /data/UserData (~49 GB free); see CLAUDE.md's Device
+         * Constraints. This wrote to /tmp since it was added for the PIN
+         * scanner, which is why nobody noticed: 1 KB usually squeezes in. */
+        if (access("/data/UserData/schwung/dump_display", F_OK) == 0) {
+            unlink("/data/UserData/schwung/dump_display");
+            FILE *f = fopen("/data/UserData/schwung/oled_dump.bin", "w");
             if (f) {
                 fwrite(pin_display_buf, 1, 1024, f);
                 fclose(f);
-                if (host.log) host.log("PIN: display buffer dumped to /tmp/pin_display.bin");
+                if (host.log) host.log("PIN: display buffer dumped to /data/UserData/schwung/oled_dump.bin");
             }
         }
     }
+    return all;
 }
 
 /* ============================================================================

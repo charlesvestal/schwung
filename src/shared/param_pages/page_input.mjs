@@ -106,6 +106,20 @@ export function decodeInput(data, mods = {}) {
         if (d1 === BACK_CC) return d2 > 0 ? { type: "back" } : null;
         if (d1 === SHIFT_CC) return { type: "shift", down: d2 > 0 };
         if (d1 === MUTE_CC) return { type: "mute", down: d2 > 0 };
+        /*
+         * Undo / Copy / Delete -- the instance copy/clear gesture, and the
+         * step-clear one (hold a step, Delete, pick a knob).
+         *
+         * DECODED HERE so that a module drawing its own grid gets them, which
+         * is the whole reason this file exists. The host routes these in
+         * shadow_ui_param_pages.mjs for its own grid; a module calls
+         * decodeInput/applyInput and would otherwise never deliver them --
+         * and the step-clear gesture is host vocabulary the on-screen notice
+         * invites you to use, so "it works on the host's grid only" is the
+         * same blind spot this feature has hit at every layer.
+         */
+        if (d1 === 56 || d1 === 60 || d1 === 119)
+            return { type: "edit", cc: d1, down: d2 > 0 };
         return null;
     }
 
@@ -133,6 +147,15 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
     if (!controller || !intent) return null;
 
     switch (intent.type) {
+        case "edit":
+            /* Returns true when the controller consumed it. Nothing else on a
+             * grid wants these, so an unconsumed one simply does nothing --
+             * it has already been withheld from Move by the claim that
+             * delivered it here. */
+            if (typeof controller.onEditCc === "function")
+                controller.onEditCc(intent.cc, intent.down);
+            return null;
+
         case "knob":
             /* Shift is precision mode: it reveals every value AND makes the
              * encoders fine. Chasing a number and being able to read it are the

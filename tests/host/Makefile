@@ -27,6 +27,27 @@ LDFLAGS = -lpthread
 # commit that introduced it.
 DEPFLAGS = -MMD -MP -MF $@.d
 
+# AND TIMESTAMPS LIE ON THIS CHECKOUT, which defeats all of the above.
+#
+# The repo lives on an ExtFS volume whose mtime resolution is ~1 s, so a file
+# edited and rebuilt inside the same second looks UNCHANGED to make and the
+# old binary is re-run. The prerequisites are correct and the .d files are
+# correct; make simply cannot see the edit.
+#
+# It matters most for exactly the thing this suite is used for: a mutation
+# applied and immediately tested reports PASS, and the honest reading of that
+# -- "the test cannot see this defect" -- is wrong. It cost two false
+# conclusions in one session, one of which was nearly written into a comment
+# as a design fact.
+#
+# So mutation checking uses `make retest`, which cannot be fooled. Ordinary
+# `make test` during development is fine: a human edit and a later build are
+# seconds apart.
+.PHONY: retest
+retest:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory test
+
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
@@ -70,7 +91,8 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
-	$(BUILD_DIR)/test_audio_in_restore
+	$(BUILD_DIR)/test_audio_in_restore \
+	$(BUILD_DIR)/test_rec_arm
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -246,6 +268,35 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# shadow_slot_clip_phase — slot -> track -> clip phase (Task 2 of automation
+# lanes). Includes shadow_chain_mgmt.c rather than linking it, the way
+# test_master_fx_permute.c does: the file is 5000 lines with file-static state
+# and no test seam. gnu11 for the same reason that file's wrapper uses it, and
+# the real clip_state.c is linked so the loop_start rebasing is proved against
+# clip_phase_beats()'s BODY rather than against a fake that would inherit the
+# test's own belief about it.
+# lane_trace.c is LINKED, not stubbed: it owns the ring
+# shadow_lanes_publish_driving pushes into, and a stub would put the ring back
+# to one copy per translation unit. Disarmed it does nothing.
+
+# lane_store — the pure breakpoint store (Task 1 of automation lanes).
+
+# lane_trace — the ring the lane diagnostic records through. Header-only, so
+# the .c is the whole test; the header is named as a dependency.
+
+# lane_lookahead — the one block of lead a p-lock needs to beat its own note.
+
+# lane_serial — the `lanes:state` document (Task 8). Links the real
+# lane_store.c rather than a fake: the document's whole job is to round-trip
+# lane_t, so a stand-in would inherit the test's own belief about its layout.
+
+# rec_arm — Move's Record button, decoded from its LED (Task 7 of automation
+# lanes). Header-only, so the .c is the whole test; the header is named as a
+# prerequisite because without it an edit to the decode leaves a stale binary
+# and `make test` reports PASS against the code you just changed.
+$(BUILD_DIR)/test_rec_arm: test_rec_arm.c ../../src/host/rec_arm.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rec_arm.c
 
 # Header-only; the .c is the whole test.
 $(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)
