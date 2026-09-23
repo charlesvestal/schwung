@@ -2108,6 +2108,25 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_slot_silence_frames[s] = 0;
             }
 
+            /* Sound generators that cannot be woken by anything the shim can
+             * see opt out of the idle gate entirely — chiefly the ones that
+             * consume line input, whose output follows a jack nobody here
+             * inspects and which receive no MIDI. Parking such a slot is not a
+             * saving, it is a fault: the probe interval below chops up to
+             * ~0.5 s off the front of every phrase and anything quieter than
+             * DSP_SILENCE_LEVEL never returns, which is heard as a noise gate
+             * that no module setting can switch off.
+             *
+             * Cleared here and not merely left unset, so that a slot ALREADY
+             * parked by whatever module preceded this one wakes on the frame
+             * the keep-alive module loads, rather than at the next probe. */
+            int synth_keep_alive = (shadow_chain_synth_requires_continuous &&
+                                    shadow_chain_synth_requires_continuous(shadow_chain_slots[s].instance));
+            if (synth_keep_alive) {
+                shadow_slot_idle[s] = 0;
+                shadow_slot_silence_frames[s] = 0;
+            }
+
             /* Idle gate: skip render_block if synth output has been silent.
              * Buffer is already zeroed; FX still runs for tail decay.
              * Probe every ~0.5s to detect self-generating audio (LFOs, arps).
@@ -2245,7 +2264,12 @@ static void shadow_inprocess_render_to_buffer(void) {
                 }
             }
 
-            if (is_silent) {
+            if (synth_keep_alive) {
+                /* Opted out above; hold the counter at zero so the slot cannot
+                 * drift back into idle between renders. */
+                shadow_slot_silence_frames[s] = 0;
+                shadow_slot_idle[s] = 0;
+            } else if (is_silent) {
                 shadow_slot_silence_frames[s]++;
                 if (shadow_slot_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
                     shadow_slot_idle[s] = 1;

@@ -198,6 +198,13 @@ extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames)
  * silence-skip via capabilities.requires_continuous_processing. NULL when the
  * loaded chain DSP is older than v0.3.12 — caller must null-check. */
 extern int (*shadow_chain_fx_requires_continuous)(void *instance);
+/* Optional: returns 1 if the SOUND GENERATOR in this chain instance must keep
+ * rendering through silence — either it declared
+ * capabilities.requires_continuous_processing, or it consumes line input and so
+ * has no wake signal the shim can see. NULL when the loaded chain DSP predates
+ * the export — caller must null-check, and a NULL reads as "may be parked",
+ * which is the pre-existing behaviour. */
+extern int (*shadow_chain_synth_requires_continuous)(void *instance);
 /* Optional: one-shot, asked EXACTLY ONCE per silent frame and immediately
  * after the "mod:tick" that advances the timers. Returns 1 if a MIDI FX
  * delivered a generated message to the synth, meaning this block must render
