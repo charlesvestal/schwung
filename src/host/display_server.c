@@ -37,6 +37,7 @@
 #define SHM_RETRY_MS       2000
 #define CLIENT_BUF_SIZE    4096
 #define SSE_BUF_SIZE       7000
+#define E16_PING_MS        3000   /* keepalive to /stream-e16 clients */
 
 #define DISPLAY_LOG_SOURCE "display_server"
 
@@ -450,6 +451,7 @@ int main(int argc, char *argv[]) {
     long long last_e16_shm_attempt = 0;
     static char e16_json[4096], e16_last[4096];
     int e16_last_len = 0;
+    long long e16_ping_at = 0;
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -626,7 +628,22 @@ int main(int argc, char *argv[]) {
                         for (int i = 0; i < MAX_CLIENTS; i++) {
                             if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_E16 ||
                                 clients[i].needs_initial_frame) continue;
-                            dprintf(clients[i].fd, "data: %.*s\n\n", n, e16_last);
+                            if (dprintf(clients[i].fd, "data: %.*s\n\n", n, e16_last) <= 0) client_remove(i);
+                        }
+                    }
+                    /* A PING, so a closed page is noticed. The E16 feed writes
+                     * only on a change, and a stream client is never read, so
+                     * a dead connection held its slot until the picture next
+                     * changed -- with the E16 idle, forever. Eight slots, two
+                     * per mirror page: a few reloads and every new connection
+                     * was refused ("Display server unavailable"). */
+                    if (now - e16_ping_at >= E16_PING_MS) {
+                        e16_ping_at = now;
+                        for (int i = 0; i < MAX_CLIENTS; i++) {
+                            /* Every stream, not only E16: the Move feed also
+                             * writes only on a change. */
+                            if (clients[i].fd < 0 || clients[i].stream_mode == STREAM_MODE_NONE) continue;
+                            if (write(clients[i].fd, ": ping\n\n", 8) <= 0) client_remove(i);
                         }
                     }
                 }
@@ -637,8 +654,10 @@ int main(int argc, char *argv[]) {
                     clients[i].needs_initial_frame = 0;
 
                     if (clients[i].stream_mode == STREAM_MODE_E16) {
-                        if (e16_last_len > 0) dprintf(clients[i].fd, "data: %.*s\n\n", e16_last_len, e16_last);
-                        else dprintf(clients[i].fd, "data: {\"active\":0}\n\n");
+                        int w = (e16_last_len > 0)
+                            ? dprintf(clients[i].fd, "data: %.*s\n\n", e16_last_len, e16_last)
+                            : dprintf(clients[i].fd, "data: {\"active\":0}\n\n");
+                        if (w <= 0) client_remove(i);
                         continue;
                     }
 
