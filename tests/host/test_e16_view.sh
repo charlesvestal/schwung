@@ -623,6 +623,28 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("...and never a CLEAR", ids.includes(0x07), false);
 }
 
+/* A REPAIR MARK SURVIVES THE REST OF ITS DRAIN. Belief used to be set to the
+ * whole target picture on every strip sent, so a NACK on an EARLIER strip of
+ * the same drain was overwritten by the next send and never repaired --
+ * missing lines, and incomplete view switches (a long drain), on hardware. */
+{
+  const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024).fill(0xFF);          /* every strip inked */
+  d.invalidate();
+  d.tick(snd, () => b, { kind: "framebuffer" });      /* CLEAR + first strips */
+  const firstStrip = snd.log.map((p) => unpack(p)).find((u) => u[6] === 0x08);
+  const a = unpack7(firstStrip.slice(7, firstStrip.length - 1), 4);
+  eq("the drain is still running after one tick", d.repaintPending, true);
+  d.invalidateRegion(a[0], a[1], a[2], a[3]);          /* the device NACKed it */
+  d.invalidate();
+  for (let i = 0; i < 64 && d.repaintPending; i++) d.tick(snd, () => b, { kind: "framebuffer" });
+  const sends = snd.log.map((p) => unpack(p)).filter((u) => u[6] === 0x08)
+    .map((u) => JSON.stringify(unpack7(u.slice(7, u.length - 1), 4)))
+    .filter((k) => k === JSON.stringify(a)).length;
+  eq("the NACKed strip goes out TWICE: original, then its repair -- not forgotten", sends, 2);
+}
+
 /* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the
  * same reading drew as the module own string before a turn (hank ratio
  * "11.000") and as the controller number after one ("11"). It goes through

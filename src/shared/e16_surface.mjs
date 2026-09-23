@@ -431,6 +431,17 @@ import { labelsMsg, ringMsg, scanlineMsg, rectangleMsg, clearMsg } from "./e16_p
 import { diffFramebuffers } from "./e16_diff.mjs";
 import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
 
+/* Copy one rectangle of pixels between two page/column buffers. */
+function copyRect(dst, src, x, y, w, h) {
+    for (let yy = y; yy < Math.min(64, y + h); yy++) {
+        const bit = 1 << (yy & 7), row = (yy >> 3) * E16_WIDTH;
+        for (let xx = x; xx < Math.min(E16_WIDTH, x + w); xx++) {
+            const i = row + xx;
+            dst[i] = (src[i] & bit) ? (dst[i] | bit) : (dst[i] & ~bit);
+        }
+    }
+}
+
 function regionKey(r) {
     if (r.kind === "clear") return "clear";
     if (r.kind === "scanline") return "s," + r.y;
@@ -687,7 +698,21 @@ export function createDisplay() {
                 if (nowMs !== undefined) outstanding.set(regionKey(region), { region, at: nowMs });
                 pendingRegions.shift();
                 shownKind = "framebuffer";
-                lastSentBuf = pendingBuf.slice();
+                /*
+                 * BELIEF ADVANCES BY EXACTLY WHAT WENT OUT. This was
+                 * `lastSentBuf = pendingBuf.slice()` -- the WHOLE target
+                 * picture on every region -- which erased any repair mark a
+                 * NACK or timeout had just set on an earlier region of the
+                 * same drain: the next send wrote the target over it, and the
+                 * failed strip was never re-sent. Hardware, 2026-09-24:
+                 * missing lines, and view switches (a long drain) left
+                 * incomplete. A CLEAR makes the belief blank; a region copies
+                 * only its own rectangle; unsent regions keep the old belief,
+                 * which is what the device really shows.
+                 */
+                if (!lastSentBuf || region.kind === "clear") lastSentBuf = new Uint8Array(1024);
+                if (region.kind === "scanline") copyRect(lastSentBuf, pendingBuf, 0, region.y, E16_WIDTH, 1);
+                else if (region.kind === "rect") copyRect(lastSentBuf, pendingBuf, region.x, region.y, region.w, region.h);
                 if (nowMs !== undefined) shownAt = nowMs;
                 if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
             }
