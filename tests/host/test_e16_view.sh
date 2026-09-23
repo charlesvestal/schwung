@@ -24,7 +24,8 @@ node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
-import { createDisplay, SCREEN_HEARTBEAT_MS } from "./src/shared/e16_surface.mjs";
+import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET } from "./src/shared/e16_surface.mjs";
+const STRIPS = 64 / STRIP_H;   /* messages in one full repaint */
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { KNOBS_PER_PAGE, PAGE_KNOBS } from "./src/shared/param_pages/page_plan.mjs";
 
@@ -256,22 +257,26 @@ frameBuf = frameBuf.map((b) => b ^ 0xFF);
 d.invalidate(); d.invalidate(); d.invalidate();
 /* An inverted screen is a FULL repaint: eight bands, once. Three
  * invalidations must not make it 24. */
-eq("navigation repaints as bands", drain(d, send, PICTURE), new Array(8).fill("rect"));
-eq("three invalidations are ONE repaint (eight bands, not 24)", send.log.length, 8);
+const p0 = d.paintsCompleted;
+drain(d, send, PICTURE);
+eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
+eq("...of exactly one full set of strips, not three", send.log.length, STRIPS);
 eq("...every message a RECTANGLE, never a framebuffer",
    send.log.every(p => kindOf(p) === "rect"), true);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
-eq("still eight messages on the wire", send.log.length, 8);
+eq("still one set of strips on the wire", send.log.length, STRIPS);
 
 /* A repaint never shares a tick with rings, and finishes before them: a
  * half-drawn screen is worse than a ring that arrives a few ticks late. */
 d = createDisplay(); send = mkSend();
 d.invalidate(); d.ringChanged(ringFor(v, 8));
-eq("repaint goes out alone", d.tick(send, frame), "rect");
-eq("...one message this tick", send.log.length, 1);
-eq("...and drains before the rings", drain(d, send), new Array(7).fill("rect"));
+eq("repaint goes out first", d.tick(send, frame), "rect");
+eq("...within the packet budget this tick",
+   send.log.reduce((a, p) => a + p.length / 4, 0) <= TICK_PACKET_BUDGET, true);
+drain(d, send);
+eq("...and drains completely before the rings", send.log.every(p => kindOf(p) === "rect"), true);
 eq("rings follow once the repaint is complete", d.tick(send, frame), "rings");
-eq("...nine messages total, one per tick", send.log.length, 9);
+eq("...one full set of strips, then the ring", send.log.length, STRIPS + 1);
 
 /* A REFUSED send stays owed; it must not queue a second copy. */
 let accept = false;
@@ -281,10 +286,10 @@ eq("refused repaint reports nothing sent", d.tick(send, frame), null);
 eq("...and stays owed", d.repaintPending, true);
 accept = true;
 eq("...going out when accepted", d.tick(send, frame), "rect");
-eq("...the refused band is retried, not queued twice: two attempts at y=0",
+eq("...the refused strip is retried, not queued twice: two attempts at y=0",
    send.log.filter(p => kindOf(p) === "rect" && unpack(p)[9] === 0).length, 2);
 drain(d, send);
-eq("...all eight bands, once each, after the retry", send.log.length, 9);
+eq("...every strip once, after the one retry", send.log.length, STRIPS + 1);
 eq("...and nothing owed after", d.repaintPending, false);
 
 /* A refused ring message keeps its positions owed for the same reason. */
@@ -430,18 +435,22 @@ eq("rings pending is visible to the caller that gates the heartbeat",
 
   /* A display, primed: a full repaint is EIGHT 128x8 bands, one per tick. */
   const mk = () => createDisplay();
+  /* Ticks until the repaint has fully drained; returns the per-tick kinds. */
   const paintAll = (d, send, fb, t) => { const k = [];
-    for (let i = 0; i < 8; i++) k.push(d.tick(send, fb, { kind: "framebuffer" }, t + i)); return k; };
+    for (let i = 0; i < 64; i++) { k.push(d.tick(send, fb, { kind: "framebuffer" }, t + i));
+      if (!d.repaintPending) break; } return k; };
+  const allRect = (k) => k.length > 0 && k.every((x) => x === "rect");
 
   const d1 = mk();
   const send1 = mkSend();
   let buf1 = new Uint8Array(1024);
   const frameBytes1 = () => buf1;
   d1.invalidate();
-  eq("first paint is eight acknowledged BANDS, not a framebuffer",
-     paintAll(d1, send1, frameBytes1, 0), new Array(8).fill("rect"));
-  eq("...each band a full-width 8-row RECTANGLE (0x08, 128x8 at y=0)",
-     unpack(send1.log[0]).slice(6, 7), [0x08]);
+  eq("first paint is acknowledged STRIPS, never a framebuffer",
+     allRect(paintAll(d1, send1, frameBytes1, 0)), true);
+  eq("...one full-width strip per STRIP_H rows", send1.log.length, STRIPS);
+  eq("...each a RECTANGLE (0x08) no taller than STRIP_H",
+     send1.log.every((p) => { const u = unpack(p); return u[6] === 0x08; }), true);
   eq("...and nothing is left owed", d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 9), null);
 
   buf1 = new Uint8Array(1024);
@@ -462,12 +471,15 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   setPx(buf2, 0, 0);
   setPx(buf2, WIDTH - 1, HEIGHT - 1);
   d2.invalidate();
+  const b2 = send2.log.length;
   const r1 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 100);
-  const r2 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 101);
-  eq("two-region diff: first tick sends one region", r1, "rect");
-  eq("two-region diff: second tick sends the other", r2, "rect");
-  const r3 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 102);
-  eq("two-region diff: third tick has nothing left", r3, null);
+  /* Two tiny regions fit the PACKET budget of one tick, so both go out together
+   * -- top one first -- and nothing is left for the next tick. */
+  eq("two-region diff: both small regions go out in ONE tick", r1, "rect");
+  eq("...exactly two messages", send2.log.length - b2, 2);
+  eq("...top region first", unpack(send2.log[b2])[9] < unpack(send2.log[b2 + 1])[9], true);
+  const r3 = d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 101);
+  eq("two-region diff: next tick has nothing left", r3, null);
 
   /* A refused send changes nothing. */
   const d3 = mk();
@@ -502,8 +514,10 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const toLabels = d4.tick(send4, frameBytes4, { kind: "labels", title: "T", labels: [] }, 101);
   eq("switch to labels sends labels", toLabels, "labels");
   d4.invalidate();
-  eq("switch back to framebuffer is a full repaint (eight bands), not a stale region",
-     paintAll(d4, send4, frameBytes4, 102), new Array(8).fill("rect"));
+  const b4 = send4.log.length;
+  paintAll(d4, send4, frameBytes4, 102);
+  eq("switch back to the drawn view is a FULL repaint, not a stale region",
+     send4.log.length - b4, STRIPS);
 
   /* invalidateBuf() IS THE HEARTBEAT FIX, DIRECTLY TESTED. Its only real
    * caller is the self-heal heartbeat in createSurface, whose job is to
@@ -521,8 +535,10 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("plain invalidate() on unchanged content sends nothing", unchanged, null);
   d5.invalidateBuf();
   d5.invalidate();
-  eq("invalidateBuf() forces a full resend of the SAME content (as bands)",
-     paintAll(d5, send5, frameBytes5, 200), new Array(8).fill("rect"));
+  const b5 = send5.log.length;
+  paintAll(d5, send5, frameBytes5, 200);
+  eq("invalidateBuf() forces a full resend of the SAME content",
+     send5.log.length - b5, STRIPS);
 
   /* A NACK NAMES ITS REGION, and only that region is re-sent. */
   const d6 = mk();
@@ -535,12 +551,30 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const before6 = send6.log.length;
   d6.invalidateRegion(40, 47, 46, 5);   /* the exact rect a device NACKed */
   d6.invalidate();
-  eq("a NACKed region is re-sent as ONE rect", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 100), "rect");
-  const resent = unpack(send6.log[before6]);
+  paintAll(d6, send6, frameBytes6, 100);
   const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
-  eq("...naming exactly the region the device refused",
-     unpack7(resent.slice(7, resent.length - 1), 4), [40, 47, 46, 5]);
-  eq("...and nothing else goes out after it", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 101), null);
+  const resent = send6.log.slice(before6).map((p) => { const u = unpack(p);
+    return unpack7(u.slice(7, u.length - 1), 4); });
+  /* Rows 47..51 of x 40..85, cut to STRIP_H-row strips -- and nothing else. */
+  const want6 = [];
+  for (let y = 47; y < 52; y += STRIP_H) want6.push([40, y, 46, Math.min(STRIP_H, 52 - y)]);
+  eq("a NACKed region re-sends exactly that region, as strips", resent, want6);
+  eq("...and nothing else goes out after it", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 200), null);
+}
+
+/* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the
+ * same reading drew as the module own string before a turn (hank ratio
+ * "11.000") and as the controller number after one ("11"). It goes through
+ * displayValue now, the formatter the knob grid uses. */
+{
+  const pg = [page("Comp", ["ratio"])];
+  const meta = { ratio: { type: "float", min: 1, max: 20, step: 1, label: "Ratio" } };
+  const draw = (val) => { const c = createCanvas(); c.clear();
+    renderView(c, buildView(pg, 0, { metaOf: (k) => meta[k], valueOf: () => val }));
+    return Array.from(c.toBuffer()).join(","); };
+  eq("a module string and the same number draw identically", draw("11.000"), draw(11));
+  eq("...and an unread value still draws nothing where the value goes",
+     draw(undefined) === draw(null), true);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");

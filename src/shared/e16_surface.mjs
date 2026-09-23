@@ -103,6 +103,33 @@ export const SCREEN_HEARTBEAT_MS = 1500;
 export const PARTIAL_HEARTBEAT_MS = 10000;
 
 /*
+ * NO REGION MESSAGE IS TALLER THAN STRIP_H ROWS.
+ *
+ * Measured on hardware 2026-09-24: 128x8 bands (~160 wire bytes, ~53 packets,
+ * ~7 SPI frames) came back NACKed 15 times out of 18 during Shift
+ * transitions, while one-value rectangles were almost always clean -- the same
+ * shape as the original garbling, where exposure is how long ONE message is on
+ * the wire. And a band that loses its first data packet can leave a bare 00
+ * straight after the header, which the E16 reads as EXIT REMOTE MODE: the
+ * device dropping to its stock screen until the next keepalive. A 128x2 strip
+ * is ~42 wire bytes, ~14 packets, one or two frames, and a loss costs two rows.
+ * Every region -- full repaints and large diff regions alike -- is cut to it.
+ */
+export const STRIP_H = 2;
+
+/*
+ * PACKETS PER TICK, not messages per tick.
+ *
+ * "One message per tick" was written for a 394-packet framebuffer, where the
+ * rule and the wire agreed. With small strips it becomes the bottleneck -- 32
+ * strips would take 32 ticks -- so the display sends regions until this many
+ * packets have gone out in the tick (always at least one message). ~46 is what
+ * the carry drains in one 60 Hz tick at pace 8 (8 packets x ~5.7 SPI frames);
+ * 40 leaves room for Move's own traffic on the same cable.
+ */
+export const TICK_PACKET_BUDGET = 40;
+
+/*
  * How long after Move's last transmission the restate is allowed to resume.
  *
  * THE HEARTBEAT IS PURE REPAIR, AND WHILE MOVE IS TALKING IT IS ALSO THE MOST
@@ -189,6 +216,15 @@ export const LIVE_PAINT_MS = 80;
  * unchanged screen is empty, so this costs rendering, never the wire.
  */
 export const LOOK_MS = 250;
+
+/*
+ * RING KEEPALIVE. A ring message gets no ACK and no NACK, so one lost or
+ * garbled -- or LED state the device drops on its own -- stayed wrong until
+ * that knob moved. Reported on hardware 2026-09-24: every ring went blank
+ * with the screen still correct, each coming back only when touched. All
+ * sixteen ride in one ~113-byte message, so restating them is cheap.
+ */
+export const RING_RESTATE_MS = 3000;
 
 /**
  * The seek / hold / release machine.
@@ -383,6 +419,19 @@ import { labelsMsg, ringMsg, scanlineMsg, rectangleMsg } from "./e16_protocol.mj
 import { diffFramebuffers } from "./e16_diff.mjs";
 import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
 
+/* Cut every region to at most STRIP_H rows, top to bottom, in order. A
+ * scanline is already one row. */
+function toStrips(regions) {
+    const out = [];
+    for (const r of regions) {
+        if (r.kind !== "rect" || r.h <= STRIP_H) { out.push(r); continue; }
+        for (let y = r.y; y < r.y + r.h; y += STRIP_H) {
+            out.push({ kind: "rect", x: r.x, y, w: r.w, h: Math.min(STRIP_H, r.y + r.h - y) });
+        }
+    }
+    return out;
+}
+
 export function createDisplay() {
     let fbOwed = false;
     /*
@@ -537,29 +586,41 @@ export function createDisplay() {
                      */
                     pendingBuf = buf.slice();
                     pendingRegions = [];
-                    for (let y = 0; y < 64; y += 8) {
-                        pendingRegions.push({ kind: "rect", x: 0, y, w: E16_WIDTH, h: 8 });
+                    for (let y = 0; y < 64; y += STRIP_H) {
+                        pendingRegions.push({ kind: "rect", x: 0, y, w: E16_WIDTH, h: STRIP_H });
                     }
                     fbOwed = false;
                 } else {
                     pendingBuf = buf.slice();
-                    pendingRegions = diff.regions.slice();
+                    pendingRegions = toStrips(diff.regions);
                     fbOwed = false;
                 }
             }
 
-            const region = pendingRegions[0];
-            const bytes = region.kind === "scanline"
-                ? scanlineMsg(region.y, packRowMajor(pendingBuf, 0, region.y, E16_WIDTH, 1))
-                : rectangleMsg(region.x, region.y, region.w, region.h,
-                                packRowMajor(pendingBuf, region.x, region.y, region.w, region.h));
-            if (!emitMsg(send, bytes)) return null;
-            pendingRegions.shift();
-            shownKind = "framebuffer";
-            lastSentBuf = pendingBuf.slice();
-            if (nowMs !== undefined) shownAt = nowMs;
-            if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
-            return region.kind;
+            /* Regions until the tick's PACKET budget is spent -- always at
+             * least one message, so a refused or oversized first region still
+             * makes progress on a later tick. A refusal stops the tick and
+             * leaves that region at the head of the queue. */
+            let used = 0;
+            let first = null;
+            while (pendingRegions.length) {
+                const region = pendingRegions[0];
+                const bytes = region.kind === "scanline"
+                    ? scanlineMsg(region.y, packRowMajor(pendingBuf, 0, region.y, E16_WIDTH, 1))
+                    : rectangleMsg(region.x, region.y, region.w, region.h,
+                                    packRowMajor(pendingBuf, region.x, region.y, region.w, region.h));
+                const packets = Math.ceil(bytes.length / 3);
+                if (first !== null && used + packets > TICK_PACKET_BUDGET) break;
+                if (!emitMsg(send, bytes)) break;
+                used += packets;
+                if (first === null) first = region.kind;
+                pendingRegions.shift();
+                shownKind = "framebuffer";
+                lastSentBuf = pendingBuf.slice();
+                if (nowMs !== undefined) shownAt = nowMs;
+                if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
+            }
+            return first;
         },
 
         /* Test seams. */
@@ -1156,6 +1217,7 @@ export function createSurface(io) {
      * encoder was seen with by the look, so only a CHANGED ring goes out. */
     let lastLivePaintAt = -Infinity;
     let lookAt = -Infinity;
+    let ringRestateAt = -Infinity;
     const ringSeen = new Map();
 
     /*
@@ -1647,6 +1709,15 @@ export function createSurface(io) {
                  * nothing, silently turning this heartbeat into a no-op. */
                 display.invalidateBuf();
                 display.invalidate();
+            }
+
+            /* RING KEEPALIVE -- see RING_RESTATE_MS. Not mid-gesture (the
+             * turn is already sending the ring under the hand) and not over
+             * the map or the layout probe, which own the picture. */
+            if (ctl && probe < 0 && settlePainted && !nav.mapVisible(t) &&
+                t - ringRestateAt >= RING_RESTATE_MS) {
+                ringRestateAt = t;
+                for (const desc of ringsFor(viewNow())) if (desc) display.ringChanged(desc);
             }
 
             /* Arming or disarming the probe is a screen change like any other. */
