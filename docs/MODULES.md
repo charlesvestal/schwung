@@ -646,6 +646,30 @@ That means:
   user clicked — the right default depends on the `custom_ui` message, which
   arrives after the slot state is built. Both render paths draw components in
   one order, signal flow: `midi_fx1, synth, fx1, fx2`.
+- **`viz.extra_keys` reach the browser.** A widget may name a value that owns
+  no cell of its own (see `docs/PARAM_PAGES.md`), and a panel driven by one is
+  blind without it. Every path that completes an initial value send fetches
+  the extras — the `state` fast path returns early, so fixing only the
+  streaming path is invisible — and sends them FIRST: they are what the panel
+  draws with; the ordinary controls can populate a beat later. It reads every
+  spelling the device reads (`viz.extra_keys`, `viz.extraKeys`, and an
+  `as_page` canvas param's own `extra_keys` / `extraKeys`) under the device's
+  cap of four per declaration, plus a ceiling of 16 per component because the
+  browser reads every page's extras at once. Slot components only — a Master
+  FX panel does not receive extras.
+- **A declaration read that did not ANSWER is not "declares nothing".** The
+  key list is cached per component, but a timed-out read or the `""` a module
+  serves while still loading is believed for 5 s, not until the next module
+  swap — otherwise the first read after a load latched the pump off.
+- **An extra key is DERIVED, so no write ever names it.** The notify ring
+  carries the key that was written; a viz extra is computed from whatever
+  edit landed. A change to any of a component's params therefore refreshes
+  its extras (throttled to 150 ms, cached key list, no read at all when no
+  browser is subscribed), and a 500 ms heartbeat carries what no write
+  announces — the transport, or a worker thread finishing. Only values that
+  moved are sent. One push per component at a time: two overlapping reads
+  answer in channel order, and the browser then gets an older value after a
+  newer one, which presents as a playhead jumping backwards.
 
 ### Remote UI for overtake tools (the Tool tab)
 
