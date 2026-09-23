@@ -623,6 +623,11 @@ static void ui_midi_out_ingest(shadow_midi_out_t *midi_out_shm)
      * copy. Re-reading it between the two would let a burst that arrived in
      * between be admitted past a check that did not measure it. */
     uint16_t copy_len = ui_midi_out_used(midi_out_shm);
+    /* The index was read first; the bytes it covers must not be read from
+     * before it. ARM64 may reorder the two loads, and a copy taking bytes the
+     * producer had not yet written is a corrupt packet inside a message --
+     * indistinguishable from a garble on the wire. */
+    __sync_synchronize();
     {
         int free_bytes = UI_MIDI_CARRY_BYTES - ui_midi_carry.len;
         if ((int)copy_len > free_bytes) return;
