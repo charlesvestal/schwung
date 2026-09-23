@@ -968,6 +968,22 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("...and goes once everything is answered", d.tick(snd, () => b, { kind: "framebuffer" }, 30), "rings");
 }
 
+/* THE TURN HINT: with Shift held the page numbers carry a turn glyph, and
+ * only then. */
+{
+  const v = buildView([page("Oscillator", ["a"]), page("Filter", ["b"])], 0,
+                      { metaOf: () => ({ min: 0, max: 1 }), valueOf: () => 0.5 });
+  const plain = createCanvas(); renderView(plain, v);
+  const hinted = createCanvas(); renderView(hinted, v, { turnHint: true });
+  const diff = (y0) => { let n = 0; for (let x = 0; x < 128; x++) for (let y = y0; y < y0 + 8; y++)
+    if (((plain.toBuffer()[(y >> 3) * 128 + x] ^ hinted.toBuffer()[(y >> 3) * 128 + x]) >> (y & 7)) & 1) n++; return n; };
+  eq("the hint marks the top header", diff(0) > 0, true);
+  eq("...and the bottom header", diff(32) > 0, true);
+  let rest = 0; for (let y = 8; y < 32; y++) for (let x = 0; x < 128; x++)
+    if (((plain.toBuffer()[(y >> 3) * 128 + x] ^ hinted.toBuffer()[(y >> 3) * 128 + x]) >> (y & 7)) & 1) rest++;
+  eq("...and touches nothing but the headers", rest, 0);
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '

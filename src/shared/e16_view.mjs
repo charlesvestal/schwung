@@ -338,7 +338,28 @@ function clip(ctx, text, w) {
  * rule made visible: a test can assert the lower 512 bytes of the framebuffer
  * are zero, which no amount of cell bookkeeping can fake.
  */
-export function renderView(ctx, view) {
+/*
+ * THE TURN HINT: a clockwise arrow beside each page number while Shift is
+ * held in the knob view, saying "turn now and this pages". 6 x 5, drawn in
+ * the header ink (the bar is inverted), so it needs no font support.
+ */
+const TURN_GLYPH = [
+    ".###..",
+    "#...#.",
+    "#..###",
+    "#...#.",
+    ".###..",
+];
+export const TURN_GLYPH_W = 6;
+function drawTurnGlyph(ctx, x, y, ink) {
+    for (let r = 0; r < TURN_GLYPH.length; r++)
+        for (let c = 0; c < TURN_GLYPH[r].length; c++)
+            if (TURN_GLYPH[r][c] === "#") ctx.fillRect(x + c, y + r, 1, 1, ink);
+}
+
+/** `opts.turnHint`: Shift is held -- mark the page numbers as turnable. */
+export function renderView(ctx, view, opts) {
+    const turnHint = !!(opts && opts.turnHint);
     ctx.clear();
     for (let half = 0; half < HALVES; half++) {
         const h = view.headers[half];
@@ -349,7 +370,9 @@ export function renderView(ctx, view) {
         ctx.fillRect(0, y, WIDTH, HEADER_BAR_H - 1, 1);
         ctx.print(1, y + 1, clip(ctx, h.name, HEADER_TEXT_W - 2), 0);
         const pos = `${h.index + 1}/${h.count}`;
-        ctx.print(WIDTH - 1 - ctx.textWidth(pos), y + 1, pos, 0);
+        const px = WIDTH - 1 - ctx.textWidth(pos);
+        ctx.print(px, y + 1, pos, 0);
+        if (turnHint) drawTurnGlyph(ctx, px - TURN_GLYPH_W - 2, y + 1, 0);
     }
     for (let e = 0; e < ENCODERS; e++) {
         const cell = view.cells[e];
