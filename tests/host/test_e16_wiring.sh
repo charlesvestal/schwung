@@ -41,7 +41,7 @@ fi
 # the real line.
 node --input-type=module -e '
 const R = process.cwd();
-const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_MS } =
+const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_MS, PARTIAL_HEARTBEAT_MS } =
   await import(R + "/src/shared/e16_surface.mjs");
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
 /* LABELS is no longer the default view, so its payload shape is pinned by
@@ -383,6 +383,49 @@ function rig(opts) {
    * the all-rings restate (~44 packets) can be a tick on its own. */
   ok(r.perTickPackets.every((n, i) => n <= TICK_PACKET_BUDGET || r.perTick[i] === 1),
      "never more than the packet budget in a tick");
+}
+
+/* ===========================================================================
+ * A VALUE WRITTEN ON MOVE REACHES THE E16 AT ONCE, AND THE HEARTBEAT NEVER
+ * BLANKS. Hardware 2026-09-24: Move-side knob changes took up to ~0.5 s (only
+ * the LOOK_MS pass noticed them), and the heartbeat forgot the screen and
+ * repainted it through a CLEAR -- a visible blank every 10 s.
+ * ========================================================================= */
+{
+  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1); r.surface.feedMidi(NEW_ACK);
+  /* Wait for QUIET: values load, the first paint drains. Measuring before that
+   * would credit the notice with traffic that was coming anyway. */
+  let quiet = 0;
+  for (let i = 0; i < 800 && quiet < 12; i++) {
+    if (i % 40 === 0) r.surface.feedMidi(NEW_ACK);
+    const b = r.send.log.length; r.ticks(1);
+    const busy = r.send.log.slice(b).some((p) => j(msgId(p)) !== j(ENTER));
+    quiet = busy ? 0 : quiet + 1;
+  }
+  ok(quiet >= 12, "the surface reaches quiet before the measurement");
+
+  /* Moved on Move: ONLY the write notice -- the fake store is left alone, so
+   * the fallback (a LOOK_MS pass plus the staggered re-read) has nothing to
+   * find, and whatever reaches the wire came through the notice. */
+  const b0 = r.send.log.length;
+  r.surface.noteParamWrite(0, "synth:p0", "0.95");
+  r.ticks(3);                                   /* 75 ms -- well under LOOK_MS */
+  const fast = r.send.log.slice(b0);
+  ok(fast.some((p) => j(msgId(p)) === j(RING)), "a Move-side write moves the E16 ring within a few ticks");
+  ok(fast.some((p) => unpack(p)[6] === 0x08), "...and redraws its digits within a few ticks");
+
+  /* Heartbeat: long idle, device answering keepalives -- no CLEAR, ever. */
+  const b1 = r.send.log.length;
+  for (let i = 0; i < Math.ceil((PARTIAL_HEARTBEAT_MS + 2000) / 25); i++) {
+    if (i % 40 === 0) r.surface.feedMidi(NEW_ACK);
+    r.ticks(1);
+  }
+  const hb = r.send.log.slice(b1);
+  ok(hb.some((p) => unpack(p)[6] === 0x08), "the heartbeat restates the screen");
+  ok(!hb.some((p) => unpack(p)[6] === 0x07), "...in place, with NO CLEAR");
 }
 
 /* ===========================================================================
