@@ -577,17 +577,18 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 	// "1/0 Preset 0" until all individual params arrive.
 	ru.sendHierarchyParams(ctx, c, slot, comp)
 
-	// Fast path: "all" returns every param in one round-trip.
-	if ru.sendAllParamsAtOnce(ctx, c, slot, comp) {
+	// Read the declaration FIRST: it is what tells us whether the "state"
+	// fast path below is really a param map for this component.
+	params := ru.fetchChainParams(slot, comp)
+
+	// Fast path: "state" returns every param in one round-trip.
+	if all, ok := ru.fetchAllParams(slot, comp); ok && stateCoversParams(all, comp, params) {
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: all})
+		ru.logger.Info("initial params: sent via 'state'", "slot", slot, "comp", comp, "count", len(all))
 		return
 	}
 
-	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
-	if err != nil || raw == "" {
-		return
-	}
-	var params []chainParam
-	if json.Unmarshal([]byte(raw), &params) != nil {
+	if len(params) == 0 {
 		return
 	}
 
@@ -672,19 +673,6 @@ func (ru *RemoteUI) fetchAllParams(slot uint8, comp string) (map[string]string, 
 	return params, true
 }
 
-// sendAllParamsAtOnce sends a component's full param set to one client in a
-// single param_update. Returns true on success. Modules with many params
-// (e.g. Surge ~280) go from ~10s of fetches to one shm round-trip.
-func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot uint8, comp string) bool {
-	params, ok := ru.fetchAllParams(slot, comp)
-	if !ok {
-		return false
-	}
-	ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
-	ru.logger.Info("initial params: sent via 'state'", "slot", slot, "comp", comp, "count", len(params))
-	return true
-}
-
 // broadcastInitialParamValues sends a component's full param set to every
 // subscriber of a slot, reading shared memory ONCE and fanning the result out —
 // instead of re-reading per client. Avoids redundant heavy shm reads (e.g. the
@@ -696,9 +684,10 @@ func (ru *RemoteUI) broadcastInitialParamValues(ctx context.Context, slot uint8,
 		return
 	}
 	hierParams := ru.fetchHierarchyParams(slot, comp)
+	declared := ru.fetchChainParams(slot, comp)
 	allParams, ok := ru.fetchAllParams(slot, comp)
-	if !ok {
-		// No "state" fast path — fall back to per-client streaming (unchanged).
+	if !ok || !stateCoversParams(allParams, comp, declared) {
+		// No usable "state" fast path — fall back to per-client streaming.
 		for _, c := range clients {
 			ru.sendInitialParamValues(ctx, c, slot, comp)
 		}
@@ -1906,6 +1895,51 @@ func (ru *RemoteUI) activeSlotsAndMasterFx() ([]uint8, bool) {
 // chainParam is the minimal structure we parse from chain_params JSON.
 type chainParam struct {
 	Key string `json:"key"`
+}
+
+// fetchChainParams reads and parses a component's chain_params declaration.
+func (ru *RemoteUI) fetchChainParams(slot uint8, comp string) []chainParam {
+	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
+	if err != nil || raw == "" {
+		return nil
+	}
+	var params []chainParam
+	if json.Unmarshal([]byte(raw), &params) != nil {
+		return nil
+	}
+	return params
+}
+
+// stateCoversParams reports whether a "state" snapshot is actually a map of
+// THIS component's parameters.
+//
+// The fast path's only test used to be that state started with "{", i.e. that
+// it parsed as a JSON object — and a module's state is an OPAQUE save blob
+// that is perfectly entitled to be an object without being a param map.
+// A module returning {"s": "v6|9|2|..."} — one key, the whole module packed
+// into a string — parsed, so the fast path "succeeded", pushed the single key
+// midi_fx1:s, AND RETURNED, skipping the sweep that fetches the real params.
+// The browser therefore had no values at all; its controls fell back to their
+// range minimums, which reads as "the values are wrong" rather than "the
+// values were never sent", and selecting another item changed nothing because
+// the refetch took the same path.
+//
+// A real param map contains at least one key the component declares. An
+// undeclarable component (no chain_params) can't be checked, so it keeps the
+// old behaviour rather than losing the fast path.
+func stateCoversParams(values map[string]string, comp string, params []chainParam) bool {
+	if len(params) == 0 {
+		return true
+	}
+	for _, p := range params {
+		if p.Key == "" {
+			continue
+		}
+		if _, ok := values[comp+":"+p.Key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // pollSlot checks for module/hierarchy changes only (infrequent).

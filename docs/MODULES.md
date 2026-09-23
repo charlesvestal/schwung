@@ -640,6 +640,12 @@ That means:
   HTML support (see `docs/plans/2026-04-08-remote-ui-plan.md`
   Task 5). Bump `min_host_version` in your catalog entry if your
   module depends on it.
+- **A panel that never appears was FOLDED, not missing.** A section's fold
+  state is DERIVED from what the component is (a component that ships a panel
+  opens; the lead position opens; the rest fold) and records only what the
+  user clicked — the right default depends on the `custom_ui` message, which
+  arrives after the slot state is built. Both render paths draw components in
+  one order, signal flow: `midi_fx1, synth, fx1, fx2`.
 
 ### Remote UI for overtake tools (the Tool tab)
 
