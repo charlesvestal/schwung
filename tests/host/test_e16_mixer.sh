@@ -57,7 +57,10 @@ function fakeIo() {
   eq("Shift+push on a level solos", [io.slots[3]["slot:soloed"], m.cell(3).label], ["1", "SOLO"]);
 
   /* Send B of track 1 is 64. SWITCHED OFF IS A STATE, like mute. */
-  eq("a send at 0% reads inverted like a switched-off one", m.cell(4), { label: "SndA", value: "0%", off: true });
+  eq("a send ON at 0% is NOT inverted -- inverted means switched off", m.cell(4), { label: "SndA", value: "0%" });
+  m.push(4, false);
+  eq("...switched off at 0% it is", m.cell(4), { label: "SndA", value: "0%", off: true });
+  m.push(4, false);
   m.push(8, false);
   eq("push switches a send off: Move sees 0", io.slots[0]["buses:main_send2"], "0");
   eq("...its ring goes grey at the level it keeps",

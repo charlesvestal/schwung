@@ -236,15 +236,13 @@ export function createMixer(io) {
             if (row === 1 || row === 2) {
                 const i = row - 1, mem = sendMem[s][i];
                 if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(mem), off: true };
-                const v = tracks[s].send[i];
-                /* At 0% it is silent too, and reads the same way. */
-                return v === 0 ? { label: row === 1 ? "SndA" : "SndB", value: pct(v), off: true }
-                               : { label: row === 1 ? "SndA" : "SndB", value: pct(v) };
+                /* Inverted means SWITCHED OFF and nothing else: a send can be
+                 * on at 0%, or off at 0% or 30%. */
+                return { label: row === 1 ? "SndA" : "SndB", value: pct(tracks[s].send[i]) };
             }
             if (s < 2) {
                 if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returnMem[s]), off: true };
-                return returns[s] === 0 ? { label: s === 0 ? "RtnA" : "RtnB", value: pct(0), off: true }
-                                        : { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
+                return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
             }
             if (s === 2) return { label: "Capt", value: "push" };
             if (filter === null) return { label: "Filt", value: "" };
