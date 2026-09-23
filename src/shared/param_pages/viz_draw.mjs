@@ -654,6 +654,31 @@ export function filterGainAt(u, mode, c, r, steep) {
     switch (mode) {
         case "hp": return u >= cx ? shoulder(u - cx) : ellipse(cx - u);
         case "bp": return Math.min(1, top * bump(u, cx, 5 + r * 4));
+        /*
+         * LP>HP is a lowpass whose RESONANCE knob sets the corner of a
+         * one-pole highpass, so the two controls are two independent
+         * corners and there is no resonance at all. It reached "bp"
+         * before, being a name with both lp and hp in it, and a bandpass
+         * is wrong in all three respects: one hump centred on the LOWPASS
+         * corner, narrowing as the second corner rises rather than moving
+         * with it, and carrying a resonant peak the filter does not have.
+         *
+         * The skirts are the same ellipse the lp and hp cases use, so
+         * this differs from its neighbours in SHAPE and not in treatment.
+         * `top` is deliberately not used: it carries the resonance peak.
+         * When the highpass corner passes the lowpass one the two skirts
+         * overlap and the min closes the band, which is what the filter
+         * itself does.
+         */
+        case "lphp": {
+            const hpx = EDGE + r * (1 - 2 * EDGE);
+            const skirt = (dist) => {
+                const t = dist / dropW;
+                return t >= 1 ? 0 : PASS * Math.sqrt(1 - t * t);
+            };
+            return Math.min(u > cx ? skirt(u - cx) : PASS,
+                            u < hpx ? skirt(hpx - u) : PASS);
+        }
         case "notch": return Math.max(0, PASS - PASS * (0.5 + 0.5 * r) * bump(u, cx, 7));
         case "peak": return Math.min(1, PASS * 0.7 + (0.3 + 0.6 * r) * (1 - PASS * 0.7) * bump(u, cx, 6));
         case "ap":
@@ -669,6 +694,9 @@ function filterModeOf(text) {
     const hasLP = /lowpass|low pass|\blp\d?\b/.test(s);
     const hasHP = /highpass|high pass|\bhp\d?\b/.test(s);
     if (/ladder/.test(s)) return hasHP ? "hp" : "lp";
+    /* Before the rule below, which would read this as a bandpass purely
+     * because the name contains both. */
+    if (/lp\s*>\s*hp|lowpass\s*>\s*highpass|lp2hp/.test(s)) return "lphp";
     if (hasLP && hasHP) return "bp";
     if (/notch|bandstop|band stop/.test(s)) return "notch";
     if (/bandpass|band pass|\bbpf\b/.test(s)) return "bp";
@@ -719,6 +747,27 @@ export function drawFilter(ctx, rect, roles, values, metaIndex) {
 
 /* -------------------------------------------------------------------- lfo */
 
+/*
+ * Shapes Schwung draws that movy's table has no id for.
+ *
+ * The ids below are movy's `shapeSample` numbering, which is why swishy
+ * sits at 8 rather than at the 5 Schwung's own lfo_common.h gives it.
+ * These three are not in that table at all: an M8 LFO offers EXP DN, EXP
+ * UP and SQU UP, and lfoShapeIdOf matches whole words with a `return 0`
+ * fallback, so before this each of them silently drew a SINE — a
+ * different waveform saying nothing true about the modulation, and
+ * invisible as a bug because nothing failed.
+ *
+ * Numbered clear of movy's range (whose 11+ are synth-specific glyphs)
+ * so neither table has to know about the other.
+ */
+const LFO_SHAPE_EXP_DOWN = 100;
+const LFO_SHAPE_EXP_UP = 101;
+const LFO_SHAPE_SQUARE_UP = 102;
+
+/* See the exponential cases in lfoShapeSample. */
+const EXP_DECAY = 5;
+
 /** schwung-movy model/lfo-shapes.ts shapeSample ids 0-10 (the ones a Schwung
  * enum can realistically resolve to — the stepped N-level families and the
  * synth-specific glyphs 11+ are not reachable from a plain shape name here). */
@@ -757,6 +806,18 @@ export function lfoShapeSample(shape, t) {
             const a0 = at(c), a1 = at(c + 1);
             return a0 + (a1 - a0) * f;
         }
+        /*
+         * EXPONENTIAL, both directions. The decay constant is chosen for
+         * legibility rather than realism: at 13 rows tall a steeper curve
+         * collapses onto the axis for most of the cycle and reads as a
+         * flat line with a spike, while a shallower one is hard to tell
+         * from the ramp it is not.
+         */
+        case LFO_SHAPE_EXP_DOWN: return 2 * Math.exp(-EXP_DECAY * ph) - 1;
+        case LFO_SHAPE_EXP_UP: return 2 * Math.exp(-EXP_DECAY * (1 - ph)) - 1;
+        /* The mirror of case 3, which starts HIGH. Drawing SQU UP with
+         * that one would show the LFO high exactly when it is low. */
+        case LFO_SHAPE_SQUARE_UP: return ph < 0.5 ? -1 : 1;
         default: return Math.sin(ph * 2 * Math.PI);
     }
 }
@@ -766,9 +827,16 @@ function lfoShapeIdOf(text) {
     if (/^(sine|sin|skewedsine)$/.test(n)) return 0;
     if (/^(tri|triangle)$/.test(n)) return 1;
     if (/^(saw|sawtooth|rampup|softsaw|sawup|ramp)$/.test(n)) return 2;
-    if (/^(square|sqr|squ|rect|softsquare|pulse|pulsetr|warmpulse)$/.test(n)) return 3;
+    /* `squdn`/`squaredown` included because case 3 starts HIGH, which is
+     * exactly what M8 calls SQU DN. */
+    if (/^(square|sqr|squ|rect|softsquare|pulse|pulsetr|warmpulse|squdn|squaredown|sqrdown)$/.test(n)) return 3;
+    if (/^(squareup|squup|sqrup)$/.test(n)) return LFO_SHAPE_SQUARE_UP;
     if (/^(sh|samplehold|rnd1|s\+h)$/.test(n)) return 4;
-    if (/^(rampdown|sawdown)$/.test(n)) return 6;
+    /* `rampdn` is M8's own spelling, and missing it by two letters was
+     * enough to fall through to sine. */
+    if (/^(rampdown|sawdown|rampdn|sawdn)$/.test(n)) return 6;
+    if (/^(expdown|expdn|exponentialdown|expdecay)$/.test(n)) return LFO_SHAPE_EXP_DOWN;
+    if (/^(expup|exponentialup|exprise)$/.test(n)) return LFO_SHAPE_EXP_UP;
     if (/^(noise|rand|rnd|random|smoothrandom)$/.test(n)) return 7;
     /* Schwung's own sixth shape (src/host/lfo_common.h): a random WALK that
      * interpolates toward a fresh target each cycle. The smooth-random
