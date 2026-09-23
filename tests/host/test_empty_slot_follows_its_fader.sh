@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AN EMPTY SLOT STILL FOLLOWS ITS FADER.
+# AN EMPTY SLOT STILL FOLLOWS ITS FADER, AND STILL SENDS.
 #
 # Under Move->Schwung a slot with no module passes Move's track through. It
 # did so at unity, so the slot's volume, mute, solo and pan did nothing for it:
@@ -18,4 +18,12 @@ echo "$block" | grep -q "shadow_pan_gains(s" \
   || { echo "FAIL: the empty-slot passthrough ignores the slot pan"; exit 1; }
 if echo "$block" | grep -q "shadow_stem_store(s, move_track, 1.0f)"; then
   echo "FAIL: the empty-slot stem is still taken at unity"; exit 1; fi
-echo "PASS: an empty slot follows its fader (volume, mute, solo, pan)"
+# ...and FEEDS ITS SENDS: an empty slot has no chain to hold send levels, so
+# the shim keeps them (empty_send) and the passthrough must use them.
+echo "$block" | grep -q "bus_mix_send(send_accum\[sb\], move_track" \
+  || { echo "FAIL: the empty-slot passthrough feeds no send bus"; exit 1; }
+echo "$block" | grep -q "empty_send\[sb\]" \
+  || { echo "FAIL: the empty-slot sends do not use the levels the shim keeps"; exit 1; }
+grep -q 'strcmp(key, "buses:main_send1") == 0) return 0;' src/host/shadow_chain_mgmt.c \
+  || { echo "FAIL: buses:main_send does not reach the empty-slot levels"; exit 1; }
+echo "PASS: an empty slot follows its fader (volume, mute, solo, pan) and feeds its sends"

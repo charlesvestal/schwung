@@ -10,7 +10,7 @@
  * ONE PUSH RULE ACROSS THE ROWS: a push takes the control to its "off" and a
  * second push brings the setting back (level -> mute, send / return -> 0),
  * so a quick kill never loses the mix; a switched-off cell is drawn inverted
- * (like MUTE), showing what the second push restores. Shift+push is the row's
+ * (like MUTE) and reads 0% / off. Shift+push is the row's
  * hard set (solo; a send or return to 100%). Row 4's third knob saves the
  * Skipback buffer on a push; the fourth is the master filter
  * (master_filter.h): turn left low-pass, right high-pass; push off and back,
@@ -220,22 +220,22 @@ export function createMixer(io) {
                 return { label, value: isFinite(db) ? (db > 0 ? "+" : "") + db.toFixed(1) : "-inf" };
             }
             const pct = (v) => (v === null ? "" : Math.round(v / SEND_MAX * 100) + "%");
-            /* SWITCHED OFF by a push is drawn inverted, like MUTE: a send
-             * turned down to 0 and a send switched off read differently, and
-             * the switched-off one shows what a push would bring back. */
+            /* SWITCHED OFF by a push is drawn inverted, like MUTE, and reads
+             * what it IS -- 0% -- so a send turned down to 0 and a send
+             * switched off differ only by the inversion. */
             if (row === 1 || row === 2) {
                 const i = row - 1, mem = sendMem[s][i];
-                if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(mem), off: true };
+                if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(0), off: true };
                 return { label: row === 1 ? "SndA" : "SndB", value: pct(tracks[s].send[i]) };
             }
             if (s < 2) {
-                if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returnMem[s]), off: true };
+                if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(0), off: true };
                 return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
             }
             if (s === 2) return { label: "Capt", value: "push" };
             if (filter === null) return { label: "Filt", value: "" };
-            /* Switched off by a push: inverted, showing what a push restores. */
-            if (filterMem !== null) return { label: "Filt", value: (filterMem < 0 ? "LP " : "HP ") + Math.round(Math.abs(filterMem) * 100), off: true };
+            /* Switched off by a push: inverted, reading off. */
+            if (filterMem !== null) return { label: "Filt", value: "off", off: true };
             if (filter < -FILTER_DEADBAND) return { label: "Filt", value: "LP " + Math.round(-filter * 100) };
             if (filter > FILTER_DEADBAND) return { label: "Filt", value: "HP " + Math.round(filter * 100) };
             return { label: "Filt", value: "off" };

@@ -680,6 +680,10 @@ export function createDisplay(opts) {
      * the repair vanished silently. A mask cannot cancel. */
     const dirty = new Uint8Array(1024);
     let timeouts = 0;
+    /* For the web mirror: the last ring sent per knob, and a counter of
+     * changes to anything the mirror shows. */
+    const shownRings = new Array(16).fill(null);
+    let mirrorVersion = 0;
 
     /* A region the device will never answer (see REORDER_LOSS): out of the
      * window, and re-sent. A lost CLEAR means nothing we believe holds. */
@@ -818,7 +822,8 @@ export function createDisplay(opts) {
                     if (sentAny && usedR + packets > budgetOf()) break;
                     if (!emitMsg(send, bytes)) break;
                     usedR += packets; sentAny = true;
-                    for (const r of part) rings.delete(r.enc);
+                    for (const r of part) { rings.delete(r.enc); shownRings[r.enc] = r; }
+                    mirrorVersion++;
                 }
                 return sentAny ? "rings" : null;
             }
@@ -965,6 +970,7 @@ export function createDisplay(opts) {
                 if (region.kind === "clear") dirty.fill(0);
                 if (region.kind === "scanline") { copyRect(lastSentBuf, pendingBuf, 0, region.y, E16_WIDTH, 1); clearDirty(0, region.y, E16_WIDTH, 1); }
                 else if (region.kind === "rect") { copyRect(lastSentBuf, pendingBuf, region.x, region.y, region.w, region.h); clearDirty(region.x, region.y, region.w, region.h); }
+                mirrorVersion++;
                 if (nowMs !== undefined) shownAt = nowMs;
                 if (pendingRegions.length === 0) { pendingBuf = null; paintsCompleted++; }
             }
@@ -1062,6 +1068,10 @@ export function createDisplay(opts) {
             markDirty(x, y, w, h);
         },
         get ringsPending() { return rings.size; },
+        /* THE MIRROR (e16_mirror_shm.h): what the device is believed to show
+         * -- the screen bytes it was sent and the last ring per knob -- and a
+         * version that moves whenever either does. */
+        mirror() { return { frame: lastSentBuf, rings: shownRings, version: mirrorVersion }; },
     };
 }
 
@@ -1763,6 +1773,9 @@ export function createSurface(io) {
     let ringContext = null;
     let ringEchoAt = null;
     let shownTurnHint = false;
+    /* The web mirror's publisher (host_e16_mirror), if the host has one. */
+    const mirrorOut = o.mirror || null;
+    let mirrorShownVersion = -1, mirrorAt = -Infinity;
 
     /*
      * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
@@ -2231,6 +2244,24 @@ export function createSurface(io) {
             };
             lifecycle.tick(t, oneSend);
             if (!lifecycle.enabled) return;
+            /* THE WEB MIRROR: publish what the device is believed to show
+             * when it changes, and at least once a second so the mirror can
+             * tell a still screen from a stopped surface. Before every early
+             * return below, so an absent device is published as inactive. */
+            if (mirrorOut) {
+                const mv = display.mirror();
+                if (mv.version !== mirrorShownVersion || t - mirrorAt >= 1000) {
+                    mirrorShownVersion = mv.version;
+                    mirrorAt = t;
+                    const rb = [];
+                    for (let e = 0; e < 16; e++) {
+                        const r = mv.rings[e] || { r: 0, g: 0, b: 0, amount: 0, bipolar: false };
+                        rb.push(r.r | 0, r.g | 0, r.b | 0, ((r.amount | 0) >> 8) & 0xFF, (r.amount | 0) & 0xFF, r.bipolar ? 1 : 0);
+                    }
+                    try { mirrorOut(mv.frame, rb, lifecycle.present); } catch (e) {}
+                }
+            }
+
             syncPresence();
             /*
              * NO DEVICE, NO READS.

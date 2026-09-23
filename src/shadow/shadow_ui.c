@@ -34,6 +34,7 @@
 #include "host/ui_midi_out_ring.h"   /* SPSC discipline for /schwung-midi-out */
 #include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
+#include "host/e16_mirror_shm.h"
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
@@ -2965,6 +2966,54 @@ static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt64(ctx, (int64_t)shadow_control->ui_midi_foreign);
 }
 
+/*
+ * host_e16_mirror(frame, rings, active) -- publish what the E16 shows, for the
+ * web mirror (display_server's /stream-e16; see e16_mirror_shm.h). `frame` is
+ * 1024 bytes of SSD1306 pages or null, `rings` 16 x 6 bytes. Created lazily
+ * on first use, so a device with no E16 never makes the segment.
+ */
+static e16_mirror_shm_t *e16_mirror_shm = NULL;
+static JSValue js_host_e16_mirror(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_FALSE;
+    if (!e16_mirror_shm) {
+        e16_mirror_shm = (e16_mirror_shm_t *)shadow_shm_map(E16_MIRROR_SHM_NAME,
+                                                            sizeof(e16_mirror_shm_t), 1, 1);
+        if (!e16_mirror_shm) return JS_FALSE;
+    }
+    e16_mirror_shm_t *m = e16_mirror_shm;
+    __atomic_store_n(&m->seq, m->seq | 1u, __ATOMIC_RELEASE);        /* odd: writing */
+    __sync_synchronize();
+    memcpy(m->magic, E16_MIRROR_MAGIC, sizeof(m->magic));
+    m->version = 1;
+    m->active = JS_ToBool(ctx, argv[2]) ? 1 : 0;
+    m->has_frame = 0;
+    if (!JS_IsNull(argv[0]) && !JS_IsUndefined(argv[0])) {
+        for (uint32_t i = 0; i < E16_MIRROR_FRAME_SIZE; i++) {
+            JSValue v = JS_GetPropertyUint32(ctx, argv[0], i);
+            int32_t b = 0;
+            JS_ToInt32(ctx, &b, v);
+            JS_FreeValue(ctx, v);
+            m->frame[i] = (uint8_t)b;
+        }
+        m->has_frame = 1;
+    }
+    for (uint32_t i = 0; i < E16_MIRROR_RINGS * E16_MIRROR_RING_BYTES; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[1], i);
+        int32_t b = 0;
+        JS_ToInt32(ctx, &b, v);
+        JS_FreeValue(ctx, v);
+        m->rings[i] = (uint8_t)b;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    m->last_update_ms = (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000);
+    __sync_synchronize();
+    __atomic_store_n(&m->seq, (m->seq | 1u) + 1u, __ATOMIC_RELEASE); /* even: done */
+    return JS_TRUE;
+}
+
 static JSValue js_host_ui_midi_pace(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3485,6 +3534,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_e16_mirror", JS_NewCFunction(ctx, js_host_e16_mirror, "host_e16_mirror", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));
