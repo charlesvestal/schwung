@@ -198,6 +198,13 @@ extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames)
  * silence-skip via capabilities.requires_continuous_processing. NULL when the
  * loaded chain DSP is older than v0.3.12 — caller must null-check. */
 extern int (*shadow_chain_fx_requires_continuous)(void *instance);
+/* Optional: returns 1 if the SOUND GENERATOR in this chain instance must keep
+ * rendering through silence — either it declared
+ * capabilities.requires_continuous_processing, or it consumes line input and so
+ * has no wake signal the shim can see. NULL when the loaded chain DSP predates
+ * the export — caller must null-check, and a NULL reads as "may be parked",
+ * which is the pre-existing behaviour. */
+extern int (*shadow_chain_synth_requires_continuous)(void *instance);
 /* Optional: one-shot, asked EXACTLY ONCE per silent frame and immediately
  * after the "mod:tick" that advances the timers. Returns 1 if a MIDI FX
  * delivered a generated message to the synth, meaning this block must render
@@ -244,6 +251,15 @@ uint32_t shadow_clip_deleted_mask(void);
  * one way (Move 2.1.0 added copy/paste between slots) and a button press is a
  * moment that can be missed, while the file states the result. */
 uint32_t shadow_clip_copy_generation(void);
+
+/* The row that NEWLY APPEARED on `track` at the last re-parse, or -1.
+ *
+ * A take recorded before Move wrote the clip carries the PENDING placeholder
+ * and must be re-keyed. Handing it the PLAYING row adopted it onto the wrong
+ * clip whenever something else was playing; the row that just appeared is the
+ * clip the user made. */
+int      shadow_clip_new_slot(int track);
+uint32_t shadow_clip_new_generation(void);
 int shadow_clip_copy_track(void);
 int shadow_clip_copy_src(void);
 int shadow_clip_copy_dst(void);
@@ -253,6 +269,8 @@ int shadow_clip_copy_dst(void);
  * identity and are filled either way; see the definition. */
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp);
+
+
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 
@@ -631,6 +649,9 @@ int shadow_inprocess_load_chain(void);
 /* Round-robin refresh of per-slot capabilities.wants_sysex. Call once per
  * SPI frame; it advances one slot per call. */
 void shadow_chain_refresh_wants_sysex_tick(void);
+/* Refresh the opt-in direct knob-touch capability alongside other per-slot
+ * cached capabilities. */
+void shadow_chain_refresh_touch_observe_tick(void);
 
 /* --- UI requests --- */
 void shadow_inprocess_handle_ui_request(void);

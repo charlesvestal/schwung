@@ -27,6 +27,27 @@ LDFLAGS = -lpthread
 # commit that introduced it.
 DEPFLAGS = -MMD -MP -MF $@.d
 
+# AND TIMESTAMPS LIE ON THIS CHECKOUT, which defeats all of the above.
+#
+# The repo lives on an ExtFS volume whose mtime resolution is ~1 s, so a file
+# edited and rebuilt inside the same second looks UNCHANGED to make and the
+# old binary is re-run. The prerequisites are correct and the .d files are
+# correct; make simply cannot see the edit.
+#
+# It matters most for exactly the thing this suite is used for: a mutation
+# applied and immediately tested reports PASS, and the honest reading of that
+# -- "the test cannot see this defect" -- is wrong. It cost two false
+# conclusions in one session, one of which was nearly written into a comment
+# as a design fact.
+#
+# So mutation checking uses `make retest`, which cannot be fooled. Ordinary
+# `make test` during development is fine: a human edit and a later build are
+# seconds apart.
+.PHONY: retest
+retest:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory test
+
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
@@ -71,10 +92,6 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
 	$(BUILD_DIR)/test_audio_in_restore \
-	$(BUILD_DIR)/test_lane_trace \
-	$(BUILD_DIR)/test_lane_store \
-	$(BUILD_DIR)/test_lane_state_roundtrip \
-	$(BUILD_DIR)/test_slot_clip_phase \
 	$(BUILD_DIR)/test_rec_arm
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -262,23 +279,17 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # lane_trace.c is LINKED, not stubbed: it owns the ring
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
-$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c | $(BUILD_DIR)
-	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
-$(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_store.c ../../src/host/lane_store.c -lm
 
 # lane_trace — the ring the lane diagnostic records through. Header-only, so
 # the .c is the whole test; the header is named as a dependency.
-$(BUILD_DIR)/test_lane_trace: test_lane_trace.c ../../src/host/lane_trace.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_trace.c
+
+# lane_lookahead — the one block of lead a p-lock needs to beat its own note.
 
 # lane_serial — the `lanes:state` document (Task 8). Links the real
 # lane_store.c rather than a fake: the document's whole job is to round-trip
 # lane_t, so a stand-in would inherit the test's own belief about its layout.
-$(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c ../../src/host/lane_serial.h ../../src/host/lane_store.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c -lm
 
 # rec_arm — Move's Record button, decoded from its LED (Task 7 of automation
 # lanes). Header-only, so the .c is the whole test; the header is named as a

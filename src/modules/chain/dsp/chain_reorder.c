@@ -123,6 +123,7 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
             k->param[0] = '\0';
         }
     }
+
 }
 
 /* Which section a request names, resolved once so the three verbs below cannot

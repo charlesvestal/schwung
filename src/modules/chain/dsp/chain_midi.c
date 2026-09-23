@@ -743,6 +743,18 @@ static void pre_delay_flush(chain_instance_t *inst) {
 void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst || len < 1) return;
+
+    /* Touch edge (capabilities.touch_observe): the synth asked for it and
+     * nothing else in the slot did. Delivered before the clock, LFO, MIDI FX,
+     * Pre-mode and audio FX paths below, every one of which would otherwise
+     * read it as a played note 0-9, and never recorded as synth:last_note. */
+    if (source == MOVE_MIDI_SOURCE_TOUCH) {
+        if (inst->synth_touch_observe && inst->synth_plugin_v2 &&
+            inst->synth_instance && inst->synth_plugin_v2->on_midi)
+            inst->synth_plugin_v2->on_midi(inst->synth_instance, msg, len, source);
+        return;
+    }
+
     chain_update_clock_runtime(msg, len);
 
     /* Reset synced LFO phases on MIDI Start (0xFA) */

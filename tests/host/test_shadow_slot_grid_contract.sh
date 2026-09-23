@@ -83,18 +83,13 @@ function makeSlot(over) {
    *
    * Automation is its own section rather than three rows among the Actions
    * because its scopes are a SET -- this clip, every clip, undo -- and because
-   * the full words do not fit a row that also names the clip: the long form
-   * truncated to Clear Clip..., which beside Moves own clip deletion reads as
-   * delete this clip. Under a breadcrumb that already says AUTOMATION, every
-   * row says what it does in full. */
-  if (menus.length !== 2) fail("expected two menu pages (Automation, Actions), got " + menus.length);
+  if (menus.length !== 1) fail("expected one menu page (Actions), got " + menus.length);
   if (pages[pages.length - 1].kind !== "menu") {
     fail("Actions must come LAST — a level emits its menu before any level it " +
          "navigates to, which is why the menu lives on its own level: " +
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "Sends", "LFO 1", "LFO 2", "Automation", "Actions"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }

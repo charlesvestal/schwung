@@ -1020,7 +1020,6 @@ void shim_gesture_state(int *shift, int *vol, unsigned *pending,
  * the per-slot lane push in the next pre-transfer. A flag rather than a direct
  * call because the gesture is decoded in the post-ioctl scan, where a slot's
  * plugin instance is not the thing in hand. */
-static volatile int lane_double_pending = 0;
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -2095,149 +2094,9 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
-        /* TAKEN ONCE, FOR ALL FOUR SLOTS, and cleared here rather than in
-         * post_transfer. The gesture is detected in midi_monitor(), which runs
-         * in PRE-transfer -- so a clear in post_transfer wiped the flag in the
-         * same frame it was set and no slot ever saw it. Measured: Move
-         * doubled the clip and the lane reported nothing, three placements
-         * running. Reading it into a local first also means every slot sees
-         * the same answer, which a mid-loop clear would not give. */
-        const int lane_double_now = lane_double_pending;
-        lane_double_pending = 0;
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
-
-            /* Tell the slot where its Move track's clip is. BEFORE the idle
-             * gate on purpose: a silent slot still advances its modulation via
-             * mod:tick, and a lane must keep playing through silence -- the
-             * gate skips render_block for 171 frames in 172.
-             *
-             * Guarded on the pointer because the export is optional: a chain
-             * DSP built before lanes resolves NULL, and every slot is simply
-             * never told, which reads downstream as "phase unknown". */
-            /* A STOPPED TRANSPORT HAS NO PHASE, and saying so is what
-             * hands the parameter back.
-             *
-             * The phase is anchor + elapsed pulses, so when the clock
-             * stops it FREEZES rather than becoming unknown -- and a
-             * frozen phase is a perfectly good one, so every lane went on
-             * driving its parameter at whatever value the stop happened to
-             * land on, for as long as the device sat there. Measured: the
-             * knob read 0.2 and the synth stayed at 0.9 indefinitely, with
-             * nothing but an unarmed turn or a clear to get it back.
-             *
-             * `lane_tick` already does the right thing with an unknown
-             * phase -- it releases everything it drives, once -- so this
-             * only has to tell it the truth. The transport service knows:
-             * a Stop (0xFC) clears `running`, and with no active source
-             * the beat position is negative. */
-            if (shadow_chain_set_clip_phase) {
-                double lane_phase = 0.0, lane_loop = 0.0;
-                double lane_fp[4] = { 0.0, 0.0, 0.0, -1.0 };
-                int lane_clip = -1, lane_fp_ok = 0;
-                int lane_ok = shadow_slot_clip_phase(s, &lane_phase, &lane_loop,
-                                                     &lane_clip, &lane_fp_ok,
-                                                     lane_fp);
-                if (lane_ok && shadow_transport_beat_position() < 0.0)
-                    lane_ok = 0;
-                shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
-                                            lane_ok, lane_phase, lane_loop,
-                                            s, lane_clip, lane_fp_ok, lane_fp);
-            }
-
-            /* Move's Record button, decoded from its LED (rec_arm.h). ON
-             * CHANGE ONLY: a per-block write would serve a param request on
-             * the SPI callback 344 times a second to say nothing new, and
-             * param-slow already names set_param as the thing that eats a
-             * frame.
-             *
-             * Keyed on the INSTANCE as well as the value, because a slot that
-             * is reloaded gets a fresh instance whose lane_armed is whatever
-             * the memset left -- so "same value as last time" would leave a
-             * newly built slot un-told and nothing would ever correct it. */
-            if (shadow_plugin_v2->set_param) {
-                static void *lane_armed_inst[SHADOW_CHAIN_INSTANCES];
-                static int   lane_armed_seen[SHADOW_CHAIN_INSTANCES];
-                void *linst = shadow_chain_slots[s].instance;
-                int armed = shadow_rec_arm_recording() ? 1 : 0;
-                if (linst != lane_armed_inst[s] || armed != lane_armed_seen[s]) {
-                    shadow_plugin_v2->set_param(linst, "lanes:armed",
-                                                armed ? "1" : "0");
-                    lane_armed_inst[s] = linst;
-                    lane_armed_seen[s] = armed;
-                }
-            }
-
-            /* MOVE DOUBLED THE LOOP (Shift+Step 15). Its manual calls that
-             * doubling "notes and automation", so every lane on the playing
-             * clip copies its points one loop-length later.
-             *
-             * Pushed the frame the gesture is SEEN rather than when the
-             * clip's new length appears: Move writes that ~10 s later, and a
-             * lane that waited would be silent over the new bars until then --
-             * indistinguishable from one that simply failed. The flag is
-             * consumed here, once per slot, because the gesture is a moment
-             * and this loop is where a slot's instance is in hand. */
-            if (shadow_plugin_v2->set_param && lane_double_now)
-                shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                            "lanes:double", "1");
-
-            /* A DELETED clip orphans its lanes, and the crossing is
-             * worker-publishes / callback-pushes.
-             *
-             * The worker is the only thing that can tell a deletion from a
-             * clip Move has not saved yet (it holds the before/after parse),
-             * and it must not push this itself: chain_set_clip_deleted is a
-             * module entry point, i.e. THIS thread, and the instance is only
-             * safe because RT is its single writer.
-             *
-             * Once per GENERATION, not per block: a counter cannot be
-             * resurrected by a preempted worker the way a flag can, and the
-             * seen-value lives here, in the consumer, so the producer never
-             * has to unwrite anything. Bounded at 32 marks on the frame a
-             * deletion lands and zero on every other frame.
-             *
-             * Every set bit goes to every slot. chain_set_clip_deleted matches
-             * on (track, slot), so a slot holding no lane for that position
-             * does nothing -- and that is what keeps this correct if a lane is
-             * ever bound to a track other than its own slot index. */
-            if (shadow_chain_set_clip_deleted) {
-                static uint32_t lane_deleted_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t gen = shadow_clip_deleted_generation();
-                if (gen != lane_deleted_gen_seen[s]) {
-                    uint32_t mask = shadow_clip_deleted_mask();
-                    lane_deleted_gen_seen[s] = gen;
-                    for (int b = 0; b < CLIP_TRACKS * CLIP_SLOTS; b++) {
-                        if (!(mask & (1u << b))) continue;
-                        shadow_chain_set_clip_deleted(
-                            shadow_chain_slots[s].instance,
-                            b / CLIP_SLOTS, b % CLIP_SLOTS);
-                    }
-                }
-            }
-
-            /* A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT, published by
-             * the worker the same way a deletion is and consumed here for the
-             * same reason: this is where a slot's instance is in hand.
-             *
-             * Only the track whose slot index matches is told, because a lane
-             * lives on the chain instance that owns that Move track -- the
-             * same rule the deletion consumer above states. */
-            if (shadow_plugin_v2->set_param) {
-                static uint32_t lane_copy_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t cgen = shadow_clip_copy_generation();
-                if (cgen != lane_copy_gen_seen[s]) {
-                    lane_copy_gen_seen[s] = cgen;
-                    if (cgen != 0 && shadow_clip_copy_track() == (int)s) {
-                        char arg[32];
-                        snprintf(arg, sizeof(arg), "%d %d",
-                                 shadow_clip_copy_src(), shadow_clip_copy_dst());
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:copy_clip", arg);
-                    }
-                }
-            }
 
             /* Per-slot timing for the render+fx work below */
             struct timespec slot_t0, slot_t1;
@@ -2245,6 +2104,25 @@ static void shadow_inprocess_render_to_buffer(void) {
 
             /* Wake slot from idle if fade is ramping (otherwise gain stays at 0) */
             if (shadow_chain_slots[s].fade.gain != shadow_chain_slots[s].fade.target) {
+                shadow_slot_idle[s] = 0;
+                shadow_slot_silence_frames[s] = 0;
+            }
+
+            /* Sound generators that cannot be woken by anything the shim can
+             * see opt out of the idle gate entirely — chiefly the ones that
+             * consume line input, whose output follows a jack nobody here
+             * inspects and which receive no MIDI. Parking such a slot is not a
+             * saving, it is a fault: the probe interval below chops up to
+             * ~0.5 s off the front of every phrase and anything quieter than
+             * DSP_SILENCE_LEVEL never returns, which is heard as a noise gate
+             * that no module setting can switch off.
+             *
+             * Cleared here and not merely left unset, so that a slot ALREADY
+             * parked by whatever module preceded this one wakes on the frame
+             * the keep-alive module loads, rather than at the next probe. */
+            int synth_keep_alive = (shadow_chain_synth_requires_continuous &&
+                                    shadow_chain_synth_requires_continuous(shadow_chain_slots[s].instance));
+            if (synth_keep_alive) {
                 shadow_slot_idle[s] = 0;
                 shadow_slot_silence_frames[s] = 0;
             }
@@ -2386,7 +2264,12 @@ static void shadow_inprocess_render_to_buffer(void) {
                 }
             }
 
-            if (is_silent) {
+            if (synth_keep_alive) {
+                /* Opted out above; hold the counter at zero so the slot cannot
+                 * drift back into idle between renders. */
+                shadow_slot_silence_frames[s] = 0;
+                shadow_slot_idle[s] = 0;
+            } else if (is_silent) {
                 shadow_slot_silence_frames[s]++;
                 if (shadow_slot_silence_frames[s] >= DSP_IDLE_THRESHOLD) {
                     shadow_slot_idle[s] = 1;
@@ -4548,7 +4431,6 @@ static void shadow_mix_audio(void)
      * screen cannot report for itself. Every 16th frame (~46 ms): it is a
      * lamp, not a value, and the poll walks four chains' lanes. */
     if ((shadow_control->shim_counter % LANES_DRIVING_PUBLISH_FRAMES) == 0)
-        shadow_lanes_publish_driving();
 
     /* ...and the held step itself, EVERY frame, not on the lamp's cadence: it
      * is one byte, and it is what the UI shows the locked value from. A press
@@ -5917,9 +5799,6 @@ void midi_monitor()
          * same place that defines what "Shift" means. */
         if (cable == 0x00 && (midi_0 & 0xF0) == 0x90 && midi_1 == 30 &&
             midi_2 > 0) {
-            if (shiftHeld) lane_double_pending = 1;
-            shadow_log(shiftHeld ? "lanes: Double Loop gesture seen"
-                                 : "lanes: step 15 with no Shift");
         }
 
         int controlMessage = 0xb0;
@@ -6683,6 +6562,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* One slot per frame learns whether its components want raw SysEx. */
     shadow_chain_refresh_wants_sysex_tick();
+    shadow_chain_refresh_touch_observe_tick();
 
     /* MIDI channel indicator: scan external (cable 2) MIDI_IN and MIDI_OUT for
      * note events and record the channels for the on-screen "i<IN> o<OUT>"
@@ -7963,7 +7843,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Reads the unfiltered hardware mailbox, so it is upstream of the
      * Move-facing filter, the shadow forward, the ring and every gate.
      */
-    if (shim_touch_trace_on && hw) {
+    if (hw) {
         const uint8_t *tsrc = (const uint8_t *)hw + MIDI_IN_OFFSET;
         for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t thead = tsrc[j];
@@ -7972,9 +7852,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t ttype = tstatus & 0xF0;
             uint8_t td1 = tsrc[j + 2];
             if ((ttype != 0x90 && ttype != 0x80) || td1 > 9) continue;
-            uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
-                            | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
-            touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+            /* The performance path is opt-in inside the dispatcher, which
+             * also owns the cable-0 test. It reads this unfiltered hardware
+             * slot before the UI process and its parameter queue, so a touch
+             * release reaches DSP in this frame.
+             *
+             * Nothing is published to the shadow UI from here. This walk has
+             * no cable test and runs in every mode, so a publish here turned an
+             * external keyboard's note 9 into a hardware jog touch and doubled
+             * every jog touch in overtake (whose walk already forwards all
+             * events). Jog touch reaches the UI from the display-mode walk. */
+            shadow_chain_dispatch_touch_to_slots(&tsrc[j]);
+            if (shim_touch_trace_on) {
+                uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
+                                | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
+                touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+            }
         }
     }
 
@@ -9908,8 +9801,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
-                /* Forward knob touch notes (0-7) to shadow UI for peek-at-value */
-                if (d1 <= 7 && shadow_ui_midi_shm) {
+                /* Forward knob touch notes (0-7) to shadow UI for peek-at-value,
+                 * and jog touch (9) for fullscreen canvases. Volume touch (8)
+                 * stays out: it is the master knob's, not the UI's. */
+                if ((d1 <= 7 || d1 == 9) && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 

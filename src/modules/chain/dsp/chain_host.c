@@ -231,6 +231,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
     inst->synth_bypassed = 0;
+    inst->synth_requires_continuous = 0;
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
     /* Cleared with the handle it was resolved against: keeping it would leave a
@@ -439,12 +440,9 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
                 if (mj_buf) {
                     size_t nr = fread(mj_buf, 1, mj_size, mj);
                     mj_buf[nr] = '\0';
-                    int cap = 0;
-                    if (json_get_int_in_section(mj_buf, "capabilities",
-                                                "requires_continuous_processing", &cap) == 0
-                        && cap) {
+                    if (json_get_flag_in_section(mj_buf, "capabilities",
+                                                 "requires_continuous_processing"))
                         inst->fx_requires_continuous[slot] = 1;
-                    }
                     free(mj_buf);
                 }
             }
@@ -683,10 +681,12 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_requires_continuous = 0;       /* Default: shim may park it on silence */
     /* Reset per synth load: a stale note from the previous module would name a
      * voice in a list that no longer exists. */
     inst->synth_last_note = -1;
     inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
+    inst->synth_touch_observe = 0;              /* Default: no direct touch edges */
 
     /* Reset FIRST, unconditionally: an id from the previous module must never
      * name a voice in a list that no longer exists — the same rule as
@@ -768,20 +768,29 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                             }
                             if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
                                 inst->synth_consumes_line_input = 1;
+                                /* And therefore keep-alive: nothing the shim
+                                 * can see would ever wake it. */
+                                inst->synth_requires_continuous = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
                         }
                     }
+                    /* Declared opt-out from the shim's silence-skip, the same
+                     * capability the FX loader reads; chain_internal.h has the
+                     * why, and the implicit line-input case is set above. */
+                    if (json_get_flag_in_section(json, "capabilities",
+                                                 "requires_continuous_processing"))
+                        inst->synth_requires_continuous = 1;
+                    if (inst->synth_requires_continuous)
+                        v2_chain_log(inst, "Synth keep-alive: exempt from silence-skip");
                     /* Opt-in for raw SysEx, same both-spellings rule as
                      * the MIDI FX path in chain_midi.c. */
-                    {
-                        int wants = 0;
-                        if ((json_get_bool_in_section(json, "capabilities", "wants_sysex", &wants) == 0
-                             || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
-                            && wants) {
-                            inst->synth_wants_sysex = 1;
-                        }
-                    }
+                    if (json_get_flag_in_section(json, "capabilities", "wants_sysex"))
+                        inst->synth_wants_sysex = 1;
+                    /* Knob 0-7 / jog 9 touch edges, delivered to this synth
+                     * alone as MOVE_MIDI_SOURCE_TOUCH. */
+                    if (json_get_flag_in_section(json, "capabilities", "touch_observe"))
+                        inst->synth_touch_observe = 1;
                     free(json);
                 }
             }
@@ -935,7 +944,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
         int frames = val ? atoi(val) : 128;
         lfo_tick(inst, frames);
-        lane_tick(inst);
         chain_idle_tick_mark(&inst->idle_tick, v2_tick_midi_fx(inst, frames));
         return;
     }
@@ -946,13 +954,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
-    /* Every automation-lane key, in ONE dispatch (chain_lanes.c). One branch
-     * rather than one per key: this file is pinned at 2900 lines, so a ladder
-     * here makes the next lane key a choice between the pin and the feature. */
-    if (key && strncmp(key, "lanes:", 6) == 0) {
-        lane_param_set(inst, key + 6, val);
-        return;
-    }
 
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
@@ -1241,7 +1242,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
-            lane_on_set_param(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
                 chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
@@ -1289,7 +1289,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
              * exists is an ordinary event, not a bug to be recovered from. */
             char fx_id[16];
             chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
-            lane_on_set_param(inst, fx_id, subkey, val);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -1334,7 +1333,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             /* Dropped if the slot holds nothing — see the audio FX branch. */
             char mfx_id[16];
             chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
-            lane_on_set_param(inst, mfx_id, subkey, val);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
@@ -1610,11 +1608,6 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
     }
 
-    /* Every automation-lane key, in ONE dispatch (chain_lanes.c). -1 comes
-     * back for a key it does not serve, so an unknown "lanes:" subkey reads
-     * as a FAILED read rather than as an empty answer. */
-    if (strncmp(key, "lanes:", 6) == 0)
-        return lane_param_get(inst, key + 6, buf, buf_len);
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we return our cached flag instead of forwarding to the sub-plugin. */
@@ -1684,6 +1677,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             if (inst->midi_fx_wants_sysex[i]) want = 1;
         }
         return snprintf(buf, buf_len, "%d", want);
+    }
+    if (strcmp(key, "touch_observe") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->synth_touch_observe ? 1 : 0);
     }
     if (strcmp(key, "midi_fx:pre_capable") == 0) {
         /* Hint from the loaded MIDI FX's module.json. Aggregated as OR
@@ -2403,7 +2399,6 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
      * this exact block with a generated note. Never advance it twice. */
     if (chain_idle_tick_consume(&inst->idle_tick)) {
         lfo_tick(inst, frames);
-        lane_tick(inst);
         v2_tick_midi_fx(inst, frames);
     }
 
@@ -2880,6 +2875,16 @@ int chain_fx_requires_continuous(void *instance) {
         if (inst->fx_requires_continuous[i]) return 1;
     }
     return 0;
+}
+
+/* Exported: 1 if the SOUND GENERATOR here must keep rendering through silence
+ * (see synth_requires_continuous in chain_internal.h). Separate from the FX
+ * answer: an FX needing continuous time does not imply the synth ahead of it
+ * does, and one flag for both would park neither. */
+__attribute__((visibility("default")))
+int chain_synth_requires_continuous(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    return inst ? (inst->synth_requires_continuous ? 1 : 0) : 0;
 }
 
 /* Called by the shim immediately after its silent-slot mod:tick. A true result

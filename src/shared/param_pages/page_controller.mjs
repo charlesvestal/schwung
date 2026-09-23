@@ -41,7 +41,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
          W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
+import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
@@ -591,30 +591,10 @@ export function createController(io = {}) {
      * Injectable so tests can drive it, and `typeof`-guarded so the preview
      * harness -- node, no device, no bindings -- simply sees no step held.
      */
-    /* The device's answer, right now, guarded -- as opposed to `s.heldStep`,
-     * which the rotation only refreshes on a KNOB page. Clearing a step's
-     * automation is not a knob-page fact: on a module's own grid the screen is
-     * often its section picker or a menu when the finger goes down, and the
-     * gesture must still work there. Measured: the whole-step clear did
-     * nothing on 9W9 for exactly this reason, while the same press worked on
-     * the host's grid. */
-    const liveHeldStep = () => {
-        try {
-            const v = heldStepOf();
-            return (typeof v === "number" && v >= 0) ? v : -1;
-        } catch (e) { return -1; }
-    };
     /* The shim's p-lock counter, bumped ONLY when a lock is confirmed to have
      * landed. Optional: a module binding this controller from its own
      * ui_chain.js supplies getParam/setParam/announce and nothing else, and
      * falls back to the deferred read below. */
-    const plockSeqOf = typeof io.plockSeq === "function" ? io.plockSeq : null;
-    const heldStepOf = io.heldStep || (() => {
-        try {
-            return (typeof globalThis.shadow_get_held_step === "function")
-                ? globalThis.shadow_get_held_step() : -1;
-        } catch (e) { return -1; }
-    });
     /*
      * MOVE'S DELETE BUTTON, and whether the held press has become a HOLD.
      *
@@ -633,18 +613,6 @@ export function createController(io = {}) {
      * trip at ~2.8 ms -- and `typeof`-guarded so the preview harness (node, no
      * device, no bindings) simply sees them false.
      */
-    const deleteHeldOf = io.deleteHeld || (() => {
-        try {
-            return (typeof globalThis.shadow_get_delete_held === "function")
-                ? globalThis.shadow_get_delete_held() === 1 : false;
-        } catch (e) { return false; }
-    });
-    const heldStepIsHoldOf = io.heldStepIsHold || (() => {
-        try {
-            return (typeof globalThis.shadow_get_held_step_is_hold === "function")
-                ? globalThis.shadow_get_held_step_is_hold() === 1 : true;
-        } catch (e) { return true; }
-    });
     /*
      * Optional: how the HOST wants a value read on a given surface.
      *
@@ -745,21 +713,12 @@ export function createController(io = {}) {
         modProbeCursor: 0,
         /* The step-held read: which step, what each key is locked to there,
          * and how far round the page the reads have got. */
-        heldStep: -1,
-        heldValues: Object.create(null),
         heldCursor: 0,
         heldDecOwned: false,
         /* One refusal read per held-step gesture, not per detent. */
-        stepRefusalChecked: false,
-        pendingRefusal: null,
         /* Which step a pending write was made under, by key -- see sendPending. */
-        pendingStep: Object.create(null),
         /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
-        lockMap: null,
-        lockMapFor: -1,
-        lockMapAnim: null,
         /* Delete held while a step is: armed, and whether a knob was picked. */
-        stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
@@ -831,10 +790,42 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* A pad press just told us the module's mode may have moved — spend
+         * the next rotation stop on the gates rather than waiting for their
+         * turn. See vouchLivePress and the gate lane. */
+        gatesDue: false,
         /* A write touched a condition key; tick() owes one plan. Coalesced
          * because an encoder sweep is a burst of writes and each one used to
          * buy a full planPages. */
         replanOwed: false,
+        /*
+         * The exact bytes the plan on screen was built from, and the mode it
+         * was built for. Compared against a fresh read to answer "did the
+         * DECLARATION move?" without parsing or planning anything.
+         *
+         * `load` runs on a divider (reloadIfChanged, ~every 8 ticks) so that a
+         * module swap or a preset that republishes its contract is noticed
+         * while the grid stands on a page. Until now it answered that question
+         * by doing the whole job — parse both contract strings, walk the
+         * hierarchy, plan every page, resolve each page's viz, hash the result
+         * — and then discarding all of it when the fingerprint came back equal,
+         * which in a steady state is EVERY time. The fingerprint is taken over
+         * `[hierarchy, chainParams, mode]` and nothing else (page_plan.mjs), so
+         * the raw bytes of those same three inputs answer identically, and the
+         * work above them is dead. Measured on minijv (433 params, 57 levels,
+         * the largest in the fleet) that discarded work is ~2.8 ms every 8
+         * ticks in node — a third of the tick, and far worse on the device's
+         * QuickJS/A72.
+         *
+         * NOT a cache of visibility: a `visible_if` is driven by a VALUE, which
+         * moves without the declaration moving, and the fingerprint has never
+         * been able to see that either — `conditionKeys` above is what watches
+         * for it, and replanIfCondition/flushReplan re-plan on their own path.
+         * This skips only what the fingerprint was already discarding.
+         */
+        rawHierarchy: null,
+        rawChain: null,
+        plannedMode: undefined,
         /* Instance copy / clear gesture (hold Copy or Delete, then pick an
          * instance) -- see onEditCc. `editUndo` is the one-level undo. */
         editGesture: null,
@@ -962,6 +953,49 @@ export function createController(io = {}) {
         return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
     };
     const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
+    /*
+     * The wire key for a visible_if GATE, resolved the way the evaluator
+     * resolves it: against the level that DECLARES the condition, at that
+     * level's own child index.
+     *
+     * fullKey cannot do this. It resolves only a key that is a cell on the
+     * current page, and the gate lane reads exactly the keys that are not --
+     * so a per-pad gate (`{ param: "type" }` on a `child_prefix: "pad"` level)
+     * asked the wire for `synth:type` instead of `synth:pad0_type`, got the
+     * chain host's "" for an unknown key, and cached it under `type`: the very
+     * slot the evaluator consults first. One pad press and a gate that was
+     * right became wrong -- the "number read off the wrong parameter, cached
+     * under the bare key" the childResolve note above warns about.
+     *
+     * A key declared by two levels that resolve it DIFFERENTLY has no single
+     * answer; null, and the lane skips it rather than pick one. The evaluator
+     * still reads it on demand, which is what it did before the lane existed.
+     */
+    const gateLevelsOf = (key) => {
+        const out = [];
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        const names = (c) => c && typeof c === "object" && String(c.param || c.key || c.param_key || "") === key;
+        for (const name of Object.keys(levels)) {
+            const lvl = levels[name];
+            if (!lvl || typeof lvl !== "object") continue;
+            let hit = names(lvl.visible_if);
+            if (!hit && Array.isArray(lvl.params)) {
+                hit = lvl.params.some((p) => p && typeof p === "object" && names(p.visible_if));
+            }
+            if (hit) out.push(name);
+        }
+        return out;
+    };
+    const gateWireKey = (key) => {
+        const levels = (s.hierarchy && s.hierarchy.levels) || {};
+        let wire = null;
+        for (const name of gateLevelsOf(key)) {
+            const w = resolveChildKey(levels[name], childIndexFor(name), key) || key;
+            if (wire !== null && wire !== w) return null;
+            wire = w;
+        }
+        return `${s.prefix}:${wire === null ? key : wire}`;
+    };
     const page = () => s.pages[s.pageIndex] || null;
 
     /*
@@ -1096,6 +1130,12 @@ export function createController(io = {}) {
             s.fingerprint = null;
             s.hierarchy = null;
             s.chainParams = null;
+            /* With the contract itself dropped, the bytes it was read from name
+             * nothing — leaving them would let the NEXT read short-circuit
+             * against a plan that no longer exists. */
+            s.rawHierarchy = null;
+            s.rawChain = null;
+            s.plannedMode = undefined;
             s.metaIndex = null;
             s.conditionKeys = new Set();
             /* flushDueWritesUnconditionally() above may have marked a plan owed
@@ -1115,7 +1155,20 @@ export function createController(io = {}) {
         s.contractRetries = 0;
         s.contractGaveUp = false;
 
-        const hierarchy = parse(rawHierarchy);
+        /*
+         * SAME BYTES AS THE PLAN ON SCREEN? Then `parse` would return an object
+         * equal to the one already in hand, and re-deriving everything from it
+         * is waste. Reusing the object rather than re-parsing also restores
+         * `fingerprintOf`'s identity memo, which is defeated by a fresh parse
+         * on every reload and so re-hashed the whole contract each time.
+         *
+         * `sameComponent` is part of it because the bytes alone do not identify
+         * a module: two slots can hold the same one, and the plan must still be
+         * rebuilt against the new prefix.
+         */
+        const declSame = sameComponent && s.rawHierarchy !== null
+                      && rawHierarchy === s.rawHierarchy && !!s.hierarchy;
+        const hierarchy = declSame ? s.hierarchy : parse(rawHierarchy);
         /*
          * Seed the active mode FROM THE MODULE.
          *
@@ -1170,10 +1223,42 @@ export function createController(io = {}) {
          */
         const rawChain = getParam(`${s.prefix}:chain_params`);
         const chainFailed = (rawChain === null || rawChain === undefined);
+        const chainSame = declSame && !chainFailed
+                       && rawChain === s.rawChain && s.chainParams !== null;
         const chainParams = chainFailed
             ? (sameComponent ? s.chainParams : null)
-            : parse(rawChain);
+            : (chainSame ? s.chainParams : parse(rawChain));
         if (chainFailed && sameComponent) armContractSettle();
+
+        /*
+         * NOTHING THE PLAN IS MADE OF MOVED — so the plan on screen IS the
+         * plan, and the rest of this function would compute it again only to
+         * throw it away at the fingerprint compare below.
+         *
+         * The three tests are exactly the three inputs the fingerprint is taken
+         * over, which is what makes this equivalent rather than approximate:
+         * same hierarchy bytes, same chain_params bytes, same mode => same
+         * `planned.fingerprint` => `return false` with nothing adopted. A
+         * chain_params read that FAILED is deliberately not a match: the
+         * retained metadata is what we keep, but the settle armed above wants
+         * another look, and short-circuiting here would latch the failure.
+         *
+         * Everything this skips is pure: planPages has no side effect the
+         * caller keeps when the fingerprint matches, and the metaIndex, the
+         * child aliases and the warm are all below the compare already.
+         */
+        if (declSame && chainSame && s.fingerprint !== null && activeMode === s.plannedMode) {
+            return false;
+        }
+
+        /* What the plan below is built from, recorded BEFORE the fingerprint
+         * compare can return: a reload that re-parsed to the same fingerprint
+         * still read these exact bytes, and the next one must compare against
+         * them or it re-parses forever. */
+        s.rawHierarchy = rawHierarchy;
+        if (!chainFailed) s.rawChain = rawChain;
+        s.plannedMode = activeMode;
+
         const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible,
                                     trailingMenus: trailingMenus(), paginate: s.paginate });
         /* Retained so a visibility re-plan costs no extra device reads. */
@@ -1557,23 +1642,12 @@ export function createController(io = {}) {
      * ONE's value and the lock carried detent TWO's, which is precisely an
      * unstamped immediate write beside a stamped pended one.
      */
-    function writeUserValue(key, wire, step) {
-        if (step === undefined || step === null || step < 0) {
-            setParam(fullKey(key), wire);
-            return;
-        }
-        const fk = fullKey(key);
-        const colon = fk.indexOf(":");
-        if (colon <= 0) { setParam(fk, wire); return; }
-        setParam("lanes:plock_step",
-                 fk.substring(0, colon) + " " + fk.substring(colon + 1) +
-                 " " + step + " " + wire);
+    function writeUserValue(key, wire) {
+        setParam(fullKey(key), wire);
     }
 
     function sendPending(key) {
-        const step = s.pendingStep[key];
-        delete s.pendingStep[key];
-        writeUserValue(key, s.pendingWrite[key], step);
+        writeUserValue(key, s.pendingWrite[key]);
     }
 
     function flushDueWrites() {
@@ -1841,6 +1915,20 @@ export function createController(io = {}) {
                 delete s.knobStates[k];
             }
         }
+        /* ...and the level's own per-instance GATES, which live on no page, so
+         * the loop above never sees them. The gate lane caches them under the
+         * generic key the evaluator asks for; left in place, the pad we just
+         * left would go on deciding what the new pad's pages are. Marked due
+         * so the new instance's answer is read rather than waited for. */
+        const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
+        if (lvlDef && s.conditionKeys) {
+            for (const k of s.conditionKeys) {
+                if (!resolveChildKey(lvlDef, 0, k)) continue;
+                if (gateLevelsOf(k).indexOf(levelName) < 0) continue;
+                delete s.values[k];
+                s.gatesDue = true;
+            }
+        }
         s.cursor = 0;
         /*
          * ...and read the new instance NOW, before anything is drawn.
@@ -1883,6 +1971,10 @@ export function createController(io = {}) {
         if (i === null) return;                 /* tri-state: not an answer */
         if (i === childIndexFor(name)) return;  /* already there */
         s.childIndex[name] = i;
+        /* The module moved its own focus — a pad was hit, a preset loaded.
+         * Whatever its mode is gated on may have moved with it, and unlike a
+         * knob turn nothing on this grid wrote anything. See the gate stop. */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         dropChildLevelCache(name);
     }
 
@@ -1940,6 +2032,21 @@ export function createController(io = {}) {
         const k = livePressParam();
         if (!k) return false;
         setParam(`${s.prefix}:${k}`, "1");
+        /*
+         * ⭑ A PAD PRESS IS THE EVENT A GATE IS MOST LIKELY WAITING FOR.
+         *
+         * A gate read on the ordinary rotation gets its turn once a pass — a
+         * fifth of a second on a full page. That is fine for a refresh and
+         * far too slow for "I hit a hat, show me the hat's pages", which is
+         * the gesture the off-page gate exists to serve.
+         *
+         * This buys the latency back for nothing: it does not add a read, it
+         * PRIORITISES one. The next stop is spent on a gate instead of on the
+         * next knob value, so the answer lands in about a tick, and the knob
+         * it displaced simply comes round next time. The rotation is a refresh
+         * loop, not a sequence with meaning.
+         */
+        if (s.conditionKeys && s.conditionKeys.size) s.gatesDue = true;
         return true;
     }
 
@@ -2199,7 +2306,6 @@ export function createController(io = {}) {
     function tick() {
         s.tickCount++;
         flushDueWrites();
-        judgePendingRefusal();
         /* After flushDueWrites, which is itself a writer of condition keys, so
          * its changes fold into the same single plan. Before everything below,
          * which reads s.pages.
@@ -2284,7 +2390,6 @@ export function createController(io = {}) {
         /* Before anything spends this tick's stop: which step is under the
          * finger decides whether the held lane below runs at all, and it is a
          * free SHM byte rather than a read. */
-        syncHeldStep(p);
 
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
@@ -2317,6 +2422,56 @@ export function createController(io = {}) {
                 extraKeys.push(k);
             }
         }
+        /*
+         * A GATE KEY IS READ WHEN SOMETHING OUTSIDE THE GRID MOVED.
+         *
+         * `visible_if` hides a level or a cell whose condition is false, and
+         * the re-plan that brings it back is driven by the condition's value
+         * CHANGING -- which the controller only notices for keys it reads.
+         *
+         * ⚠ IT IS AN EVENT, NOT A POLL, and that distinction is the whole
+         * design. A gate whose value only ever changes BECAUSE OF A WRITE
+         * FROM THIS GRID already re-plans: the write path calls
+         * replanIfCondition, and the planner's evaluator reads whatever else
+         * it needs on demand. echidna-fx is built that way -- 18 derived
+         * flags per slot, all downstream of one Cat knob that IS a cell --
+         * and polling its ~72 condition keys would spend four stops a page
+         * refreshing values that were already correct, slowing the knobs it
+         * shares the rotation with for nothing.
+         *
+         * What has no path today is a gate that moves with NO grid
+         * interaction at all: a module whose mode lives outside the grid,
+         * where the pad you hit selects the voice and two voice types want
+         * different pages. So the gates are marked due exactly when the grid
+         * learns of such a move -- a live pad press (vouchLivePress) or the
+         * module's own focus changing (syncChildIndexFromModule) -- and are
+         * read one per tick from the next stop. Idle, this costs nothing at
+         * all.
+         *
+         * `conditionKeys` comes from the planner's pre-pass over EVERY level,
+         * including hidden ones, so a level that is off can come back on.
+         */
+        if (s.gatesDue) {
+            const due = [];
+            for (const k of s.conditionKeys) {
+                if (!k || p.keys.indexOf(k) >= 0) continue;   /* a cell is read anyway */
+                if (gateWireKey(k) === null) continue;        /* ambiguous: evaluator reads it */
+                due.push(k);
+                if (due.length >= MAX_DECLARED_EXTRA_KEYS) break;
+            }
+            const k = due[s.gateAt || 0];
+            if (!k) { s.gatesDue = false; s.gateAt = 0; }
+            else {
+                s.gateAt = (s.gateAt || 0) + 1;
+                if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
+                const gv = getParam(gateWireKey(k));
+                const before = s.values[k];
+                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                if (s.values[k] !== before) replanIfCondition(k);
+                return null;
+            }
+        }
+
         /*
          * THE NEIGHBOUR LANE — why the incoming page arrives populated.
          *
@@ -2375,72 +2530,6 @@ export function createController(io = {}) {
             maybeResettle(() => reloadIfChanged(s.lastLoadOpts));
         }
 
-        /* AFTER the metadata retry, deliberately. The probe RETURNS, so ahead
-         * of it it could eat a retry tick outright whenever the two cadences
-         * coincided -- which they do every 1032 ticks, and that was enough to
-         * leave osirus's `(loading)` enum placeholder up for good in the one
-         * test that waits for it. A lane that takes a turn must never be able
-         * to starve one that fires on a schedule. */
-        /*
-         * HOLD A STEP AND SEE WHAT IS LOCKED ON IT.
-         *
-         * The read half of the p-lock gesture. Writing one has worked for a
-         * while -- hold a step, turn a knob, the value is stored on that step
-         * -- and nothing on the screen ever said so, which is what made a
-         * working feature read as a missing one: you set values you could
-         * never see again.
-         *
-         * `<key>:held` is answered by the shim, which knows the held step and
-         * owns the step->phase arithmetic; the chain evaluates its lane at
-         * that phase. Empty is every kind of "no" -- no step, two steps, a
-         * step the strip cannot place, no lane, nothing at that phase -- and
-         * none of them is the value 0, which is why this never writes a
-         * decoration for an empty answer. A knob reading someone else`s number
-         * because a step went down would be worse than showing nothing.
-         *
-         * It SPENDS A STOP, like the modulation probe: the page fills in over
-         * one rotation (~130 ms for eight knobs), and the budget stays one
-         * read per tick. Ahead of the probe because it is the transient of the
-         * two -- the finger is on the button now.
-         */
-        /* THE HELD READOUT WAITS FOR THE HOLD, exactly as the lock map does.
-         *
-         * Both are the same gesture's presentation and they were appearing at
-         * different moments: the values on the PRESS, the map half a second
-         * later. Reported from the device -- "we show the knob value before
-         * the map comes in, it should appear when the map is there".
-         *
-         * It also completes the other half of the point: with this gated too,
-         * a TAP does no IPC at all. This read is one param per tick while a
-         * step is down, and a tap was paying it for nothing.
-         *
-         * THE WRITE PATH IS NOT GATED and must not be: a p-lock has to work
-         * faster than the tap threshold (hold a step, turn a knob, done inside
-         * 100 ms), and it seeds `heldValues` itself when it writes, so the
-         * pending-flush that turns a late detent into a lock still finds it. */
-        if (s.heldStep >= 0 && p.keys.length &&
-            !(io.heldStepIsHold && !io.heldStepIsHold())) {
-            const key = p.keys[s.heldCursor % p.keys.length];
-            s.heldCursor = (s.heldCursor + 1) % p.keys.length;
-            if (key) {
-                const a = getParam(fullKey(key) + ":held");
-                if (a === null || a === undefined || a === "") {
-                    delete s.heldValues[key];
-                } else {
-                    /* "<value> <exact>" -- `exact` says a point SITS on this
-                     * step rather than the curve passing through it. Both are
-                     * shown; only an exact one is what a turn would replace,
-                     * which is the distinction a lock mark has to carry or it
-                     * invites editing a point that is not there. */
-                    const sp = a.lastIndexOf(" ");
-                    const v = sp > 0 ? a.slice(0, sp) : a;
-                    const exact = sp > 0 && a.slice(sp + 1) === "1";
-                    s.heldValues[key] = { value: v, exact };
-                }
-                applyHeldDecorations(p);
-            }
-            return null;
-        }
 
         /*
          * THE MODULATION PROBE, for a consumer that injects no predicate.
@@ -2532,7 +2621,15 @@ export function createController(io = {}) {
             const ek = extraKeys[at - p.keys.length - 1];
             if (!ek) return null;
             const ev = getParam(fullKey(ek));
+            const was = s.values[ek];
             if (ev !== null && ev !== undefined) s.values[ek] = ev;
+            /* This lane stores straight into s.values rather than going
+             * through acceptValue -- see the tri-state note above, which is
+             * deliberately different here. So the condition re-plan, which
+             * acceptValue would otherwise have fired, is made explicitly. A
+             * gate read on this lane is the whole reason a level hidden by
+             * `visible_if` can ever come back. */
+            if (s.values[ek] !== was) replanIfCondition(ek);
             return null;
         }
         const key = p.keys[at];
@@ -3550,79 +3647,8 @@ export function createController(io = {}) {
      * identically here and in the list editor, writes through, and holds off
      * reads for that key until it settles.
      */
-    /*
-     * THE VALUE WE JUST WROTE, cached so the cell is steady between reads --
-     * and UNDER A HELD STEP THAT IS THE LOCK, NOT THE BASE.
-     *
-     * Writing `s.values` while a step is held would leave the base cache
-     * holding a number that only ever belonged to one step. Nothing re-reads a
-     * key that already has a value until the cursor comes round to it, so the
-     * knob would go on walking from that number after the finger came off, and
-     * the base the user thinks they are editing would be a step's value.
-     * Elektron's rule as well: a trig-held turn does not move the track value.
-     *
-     * `exact` is asserted because it is about to be true -- this write puts a
-     * point ON that step.
-     */
     function cacheWritten(key, wire) {
-        if (s.heldStep >= 0) {
-            /* THE WRITE CARRIES THE STEP IT WAS MADE UNDER.
-             *
-             * The p-lock decision used to be the shim's, read from whatever
-             * step was held when the write ARRIVED -- and a knob write is
-             * DEBOUNCED, so a write made under a step could land after the
-             * finger left it and be taken for an ordinary track edit.
-             * Converting on release only moved the race: tick() calls
-             * flushDueWrites() ~90 lines BEFORE syncHeldStep(), so whichever
-             * ran first that tick decided, and the leak went from "gaps 0-5"
-             * to intermittent -- 13 of 30 trials, scattered across gaps 0-15.
-             *
-             * Provenance instead of ordering: the stamp travels WITH the
-             * write, so no sequence of flush and sync can misattribute it, and
-             * flushDueWritesUnconditionally (a module swap, a visible_if
-             * re-plan) is covered by the same fact rather than needing its own
-             * copy of the rule. */
-            s.pendingStep[key] = s.heldStep;
-            s.heldValues[key] = { value: wire, exact: true };
-            const p = page();
-            if (p) applyHeldDecorations(p);
-            /* A REFUSED LOCK IS SAID OUT LOUD, because the fallback is
-             * INVISIBLE and wrong: the shim writes the value to the TRACK when
-             * it cannot place the step (no bar, a full store, a step outside
-             * the clip), so the user hears the sound change, concludes the
-             * lock took, and has in fact edited the value that plays on every
-             * OTHER step.
-             *
-             * BUT NOT ON THIS TICK, AND NOT FROM THE REGISTERS ALONE.
-             *
-             * The check used to read `lanes:plock_reason` and
-             * `lanes:plock_refused` immediately after the write. The param
-             * channel is a request/response queue, not a function call: the
-             * read can be served BEFORE the write it is asking about has been
-             * applied, so what came back was the PREVIOUS gesture's outcome.
-             * One genuine refusal then got re-reported on every later
-             * gesture, forever -- reported from the device as "hank's tone
-             * knob says can't automate, that's wrong", on a parameter that
-             * locks perfectly well, and as the display being "inconsistent",
-             * which is exactly what a race looks like from outside.
-             *
-             * So the gesture RECORDS what it needs and a later tick judges it,
-             * with provenance rather than timing: `plock_seq` is bumped by the
-             * shim only when a lock is CONFIRMED to have landed, so a counter
-             * that moved is proof this write took, whatever the registers say.
-             * Only when it has not moved are the registers worth reading -- so
-             * a successful lock now costs no round trip at all, where it used
-             * to cost two. */
-            if (!s.stepRefusalChecked) {
-                s.stepRefusalChecked = true;
-                let seq = null;
-                if (plockSeqOf) { try { seq = plockSeqOf(); } catch (e) { seq = null; } }
-                s.pendingRefusal = { key, step: s.heldStep, seq,
-                                     tick: s.tickCount };
-            }
-        } else {
-            s.values[key] = wire;
-        }
+        s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
     }
 
@@ -3681,11 +3707,6 @@ export function createController(io = {}) {
              * is the direction this codebase has repeatedly wished it had
              * chosen.
              */
-            if (s.heldStep >= 0 || liveHeldStep() >= 0) {
-                notice("Triggers cannot be locked", 3000);
-                announce("triggers cannot be locked to a step");
-                return null;
-            }
             if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
             else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
             fireTrigger(key, meta, t);
@@ -3742,8 +3763,7 @@ export function createController(io = {}) {
              * which is also Elektron: the first turn CREATES a lock starting
              * from what the track is doing.
              */
-            const heldSeed = (s.heldStep >= 0 && s.heldValues[key])
-                ? s.heldValues[key].value : undefined;
+            const heldSeed = undefined;
             let raw = heldSeed !== undefined ? heldSeed : s.values[key];
             if (raw === undefined) {
                 raw = getParam(fullKey(key));
@@ -3851,10 +3871,7 @@ export function createController(io = {}) {
         if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
-            delete s.pendingStep[key];
-            /* Named, not plain: see writeUserValue. This branch is the one the
-             * leak survived in. */
-            writeUserValue(key, wire, s.heldStep >= 0 ? s.heldStep : -1);
+            writeUserValue(key, wire);
         replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
@@ -3864,7 +3881,7 @@ export function createController(io = {}) {
         const lastAnnounce = s.lastAnnounceMs[key] || 0;
         if (t - lastAnnounce >= ANNOUNCE_THROTTLE_MS) {
             s.lastAnnounceMs[key] = t;
-            announce(announceTurn(meta, wire, s.heldStep));
+            announce(announceTurn(meta, wire));
         }
         return wire;
     }
@@ -3943,6 +3960,10 @@ export function createController(io = {}) {
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
         s.fingerprint = planned.fingerprint;
+        /* The plan on screen is now this mode's, so the next reload compares
+         * against it. Without this the mode the reload reads back differs from
+         * the one recorded and it re-plans once for nothing. */
+        s.plannedMode = s.lastLoadOpts && s.lastLoadOpts.mode;
         s.conditionKeys = planned.conditionKeys || new Set();
         s.values = Object.create(null);
         s.knobStates = Object.create(null);
@@ -4071,46 +4092,6 @@ export function createController(io = {}) {
      */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
-        /* THE PICK, while Delete is held over a held step: this knob's lock on
-         * this step goes. On the TOUCH, not the turn -- a turn under a held
-         * step writes a p-lock, so asking for a turn here would create the
-         * thing it is meant to remove. */
-        /* ...AND WITH NO STEP HELD, the whole lane.
-         *
-         * Asked of the HOST, not tracked from the CC. CC 119 only reaches this
-         * controller when a step is down or the module declared
-         * `claims_edit_ccs` -- 9W9 declares neither -- so a flag set from the
-         * CC would never once be true on the modules this is for. That is the
-         * "a grid feature is unreachable until the shim forwards its CC" trap,
-         * and this feature walked straight into it before the shim started
-         * publishing the byte (shadow_control_t.delete_held).
-         *
-         * The step branch below runs after, so the two can never both fire: a
-         * held step always means "on this step". */
-        if (down && deleteHeldOf() &&
-            !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
-            if (clearParamLane(slot)) return;
-        }
-        if (down && s.stepClear && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
-            const k = keyAt(slot);
-            if (k && clearHeldStep(k)) {
-                s.stepClear.picked = true;
-                const m = metaAt(slot);
-                const label = (m && (m.name || m.label)) || k;
-                const n = s.lastCleared;
-                if (n === 0) {
-                    notice("No " + String(label) + " lock on this step");
-                    announce("no " + label + " lock on this step");
-                } else if (n > 0) {
-                    notice(String(label) + " automation cleared");
-                    announce(label + " cleared");
-                } else {
-                    notice("Clear sent, result unknown");
-                    announce("clear sent, result unknown");
-                }
-                return;
-            }
-        }
         /* A finger on a knob means you are aiming, not reading — and if it is a
          * different knob the list is describing a parameter you have left. */
         s.peek = null;
@@ -4314,11 +4295,6 @@ export function createController(io = {}) {
          * step on every pass. Both entry points need it -- guarding only the
          * turn leaves the same trap one gesture away. */
         if (meta.writeOnly) {
-            if (s.heldStep >= 0 || liveHeldStep() >= 0) {
-                notice("Triggers cannot be locked", 3000);
-                announce("triggers cannot be locked to a step");
-                return null;
-            }
             fireTrigger(key, meta, now());
             return null;
         }
@@ -4547,133 +4523,6 @@ export function createController(io = {}) {
     }
 
     /** Copy (60) / Delete (119) / Undo (56). Returns whether the event was taken. */
-    /*
-     * REMOVE WHAT IS LOCKED ON THE HELD STEP.
-     *
-     * There was no grain for this at all: `clear`, `clear_clip`, `clear_param`
-     * and `clear_target` each take a whole lane or more, so getting rid of one
-     * bad p-lock meant throwing away that parameter's entire automation.
-     *
-     * Elektron removes a lock by PRESSING THE ENCODER of the parameter, and
-     * Move has no encoder press -- the only press is the jog. So the gesture
-     * is the one this grid already uses for instance copy/clear: hold DELETE,
-     * then PICK. A knob touch picks that parameter; releasing Delete without
-     * picking clears the whole step. The notice says so, because a gesture
-     * nobody can discover is one nobody uses.
-     *
-     * The step->phase translation is the shim's, through the same function the
-     * WRITE uses, so what a clear removes from is by construction the step a
-     * p-lock would have written to.
-     */
-    function clearHeldStep(key) {
-        if (s.heldStep < 0 && liveHeldStep() < 0) return false;
-        /* `<target> <param>`, split off the full key rather than rebuilt: the
-         * chain's lane store is keyed by exactly those two fields, and a
-         * second way of deriving them is a second thing to get wrong -- the
-         * same rule the p-lock write follows. */
-        let arg = "";
-        if (key) {
-            const fk = fullKey(key);
-            const colon = fk.indexOf(":");
-            if (colon <= 0) return false;
-            arg = fk.substring(0, colon) + " " + fk.substring(colon + 1);
-        }
-        setParam("lanes:clear_step", arg);
-        /* AND HOW MANY POINTS ACTUALLY WENT. `lanes:cleared` exists for this
-         * exact reason -- the chain writes it unconditionally, so a second
-         * press answers 0 rather than repeating the first one's number -- and
-         * nothing read it. Both notices fired on "a step was held and the key
-         * split", which is true of a clear that removed nothing, so the UI
-         * said "Step automation cleared" whether or not it had. Reported from
-         * the device as "it says it cleared it, but holding the step again
-         * still shows it", which is indistinguishable from a broken clear and
-         * is how a reporting bug gets chased as a behavioural one.
-         *
-         * The tri-state applies as everywhere: a read that did not complete is
-         * NOT zero, and must not be reported as "nothing was there". */
-        const rawCleared = getParam("lanes:cleared");
-        const cleared = (rawCleared === null || rawCleared === undefined ||
-                         rawCleared === "") ? -1 : Number(rawCleared);
-        s.lastCleared = isFinite(cleared) ? cleared : -1;
-        /* AND THE MAP IS NOW WRONG. It is fetched once per held-step gesture
-         * and the clear happens INSIDE one, so the strip went on showing a
-         * mark for automation that had just been deleted -- for as long as the
-         * finger stayed down, which is exactly when the user is looking at it
-         * for confirmation. Invalidating rather than re-reading here: the next
-         * frame refetches, off the draw path, and one clear costs one read
-         * instead of one per cleared key. */
-        s.lockMapFor = -1;
-        if (key) delete s.heldValues[key];
-        else for (const k in s.heldValues) delete s.heldValues[k];
-        const p = page();
-        if (p) applyHeldDecorations(p);
-        /* The values the cells fall back to are the BASE, which the rotation
-         * has not necessarily read since the lock was showing. Dropping them
-         * makes it re-read rather than show a number that was never the
-         * track's. */
-        if (key) delete s.values[key]; else for (const k of (p ? p.keys : [])) delete s.values[k];
-        return true;
-    }
-
-    /*
-     * DELETE + A KNOB, WITH NO STEP HELD: this knob's whole automation for
-     * this clip goes.
-     *
-     * The third of a set that reads as one sentence once it is complete -- the
-     * held STEP narrows the clear to a step, the KNOB narrows it to a
-     * parameter:
-     *
-     *     Delete + step, release    everything on that step
-     *     Delete + step + knob      that knob, on that step
-     *     Delete + knob             that knob's whole lane for this clip
-     *
-     * On the TOUCH, not the turn, for the same reason the step pick is: a turn
-     * would write a value on the way to deleting one.
-     *
-     * It ANNOUNCES WHAT IT REMOVED and stays undoable (`lanes:undo`, which
-     * clear_param snapshots into). A brush of a knob while Delete is held
-     * would otherwise wipe a lane silently, and "silently" is the part that
-     * makes it unrecoverable in practice -- you cannot undo what you did not
-     * know happened.
-     */
-    function clearParamLane(slot) {
-        const key = keyAt(slot);
-        if (!key) return false;
-        const fk = fullKey(key);
-        const colon = fk.indexOf(":");
-        if (colon <= 0) return false;
-        setParam("lanes:clear_param",
-                 fk.substring(0, colon) + " " + fk.substring(colon + 1));
-        /* The count, for the same reason the step clear needs one: a clear
-         * that reports success without one cannot be told from a clear that
-         * removed nothing. A read that did not complete is a THIRD answer. */
-        const raw = getParam("lanes:cleared");
-        const n = (raw === null || raw === undefined || raw === "")
-                ? -1 : Number(raw);
-        const cleared = isFinite(n) ? n : -1;
-
-        const m = metaAt(slot);
-        const label = (m && (m.name || m.label)) || key;
-        if (cleared === 0) {
-            notice("No " + String(label) + " automation in this clip");
-            announce("no " + label + " automation in this clip");
-        } else if (cleared > 0) {
-            notice(String(label) + " automation cleared");
-            announce(label + " automation cleared");
-        } else {
-            notice("Clear sent, result unknown");
-            announce("clear sent, result unknown");
-        }
-        /* The map and the cached values are now wrong in exactly the way they
-         * are after a step clear -- same invalidation, same reasons. */
-        s.lockMapFor = -1;
-        delete s.heldValues[key];
-        delete s.values[key];
-        const p = page();
-        if (p) applyHeldDecorations(p);
-        return true;
-    }
-
     function onEditCc(cc, down) {
         /* UNDO IS NOT HANDLED HERE, and the attempt is worth recording.
          *
@@ -4696,47 +4545,6 @@ export function createController(io = {}) {
             if (childIndexFor(u.level) === u.index) dropChildLevelCache(u.level);
             notice("Undone " + childLabel(u.def, u.index));
             announce("undone");
-            return true;
-        }
-        /* COPY is CLAIMED and inert. Elektron copies a trig's locks with the
-         * trig and we have no such verb yet -- but leaving the button
-         * unclaimed is not neutral: it reaches Move, which DUPLICATES THE
-         * CLIP and selects the duplicate, so the next p-lock addresses a
-         * different clip than the one being edited. Saying "not yet" is the
-         * honest failure; doing something destructive is not. */
-        if (cc === 60 && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
-            if (down) { notice("Copying locks is not supported yet"); announce("copying locks is not supported yet"); }
-            return true;
-        }
-        if (cc === 119 && (down ? (s.heldStep >= 0 || liveHeldStep() >= 0)
-                                : !!s.stepClear)) {
-            if (down) {
-                s.stepClear = { picked: false };
-                notice("Clear step: touch a knob, or release for all", 4000, true);
-                announce("clear step, touch a knob, or release for all");
-            } else {
-                const picked = s.stepClear.picked;
-                s.stepClear = null;
-                if (s.notice && s.notice.prompt) s.notice = null;
-                if (!picked) {
-                    clearHeldStep(null);
-                    /* NAME WHAT HAPPENED. "Nothing to clear" is a useful
-                     * answer and was being reported as success; an unreadable
-                     * count is a third thing again and must not claim
-                     * either. */
-                    const n = s.lastCleared;
-                    if (n === 0) {
-                        notice("Nothing locked on this step");
-                        announce("nothing locked on this step");
-                    } else if (n > 0) {
-                        notice("Step automation cleared (" + n + ")");
-                        announce("step automation cleared, " + n);
-                    } else {
-                        notice("Clear sent, result unknown");
-                        announce("clear sent, result unknown");
-                    }
-                }
-            }
             return true;
         }
         if (cc !== 60 && cc !== 119) return false;
@@ -4808,45 +4616,6 @@ export function createController(io = {}) {
      * ui_chain.js is in that position, so it waits longer instead. */
     const REFUSAL_JUDGE_TICKS_NO_SEQ = 8;
 
-    /* Judge the refusal recorded by the last p-lock write. See the recording
-     * site in writeUserValue for why this is not done inline. */
-    function judgePendingRefusal() {
-        const pr = s.pendingRefusal;
-        if (!pr) return;
-        const wait = (pr.seq !== null && plockSeqOf)
-            ? REFUSAL_JUDGE_TICKS : REFUSAL_JUDGE_TICKS_NO_SEQ;
-        if (s.tickCount - pr.tick < wait) return;
-        s.pendingRefusal = null;
-
-        /* THE COUNTER IS THE ANSWER WHEN WE HAVE IT. `plock_seq` moves only
-         * when the shim confirms a lock landed, so a move is proof this write
-         * took -- and proof costs no round trip, where the old check spent two
-         * on every gesture including the ones that worked. */
-        if (pr.seq !== null && plockSeqOf) {
-            let now = null;
-            try { now = plockSeqOf(); } catch (e) { now = null; }
-            if (now !== null && now !== pr.seq) return;
-        }
-
-        const why = getParam("lanes:plock_reason");
-        const refused = getParam("lanes:plock_refused");
-        /* Tri-state: a read that did not complete says NOTHING about the
-         * lock, and turning it into a refusal is how a channel hiccup becomes
-         * an accusation. Only a served, non-zero code speaks. */
-        const bad = (why && !/^0 /.test(why)) ? why : null;
-        const bad2 = (refused && !/^0 /.test(refused)) ? refused : null;
-        if (!bad && !bad2) return;
-        const token = String(bad || bad2)
-            .replace(/^-?\d+\s*/, "").replace(/_/g, " ");
-        const msg = plockRefusalText(token);
-        notice("Not locked: " + msg, 4000);
-        announce("not locked, " + msg);
-        if (typeof console !== "undefined" && console.log) {
-            console.log("plock-refused key=" + pr.key + " step=" + pr.step +
-                        " reason=" + JSON.stringify(why) +
-                        " refused=" + JSON.stringify(refused));
-        }
-    }
 
     /* THE REASON IN THE USER'S WORDS, not the enum's.
      *
@@ -4977,88 +4746,7 @@ export function createController(io = {}) {
      * Skips a key that is being turned, for the same reason the value cursor
      * does (`settleUntil`): a read issued before the turn lands after it.
      */
-    /*
-     * The step-held reads, as the decorations the renderer already draws.
-     *
-     * `decorations[slot] = {locked, value}` exists for a sequencer's parameter
-     * locks and draws exactly what is wanted here: the locked value in the
-     * cell, a top-left corner mark, graphics standing down so a picture
-     * spanning four cells cannot hide which of them is locked. The screen
-     * reader reads them too. So this is a wiring job and not a drawing one.
-     *
-     * A CALLER'S OWN DECORATIONS WIN. A tool that sets them is describing its
-     * own locks, and silently replacing those with ours would be a worse bug
-     * than the missing feature. `heldDecOwned` is what lets the release clear
-     * only what we installed.
-     */
-    function applyHeldDecorations(p) {
-        if (s.decorations && !s.heldDecOwned) return;
-        let any = false;
-        const dec = [];
-        for (let i = 0; i < p.keys.length; i++) {
-            const k = p.keys[i];
-            const h = k ? s.heldValues[k] : null;
-            if (!h) { dec.push(null); continue; }
-            any = true;
-            dec.push({ locked: true, value: h.value, exact: h.exact });
-        }
-        if (any) { s.decorations = dec; s.heldDecOwned = true; }
-        else if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }
-    }
 
-    /* The finger moved to another step, or came off one. Everything read for
-     * the old step is about a different phase now, so it goes -- a stale lock
-     * shown on the wrong step is the one outcome worse than no lock at all. */
-    function syncHeldStep(p) {
-        let now = -1;
-        try { now = heldStepOf(); } catch (e) { now = -1; }
-        if (typeof now !== "number" || !(now >= 0)) now = -1;
-        if (now === s.heldStep) return;
-        /*
-         * THE LAST DETENT MUST NOT LEAK INTO THE TRACK VALUE.
-         *
-         * A knob turn is DEBOUNCED (SETPARAM_THROTTLE_MS), and the p-lock
-         * decision is made shim-side from the step held AT THE MOMENT OF THE
-         * WRITE. Let go of the step within that window -- which is what
-         * flick-and-lift does, the ordinary Elektron hand movement -- and the
-         * pending write flushes with no step held and lands as an ordinary
-         * track-value edit, on top of the lock that already landed. Measured:
-         * releasing 0-5 frames after the last detent moved the base from
-         * 0.2000 to 0.2400/0.2600/0.2800, while 15+ frames was clean.
-         *
-         * So a write still pending when the finger leaves the step is sent
-         * HERE, as an explicit p-lock on the step it belonged to, and removed
-         * from the queue. The UI knows both halves; the shim, by then, knows
-         * neither.
-         */
-        if (s.heldStep >= 0) {
-            for (const key in s.pendingWrite) {
-                if (!s.heldValues[key]) continue;      /* not part of this lock */
-                const fk = fullKey(key);
-                const colon = fk.indexOf(":");
-                if (colon > 0) {
-                    setParam("lanes:plock_step",
-                             fk.substring(0, colon) + " " + fk.substring(colon + 1) +
-                             " " + s.heldStep + " " + s.pendingWrite[key]);
-                }
-                delete s.pendingWrite[key];
-            }
-        }
-        s.heldStep = now;
-        s.heldCursor = 0;
-        /* The knob engine seeds ONCE per key and then walks its own state, so
-         * a state seeded from step 5's lock would keep walking from it after
-         * the finger moved to step 9 -- or came off entirely, editing the BASE
-         * from a number that belonged to a step. Dropping the state is what
-         * makes the next turn re-seed from whatever the cell shows then. Only
-         * the keys that had a lock: everything else is already walking from
-         * the base, and re-seeding those would throw away sub-step precision
-         * mid-gesture. */
-        s.stepRefusalChecked = false;
-        for (const k in s.heldValues) delete s.knobStates[k];
-        for (const k in s.heldValues) delete s.heldValues[k];
-        if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }
-    }
 
     function refreshModulatedValues(p) {
         const modKeys = [];
@@ -5626,80 +5314,6 @@ export function createController(io = {}) {
     }
 
     /*
-     * THE LOCK MAP -- which of the sixteen steps carry a lock.
-     *
-     * A lock is invisible until you hold its step, so finding one you made
-     * earlier meant holding all sixteen and watching for an inverted band, on
-     * a page that might not be the page it lives on. The auditor called this
-     * the thing that dominates everything else, and it is: locking is a
-     * write-only medium without it, so you stop making locks you might want to
-     * revise -- which is most of them.
-     *
-     * IT IS A PEEK, not a strip, because the screen has no room for a strip:
-     * the header is the held-knob readout and the grid is eight cells. So it
-     * appears in the one moment it is wanted and nothing is displaced --
-     * while a step is held and NO knob is touched, which is the resting state
-     * of "where are my locks" and the state in which the header has nothing
-     * to say anyway. Touch a knob and it goes, because from then on you are
-     * editing and the cells are the answer.
-     *
-     * One read per gesture, not per frame: the masks are fetched when the
-     * held step changes and kept until it does again.
-     */
-    function lockMap() {
-        /* A TOUCHED KNOB DOES NOT DISMISS IT. It did, on the reasoning that a
-         * knob under a finger means you are editing rather than looking -- but
-         * holding a step AND turning a knob IS the p-lock gesture, so that
-         * rule hid the strip during the one action it exists to support. You
-         * want to see which steps carry locks while you are putting one on a
-         * step, not only in the moment before. */
-        if (s.heldStep < 0) {
-            /* THE CACHE ENDS WITH THE GESTURE, not with the step number.
-             * Keyed on the step alone, holding the SAME step twice re-used the
-             * first answer -- so a lock you had just made, on the step you made
-             * it on, was the one lock the map could not show you. Which reads
-             * as "the map does not see my lock" rather than as a stale read,
-             * because every other step was right. */
-            s.lockMapFor = -1;
-            return null;
-        }
-        /* A TAP MUST NOT ASK. `held_step` goes live on the PRESS, because a
-         * p-lock has to work faster than the tap threshold -- so acting on it
-         * alone meant every step press fired this query, and that question
-         * being converted into an edit is what took the step buttons away.
-         * The shim publishes whether the press has become a HOLD, from the
-         * same STEP_TAP_MS the tap/hold split uses; waiting for it also means
-         * a tap costs NO IPC at all, which on this surface is the point (a
-         * read is ~2.8 ms against a 1.68 ms whole-page render).
-         *
-         * A host that cannot answer (a module binding this controller from
-         * its own ui_chain.js supplies no such io) keeps the old behaviour
-         * rather than losing the map entirely. */
-        if (!heldStepIsHoldOf()) return null;
-        if (s.lockMapFor !== s.heldStep) {
-            s.lockMapFor = s.heldStep;
-            s.lockMap = null;
-            const p = page();
-            const keys = (p && p.keys) ? p.keys.filter(Boolean) : [];
-            const fk = keys.length ? fullKey(keys[0]) : "";
-            const colon = fk.indexOf(":");
-            const target = colon > 0 ? fk.substring(0, colon) : "";
-            /* The page's own parameters, so the map can say which locks are
-             * editable from here and which are somewhere else in the slot. */
-            setParam("lanes:step_locks_query", target + " " + keys.join(","));
-            const raw = getParam("lanes:step_locks");
-            /* The tri-state, as everywhere: a read that did not complete says
-             * NOTHING about the clip, and drawing an empty map for it would
-             * report "no locks anywhere" -- the most misleading answer this
-             * panel could give. */
-            if (raw === null || raw === undefined || raw === "") return null;
-            const parts = String(raw).trim().split(/\s+/);
-            const uni = Number(parts[0]), pag = Number(parts[1]);
-            if (!isFinite(uni)) return null;
-            s.lockMap = { union: uni | 0, page: isFinite(pag) ? (pag | 0) : 0 };
-        }
-        return s.lockMap;
-    }
 
     /*
      * Sixteen cells across the width, one per step button: SOLID for a lock on
@@ -5725,74 +5339,7 @@ export function createController(io = {}) {
     const LOCK_MAP_ANIM_MS = 110;
     const LOCK_MAP_BLINK_MS = 620;
 
-    function lockMapFrame() {
-        const want = lockMap();
-        const t = now();
-        const a = s.lockMapAnim;
-        if (want) {
-            if (!a || !a.open) s.lockMapAnim = { open: true, since: t, map: want };
-            else a.map = want;
-        } else if (a && a.open) {
-            /* Keep the last map for the way out: the read is gone the instant
-             * the step is released, and a panel that vanishes mid-slide is the
-             * glitch the slide exists to avoid. */
-            s.lockMapAnim = { open: false, since: t, map: a.map };
-        }
-        const cur = s.lockMapAnim;
-        if (!cur) return null;
-        let p = (t - cur.since) / LOCK_MAP_ANIM_MS;
-        if (!(p >= 0)) p = 0;
-        if (p > 1) p = 1;
-        if (!cur.open && p >= 1) { s.lockMapAnim = null; return null; }
-        /* Ease out: fast off the edge, settling onto the rule. */
-        const e = cur.open ? 1 - (1 - p) * (1 - p) : p * p;
-        const off = Math.round((cur.open ? 1 - e : e) * LOCK_MAP_H);
-        /* The blink is computed HERE rather than in the draw so the draw stays
-         * a pure function of the frame it is handed -- the same reason the
-         * slide's offset is. Duty is deliberately long-on: the outline is a
-         * position marker first and an animation second, so it is present
-         * more often than not. */
-        const phase = (t % LOCK_MAP_BLINK_MS) / LOCK_MAP_BLINK_MS;
-        return { map: cur.map, y: RULE_Y + off, outline: phase < 0.65 };
-    }
 
-    function drawLockMap(ctx, frame) {
-        const { map } = frame;
-        const y = frame.y, h = LOCK_MAP_H, cell = 8;
-        /* Blank exactly the rows the panel covers, never the whole band: the
-         * footer is already in the framebuffer from render(), so clearing only
-         * under the panel lets it be covered on the way in and UNCOVERED row by
-         * row on the way out. Clearing the band instead leaves the footer
-         * missing for the length of the slide and snapping back at the end,
-         * which is the thing that reads as a glitch. */
-        ctx.fillRect(0, y, SCREEN_WIDTH, LOCK_MAP_BOTTOM - y, 0);
-        ctx.fillRect(0, y, SCREEN_WIDTH, 1, 1);
-        for (let i = 0; i < 16; i++) {
-            const x = i * cell;
-            const onPage = (map.page >> i) & 1;
-            const anywhere = (map.union >> i) & 1;
-            if (onPage) ctx.fillRect(x + 1, y + 3, cell - 2, 5, 1);
-            else if (anywhere) ctx.fillRect(x + 1, y + 5, cell - 2, 2, 1);
-            if (i === s.heldStep && frame.outline) {
-                /* The held step is framed rather than filled: filling it would
-                 * be a seventeenth kind of mark meaning "here", competing with
-                 * the two that mean "locked".
-                 *
-                 * AND IT FLASHES. A static frame is one more thing on a strip
-                 * of sixteen small marks, and the eye does not find it; the
-                 * one cell that is CHANGING is the one the eye goes to, which
-                 * is exactly the job -- "this is the step you are editing".
-                 * Blinking the mark instead would fight the two marks that
-                 * mean "locked", so it is the OUTLINE that blinks and the
-                 * marks that stay still. */
-                ctx.fillRect(x, y + 2, cell - 1, 1, 1);
-                ctx.fillRect(x, y + h - 1, cell - 1, 1, 1);
-                ctx.fillRect(x, y + 2, 1, h - 2, 1);
-                ctx.fillRect(x + cell - 2, y + 2, 1, h - 2, 1);
-            }
-        }
-        return true;
-    }
 
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
@@ -5800,10 +5347,8 @@ export function createController(io = {}) {
             const r = drawDeclaredCard(ctx);
             /* Under the notice, over the card: a notice is a sentence about
              * what just happened and must not be covered by a legend. */
-            const frame = lockMapFrame();
-            const m = frame ? drawLockMap(ctx, frame) : false;
             drawNotice(ctx);
-            return r || m;
+            return r;
         }
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
@@ -6209,7 +5754,7 @@ export function createController(io = {}) {
          *  honest assertion about a gesture whose whole purpose is display. */
         get decorations() { return s.decorations; },
         /** The step button under the finger, or -1. */
-        get heldStep() { return s.heldStep; },
+
         /** Which instance of `level` is focused, zero-based. The editor
          *  hand-off needs it: without it the editor re-asks which child,
          *  when the grid already knows. */

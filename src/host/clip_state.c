@@ -24,6 +24,9 @@ void clip_state_reset(clip_state_t *st)
     memset(st, 0, sizeof(*st));
     for (int t = 0; t < CLIP_TRACKS; t++) {
         st->tracks[t].clip_slot = -1;
+        /* -1 is "not known", and 0 is a real row — the same distinction the
+         * clip row itself has to keep. */
+        st->tracks[t].selected_slot = -1;
         st->queued_slot[t] = -1;
         st->saw_stop[t] = 0;
         st->pending_start[t] = 0;
@@ -110,6 +113,86 @@ void clip_state_on_transport_start(clip_state_t *st)
     }
 }
 
+/* Record one pad's BASE COLOUR and re-decide which clip is selected.
+ *
+ * THE RULE, and it has to be statable: among the pads whose colour we have
+ * seen on this track, the IDLE colour is the one most of them share. A pad
+ * that is not idle is a candidate; the PLAYING pad is excluded, because a
+ * playing clip is painted differently too and is a different question. If
+ * exactly one candidate remains it is the selection. Anything else -- no
+ * candidate, or several -- leaves the answer ALONE.
+ *
+ * Refusing on ambiguity rather than picking is the whole point: this feeds
+ * the path that decides which clip a p-lock edits, and being confidently
+ * wrong there writes automation onto a clip the user never touched.
+ */
+static void clip_state_note_base(clip_state_t *st, int track, int slot,
+                                 uint8_t val, uint32_t pulses)
+{
+    if (!st || track < 0 || track >= CLIP_TRACKS) return;
+    if (slot < 0 || slot >= CLIP_SLOTS) return;
+    clip_track_state_t *tr = &st->tracks[track];
+    tr->base_val[slot] = val;
+    tr->base_seen |= (uint8_t)(1u << slot);
+    tr->base_pulse[slot] = pulses;
+
+    /* DECIDE ON THE CURRENT REPAINT, NOT ON ACCUMULATED HISTORY.
+     *
+     * Selecting a clip repaints the whole row at once, so the pads painted
+     * alongside this one are the picture to read. Colours remembered from
+     * minutes ago are a different picture — and mixing them is what made the
+     * decode answer with a selection two clips stale, because an old value
+     * still counted toward the majority and toward the candidates.
+     *
+     * A repaint arrives inside a couple of frames; CLIP_SEL_BURST_PULSES is
+     * generous against that and still far short of anything a user could do
+     * in between. */
+    uint8_t fresh = 0;
+    for (int i = 0; i < CLIP_SLOTS; i++) {
+        if (!(tr->base_seen & (1u << i))) continue;
+        const uint32_t d = pulses - tr->base_pulse[i];
+        if (d <= CLIP_SEL_BURST_PULSES) fresh |= (uint8_t)(1u << i);
+    }
+
+    /* The modal colour is idle. With fewer than three pads painted there is
+     * no majority to speak of, so nothing is decided. */
+    int best = -1, best_n = 0;
+    for (int i = 0; i < CLIP_SLOTS; i++) {
+        if (!(fresh & (1u << i))) continue;
+        int n = 0;
+        for (int j = 0; j < CLIP_SLOTS; j++)
+            if ((fresh & (1u << j)) && tr->base_val[j] == tr->base_val[i])
+                n++;
+        if (n > best_n) { best_n = n; best = i; }
+    }
+    if (best < 0 || best_n < 2) return;
+    const uint8_t idle = tr->base_val[best];
+
+    int cand = -1, ncand = 0;
+    for (int i = 0; i < CLIP_SLOTS; i++) {
+        if (!(fresh & (1u << i))) continue;
+        if (tr->base_val[i] == idle) continue;
+        if (tr->identity_valid && tr->clip_slot == i) continue;  /* playing */
+        cand = i; ncand++;
+    }
+    if (ncand == 1) { tr->selected_slot = cand; return; }
+
+    /* NO OCCUPIED PAD IS SELECTED, which is itself an observation: the user is
+     * on an EMPTY slot. That is how a new clip is made, and it is the case
+     * that matters most here.
+     *
+     * Measured 2026-09-17: an empty slot keeps its own colour whether or not
+     * it is selected, so selecting one produces no "selected" pad anywhere on
+     * the row. Reading that as ambiguity left the previous selection standing
+     * and every p-lock on the new clip was keyed to the clip selected BEFORE
+     * it — silently, on a clip the user was no longer looking at.
+     *
+     * We cannot say WHICH empty slot, and we do not need to: the honest
+     * answer for a clip Move has not written yet is the PENDING placeholder,
+     * which is what this feeds. */
+    if (ncand == 0) tr->selected_slot = CLIP_SEL_EMPTY;
+}
+
 void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
                        uint8_t d2, uint32_t pulses, int running, int ui_mode)
 {
@@ -154,7 +237,20 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
         }
         return;
     }
-    if (ch != CLIP_CH_PLAYING) return;   /* base colour: carries no state */
+    /* THE BASE COLOUR CARRIES THE SELECTION, and this used to discard it
+     * saying it carried no state. Measured 2026-09-17: selecting a clip
+     * repaints its track's whole row, the selected pad taking a value no
+     * other pad has. That is the only live statement of which clip is on
+     * SCREEN, and without it the write path had to borrow the PLAYING row --
+     * which sent p-locks to a clip the user was not editing, silently.
+     *
+     * Decoded relatively: see clip_track_state_t::selected_slot for why a
+     * constant cannot work here. */
+    if (ch != CLIP_CH_PLAYING && ch != CLIP_CH_QUEUED) {
+        clip_state_note_base(st, track, slot, on ? d2 : 0, pulses);
+        return;
+    }
+    if (ch != CLIP_CH_PLAYING) return;
 
     clip_track_state_t *tr = &st->tracks[track];
 
@@ -437,4 +533,15 @@ int clip_playhead_take(clip_playhead_ev_t *out, int max)
         ph_tail++;
     }
     return n;
+}
+
+/* The SELECTED clip on `track`, or -1 when it is not known.
+ *
+ * Read by the write path (a p-lock edits the clip on SCREEN), never by
+ * playback, which wants the clip that is SOUNDING. Keeping the two questions
+ * apart is the point of this whole field. */
+int clip_state_selected_slot(const clip_state_t *st, int track)
+{
+    if (!st || track < 0 || track >= CLIP_TRACKS) return -1;
+    return st->tracks[track].selected_slot;
 }

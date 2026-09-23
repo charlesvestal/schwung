@@ -123,6 +123,10 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
  * plus the XMOS timestamp that follows it, so a 4-byte buffer would read past
  * the end. Callers walk MIDI_IN at the 8-byte stride and pass &in_src[i]. */
 void shadow_chain_dispatch_sysex_to_slots(const uint8_t *slot8);
+/* Deliver a physical cable-0 encoder/jog touch edge (notes 0-7 or 9; master
+ * volume touch 8 is excluded) only to slots whose
+ * loaded generator declared capabilities.touch_observe. */
+void shadow_chain_dispatch_touch_to_slots(const uint8_t *slot8);
 
 /* Broadcast a 1-byte system-realtime message (0xF8/0xFA/0xFB/0xFC) to every
  * active chain slot, bypassing per-slot channel remap (which would corrupt the

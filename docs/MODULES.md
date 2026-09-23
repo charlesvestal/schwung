@@ -105,6 +105,7 @@ for keys anywhere in `module.json`).
 | `audio_in` | Module uses audio input |
 | `midi_in` | Module processes MIDI input |
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
+| `touch_observe` | Sound generator receives raw capacitive touch edges for Knobs 1–8 (notes 0–7) and the jog wheel (note 9) in `on_midi`, in the same SPI frame, with `source == MOVE_MIDI_SOURCE_TOUCH` (5). That source is how a touch is told apart from a played note 0–9. Touches go to the synth ONLY — never to the slot's MIDI FX, LFO retrigger, audio FX or Move's track. Master-volume touch (note 8) and external-cable notes are excluded. Opt in only for latency-sensitive performance control. |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
@@ -514,6 +515,15 @@ schwungRemote.setParam(comp + ":mix", "0.5");
 for *your* component, so they need no prefix. A page that ignores
 the flag defaults to `synth` and behaves exactly as before.
 
+**The module's page in the manager links the web UI once per place
+the module is loaded** — "Open web UI: Track 2 Synth", "Master FX 3",
+"Tool" — each carrying the same query the Remote UI's pop-out button
+builds. There is no bare link: opened with no query, the page falls
+back to slot 0 as `synth` and drives whatever is loaded on Track 1.
+Not loaded anywhere means no button. The one exception is an
+overtake/tool module with no DSP, which has no place to find and is
+linked on the tool channel.
+
 ### File layout
 
 ```
@@ -630,6 +640,36 @@ That means:
   HTML support (see `docs/plans/2026-04-08-remote-ui-plan.md`
   Task 5). Bump `min_host_version` in your catalog entry if your
   module depends on it.
+- **A panel that never appears was FOLDED, not missing.** A section's fold
+  state is DERIVED from what the component is (a component that ships a panel
+  opens; the lead position opens; the rest fold) and records only what the
+  user clicked — the right default depends on the `custom_ui` message, which
+  arrives after the slot state is built. Both render paths draw components in
+  one order, signal flow: `midi_fx1, synth, fx1, fx2`.
+- **`viz.extra_keys` reach the browser.** A widget may name a value that owns
+  no cell of its own (see `docs/PARAM_PAGES.md`), and a panel driven by one is
+  blind without it. Every path that completes an initial value send fetches
+  the extras — the `state` fast path returns early, so fixing only the
+  streaming path is invisible — and sends them FIRST: they are what the panel
+  draws with; the ordinary controls can populate a beat later. It reads every
+  spelling the device reads (`viz.extra_keys`, `viz.extraKeys`, and an
+  `as_page` canvas param's own `extra_keys` / `extraKeys`) under the device's
+  cap of four per declaration, plus a ceiling of 16 per component because the
+  browser reads every page's extras at once. Slot components only — a Master
+  FX panel does not receive extras.
+- **A declaration read that did not ANSWER is not "declares nothing".** The
+  key list is cached per component, but a timed-out read or the `""` a module
+  serves while still loading is believed for 5 s, not until the next module
+  swap — otherwise the first read after a load latched the pump off.
+- **An extra key is DERIVED, so no write ever names it.** The notify ring
+  carries the key that was written; a viz extra is computed from whatever
+  edit landed. A change to any of a component's params therefore refreshes
+  its extras (throttled to 150 ms, cached key list, no read at all when no
+  browser is subscribed), and a 500 ms heartbeat carries what no write
+  announces — the transport, or a worker thread finishing. Only values that
+  moved are sent. One push per component at a time: two overlapping reads
+  answer in channel order, and the browser then gets an older value after a
+  newer one, which presents as a playhead jumping backwards.
 
 ### Remote UI for overtake tools (the Tool tab)
 
@@ -1689,6 +1729,38 @@ Supported condition fields:
 
 Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
+#### The gate does not need a cell
+
+A condition's `param` does not need a knob of its own, so **a gate may be a
+value the player never turns** — a
+derived mode the module publishes and refuses writes to. That is the normal
+shape for a multi-engine instrument: a drum machine where the pad you hit
+selects the voice, and a cymbal wants different pages from a drum, publishes
+`ui_engine` and gates its two page sets on it.
+
+**It is an event, not a poll.** A gate whose value only moves because of a
+write from the grid already re-plans — the write path does it, and the planner
+reads whatever else the condition needs on demand. Nothing extra is read for
+those, so a module gated on one of its own knobs costs exactly what it costs
+today. The gates are read only when the grid learns of a move it did not
+cause: a live pad press, or the module changing its own focus.
+
+When that happens the gate keys of the WHOLE hierarchy are eligible, not just
+those of the level you are standing on — a level that is currently hidden must
+be able to come back. A gate declared on a child level is read for the
+instance the grid is showing (`pad3_type` for a `{ "param": "type" }` on a
+`child_prefix: "pad"` level), exactly as the condition itself is evaluated. They share the cap and the budget of a canvas page's
+`extra_keys`: at most four, one read per stop.
+
+**Four counts distinct gate PARAMS, not values or levels.** A drum machine
+with ten engines publishes one `ui_engine` taking ten values and gates every
+engine's pages on it — that is one key, however many levels read it. The cap
+only binds a module with more than four *independent* modes.
+
+`validate.mjs` does not report a gate as `unreachable-params`. Having no cell
+is what it is for, and giving one to a derived value would only let the player
+disagree with whatever derives it.
+
 ### Parameter visualisations (`viz`)
 
 A knob page can draw a parameter *group* as a picture instead of separate
@@ -2438,12 +2510,16 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
 - `enterable` (optional): The canvas has navigation inside it — see below (default `false`).
+- `extra_keys` (optional): Up to four additional parameter values used by an authored canvas page or bounded fullscreen live feed.
+- `fullscreen_live_ms` (optional): In fullscreen mode, refresh declared `extra_keys` at this interval and call `onValues(ctx, { values, nowMs })`. Clamped to at least 50 ms; omit it for no fullscreen reads. Keys are read one per tick and delivered together; a read that did not complete is `null`.
 
 Behavior notes:
 
 - Clicking the parameter enters a dedicated fullscreen canvas view.
 - Set `show_value: false` for button-style canvas entries that should not show a value.
-- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `onValues`, `tick`, `draw`, `onClose`, `onExit`.
+- `draw` and `tick` still receive no parameter accessors. Use the bounded
+  `onValues` payload instead of reading on the draw path.
 
 ##### `enterable`: a canvas you navigate, not just look at
 

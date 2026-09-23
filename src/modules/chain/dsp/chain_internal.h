@@ -47,8 +47,6 @@
 #include "host/bus_mix.h"
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
-#include "host/lane_store.h"
-#include "host/lane_serial.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -532,14 +530,6 @@ static inline int bus_fx_ready(const slot_bus_t *bus)
 }
 
 /* Chain instance state - contains all per-instance data for v2 API */
-enum {
-    LANE_PLOCK_OK = 0,
-    LANE_PLOCK_BAD_REQUEST,
-    LANE_PLOCK_NO_CLIP,
-    LANE_PLOCK_UNKNOWN_PARAM,   /* the module has no such parameter */
-    LANE_PLOCK_STORE_FULL,
-};
-
 typedef struct chain_instance {
     /* Module directory */
     char module_dir[MAX_PATH_LEN];
@@ -563,7 +553,8 @@ typedef struct chain_instance {
      *
      * Written on the SPI callback: a plain int store, nothing else. */
     int synth_last_note;
-    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */
+    int synth_touch_observe; /* capabilities.touch_observe on the synth */
 
     /* Voices this synth can render into separate buffers, in the module's own
      * declared order — the index here IS the voice_out[] index handed to
@@ -835,64 +826,6 @@ typedef struct chain_instance {
      * time signature -- only converting BARS does, which is the strip reader's
      * problem alone (quarters per bar = upper * 4 / lower). */
     double clip_phase_beats;      /* quarters from the clip's start */
-    double clip_loop_start;       /* the window's start, same coordinate */
-    double clip_loop_len;         /* quarters */
-    /* Which clip the phase belongs to, and what it looks like right now. All
-     * pushed together in ONE call, deliberately: these are facts about one
-     * clip at one instant, and splitting them across calls lets a lane bind a
-     * fingerprint to a position it did not come from. */
-    int    lane_track;            /* Move track 0..3 (== the slot index) */
-    int    lane_clip_slot;        /* 0..7, or -1 for "nothing playing" */
-    int    clip_fp_valid;
-    lane_fingerprint_t clip_fp;   /* content fingerprint; note data in Task 6 */
-
-    /* The lanes themselves: ON THE INSTANCE, never inside patch_info_t. That
-     * struct is a STACK LOCAL on the SPI callback (v2_set_param's load_file)
-     * and also sits MAX_PATCHES deep in this instance -- which is why raising
-     * SLOT_BUSES from 4 to 8 took the callback frame from 194 KB to 232 KB.
-     * A lane_store_t is 18 KB and must land in neither multiplier. */
-    lane_store_t lanes;
-    int    lane_armed;            /* pushed from the shim: Move's Record button */
-    /* How many lanes the last `lanes:clear` threw away, read back as
-     * `lanes:cleared`. The UI announces a NUMBER: a clear that reports
-     * success without one is indistinguishable from one that cleared
-     * nothing. */
-    int    lanes_last_cleared;
-    /* 1 if the last `lanes:plock` wrote a point, 0 if it was refused. A
-     * gesture that silently does nothing is indistinguishable from one that
-     * worked until the loop comes round, which is exactly the ambiguity the
-     * rest of this feature spends its instrumentation on. */
-    int    lanes_last_plocked;
-    int    lanes_last_undone;
-    /* Why the last lanes:plock was refused; see LANE_PLOCK_* and the comment
-     * at the plock verb. */
-    int    lanes_plock_refusal;
-    /* THE LAST `lanes:probe` ANSWER: what a lane holds at one phase.
-     *
-     * A GET cannot carry arguments -- a param key is one token, and the phase,
-     * target and param are three -- so the question is asked as a SET and the
-     * answer read back. Single-threaded on the SPI callback, one question at
-     * a time, which is what makes a stashed answer safe here.
-     *
-     * `have` distinguishes "no lane, or nothing to say at that phase" from the
-     * value 0.0, exactly as lane_eval's own return does. `exact` says a point
-     * sits AT that phase (within LANE_MIN_POINT_BEATS) rather than the curve
-     * merely passing through it -- a held step showing a value it does not own
-     * would invite editing the wrong point. */
-    int    lanes_probe_have;
-    int    lanes_probe_exact;
-    float  lanes_probe_value;
-    int    lanes_probe_stepped;
-    /* ONE-DEEP UNDO of the whole slot's automation, swapped rather than
-     * copied back so the same verb is redo. See lane_store_swap(). */
-    lane_store_t lanes_undo;
-    int    lanes_undo_valid;
-    /* Points copied by the last `lanes:double`. Reported for the same reason
-     * as the others: a gesture that silently did nothing is indistinguishable
-     * from one that worked until the second half comes round. */
-    int    lanes_last_doubled;
-    /* Lanes carried onto a duplicated clip by the last `lanes:copy_clip`. */
-    int    lanes_last_copied;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
@@ -993,6 +926,16 @@ typedef struct chain_instance {
      * module.json; shim must never park the slot as fx_idle so stateful FX
      * (loopers, modulated delays) keep advancing internal time during silence. */
     int fx_requires_continuous[MAX_AUDIO_FX];
+
+    /* 1 = the SYNTH must never be parked by the shim's silence-skip either.
+     * Set when the sound generator's module.json declares
+     * capabilities.requires_continuous_processing, and IMPLIED for any synth
+     * that consumes line input (synth_consumes_line_input): such a module's
+     * output follows a jack the host never inspects and it receives no MIDI,
+     * so once the shim parks it on silence nothing exists to wake it inside
+     * the ~0.5 s probe interval — which reads to the user as the input being
+     * gated. */
+    int synth_requires_continuous;
     
     /* Synth load error message */
     char synth_load_error[256];
@@ -1229,6 +1172,7 @@ CHAIN_INTERNAL int json_get_int(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_int_in_section(const char *json, const char *section_key, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *section_key, const char *key, int *out);
+CHAIN_INTERNAL int json_get_flag_in_section(const char *json, const char *section_key, const char *key);
 CHAIN_INTERNAL int json_get_section_bounds(const char *json, const char *section_key, const char **out_start, const char **out_end);
 CHAIN_INTERNAL int json_get_string(const char *json, const char *key, char *out, int out_len);
 CHAIN_INTERNAL int json_get_string_in_section(const char *json, const char *section_key, const char *key, char *out, int out_len);
@@ -1265,28 +1209,6 @@ CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, 
 CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
 CHAIN_INTERNAL void smoother_set_target(param_smoother_t *smoother, const char *key, float value);
 CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
-
-/* chain_lanes.c */
-CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
-CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
-/* Snapshot the store for one-deep undo/redo; see lane_store_swap(). */
-CHAIN_INTERNAL void lane_undo_take(chain_instance_t *inst);
-CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst);
-CHAIN_INTERNAL void lane_punch_end_all(chain_instance_t *inst);
-CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst, const char *target, const char *param);
-CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
-                                     const char *param, const char *val);
-CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
-                                             lane_fingerprint_t *out);
-CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
-CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
-CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
-/* ONE dispatch for every "lanes:" key -- `sub` is the key past the prefix.
- * chain_host.c carries a single branch each way; every lane key lives here. */
-CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,
-                                   const char *val);
-CHAIN_INTERNAL int lane_param_get(chain_instance_t *inst, const char *sub,
-                                  char *buf, int buf_len);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

@@ -1466,9 +1466,14 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// One button per place the module is loaded; see module_webui_links.go
+	// for why a bare link to web_ui.html drove the wrong module.
+	webUI := app.moduleWebUILinks(id, mod.ComponentType, modDir)
+
 	data := map[string]any{
 		"Title":          mod.Name,
 		"Module":         mod,
+		"WebUI":          webUI,
 		"Installed":      installed,
 		"ModuleDir":      modDir,
 		"AssetsDir":      assetsDir,

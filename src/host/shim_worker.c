@@ -112,6 +112,9 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
     { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
+    /* The lanes kill switch. Polled like the rest so arming it needs no
+     * restart, and so a user can turn the feature off again the moment it
+     * misbehaves. */
 };
 
 /* ---- SPI frame tally --------------------------------------------------- */
@@ -401,7 +404,6 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
-#include "lane_trace.h"
 /* Defined in schwung_shim.c; see its comment. */
 void shim_gesture_state(int *shift, int *vol, unsigned *pending,
                         unsigned *fired, unsigned *vol_during);
@@ -484,6 +486,16 @@ static volatile int      g_clip_copy_track = -1;
 static volatile int      g_clip_copy_src   = -1;
 static volatile int      g_clip_copy_dst   = -1;
 static volatile uint32_t g_clip_copy_gen;
+/* Per track, the row that newly appeared at the last re-parse, or -1. Handed
+ * to the chain so a blind take adopts onto the clip that was MADE rather than
+ * onto whatever happens to be playing. */
+static volatile int      g_clip_new_slot[CLIP_TRACKS] = { -1, -1, -1, -1 };
+static volatile uint32_t g_clip_new_gen;
+int shadow_clip_new_slot(int track) {
+    if (track < 0 || track >= CLIP_TRACKS) return -1;
+    return g_clip_new_slot[track];
+}
+uint32_t shadow_clip_new_generation(void) { return g_clip_new_gen; }
 
 uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
 uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
@@ -651,7 +663,28 @@ static void clip_regions_tick(void)
                     dst = s2; break;
                 }
             }
-            if (dst < 0) continue;
+            /* PUBLISH THE NEWLY-APPEARED ROW, whether or not it turns out
+             * to be a duplicate.
+             *
+             * A lane recorded blind carries the PENDING placeholder and has to
+             * be re-keyed when Song.abl finally names a row. It was handed
+             * `lane_clip_slot` — the clip that is PLAYING — so with one clip
+             * playing while the user made another, the take adopted onto the
+             * playing clip. The row that just APPEARED is the clip the user
+             * made, and this loop already knows it. */
+            /* CLEARED WHEN NOTHING NEW APPEARED, not only set when something
+             * did. Left standing, it went on naming a row from a parse long
+             * past, and the next blind take adopted onto THAT row instead of
+             * onto the clip just made — which is the same class of mistake as
+             * the stale `isPlaying` this whole area exists to stop trusting.
+             * A stale answer is worse than none, because none falls back to
+             * the playing row and a stale one is confidently wrong. */
+            if (t < CLIP_TRACKS) {
+                const int prev = g_clip_new_slot[t];
+                g_clip_new_slot[t] = dst;      /* dst is -1 when none appeared */
+                if (prev != dst) g_clip_new_gen++;
+            }
+            if (dst < 0) continue;   /* nothing new here: duplicate check skipped */
             const clip_region_t *d = &g_regions.slots[t][dst];
             for (int src = 0; src < CLIP_SLOTS; src++) {
                 if (src == dst || !before.slots[t][src].exists) continue;
@@ -938,52 +971,6 @@ static void clip_phase_check_tick(void)
     }
 }
 
-/* THE LANE TRACE, drained. The callback fills a preallocated ring (lane_trace.h);
- * this is the only side that opens a file. Armed by
- * /data/UserData/schwung/lanes_trace_on, polled here so the callback never
- * calls access().
- *
- * Drained at the worker's full 5 Hz rather than the 1 Hz the clip readout uses:
- * the ring holds ~51 s and a take plus its following loops is ~15 s, so this is
- * belt and braces -- but a diagnostic that loses the take because its consumer
- * was lazy is worse than no diagnostic, and the drops would only show up as a
- * number after the fact. */
-static void lane_trace_tick(void)
-{
-    static int armed;
-    const int now = (access("/data/UserData/schwung/lanes_trace_on", F_OK) == 0);
-    if (now != armed) {
-        armed = now;
-        lane_trace_set_armed(now);
-        FILE *m = fopen("/data/UserData/schwung/lanes_trace.log", "a");
-        if (m) {
-            fprintf(m, "# lane trace %s\n", now ? "ARMED" : "disarmed");
-            fclose(m);
-        }
-        if (!now) return;
-    }
-    if (!armed) return;
-
-    lane_trace_entry_t e;
-    FILE *fp = NULL;
-    while (lane_trace_pop(lane_trace_ring(), &e)) {
-        if (!fp) {
-            /* Opened only when there is something to write, and closed each
-             * drain -- same reasoning as clip_state_tick: a FILE* held across
-             * an `rm` of the log writes to an unlinked inode and the readout
-             * goes silent in a way that looks like a dead worker. */
-            fp = fopen("/data/UserData/schwung/lanes_trace.log", "a");
-            if (!fp) return;
-        }
-        fprintf(fp, "f=%-9u s%u %s\n", e.frame, e.slot, e.line);
-    }
-    if (fp) {
-        const uint32_t d = lane_trace_ring()->dropped;
-        if (d) fprintf(fp, "# DROPPED %u samples (ring lapped)\n", d);
-        fclose(fp);
-    }
-}
-
 /* THE STEP TAP PATH, reported. Always on and silent unless a step moved --
  * same shape as param_slow_tick, and for the same reason: the condition is
  * rare, the cost of missing it is a user telling us their step buttons are
@@ -1003,21 +990,6 @@ static void step_tap_tick(void)
              shim_step_tap_queued, shim_step_tap_emitted,
              shim_step_tap_noroom, shim_step_hold_ms_last, 500,
              shim_step_plock_key[0] ? shim_step_plock_key : "(none)");
-    LOG_DEBUG("shim", msg);
-}
-
-/* THE BLIND WINDOW, once a second while it is open. Silent otherwise. */
-static void blind_anchor_tick(void)
-{
-    if (!g_blind_seen) return;
-    g_blind_seen = 0;
-    char msg[200];
-    snprintf(msg, sizeof(msg),
-             "lane-blind: have_ph=%d idx=%d age=%d segs=%d len=%.2f res=%.2f "
-             "-> phase=%s",
-             g_blind_have_ph, g_blind_idx, g_blind_age, g_blind_segs,
-             g_blind_len_x100 / 100.0, g_blind_res_x100 / 100.0,
-             g_blind_got ? "YES" : "no");
     LOG_DEBUG("shim", msg);
 }
 
@@ -1045,7 +1017,19 @@ static void clip_state_tick(void)
     const char *rec = !shadow_rec_arm_seen()  ? "?"     :
                       shadow_rec_arm_recording() ? "SOLID" :
                       shadow_rec_arm_flashing()  ? "FLASH" : "off";
-    fprintf(fp, "pul=%-7u rec=%-5s", pul, rec);
+    fprintf(fp, "pul=%-7u rec=%-5s ui=%d", pul, rec, cs->last_ui_mode);
+    /* THE DECODED SELECTION, per track, beside the playing clip — the two are
+     * different questions and the whole class of new-clip bugs came from
+     * answering one with the other. `sel=-1` is "not known" and `sel=E` is
+     * "an EMPTY slot is selected", which is how a new clip is made. */
+    fprintf(fp, " sel[");
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const int sv = cs->tracks[t].selected_slot;
+        if (sv == CLIP_SEL_EMPTY)  fprintf(fp, "E");
+        else if (sv < 0)           fprintf(fp, "?");
+        else                       fprintf(fp, "%d", sv + 1);
+    }
+    fprintf(fp, "]");
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);
@@ -1727,7 +1711,6 @@ static void *worker_main(void *arg) {
         clip_regions_tick();
         clip_phase_check_tick();
         clip_state_tick();
-        lane_trace_tick();                       /* 5 Hz drain, no-op unless armed */
         worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
         if (tick % 5 == 0) {
@@ -1736,7 +1719,6 @@ static void *worker_main(void *arg) {
             ui_midi_out_drop_tick();
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
-            blind_anchor_tick();      /* 1 Hz while a clip has no row yet */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;

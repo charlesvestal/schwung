@@ -281,6 +281,13 @@ void unified_log(const char *source, int level, const char *fmt, ...) {
  * answer that makes the resolver return 0 = phase UNKNOWN. */
 int shadow_transport_pulses = 0;
 const void *clip_state_current(void) { return 0; }
+/* No screen in this fixture, so nothing is selected: -1 is "not known", which
+ * is the answer that makes shadow_slot_clip_phase fall through to the file
+ * exactly as it did before the selection decode existed. */
+int clip_state_selected_slot(const void *st, int track) { (void)st; (void)track; return -1; }
+/* No worker in this fixture, so no clip ever "newly appeared": -1 keeps
+ * shadow_slot_clip_phase on the path it took before that signal existed. */
+int shadow_clip_new_slot(int track) { (void)track; return -1; }
 /* No playhead in a host unit test: the blind-window phase source asks for one
  * and must get "never seen", which is the state every other stub here models. */
 int clip_playhead_last(unsigned char *i, unsigned int *p) { (void)i; (void)p; return 0; }
@@ -347,7 +354,6 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -Isrc/host \
   -DFIXTURE_DIR="\"$work\"" \
   tests/host/test_master_fx_permute.c "$work/stubs.c" \
-  src/host/lane_trace.c \
   -lm -o "$bin"
 
 "$bin"
