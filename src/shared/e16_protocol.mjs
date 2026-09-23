@@ -143,7 +143,15 @@ export function isAck(asm) {
 export const OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX = false;
 
 const OLED_SCANLINE_ID = 0x05;
-const OLED_RECTANGLE_ID = 0x06;
+/* 0x08, NOT the sheet's 0x06. Measured on hardware 2026-09-24: 0x06 is
+ * silent in every form (with and without the 0x06 category prefix, any size,
+ * even with a deliberately wrong CRC -- which SCANLINE answers with NACK 0x03,
+ * so a live handler cannot stay quiet). An opcode sweep of 0x08-0x0F found it:
+ * 0x08 NACKs a bad CRC echoing our exact x/y/w/h, and ACKs a real rectangle
+ * that draws. 0x06 is also the CATEGORY byte, so the sheet's value could never
+ * have dispatched -- and a no-prefix "06" rectangle whose pixel MSBs are all
+ * clear would read as "06 00", EXIT REMOTE MODE. */
+const OLED_RECTANGLE_ID = 0x08;
 const OLED_CLEAR_ID = 0x07;
 const OLED_UPDATE_ACK_ID = 0x53;
 const OLED_UPDATE_NACK_ID = 0x54;

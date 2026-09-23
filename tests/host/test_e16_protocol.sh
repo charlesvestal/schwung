@@ -55,7 +55,7 @@ eq("scanline length", scan.length, 1 + 5 + 1 + pack7(new Array(17).fill(0)).leng
 
 /* RECTANGLE: x=2 y=3 w=8 h=2 -> ceil(8/8)*2 = 2 payload bytes. */
 const rect = rectangleMsg(2, 3, 8, 2, [0xFF, 0x00]);
-eq("rectangle header+id", rect.slice(0, 7), [0xF0,0x00,0x21,0x5B,0x02,0x01,0x06]);
+eq("rectangle header+id (0x08, measured -- not the sheet 0x06)", rect.slice(0, 7), [0xF0,0x00,0x21,0x5B,0x02,0x01,0x08]);
 eq("rectangle length", rect.length, 1 + 5 + 1 + pack7([2,3,8,2,0xFF,0x00]).length + 1);
 let threw = false;
 try { rectangleMsg(2, 3, 8, 2, [0x00]); } catch (e) { threw = true; }
@@ -85,10 +85,10 @@ for (const raw of [[], [1], [0xFF,0x00,0x80,0x7F,0x01,0xFE,0x55,0xAA], new Array
 
 /* An OLED UPDATE ACK for a RECTANGLE at (2,3,8,2): cmd=0x06, status=0x00,
  * addr = x,y,w,h. */
-const ackRaw = [0x06, 0x00, 2, 3, 8, 2];
+const ackRaw = [0x08, 0x00, 2, 3, 8, 2];
 const ackAsm = [0x00,0x21,0x5B,0x02,0x01,0x53].concat(pack7(ackRaw));
 eq("oled ack parses", parseOledUpdateReply(ackAsm),
-   { ok: true, cmd: 0x06, status: 0x00, addr: { x: 2, y: 3, w: 8, h: 2 } });
+   { ok: true, cmd: 0x08, status: 0x00, addr: { x: 2, y: 3, w: 8, h: 2 } });
 
 /* A NACK for a SCANLINE at y=3 with a CRC mismatch (status 0x03); unused
  * address bytes are 0xFF per spec and must decode to null, not 255. */
@@ -117,6 +117,27 @@ eq("the captured bytes are exactly ACK_BODY_NO_CATEGORY",
 eq("new-firmware ENTER ack is NOT an oled reply",
    parseOledUpdateReply(ACK_BODY_NO_CATEGORY), null);
 eq("an OLED UPDATE ack is NOT an ENTER ack", isAck(ackAsm), false);
+
+/* WIRE CAPTURES from the device, 2026-09-24 -- the real replies, verbatim
+ * (asm = everything between F0 and F7). These are ground truth; the
+ * fixtures above are constructed. */
+const cap = (hex) => hex.split(" ").map((h) => parseInt(h, 16));
+eq("captured CLEAR ack decodes",
+   parseOledUpdateReply(cap("00 21 5b 02 01 53 3c 07 00 7f 7f 7f 7f")),
+   { ok: true, cmd: 0x07, status: 0, addr: {} });
+eq("captured SCANLINE ack decodes (y=58)",
+   parseOledUpdateReply(cap("00 21 5b 02 01 53 38 05 00 3a 7f 7f 7f")),
+   { ok: true, cmd: 0x05, status: 0, addr: { y: 58 } });
+eq("captured SCANLINE CRC-mismatch NACK decodes",
+   parseOledUpdateReply(cap("00 21 5b 02 01 54 38 05 03 14 7f 7f 7f")),
+   { ok: false, cmd: 0x05, status: 3, addr: { y: 20 } });
+eq("captured RECTANGLE ack decodes (x=8 y=30 24x24)",
+   parseOledUpdateReply(cap("00 21 5b 02 01 53 00 08 00 08 1e 18 18")),
+   { ok: true, cmd: 0x08, status: 0, addr: { x: 8, y: 30, w: 24, h: 24 } });
+/* The exact bytes the device drew from, re-built by our encoder. */
+eq("rectangleMsg reproduces the bytes the device ACKed",
+   rectangleMsg(8, 30, 24, 24, new Array(72).fill(0xFF)).slice(0, 12),
+   cap("f0 00 21 5b 02 01 08 70 08 1e 18 18"));
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
