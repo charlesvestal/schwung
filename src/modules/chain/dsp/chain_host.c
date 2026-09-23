@@ -787,9 +787,8 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                      * the MIDI FX path in chain_midi.c. */
                     if (json_get_flag_in_section(json, "capabilities", "wants_sysex"))
                         inst->synth_wants_sysex = 1;
-                    /* Performance controls may opt into the raw capacitive
-                     * touch edge: knob notes 0-7 and jog note 9, delivered
-                     * to this synth alone as MOVE_MIDI_SOURCE_TOUCH. */
+                    /* Knob 0-7 / jog 9 touch edges, delivered to this synth
+                     * alone as MOVE_MIDI_SOURCE_TOUCH. */
                     if (json_get_flag_in_section(json, "capabilities", "touch_observe"))
                         inst->synth_touch_observe = 1;
                     free(json);
