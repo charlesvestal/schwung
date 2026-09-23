@@ -25073,6 +25073,9 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    /* FIRST: MIDI was read just before this tick, so every E16 reply that has
+     * arrived is delivered. Anything slow below must not age its ACK timers. */
+    try { e16Surface.markInputRead(); } catch (e) {}
     /* Button claims, re-derived from whatever is on screen. Kept at the top of
      * the tick as the SINGLE re-check point for that entry condition -- see the
      * table above reconcileCcClaim(). */

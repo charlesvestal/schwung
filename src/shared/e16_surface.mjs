@@ -645,13 +645,23 @@ export function createDisplay(opts) {
          *        what went out, for tests and for a caller that wants to log
          *        its send budget.
          */
-        tick(send, frameBytes, screen, nowMs) {
+        tick(send, frameBytes, screen, nowMs, heardMs) {
             /* Regions the device never answered: treat as lost and re-send
              * (see ACK_TIMEOUT_MS). A lost CLEAR means nothing we believe
-             * about the device holds, so that is a full repaint. */
-            if (nowMs !== undefined && outstanding.size) {
+             * about the device holds, so that is a full repaint.
+             *
+             * AGED AGAINST THE LAST TIME REPLIES WERE READ (heardMs), not the
+             * clock. Replies are delivered before the UI tick; if something in
+             * the tick stalls (a slot switch's blocking param reads), every
+             * answer that arrived meanwhile is still unread in the ring when
+             * this runs. Aged by the clock, one slow frame declared every
+             * outstanding region lost and re-sent it -- hardware, 2026-09-24:
+             * 52 "timeouts" against 6 regions truly unanswered on the wire,
+             * clustered on slot switches. */
+            const ref = heardMs !== undefined ? heardMs : nowMs;
+            if (ref !== undefined && outstanding.size) {
                 for (const [k, o] of outstanding) {
-                    if (nowMs - o.at < ACK_TIMEOUT_MS) continue;
+                    if (ref - o.at < ACK_TIMEOUT_MS) continue;
                     outstanding.delete(k);
                     timeouts++;
                     if (o.region.kind === "clear") this.invalidateBuf("CLEAR never acknowledged");
@@ -1629,6 +1639,7 @@ export function createSurface(io) {
     const NACK_LOG_RATE_MS = 1000;
     let lastNackLogAt = -Infinity;
     const STATS_LOG_MS = 10000;
+    let heardAt = null;
     let lastStatsAt = -Infinity, statsAcks = 0, statsNacks = 0, statsTo = 0;
 
     const asm = createSysexAssembler({
@@ -1792,6 +1803,11 @@ export function createSurface(io) {
          * other consumer is gated, so a shared port carries no risk of the
          * surface acting on somebody else's gear.
          */
+        /* The host has just delivered every pending reply (MIDI is read
+         * before the UI tick): anything still unanswered after this point
+         * really was unanswered. Call first thing in the frame. */
+        markInputRead() { heardAt = now(); },
+
         feedMidi(data) {
             asm.feed(data);
             if (!lifecycle.enabled) return null;
@@ -2051,7 +2067,7 @@ export function createSurface(io) {
                 if (probe >= 0) drawTestPattern(canvas, probe, { paints, fps: paintFps });
                 else nav.render(canvas, t);
                 return canvas.toBuffer();
-            }, screen, t);
+            }, screen, t, heardAt === null ? t : heardAt);
 
             /* A PAINT is a completed picture on the device, never an intent --
              * the LAST region of a repaint, or a whole LABELS screen. */
