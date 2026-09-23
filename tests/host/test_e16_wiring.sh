@@ -193,8 +193,16 @@ function rig(opts) {
           if (id === 0x08) addr = unpack7(u.slice(7, u.length - 1), 4);
           if (id === 0x05) addr = [unpack7(u.slice(7, u.length - 1), 1)[0], 0xFF, 0xFF, 0xFF];
           if (id === 0x07) addr = [0xFF, 0xFF, 0xFF, 0xFF];
-          surface.feedMidi([0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53]
-            .concat(pack7([id, 0].concat(addr)), [0xF7]));
+          /* PACKETISED AS THE E16 DOES (captured 2026-09-24): three-byte
+           * continuations, then a TWO-byte CIN 6 continuation carrying the
+           * last two payload bytes WITHOUT F7, then F7 alone -- each handed to
+           * JS as its real bytes only. Feeding one whole array hid that the
+           * shim dropped that CIN 6 packet, so no reply ever parsed. */
+          const msg = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53]
+            .concat(pack7([id, 0].concat(addr)));          /* 15 bytes, no F7 */
+          for (let q = 0; q + 3 <= 12; q += 3) surface.feedMidi(msg.slice(q, q + 3));
+          surface.feedMidi(msg.slice(12, 14));             /* CIN 6: 2 data bytes */
+          surface.feedMidi([0xF7]);                        /* CIN 5: F7 alone */
         }
         this.perTick.push(send.log.length - before);
         this.perTickPackets.push(send.log.slice(before)
