@@ -491,6 +491,11 @@ function toStrips(regions) {
 
 export function createDisplay(opts) {
     const budgetOf = (opts && opts.budgetOf) || (() => TICK_PACKET_BUDGET);
+    /* Told WHY each full repaint (CLEAR + everything) happens -- the visible
+     * blank. "Periodic blanking" cost a session of inference; one log line
+     * per blank would have named it. */
+    const onFull = (opts && opts.onFull) || (() => {});
+    let nullReason = "first paint";
     let fbOwed = false;
     /*
      * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
@@ -595,7 +600,7 @@ export function createDisplay(opts) {
                     if (nowMs - o.at < ACK_TIMEOUT_MS) continue;
                     outstanding.delete(k);
                     timeouts++;
-                    if (o.region.kind === "clear") this.invalidateBuf();
+                    if (o.region.kind === "clear") this.invalidateBuf("CLEAR never acknowledged");
                     else if (o.region.kind === "scanline") this.invalidateRegion(0, o.region.y, E16_WIDTH, 1);
                     else this.invalidateRegion(o.region.x, o.region.y, o.region.w, o.region.h);
                     fbOwed = true;
@@ -622,6 +627,7 @@ export function createDisplay(opts) {
                  * -- any queued partial-update state describes a screen the
                  * device is no longer being asked to show. */
                 pendingRegions = []; pendingBuf = null; lastSentBuf = null;
+                nullReason = "left the drawn view (LABELS)";
                 const bytes = labelsMsg(screen.title, screen.labels);
                 if (emitMsg(send, bytes)) {
                     fbOwed = false; labelsOwed = false; shownKind = want;
@@ -637,6 +643,7 @@ export function createDisplay(opts) {
                  * pixel state, if any, belongs to a mode we've left (or this
                  * is the very first paint). A diff against it would describe
                  * a screen that was never drawn. */
+                if (lastSentBuf) nullReason = "entered the drawn view";
                 pendingRegions = []; pendingBuf = null; lastSentBuf = null;
             }
 
@@ -661,6 +668,7 @@ export function createDisplay(opts) {
                     return null;
                 }
                 if (diff.kind === "full") {
+                    onFull(nullReason);
                     /*
                      * A FULL REPAINT IS EIGHT ACKNOWLEDGED BANDS, NOT ONE
                      * FRAMEBUFFER. Measured on hardware 2026-09-24: every
@@ -744,7 +752,11 @@ export function createDisplay(opts) {
             const k = reply.cmd === 0x07 ? "clear"
                     : reply.cmd === 0x05 ? "s," + a.y
                     : [a.x, a.y, a.w, a.h].join(",");
-            outstanding.delete(k);
+            /* Returns false for an ACK of a CLEAR we never sent: a corrupted
+             * message the device read as CLEAR -- it blanked ITSELF, and
+             * nothing we believe about the screen holds. The caller repaints. */
+            const known = outstanding.delete(k);
+            return known || !(reply.ok && reply.cmd === 0x07);
         },
         /* A repaint is in flight: some of its regions are still queued. */
         get repaintPending() { return fbOwed || pendingRegions.length > 0; },
@@ -756,7 +768,8 @@ export function createDisplay(opts) {
          * true. Forgetting it is what makes the presence edge resend. If the
          * mode itself is still trustworthy and only the PIXELS are suspect,
          * invalidateBuf() below is the narrower tool -- see its comment. */
-        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
+        forgetShown() { shownKind = null; lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+                        nullReason = "forgetShown (replug / presence edge)"; },
         /* Something happened that means what we BELIEVE is on the device
          * might be wrong, even though our own rendered content hasn't
          * changed -- an OLED UPDATE NACK (a later task), or a heartbeat
@@ -766,7 +779,8 @@ export function createDisplay(opts) {
          * believed to be in framebuffer mode (shownKind untouched), only
          * the PIXELS are suspect -- the next diff sees prev === null and
          * sends a full repaint regardless of whether content changed. */
-        invalidateBuf() { lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
+        invalidateBuf(reason) { lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+                                nullReason = reason || "invalidateBuf"; },
 
         /*
          * The device NACKed ONE region and named it. Make only that area
@@ -779,6 +793,7 @@ export function createDisplay(opts) {
          */
         invalidateRegion(x, y, w, h) {
             if (!lastSentBuf || ![x, y, w, h].every((v) => typeof v === "number")) {
+                if (lastSentBuf) nullReason = "a repair with no usable address";
                 lastSentBuf = null; pendingRegions = []; pendingBuf = null;
                 return;
             }
@@ -1285,9 +1300,18 @@ export function createSurface(io) {
     /* Injected like everything else; a host that says nothing gets the
      * fixed budget, which is what every test without a pace expects. */
     const paceOf = o.paceOf || null;
-    const display = createDisplay(paceOf ? {
-        budgetOf: () => (paceOf() || SHIM_DEFAULT_PACE) * BUDGET_FRAMES_PER_TICK,
-    } : undefined);
+    let lastFullLogAt = -Infinity;
+    const display = createDisplay({
+        budgetOf: paceOf ? () => (paceOf() || SHIM_DEFAULT_PACE) * BUDGET_FRAMES_PER_TICK
+                         : () => TICK_PACKET_BUDGET,
+        /* One line per visible blank, rate-limited, naming its cause. */
+        onFull: (reason) => {
+            const t = now();
+            if (t - lastFullLogAt < 1000) return;
+            lastFullLogAt = t;
+            console.log("e16: full repaint (CLEAR) -- " + reason);
+        },
+    });
 
     let ctl = null;
     /* "<slot>:<component>" of the load the controller is currently holding.
@@ -1506,7 +1530,14 @@ export function createSurface(io) {
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
-            display.acked(reply);   /* answered either way: no longer outstanding */
+            if (!display.acked(reply)) {
+                /* The device ACKed a CLEAR we never sent: it read a corrupted
+                 * message as CLEAR and blanked itself. Repaint now, not at the
+                 * next heartbeat. */
+                display.invalidateBuf("device CLEARED itself (unsolicited CLEAR ack)");
+                display.invalidate();
+                return;
+            }
             if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
             /* The NACK NAMES the region that failed, so only that region is
              * re-sent (invalidateRegion); a reply we cannot localise falls
@@ -1518,7 +1549,12 @@ export function createSurface(io) {
             const a = reply.addr || {};
             if (reply.cmd === 0x08) display.invalidateRegion(a.x, a.y, a.w, a.h);
             else if (reply.cmd === 0x05) display.invalidateRegion(0, a.y, 128, 1);
-            else display.invalidateBuf();
+            else if (reply.cmd === 0x07) display.invalidateBuf("CLEAR NACKed");
+            /* Any other command byte: the message was cut before its command
+             * could be read, so the NACK cannot say WHICH region failed. It
+             * is not a reason to blank the screen -- every region is tracked
+             * and the one that failed times out and is re-sent by itself.
+             * This branch used to force a full CLEAR repaint. */
             display.invalidate();
             const t = now();
             if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
