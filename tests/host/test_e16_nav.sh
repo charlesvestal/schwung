@@ -256,13 +256,24 @@ function rigMapPage(slot) {
 
 /* ---- 6. THE BUS CELL ---------------------------------------------------- */
 {
+  /* A slot WITHOUT buses: the tap is inert, rather than emptying the list
+   * (hardware: "the knobs clear"). */
+  const nb = rig();
+  nb.ev({ type: "shift", down: true });
+  const busless = CHAIN.slots.findIndex((sl) => !(sl.buses && sl.buses.some(Boolean)));
+  if (busless >= 0) {
+    nb.ev({ type: "push", enc: busless });
+    eq("a slot with no buses: tapping it again does nothing", nb.ev({ type: "push", enc: busless }), null);
+  }
+}
+{
   const r = rig();
   r.ev({ type: "shift", down: true });
   eq("pressing the CURRENT slot swaps the lower 12 to buses",
      r.ev({ type: "push", enc: 0 }), { action: "buses", showBuses: true });
   const want = createCanvas();
-  renderMap(want, buildMap(CHAIN, { slot: 0, page: 0, showBuses: true }));
-  eq("...in pixels", Array.from(r.cv.toBuffer()), Array.from(want.toBuffer()));
+  renderMap(want, buildMap(CHAIN, { slot: 0, page: 0, showBuses: true }), { page: 0, showBuses: true });
+  eq("...in pixels, the slot box tagged as the bus view", Array.from(r.cv.toBuffer()), Array.from(want.toBuffer()));
   eq("...and a bus is a jump target",
      r.ev({ type: "push", enc: 4 }),
      { action: "focus", slot: 0, component: "bus1" });

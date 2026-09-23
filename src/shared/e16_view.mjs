@@ -468,6 +468,11 @@ export function renderMap(ctx, map, opts) {
         ctx.print(r.x + 2, r.y + 2, clip(ctx, cell.label, r.w - 4), ink);
         if (!isSlot) {
             ctx.print(r.x + 2, r.y + 9, clip(ctx, cell.component, r.w - 4), ink);
+        } else if (fill && o.showBuses) {
+            /* In bus view the current slot box says so -- the list beneath it
+             * is buses, not modules. */
+            const tag = pageCount > 1 ? `Bus ${page + 1}/${pageCount}` : "Buses";
+            ctx.print(r.x + r.w - 2 - ctx.textWidth(tag), r.y + 9, tag, ink);
         } else if (fill && pageCount > 1) {
             /* The indicator lives on the CURRENT SLOT cell because that is the
              * cell whose list is being paged -- a page number floating in a

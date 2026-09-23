@@ -1351,6 +1351,12 @@ export function createNav(opts) {
                 const enc = ev.enc | 0;
                 if (enc < SLOT_CELLS) {
                     if (enc === slot) {
+                        /* The bus view of a slot with no buses is an empty
+                         * list -- every lower knob went dark, which read as a
+                         * broken page (hardware, 2026-09-24). Only a slot that
+                         * HAS buses toggles; otherwise the tap is inert. */
+                        const hasBuses = buildMap(chainOf(), { slot, showBuses: true }).cells.slice(SLOT_CELLS).some(Boolean);
+                        if (!showBuses && !hasBuses) return null;
                         showBuses = !showBuses;
                         mapPage = 0;
                         invalidate();
@@ -1495,7 +1501,7 @@ export function createNav(opts) {
          */
         render(ctx, now) {
             const up = mapVisible(now);
-            if (up) renderMap(ctx, currentMap(), { page: mapPage });
+            if (up) renderMap(ctx, currentMap(), { page: mapPage, showBuses });
             else renderParams(ctx);
             shownMap = up;
         },
