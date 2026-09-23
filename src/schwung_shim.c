@@ -5090,6 +5090,15 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;
+        /* master_fx:skipback_save -- the Shift+Capture save, for a control
+         * surface (the E16 Mixer's capture knob). A SET triggers it; the save
+         * itself is handed to the worker, exactly as the gesture's is. */
+        if (strcmp(fx_key, "skipback_save") == 0) {
+            if (req_type == 1) skipback_trigger_save();
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+            return 1;
+        }
         if (strcmp(fx_key, "resample_bridge") == 0) {
             if (req_type == 1) {
                 native_resample_bridge_mode_t new_mode =

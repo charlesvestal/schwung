@@ -10744,6 +10744,41 @@ const e16Surface = createE16Surface({
         getParam: (key) => getSlotParam(focus.slot, key),
         setParam: (key, value) => setSlotParam(focus.slot, key, value),
     }),
+    /*
+     * THE MIXER (double-tap Shift; e16_mixer.mjs). The same keys Slot
+     * Settings writes -- slot:volume is also what Move's own track volume
+     * drives -- so the E16, the slot grid and Move move one value. Sends and
+     * returns mark sendLevelsDirty like their grid; volume / mute / solo ride
+     * the slot state like every other slot setting.
+     */
+    mixer: {
+        getSlot: (slot, key) => getSlotParam(slot, key),
+        setSlot: (slot, key, value) => {
+            const ok = setSlotParam(slot, key, value);
+            if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
+            return ok;
+        },
+        getGlobal: (key) => {
+            try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
+            catch (e) { return null; }
+        },
+        setGlobal: (key, value) => {
+            let ok = false;
+            try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
+            catch (e) { ok = false; }
+            if (ok) sendLevelsDirty = true;
+            return ok;
+        },
+        /* Same save as Shift+Capture on Move. */
+        skipback: () => {
+            try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
+            catch (e) { return false; }
+        },
+        nameOf: (slot) => {
+            const sl = (e16ChainShape().slots || [])[slot] || {};
+            return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
+        },
+    },
 });
 
 function setExternalSurfaceFollow(v) {
