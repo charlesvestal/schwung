@@ -657,6 +657,44 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("...and each stays within its budget", perTick(60) <= 60 && perTick(40) <= 40, true);
 }
 
+/* A NEWER PICTURE REPLACES THE REST OF THE QUEUE. A quick Shift tap used to
+ * draw the whole map before the knob view even started. Start drawing A,
+ * switch to B after one tick: A remaining strips are abandoned, and what
+ * reaches the device is exactly B. */
+{
+  const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
+  const d = createDisplay(); const snd = mkSend();
+  const blank = new Uint8Array(1024);
+  let cur = blank;
+  d.invalidate();
+  for (let i = 0; i < 8 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => cur, { kind: "framebuffer" });
+  const A = new Uint8Array(1024).fill(0xFF);             /* the map: every row */
+  const B = new Uint8Array(1024);                        /* the knob view: one mark */
+  B[(40 >> 3) * 128 + 10] |= (1 << (40 & 7));
+  cur = A; d.invalidate();
+  d.tick(snd, () => cur, { kind: "framebuffer" });        /* one tick of A goes out */
+  const n0 = snd.log.length;
+  cur = B; d.invalidate();                                /* Shift released */
+  for (let i = 0; i < 64 && d.repaintPending; i++) d.tick(snd, () => cur, { kind: "framebuffer" });
+  const afterSwitch = snd.log.length - n0;
+  eq("switching mid-drain does NOT finish the old picture first",
+     afterSwitch < STRIPS - 4, true);
+  /* Apply everything that went out, in order, to a model screen: it must be B. */
+  const screen = new Uint8Array(1024);
+  for (const p of snd.log) { const u = unpack(p);
+    if (u[6] === 0x07) screen.fill(0);
+    if (u[6] !== 0x08) continue;
+    const payload = u.slice(7, u.length - 1);
+    const hdr = unpack7(payload, 4); const [x, y, w, h] = hdr;
+    const bits = unpack7(payload, 4 + Math.ceil(w / 8) * h).slice(4);
+    for (let ry = 0; ry < h; ry++) for (let rx = 0; rx < w; rx++) {
+      const on = (bits[ry * Math.ceil(w / 8) + (rx >> 3)] >> (7 - (rx & 7))) & 1;
+      const i = ((y + ry) >> 3) * 128 + x + rx, bit = 1 << ((y + ry) & 7);
+      screen[i] = on ? (screen[i] | bit) : (screen[i] & ~bit); } }
+  eq("...and the device ends up showing exactly the NEW picture",
+     Array.from(screen).join(), Array.from(B).join());
+}
+
 /* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the
  * same reading drew as the module own string before a turn (hank ratio
  * "11.000") and as the controller number after one ("11"). It goes through

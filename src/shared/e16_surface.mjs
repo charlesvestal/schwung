@@ -647,7 +647,18 @@ export function createDisplay(opts) {
                 pendingRegions = []; pendingBuf = null; lastSentBuf = null;
             }
 
-            if (pendingRegions.length === 0) {
+            /*
+             * A NEWER PICTURE REPLACES THE REST OF THE QUEUE. It used to wait
+             * for the current drain to finish, so a quick Shift tap drew the
+             * whole map before the knob view even started, and flipping
+             * through slots drew every intermediate slot in full (hardware,
+             * 2026-09-24). That wait was only needed while the belief was
+             * approximate; it now holds exactly what went out, region by
+             * region, so re-diffing mid-drain yields exactly what is still
+             * needed. Not before the leading CLEAR of a full repaint has gone
+             * (no belief yet) -- that repaint finishes as queued.
+             */
+            if (pendingRegions.length === 0 || (fbOwed && lastSentBuf)) {
                 const buf = frameBytes();
                 /*
                  * NEVER ESCALATE A KNOWN SCREEN TO "FULL". The region-count and
@@ -663,22 +674,16 @@ export function createDisplay(opts) {
                 const diff = diffFramebuffers(lastSentBuf, buf,
                     { maxRegions: Infinity, fullRepaintThreshold: Infinity });
                 if (diff.kind === "none") {
+                    /* The device already shows this picture -- including when
+                     * a pre-empted drain had already put it all out. */
+                    if (pendingRegions.length) paintsCompleted++;
+                    pendingRegions = []; pendingBuf = null;
                     fbOwed = false;
                     shownKind = "framebuffer";
                     return null;
                 }
                 if (diff.kind === "full") {
                     onFull(nullReason);
-                    /*
-                     * A FULL REPAINT IS EIGHT ACKNOWLEDGED BANDS, NOT ONE
-                     * FRAMEBUFFER. Measured on hardware 2026-09-24: every
-                     * RECTANGLE the device accepted landed exactly, and every
-                     * corrupted one came back NACKed -- while a FRAMEBUFFER
-                     * gets no reply at all, so a splice inside it is drawn
-                     * and never reported (the shifted-row photo). A band is
-                     * 128x8 (~50 packets against 394), and a garble costs one
-                     * band and names it, instead of costing a silent screen.
-                     */
                     /*
                      * A FULL REPAINT IS ONE CLEAR, THEN ONLY THE INK. CLEAR is
                      * 8 bytes and ACKed; after it a blank strip needs no
