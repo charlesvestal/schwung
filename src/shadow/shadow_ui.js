@@ -5403,6 +5403,7 @@ const CHAIN_SETTINGS_ITEMS = [
      * its stored gain until something turns the knob, which then pulls it into
      * range. */
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
+    { key: "slot:pan", label: "Pan", type: "float", min: -1, max: 1, step: 0.05 },
     /*
      * THE SEND MIXER'S DOOR -- one row for every level into A and B.
      *
@@ -9302,7 +9303,8 @@ function saveChainConfigToDir(dir) {
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, forward_channel: fwd, muted: muted, soloed: soloed });
+            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, forward_channel: fwd, muted: muted, soloed: soloed });
         }
         host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
     } catch (e) {
@@ -9474,6 +9476,8 @@ function loadChainConfigFromDir(dir) {
         for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
             const s = data.slots[i];
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
+            /* Absent (a set saved before pan existed) means centre. */
+            setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
             /* Always write receive_channel: use saved value if present, else
              * default to slot index + 1. Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
@@ -15066,6 +15070,11 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "slot:volume") {
         const pct = Math.round(parseFloat(val) * 100);
         return `${pct}%`;
+    }
+    if (setting.key === "slot:pan") {
+        const p = parseFloat(val) || 0;
+        if (Math.abs(p) < 0.01) return "C";
+        return (p < 0 ? "L " : "R ") + Math.round(Math.abs(p) * 100);
     }
     if (setting.key === "slot:muted") {
         return parseInt(val) ? "Yes" : "No";

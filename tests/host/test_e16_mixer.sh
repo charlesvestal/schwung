@@ -18,7 +18,7 @@ const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
 
 /* A fake host: the slot params and the global send returns. */
 function fakeIo() {
-  const slots = [0, 1, 2, 3].map(() => ({ "slot:volume": "1", "slot:muted": "0", "slot:soloed": "0",
+  const slots = [0, 1, 2, 3].map(() => ({ "slot:volume": "1", "slot:muted": "0", "slot:soloed": "0", "slot:pan": "0.000",
     "buses:main_send1": "0", "buses:main_send2": "64" }));
   const glob = { "send1:return": "100", "send2:return": "127", "master_fx:filter": "0.000" };
   const io = { slots, glob, reads: 0, writes: [], skipbacks: 0,
@@ -35,7 +35,7 @@ function fakeIo() {
 {
   const io = fakeIo(); const m = createMixer(io);
   m.load();
-  eq("load reads every value once", io.reads, 4 * 5 + 3);
+  eq("load reads every value once", io.reads, 4 * 6 + 3);
   eq("level cell prints dB", m.cell(0), { label: "Vol", value: "0.0" });
   m.turn(0, 2, false);
   eq("a turn steps the level half a dB per detent", m.cell(0).value, "+1.0");
@@ -45,6 +45,10 @@ function fakeIo() {
   for (let i = 0; i < 400; i++) m.turn(1, -1, false);
   eq("...and bottoms out at -inf", [m.cell(1).value, Number(io.slots[1]["slot:volume"])], ["-inf", 0]);
 
+  m.turn(1, -15, true);
+  eq("Shift+turn on a level pans", [io.slots[1]["slot:pan"], m.cell(1).label], ["-0.30", "L 30"]);
+  m.turn(1, 15, true);
+  eq("...back to centre reads Vol again", m.cell(1).label, "Vol");
   m.push(2, false);
   eq("push on a level mutes", [io.slots[2]["slot:muted"], m.cell(2).label], ["1", "MUTE"]);
   m.push(2, false);

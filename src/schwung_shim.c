@@ -2098,8 +2098,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                         ps->active = 1;
                     }
                 }
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
@@ -2407,6 +2410,35 @@ static int shadow_stems_wanted = 0;
 static inline void shadow_stem_frame_reset(void) {
     if (!shadow_stems_wanted) return;
     memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
+}
+
+/*
+ * PAN, as a stereo BALANCE: at centre both channels are x1.0 exactly (every
+ * existing mix bit-identical); turning one way fades the OPPOSITE channel
+ * out on an equal-power curve and leaves the near one alone -- how Ableton
+ * pans a stereo track. Applied where a slot joins the master mix and in its
+ * stem (so stems still sum to the master); sends stay pre-pan.
+ */
+static inline void shadow_pan_gains(int s, float *gl, float *gr) {
+    const float p = shadow_chain_slots[s].pan;
+    *gl = (p > 0.0f) ? cosf(p * (float)M_PI_2) : 1.0f;
+    *gr = (p < 0.0f) ? cosf(-p * (float)M_PI_2) : 1.0f;
+}
+
+static inline void shadow_stem_store(int idx, const int16_t *src, float gain);
+/* The slot stem, panned like the slot main mix. */
+static inline void shadow_stem_store_slot(int s, const int16_t *src, float gain) {
+    float gl, gr;
+    shadow_pan_gains(s, &gl, &gr);
+    if (gl == 1.0f && gr == 1.0f) { shadow_stem_store(s, src, gain); return; }
+    if (!shadow_stems_wanted || s < 0 || s >= SAMPLER_STEM_COUNT || !src) return;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        float v = (float)src[i] * gain * ((i & 1) ? gr : gl);
+        if (v > 32767.0f) v = 32767.0f;
+        if (v < -32768.0f) v = -32768.0f;
+        shadow_stem_bus[s][i] = (int16_t)lroundf(v);
+    }
+    shadow_stem_valid[s] = 1;
 }
 
 static inline void shadow_stem_store(int idx, const int16_t *src, float gain) {
@@ -2845,7 +2877,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     /* Same signal, same gain — the stem tap for this slot.
                      * Under Move->Schwung fx_buf is Move's track N plus this
                      * slot's synth, already through the slot FX chain. */
-                    shadow_stem_store(s, fx_buf, cap_vol);
+                    shadow_stem_store_slot(s, fx_buf, cap_vol);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -2862,8 +2894,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
 
                 /* Add FX output to mailbox */
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     float gain = vol;
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
@@ -2922,7 +2957,7 @@ skip_la_rebuild:
                 /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
                  * Move's own audio never enters a slot on this path, and is
                  * captured whole as the Move stem instead. */
-                shadow_stem_store(s, fx_buf,
+                shadow_stem_store_slot(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 /* Write to publisher shared memory for link_subscriber */
@@ -2939,8 +2974,11 @@ skip_la_rebuild:
                     ps->write_pos = wp;
                 }
 
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
@@ -2959,7 +2997,7 @@ skip_la_rebuild:
                  * legacy branch that runs the FX inline. */
                 shim_drain_slot_send(s, fx_buf);
 
-                shadow_stem_store(s, fx_buf,
+                shadow_stem_store_slot(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
@@ -2991,8 +3029,11 @@ skip_la_rebuild:
                     shadow_slot_fx_idle[s] = 0;
                 }
 
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
