@@ -3749,10 +3749,18 @@ func main() {
 	}
 	mux.Handle("GET /mirror", displayProxy)
 	mux.Handle("GET /mirror/", displayProxy)
-	mux.Handle("GET /stream-auto", displayProxy)
+	// THE STREAMS ARE ENDLESS, so the server WriteTimeout (60 s) must not apply
+	// to them: Go enforces it on every response, and it cut each mirror feed
+	// once a minute -- the page froze until the EventSource reconnected. The
+	// deadline is lifted for these two routes only.
+	streamProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		displayProxy.ServeHTTP(w, r)
+	})
+	mux.Handle("GET /stream-auto", streamProxy)
 	// The OXI E16 mirror (display_server /stream-e16), shown under Move's
 	// screen on /mirror while an E16 is live.
-	mux.Handle("GET /stream-e16", displayProxy)
+	mux.Handle("GET /stream-e16", streamProxy)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	// SecurityHeaders runs outermost so headers are set even on responses
