@@ -410,13 +410,36 @@ eq("rings pending is visible to the caller that gates the heartbeat",
     return out.slice(6, 7);   /* the single id byte, per OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX=false */
   };
 
-  const d1 = createDisplay();
+  /* A partial-capable display (new firmware -- see createDisplay `partial`),
+   * primed: a full repaint is EIGHT 128x8 bands, one per tick. */
+  const mk = () => { const d = createDisplay(); d.setPartial(true); return d; };
+  const paintAll = (d, send, fb, t) => { const k = [];
+    for (let i = 0; i < 8; i++) k.push(d.tick(send, fb, { kind: "framebuffer" }, t + i)); return k; };
+
+  /* NO REGION SUPPORT = THE OLD BEHAVIOUR, BYTE FOR BYTE. Old firmware ignores
+   * RECTANGLE silently, so a display that has not been told otherwise must
+   * send a whole FRAMEBUFFER for every repaint, small change or not. */
+  {
+    const d0 = createDisplay(); const s0 = mkSend();
+    let b0 = new Uint8Array(1024); const f0 = () => b0;
+    d0.invalidate(); eq("default display: first paint is a framebuffer",
+                        d0.tick(s0, f0, { kind: "framebuffer" }, 0), "framebuffer");
+    b0 = new Uint8Array(1024); setPx(b0, 10, 10);
+    d0.invalidate(); eq("default display: a one-pixel change is STILL a framebuffer",
+                        d0.tick(s0, f0, { kind: "framebuffer" }, 1), "framebuffer");
+    eq("partial is off by default", d0.partial, false);
+  }
+
+  const d1 = mk();
   const send1 = mkSend();
   let buf1 = new Uint8Array(1024);
   const frameBytes1 = () => buf1;
   d1.invalidate();
-  const first = d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 0);
-  eq("first paint (prev unknown) is a full framebuffer", first, "framebuffer");
+  eq("first paint is eight acknowledged BANDS, not a framebuffer",
+     paintAll(d1, send1, frameBytes1, 0), new Array(8).fill("rect"));
+  eq("...each band a full-width 8-row RECTANGLE (0x08, 128x8 at y=0)",
+     unpack(send1.log[0]).slice(6, 7), [0x08]);
+  eq("...and nothing is left owed", d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 9), null);
 
   buf1 = new Uint8Array(1024);
   setPx(buf1, 10, 10);
@@ -426,12 +449,12 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("rect message id byte (0x08, measured on hardware)", unpackMsgId(send1.log[send1.log.length - 1]), [0x08]);
 
   /* Two-region diff drains across two ticks. */
-  const d2 = createDisplay();
+  const d2 = mk();
   const send2 = mkSend();
   let buf2 = new Uint8Array(1024);
   const frameBytes2 = () => buf2;
   d2.invalidate();
-  d2.tick(send2, frameBytes2, { kind: "framebuffer" }, 0);   /* establish baseline */
+  paintAll(d2, send2, frameBytes2, 0);   /* establish baseline */
   buf2 = new Uint8Array(1024);
   setPx(buf2, 0, 0);
   setPx(buf2, WIDTH - 1, HEIGHT - 1);
@@ -444,12 +467,12 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("two-region diff: third tick has nothing left", r3, null);
 
   /* A refused send changes nothing. */
-  const d3 = createDisplay();
+  const d3 = mk();
   const send3 = mkSend();
   let buf3 = new Uint8Array(1024);
   const frameBytes3 = () => buf3;
   d3.invalidate();
-  d3.tick(send3, frameBytes3, { kind: "framebuffer" }, 0);
+  paintAll(d3, send3, frameBytes3, 0);
   buf3 = new Uint8Array(1024);
   setPx(buf3, 5, 5);
   d3.invalidate();
@@ -461,13 +484,13 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("retry after refusal still sends the same diff", retried, "rect");
 
   /* Switching to labels drops any queued regions and forces a full repaint
-   * on the way back to framebuffer mode. */
-  const d4 = createDisplay();
+   * on the way back to framebuffer mode -- as bands. */
+  const d4 = mk();
   const send4 = mkSend();
   let buf4 = new Uint8Array(1024);
   const frameBytes4 = () => buf4;
   d4.invalidate();
-  d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 0);
+  paintAll(d4, send4, frameBytes4, 0);
   buf4 = new Uint8Array(1024);
   setPx(buf4, 0, 0);
   setPx(buf4, WIDTH - 1, HEIGHT - 1);
@@ -476,32 +499,45 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const toLabels = d4.tick(send4, frameBytes4, { kind: "labels", title: "T", labels: [] }, 101);
   eq("switch to labels sends labels", toLabels, "labels");
   d4.invalidate();
-  const backToFb = d4.tick(send4, frameBytes4, { kind: "framebuffer" }, 102);
-  eq("switch back to framebuffer is a full repaint, not a stale region", backToFb, "framebuffer");
+  eq("switch back to framebuffer is a full repaint (eight bands), not a stale region",
+     paintAll(d4, send4, frameBytes4, 102), new Array(8).fill("rect"));
 
   /* invalidateBuf() IS THE HEARTBEAT FIX, DIRECTLY TESTED. Its only real
-   * caller is the self-heal heartbeat in createSurface (SCREEN_HEARTBEAT_MS),
-   * whose entire job is to resend BYTE-IDENTICAL content to repair
-   * corruption the surface cannot otherwise detect -- a plain invalidate()
-   * with UNCHANGED content is exactly the case diffFramebuffers correctly
-   * answers "none" (nothing to send) for, which would make the heartbeat a
-   * silent no-op. This asserts the fix directly, independent of the
-   * heartbeat own timing/gating logic in createSurface. */
-  const d5 = createDisplay();
+   * caller is the self-heal heartbeat in createSurface, whose job is to
+   * resend BYTE-IDENTICAL content -- a plain invalidate() on unchanged
+   * content is exactly what the diff correctly answers "none" for. */
+  const d5 = mk();
   const send5 = mkSend();
   const buf5 = new Uint8Array(1024);
   setPx(buf5, 10, 10);
   const frameBytes5 = () => buf5;   /* deliberately IDENTICAL every call */
   d5.invalidate();
-  const primed = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 0);
-  eq("priming paint", primed, "framebuffer");
+  eq("priming paint", paintAll(d5, send5, frameBytes5, 0)[0], "rect");
   d5.invalidate();
   const unchanged = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 100);
   eq("plain invalidate() on unchanged content sends nothing", unchanged, null);
   d5.invalidateBuf();
   d5.invalidate();
-  const repaired = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 200);
-  eq("invalidateBuf() forces a full resend of the SAME content", repaired, "framebuffer");
+  eq("invalidateBuf() forces a full resend of the SAME content (as bands)",
+     paintAll(d5, send5, frameBytes5, 200), new Array(8).fill("rect"));
+
+  /* A NACK NAMES ITS REGION, and only that region is re-sent. */
+  const d6 = mk();
+  const send6 = mkSend();
+  const buf6 = new Uint8Array(1024);
+  setPx(buf6, 40, 50);
+  const frameBytes6 = () => buf6;   /* unchanged content throughout */
+  d6.invalidate();
+  paintAll(d6, send6, frameBytes6, 0);
+  const before6 = send6.log.length;
+  d6.invalidateRegion(40, 47, 46, 5);   /* the exact rect a device NACKed */
+  d6.invalidate();
+  eq("a NACKed region is re-sent as ONE rect", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 100), "rect");
+  const resent = unpack(send6.log[before6]);
+  const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
+  eq("...naming exactly the region the device refused",
+     unpack7(resent.slice(7, resent.length - 1), 4), [40, 47, 46, 5]);
+  eq("...and nothing else goes out after it", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 101), null);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
