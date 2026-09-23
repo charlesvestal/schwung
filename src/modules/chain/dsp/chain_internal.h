@@ -925,6 +925,16 @@ typedef struct chain_instance {
      * module.json; shim must never park the slot as fx_idle so stateful FX
      * (loopers, modulated delays) keep advancing internal time during silence. */
     int fx_requires_continuous[MAX_AUDIO_FX];
+
+    /* 1 = the SYNTH must never be parked by the shim's silence-skip either.
+     * Set when the sound generator's module.json declares
+     * capabilities.requires_continuous_processing, and IMPLIED for any synth
+     * that consumes line input (synth_consumes_line_input): such a module's
+     * output follows a jack the host never inspects and it receives no MIDI,
+     * so once the shim parks it on silence nothing exists to wake it inside
+     * the ~0.5 s probe interval — which reads to the user as the input being
+     * gated. */
+    int synth_requires_continuous;
     
     /* Synth load error message */
     char synth_load_error[256];
@@ -1161,6 +1171,7 @@ CHAIN_INTERNAL int json_get_int(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_int_in_section(const char *json, const char *section_key, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *section_key, const char *key, int *out);
+CHAIN_INTERNAL int json_get_flag_in_section(const char *json, const char *section_key, const char *key);
 CHAIN_INTERNAL int json_get_section_bounds(const char *json, const char *section_key, const char **out_start, const char **out_end);
 CHAIN_INTERNAL int json_get_string(const char *json, const char *key, char *out, int out_len);
 CHAIN_INTERNAL int json_get_string_in_section(const char *json, const char *section_key, const char *key, char *out, int out_len);

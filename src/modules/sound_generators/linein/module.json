@@ -13,6 +13,7 @@
     "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
+    "requires_continuous_processing": true,
     "ui_hierarchy": {
       "levels": {
         "root": {
