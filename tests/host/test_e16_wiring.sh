@@ -325,6 +325,49 @@ function rig(opts) {
 }
 
 /* ===========================================================================
+ * REGION FIRMWARE: THE READING FOLLOWS A LONG SPIN, AND A VALUE CHANGED ON
+ * MOVE REACHES THE E16. Both reported on hardware 2026-09-24. The settle
+ * redrew the digits only once the hand stopped, so a continuous spin showed
+ * nothing; and nothing repainted for a change that did not come from the
+ * E16 own encoders -- the old 1.5 s whole-screen heartbeat had been hiding
+ * that. Neither may break the one-message-per-tick budget.
+ * ========================================================================= */
+{
+  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const isRect = (p) => unpack(p)[6] === 0x08;
+
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1); r.surface.feedMidi(NEW_ACK); r.ticks(60);   /* bands drawn, contract loaded */
+
+  /* A continuous spin: one detent every tick, 40 ticks, the hand never
+   * still for SETTLE_MS. */
+  const b0 = r.send.log.length;
+  for (let i = 0; i < 40; i++) { r.surface.feedMidi([0xB0, 0x01, 0x01]); r.ticks(1, 16); }
+  const during = r.send.log.slice(b0);
+  ok(during.some(isRect), "a long spin redraws the reading WHILE turning, not only after");
+  ok(during.some((p) => j(msgId(p)) === j(RING)), "...and the ring still moves during the spin");
+
+  /* A value changed from Move -- nothing touches the E16. */
+  r.ticks(40);                                            /* let the spin settle */
+  const b1 = r.send.log.length;
+  r.params.set(0, "p0", "0.95");
+  r.ticks(80);
+  const after = r.send.log.slice(b1);
+  ok(after.some(isRect), "a value changed on Move repaints the E16 region");
+  ok(after.some((p) => j(msgId(p)) === j(RING)), "...and moves that encoders ring");
+
+  /* An unchanged screen costs nothing on the wire: the look diffs to empty. */
+  r.ticks(40);
+  const b2 = r.send.log.length;
+  r.ticks(80);
+  const idle = r.send.log.slice(b2).filter((p) => j(msgId(p)) !== j(ENTER));
+  eq("an idle, unchanged screen sends nothing but keepalives", idle.length, 0);
+
+  ok(Math.max.apply(null, r.perTick) <= 1, "never more than one message in a tick");
+}
+
+/* ===========================================================================
  * OLED UPDATE NACK -- built against a draft spec, not yet on hardware. A
  * NACK must invalidate the surfaces belief about whats on screen (so the
  * NEXT repaint is a full one) without touching anything else -- not the
