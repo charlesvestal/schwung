@@ -197,6 +197,9 @@
         </form>
         <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
         {{end}}
+        {{range .WebUI.Links}}
+        <a class="btn btn-secondary" href="{{.URL}}" target="_blank" rel="noopener">Open web UI{{with .Where}}: {{.}}{{end}}</a>
+        {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Module.Name}}?" data-confirm-title="Uninstall" data-confirm-label="Uninstall" data-confirm-danger="true">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-danger">Uninstall</button>
@@ -211,6 +214,9 @@
         {{end}}
         {{end}}
     </div>
+    {{if and .WebUI.Present (not .WebUI.Links)}}
+    <p class="text-muted">{{if .WebUI.Unknown}}This module has a web UI, but the device did not answer when asked where it is loaded. Reload to try again, or open it from <a href="/remote-ui">Remote UI</a>.{{else}}This module has a web UI, which opens against a loaded copy of it. Load the module to open it here.{{end}}</p>
+    {{end}}
     {{else}}
     <p class="text-muted">Built-in module — included with Schwung.</p>
     {{end}}
