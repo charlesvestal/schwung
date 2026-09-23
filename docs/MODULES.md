@@ -514,6 +514,15 @@ schwungRemote.setParam(comp + ":mix", "0.5");
 for *your* component, so they need no prefix. A page that ignores
 the flag defaults to `synth` and behaves exactly as before.
 
+**The module's page in the manager links the web UI once per place
+the module is loaded** — "Open web UI: Track 2 Synth", "Master FX 3",
+"Tool" — each carrying the same query the Remote UI's pop-out button
+builds. There is no bare link: opened with no query, the page falls
+back to slot 0 as `synth` and drives whatever is loaded on Track 1.
+Not loaded anywhere means no button. The one exception is an
+overtake/tool module with no DSP, which has no place to find and is
+linked on the tool channel.
+
 ### File layout
 
 ```
