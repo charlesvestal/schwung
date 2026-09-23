@@ -24,8 +24,16 @@ node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
-import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET } from "./src/shared/e16_surface.mjs";
-const STRIPS = 64 / STRIP_H;   /* messages in one full repaint */
+import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS } from "./src/shared/e16_surface.mjs";
+const STRIPS = 64 / STRIP_H;   /* strips in a fully inked screen */
+/* Messages in a FULL repaint of buf: one CLEAR, then one strip per STRIP_H
+ * rows holding any ink (blank strips are not sent). */
+const fullMsgs = (buf) => { let n = 1;
+  for (let y = 0; y < 64; y += STRIP_H) { let ink = false;
+    for (let yy = y; yy < y + STRIP_H && !ink; yy++)
+      for (let x = 0; x < 128 && !ink; x++) if (buf[(yy >> 3) * 128 + x] & (1 << (yy & 7))) ink = true;
+    if (ink) n++; }
+  return n; };
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { KNOBS_PER_PAGE, PAGE_KNOBS } from "./src/shared/param_pages/page_plan.mjs";
 
@@ -182,6 +190,7 @@ const unpack = (p) => { const out = [];
 const kindOf = (packets) => { const b = unpack(packets);
   if (b[0] !== 0xF0) return "?";
   if (b[6] === 0x08) return "rect";
+  if (b[6] === 0x07) return "clear";
   const id = (b[6] << 8) | b[7];
   return id === 0x0602 ? "framebuffer" : id === 0x0604 ? "ring"
        : id === 0x0603 ? "labels" : "other"; };
@@ -260,23 +269,26 @@ d.invalidate(); d.invalidate(); d.invalidate();
 const p0 = d.paintsCompleted;
 drain(d, send, PICTURE);
 eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
-eq("...of exactly one full set of strips, not three", send.log.length, STRIPS);
-eq("...every message a RECTANGLE, never a framebuffer",
-   send.log.every(p => kindOf(p) === "rect"), true);
+/* A full repaint is ONE CLEAR, then one strip per inked STRIP_H rows. This
+ * screen is inverted, so every strip holds ink: 1 + STRIPS messages. */
+eq("...of exactly one CLEAR plus one set of strips, not three", send.log.length, 1 + STRIPS);
+eq("...the CLEAR first", kindOf(send.log[0]), "clear");
+eq("...then only RECTANGLEs, never a framebuffer",
+   send.log.slice(1).every(p => kindOf(p) === "rect"), true);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
-eq("still one set of strips on the wire", send.log.length, STRIPS);
+eq("still one repaint on the wire", send.log.length, 1 + STRIPS);
 
 /* A repaint never shares a tick with rings, and finishes before them: a
  * half-drawn screen is worse than a ring that arrives a few ticks late. */
 d = createDisplay(); send = mkSend();
 d.invalidate(); d.ringChanged(ringFor(v, 8));
-eq("repaint goes out first", d.tick(send, frame), "rect");
+eq("repaint goes out first, CLEAR leading", d.tick(send, frame), "clear");
 eq("...within the packet budget this tick",
    send.log.reduce((a, p) => a + p.length / 4, 0) <= TICK_PACKET_BUDGET, true);
 drain(d, send);
-eq("...and drains completely before the rings", send.log.every(p => kindOf(p) === "rect"), true);
+eq("...and drains completely before the rings",
+   send.log.every(p => kindOf(p) === "rect" || kindOf(p) === "clear"), true);
 eq("rings follow once the repaint is complete", d.tick(send, frame), "rings");
-eq("...one full set of strips, then the ring", send.log.length, STRIPS + 1);
 
 /* A REFUSED send stays owed; it must not queue a second copy. */
 let accept = false;
@@ -285,11 +297,11 @@ d.invalidate();
 eq("refused repaint reports nothing sent", d.tick(send, frame), null);
 eq("...and stays owed", d.repaintPending, true);
 accept = true;
-eq("...going out when accepted", d.tick(send, frame), "rect");
-eq("...the refused strip is retried, not queued twice: two attempts at y=0",
-   send.log.filter(p => kindOf(p) === "rect" && unpack(p)[9] === 0).length, 2);
+eq("...going out when accepted, CLEAR leading", d.tick(send, frame), "clear");
+eq("...the refused CLEAR is retried, not queued twice: two attempts",
+   send.log.filter(p => kindOf(p) === "clear").length, 2);
 drain(d, send);
-eq("...every strip once, after the one retry", send.log.length, STRIPS + 1);
+eq("...every message once, after the one retry", send.log.length, 1 + fullMsgs(frame()));
 eq("...and nothing owed after", d.repaintPending, false);
 
 /* A refused ring message keeps its positions owed for the same reason. */
@@ -339,7 +351,7 @@ eq("the first tick paints, having told the device nothing yet",
 eq("...and a second identical tick sends nothing",
    d.tick(send, frame, TEXT), null);
 eq("raising the map repaints the drawn view with no invalidate at all",
-   drain(d, send, PICTURE)[0], "rect");
+   drain(d, send, PICTURE)[0], "clear");
 eq("dismissing it owes LABELS back, though not one label changed",
    d.tick(send, frame, TEXT), "labels");
 eq("and then it settles again", d.tick(send, frame, TEXT), null);
@@ -446,11 +458,9 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   let buf1 = new Uint8Array(1024);
   const frameBytes1 = () => buf1;
   d1.invalidate();
-  eq("first paint is acknowledged STRIPS, never a framebuffer",
-     allRect(paintAll(d1, send1, frameBytes1, 0)), true);
-  eq("...one full-width strip per STRIP_H rows", send1.log.length, STRIPS);
-  eq("...each a RECTANGLE (0x08) no taller than STRIP_H",
-     send1.log.every((p) => { const u = unpack(p); return u[6] === 0x08; }), true);
+  paintAll(d1, send1, frameBytes1, 0);
+  eq("first paint of a BLANK screen is a single CLEAR -- no strips at all",
+     send1.log.map((p) => unpack(p)[6]), [0x07]);
   eq("...and nothing is left owed", d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 9), null);
 
   buf1 = new Uint8Array(1024);
@@ -517,7 +527,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const b4 = send4.log.length;
   paintAll(d4, send4, frameBytes4, 102);
   eq("switch back to the drawn view is a FULL repaint, not a stale region",
-     send4.log.length - b4, STRIPS);
+     send4.log.length - b4, fullMsgs(buf4));
 
   /* invalidateBuf() IS THE HEARTBEAT FIX, DIRECTLY TESTED. Its only real
    * caller is the self-heal heartbeat in createSurface, whose job is to
@@ -529,7 +539,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   setPx(buf5, 10, 10);
   const frameBytes5 = () => buf5;   /* deliberately IDENTICAL every call */
   d5.invalidate();
-  eq("priming paint", paintAll(d5, send5, frameBytes5, 0)[0], "rect");
+  eq("priming paint", paintAll(d5, send5, frameBytes5, 0)[0], "clear");
   d5.invalidate();
   const unchanged = d5.tick(send5, frameBytes5, { kind: "framebuffer" }, 100);
   eq("plain invalidate() on unchanged content sends nothing", unchanged, null);
@@ -538,7 +548,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const b5 = send5.log.length;
   paintAll(d5, send5, frameBytes5, 200);
   eq("invalidateBuf() forces a full resend of the SAME content",
-     send5.log.length - b5, STRIPS);
+     send5.log.length - b5, fullMsgs(buf5));
 
   /* A NACK NAMES ITS REGION, and only that region is re-sent. */
   const d6 = mk();
@@ -560,6 +570,38 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   for (let y = 47; y < 52; y += STRIP_H) want6.push([40, y, 46, Math.min(STRIP_H, 52 - y)]);
   eq("a NACKed region re-sends exactly that region, as strips", resent, want6);
   eq("...and nothing else goes out after it", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 200), null);
+}
+
+/* A FULL REPAINT IS ONE CLEAR, THEN ONLY THE INK, each strip trimmed to its
+ * inked width -- and a region the device never answers is re-sent. */
+{
+  const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
+  const px = (b, x, y) => { b[(y >> 3) * 128 + x] |= (1 << (y & 7)); };
+  const addr = (p) => { const u = unpack(p); return unpack7(u.slice(7, u.length - 1), 4); };
+
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024); px(b, 40, 50); px(b, 45, 51);
+  d.invalidate();
+  for (let i = 0; i < 8 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
+  eq("full repaint = CLEAR + ONE strip for the only inked rows",
+     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08]);
+  eq("...that strip trimmed to its ink (x 40..45, rows 50-51)", addr(snd.log[1]), [40, 50, 6, 2]);
+
+  /* The device ACKs the CLEAR but never answers the strip. */
+  d.acked({ cmd: 0x07, addr: {} });
+  eq("the unanswered strip is outstanding", d.outstandingCount, 1);
+  const n0 = snd.log.length;
+  d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS - 50);
+  eq("...not re-sent before ACK_TIMEOUT_MS", snd.log.length, n0);
+  d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS + 10);
+  eq("...re-sent once it times out", snd.log.slice(n0).map(addr), [[40, 50, 6, 2]]);
+  eq("...and counted", d.ackTimeouts, 1);
+
+  /* An answered region is never re-sent. */
+  d.acked({ cmd: 0x08, addr: { x: 40, y: 50, w: 6, h: 2 } });
+  const n1 = snd.log.length;
+  d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS * 4);
+  eq("an ACKed region is not re-sent", snd.log.length, n1);
 }
 
 /* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the

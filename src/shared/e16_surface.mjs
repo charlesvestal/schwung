@@ -130,6 +130,18 @@ export const STRIP_H = 2;
 export const TICK_PACKET_BUDGET = 40;
 
 /*
+ * A region the device never answered is re-sent after this long.
+ *
+ * NACK repair covers a message that ARRIVED damaged. A message lost outright
+ * gets no reply at all, and the surface -- which advanced its belief when it
+ * sent -- would believe forever that the device shows it: the Shift map
+ * drawn "incompletely", the last two labels never cleared (hardware,
+ * 2026-09-24). Measured ACK latency is ~4 SPI frames (~12 ms); 250 ms leaves
+ * room for a queued tick and the inbound path without retrying live traffic.
+ */
+export const ACK_TIMEOUT_MS = 250;
+
+/*
  * How long after Move's last transmission the restate is allowed to resume.
  *
  * THE HEARTBEAT IS PURE REPAIR, AND WHILE MOVE IS TALKING IT IS ALSO THE MOST
@@ -415,9 +427,33 @@ export function createSysexAssembler(opts) {
  * caller's, so tests drive the whole thing with no device.
  * ---------------------------------------------------------------------------
  */
-import { labelsMsg, ringMsg, scanlineMsg, rectangleMsg } from "./e16_protocol.mjs";
+import { labelsMsg, ringMsg, scanlineMsg, rectangleMsg, clearMsg } from "./e16_protocol.mjs";
 import { diffFramebuffers } from "./e16_diff.mjs";
 import { packRowMajor, WIDTH as E16_WIDTH } from "./e16_canvas.mjs";
+
+function regionKey(r) {
+    if (r.kind === "clear") return "clear";
+    if (r.kind === "scanline") return "s," + r.y;
+    return [r.x, r.y, r.w, r.h].join(",");
+}
+
+/* After a CLEAR: one strip per STRIP_H rows that holds any ink, trimmed to
+ * that ink's x-range. A blank strip is not sent at all. */
+function inkedStrips(buf) {
+    const out = [];
+    for (let y = 0; y < 64; y += STRIP_H) {
+        let x0 = -1, x1 = -1;
+        for (let x = 0; x < E16_WIDTH; x++) {
+            let on = false;
+            for (let yy = y; yy < y + STRIP_H && yy < 64; yy++) {
+                if (buf[(yy >> 3) * E16_WIDTH + x] & (1 << (yy & 7))) { on = true; break; }
+            }
+            if (on) { if (x0 < 0) x0 = x; x1 = x; }
+        }
+        if (x0 >= 0) out.push({ kind: "rect", x: x0, y, w: x1 - x0 + 1, h: Math.min(STRIP_H, 64 - y) });
+    }
+    return out;
+}
 
 /* Cut every region to at most STRIP_H rows, top to bottom, in order. A
  * scanline is already one row. */
@@ -474,6 +510,9 @@ export function createDisplay() {
      * messages, so counting sends would count bands, not pictures. The
      * refresh meter and the tests read this; nothing decides behaviour on it. */
     let paintsCompleted = 0;
+    /* Sent regions awaiting an ACK or NACK, keyed as the device echoes them. */
+    const outstanding = new Map();
+    let timeouts = 0;
     /* When the last screen actually went out, for the heartbeat below. */
     let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
@@ -526,6 +565,20 @@ export function createDisplay() {
          *        its send budget.
          */
         tick(send, frameBytes, screen, nowMs) {
+            /* Regions the device never answered: treat as lost and re-send
+             * (see ACK_TIMEOUT_MS). A lost CLEAR means nothing we believe
+             * about the device holds, so that is a full repaint. */
+            if (nowMs !== undefined && outstanding.size) {
+                for (const [k, o] of outstanding) {
+                    if (nowMs - o.at < ACK_TIMEOUT_MS) continue;
+                    outstanding.delete(k);
+                    timeouts++;
+                    if (o.region.kind === "clear") this.invalidateBuf();
+                    else if (o.region.kind === "scanline") this.invalidateRegion(0, o.region.y, E16_WIDTH, 1);
+                    else this.invalidateRegion(o.region.x, o.region.y, o.region.w, o.region.h);
+                    fbOwed = true;
+                }
+            }
             const want = screen ? screen.kind : "framebuffer";
             const screenOwed = fbOwed || pendingRegions.length > 0 || shownKind !== want;
             if (!screenOwed) {
@@ -584,11 +637,15 @@ export function createDisplay() {
                      * 128x8 (~50 packets against 394), and a garble costs one
                      * band and names it, instead of costing a silent screen.
                      */
+                    /*
+                     * A FULL REPAINT IS ONE CLEAR, THEN ONLY THE INK. CLEAR is
+                     * 8 bytes and ACKed; after it a blank strip needs no
+                     * message at all and an inked one only its inked width.
+                     * The knob view is mostly empty space, so this is most of
+                     * the win; the map, boxed on most rows, gains less.
+                     */
                     pendingBuf = buf.slice();
-                    pendingRegions = [];
-                    for (let y = 0; y < 64; y += STRIP_H) {
-                        pendingRegions.push({ kind: "rect", x: 0, y, w: E16_WIDTH, h: STRIP_H });
-                    }
+                    pendingRegions = [{ kind: "clear" }].concat(inkedStrips(pendingBuf));
                     fbOwed = false;
                 } else {
                     pendingBuf = buf.slice();
@@ -605,7 +662,8 @@ export function createDisplay() {
             let first = null;
             while (pendingRegions.length) {
                 const region = pendingRegions[0];
-                const bytes = region.kind === "scanline"
+                const bytes = region.kind === "clear" ? clearMsg()
+                    : region.kind === "scanline"
                     ? scanlineMsg(region.y, packRowMajor(pendingBuf, 0, region.y, E16_WIDTH, 1))
                     : rectangleMsg(region.x, region.y, region.w, region.h,
                                     packRowMajor(pendingBuf, region.x, region.y, region.w, region.h));
@@ -614,6 +672,7 @@ export function createDisplay() {
                 if (!emitMsg(send, bytes)) break;
                 used += packets;
                 if (first === null) first = region.kind;
+                if (nowMs !== undefined) outstanding.set(regionKey(region), { region, at: nowMs });
                 pendingRegions.shift();
                 shownKind = "framebuffer";
                 lastSentBuf = pendingBuf.slice();
@@ -628,6 +687,17 @@ export function createDisplay() {
         get labelsTextOwed() { return labelsOwed; },
         get shownKind() { return shownKind; },
         get paintsCompleted() { return paintsCompleted; },
+        get outstandingCount() { return outstanding.size; },
+        get ackTimeouts() { return timeouts; },
+        /* The device answered one region (ACK or NACK): it is no longer
+         * outstanding. A NACK is repaired separately by the caller. */
+        acked(reply) {
+            const a = (reply && reply.addr) || {};
+            const k = reply.cmd === 0x07 ? "clear"
+                    : reply.cmd === 0x05 ? "s," + a.y
+                    : [a.x, a.y, a.w, a.h].join(",");
+            outstanding.delete(k);
+        },
         /* A repaint is in flight: some of its regions are still queued. */
         get repaintPending() { return fbOwed || pendingRegions.length > 0; },
         /* Milliseconds since the screen last went out, or null if never. */
@@ -1383,6 +1453,7 @@ export function createSurface(io) {
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
+            display.acked(reply);   /* answered either way: no longer outstanding */
             if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
             /* The NACK NAMES the region that failed, so only that region is
              * re-sent (invalidateRegion); a reply we cannot localise falls
