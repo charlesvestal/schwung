@@ -100,7 +100,7 @@ export const SCREEN_HEARTBEAT_MS = 1500;
  * could not see -- and it now costs eight acknowledged bands, not an
  * unacknowledged framebuffer.
  */
-export const PARTIAL_HEARTBEAT_MS = 10000;
+export const PARTIAL_HEARTBEAT_MS = 30000;
 
 /*
  * NO REGION MESSAGE IS TALLER THAN STRIP_H ROWS.
@@ -1584,6 +1584,32 @@ export function createSurface(io) {
         /** The setting. Idempotent; EXIT is sent by the lifecycle, once. */
         setEnabled(on) { lifecycle.setEnabled(!!on, now(), send); },
 
+        /*
+         * A parameter was WRITTEN by someone other than these encoders --
+         * Schwung's own knob grid on Move, most often. Nothing told the E16:
+         * it noticed only on the next LOOK_MS pass plus the controller's
+         * staggered re-read, up to ~0.5 s (hardware, 2026-09-24: "moving the
+         * move knob is very slow to update the e16"). The written value goes
+         * straight into the controller's cache and rides the same path as a
+         * turn of our own encoder: the ring now, the digits live and
+         * throttled, a final redraw when the hand stops. Keys arrive with or
+         * without the component prefix; only a cell on screen is touched.
+         */
+        noteParamWrite(slot, key, value) {
+            if (!lifecycle.enabled || !ctl || !ctl.state || !ctl.state.values) return;
+            if (!nav || (slot | 0) !== nav.slot) return;
+            const k = String(key);
+            const view = viewNow();
+            for (const cell of view.cells) {
+                if (!cell) continue;
+                if (k !== cell.key && k !== nav.component + ":" + cell.key) continue;
+                ctl.state.values[cell.key] = String(value);
+                display.ringChanged(ringFor(viewNow(), cell.enc));
+                turnedAt = now();
+                settlePainted = false;
+            }
+        },
+
         /** Follow Focus. The surface parks its own focus on the OFF->ON edge,
          *  so this must be told the EDGE and not poll a setting. */
         setFollow(on) { nav.setFollow(!!on, now()); },
@@ -1815,7 +1841,12 @@ export function createSurface(io) {
                  * different; without this line the diff engine would see no
                  * difference here and correctly (for a real change) send
                  * nothing, silently turning this heartbeat into a no-op. */
-                display.invalidateBuf();
+                /* IN PLACE, NO CLEAR: every strip re-sent over what is there.
+                 * invalidateBuf() here forgot the screen, so the repair was
+                 * CLEAR + scan-in -- a visible blank every heartbeat
+                 * (hardware, 2026-09-24). Marking every pixel dirty keeps the
+                 * belief and makes the diff re-send all 64 rows in place. */
+                display.invalidateRegion(0, 0, 128, 64);
                 display.invalidate();
             }
 

@@ -7562,6 +7562,9 @@ function setSlotParam(slot, key, value) {
     try {
         const ok = shadow_set_param(slot, key, String(value));
         if (!ok) return false;
+        /* Tell the E16 surface at once -- see noteParamWrite. A const declared
+         * later in this file is in its TDZ during early init: caught. */
+        try { e16Surface.noteParamWrite(slot, key, value); } catch (e) {}
 
         /* Re-check MIDI FX warnings immediately after sync/module changes. */
         if (key === "midi_fx1:module") {
