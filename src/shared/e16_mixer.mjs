@@ -50,6 +50,9 @@ export const MIXER_ROW_RGB = [
     { r: 90, g: 0, b: 70 },     /* returns / master -- magenta */
 ];
 
+/* A switched-off send, return or filter: GREY, at the level it keeps. */
+export const MIXER_OFF_RGB = { r: 24, g: 24, b: 24 };
+
 const rowOf = (enc) => Math.floor(enc / TRACKS);
 const colOf = (enc) => enc % TRACKS;
 
@@ -236,11 +239,15 @@ export function createMixer(io) {
             if (row === 1 || row === 2) {
                 const i = row - 1, mem = sendMem[s][i];
                 if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(mem), off: true };
-                return { label: row === 1 ? "SndA" : "SndB", value: pct(tracks[s].send[i]) };
+                const v = tracks[s].send[i];
+                /* At 0% it is silent too, and reads the same way. */
+                return v === 0 ? { label: row === 1 ? "SndA" : "SndB", value: pct(v), off: true }
+                               : { label: row === 1 ? "SndA" : "SndB", value: pct(v) };
             }
             if (s < 2) {
                 if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returnMem[s]), off: true };
-                return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
+                return returns[s] === 0 ? { label: s === 0 ? "RtnA" : "RtnB", value: pct(0), off: true }
+                                        : { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
             }
             if (s === 2) return { label: "Capt", value: "push" };
             if (filter === null) return { label: "Filt", value: "" };
@@ -274,11 +281,11 @@ export function createMixer(io) {
                 const mem = sendMem[s][row - 1];
                 const v = mem !== null ? mem : tracks[s].send[row - 1];
                 amount = v === null ? 0 : v / SEND_MAX;
-                if (mem !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
+                if (mem !== null) c = MIXER_OFF_RGB;
             } else if (s < 2) {
                 const v = returnMem[s] !== null ? returnMem[s] : returns[s];
                 amount = v === null ? 0 : v / SEND_MAX;
-                if (returnMem[s] !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
+                if (returnMem[s] !== null) c = MIXER_OFF_RGB;
             } else if (s === 2) {
                 c = { r: 40, g: 0, b: 0 };               /* capture: a dim red button */
                 amount = 1;
@@ -286,7 +293,7 @@ export function createMixer(io) {
                 /* The filter: bipolar, centred when off; switched off, dim at
                  * the position it comes back at. */
                 const x = filterMem !== null ? filterMem : (filter === null ? 0 : filter);
-                if (filterMem !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
+                if (filterMem !== null) c = MIXER_OFF_RGB;
                 return { enc, r: c.r, g: c.g, b: c.b,
                          amount: Math.max(0, Math.min(RING_MAX, Math.round((x + 1) / 2 * RING_MAX))),
                          bipolar: true };
