@@ -34,6 +34,7 @@ export const LEVEL_DB_STEP = 0.5;         /* per detent */
 export const LEVEL_DB_FLOOR = -60;        /* below this, the level is -inf (0) */
 export const SEND_STEP = 2;               /* per detent, of 127 */
 export const FILTER_STEP = 0.02;          /* per detent, of -1..1 */
+export const PAN_STEP = 0.02;             /* per detent, of -1..1 */
 export const FILTER_DEADBAND = 0.02;      /* must match master_filter.h */
 
 /* One colour per ROW, so the four functions read apart at a glance. Green is
@@ -63,7 +64,7 @@ export function createMixer(io) {
     /* null = not read (or the read failed): drawn as blank, never as zero --
      * a failed read must not become a picture (CLAUDE.md, the tri-state). */
     const tracks = [];
-    for (let s = 0; s < TRACKS; s++) tracks.push({ vol: null, muted: null, soloed: null, send: [null, null] });
+    for (let s = 0; s < TRACKS; s++) tracks.push({ vol: null, muted: null, soloed: null, pan: null, send: [null, null] });
     const returns = [null, null];
     let filter = null;
     let filterMem = null;
@@ -85,6 +86,7 @@ export function createMixer(io) {
         READS.push(() => { const v = num(getSlot(s, "slot:soloed")); tracks[s].soloed = v === null ? null : v > 0; });
         READS.push(() => { tracks[s].send[0] = num(getSlot(s, "buses:main_send1")); });
         READS.push(() => { tracks[s].send[1] = num(getSlot(s, "buses:main_send2")); });
+        READS.push(() => { tracks[s].pan = num(getSlot(s, "slot:pan")); });
     }
     READS.push(() => { returns[0] = num(getGlobal("send1:return")); });
     READS.push(() => { returns[1] = num(getGlobal("send2:return")); });
@@ -112,14 +114,21 @@ export function createMixer(io) {
         /** Re-read ONE value, round robin (changes made elsewhere). */
         refreshNext() { READS[readAt](); readAt = (readAt + 1) % READS.length; },
 
-        /** A turn. `shift` is Shift held (pan, on the level row -- not built
-         *  yet). Returns true when something changed. */
+        /** A turn. `shift` is Shift held: pan, on the level row. Returns true
+         *  when something changed. */
         turn(enc, ticks, shift) {
             const row = rowOf(enc), s = colOf(enc);
             if (!ticks) return false;
             if (row === 0) {
-                if (shift) return false;                 /* pan: step 3 */
                 const t = tracks[s];
+                if (shift) {
+                    /* PAN: Shift+turn the level knob. */
+                    if (t.pan === null) return false;
+                    const next = Math.max(-1, Math.min(1, Math.round((t.pan + ticks * PAN_STEP) * 100) / 100));
+                    if (next === t.pan) return false;
+                    if (setSlot(s, "slot:pan", next.toFixed(2)) !== false) t.pan = next;
+                    return true;
+                }
                 if (t.vol === null) return false;
                 const db = volToDb(t.vol);
                 const from = isFinite(db) ? db : LEVEL_DB_FLOOR;
@@ -193,7 +202,11 @@ export function createMixer(io) {
             const row = rowOf(enc), s = colOf(enc);
             if (row === 0) {
                 const t = tracks[s];
-                const label = t.soloed ? "SOLO" : (t.muted ? "MUTE" : "Vol");
+                /* Solo and mute name the cell; otherwise an off-centre pan
+                 * does ("L 30"), and a centred track just says Vol. */
+                const panned = t.pan !== null && Math.abs(t.pan) >= 0.01;
+                const label = t.soloed ? "SOLO" : (t.muted ? "MUTE"
+                    : panned ? (t.pan < 0 ? "L " : "R ") + Math.round(Math.abs(t.pan) * 100) : "Vol");
                 if (t.vol === null) return { label, value: "" };
                 const db = volToDb(t.vol);
                 return { label, value: isFinite(db) ? (db > 0 ? "+" : "") + db.toFixed(1) : "-inf" };

@@ -35,6 +35,7 @@ typedef struct shadow_chain_slot_t {
     int patch_index;
     int active;
     float volume;           /* 0.0 to 1.0, user-set level (never modified by mute/solo) */
+    float pan;              /* -1 left .. 0 centre .. +1 right: a stereo BALANCE (see shadow_pan_gain) */
     int muted;              /* 1 = muted (Mute+Track or Move speakerOn sync) */
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int feedback_hold;      /* 1 = booted muted as a line-input feedback guard; JS clears once jack state is safe */

@@ -2872,6 +2872,13 @@ void shadow_process_fade_completions(void) {
  * ============================================================================ */
 
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
+    if (strcmp(key, "slot:pan") == 0) {
+        float p = (float)atof(value);
+        if (!(p >= -1.0f)) p = -1.0f;
+        if (p > 1.0f) p = 1.0f;
+        shadow_chain_slots[slot].pan = p;
+        return 1;
+    }
     if (strcmp(key, "slot:volume") == 0) {
         float vol = atof(value);
         if (vol < 0.0f) vol = 0.0f;
@@ -2938,7 +2945,12 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "slot:volume") == 0) {
-        return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].volume);
+        /* Four places, not two: a surface stepping the level in dB (the E16
+         * Mixer) re-reads it, and two decimals put -30 dB half a dB off. */
+        return snprintf(buf, buf_len, "%.4f", shadow_chain_slots[slot].volume);
+    }
+    if (strcmp(key, "slot:pan") == 0) {
+        return snprintf(buf, buf_len, "%.3f", shadow_chain_slots[slot].pan);
     }
     if (strcmp(key, "slot:muted") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].muted);

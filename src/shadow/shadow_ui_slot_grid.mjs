@@ -120,6 +120,12 @@ export const SLOT_SEND_PARAMS = [
       min: 0, max: 127, step: 1, default: 0 },
     { key: "send_b", name: "Send B", short_name: "SndB", type: "int",
       min: 0, max: 127, step: 1, default: 0 },
+    /* PAN, a stereo balance (shadow_pan_gains in schwung_shim.c): -1 left,
+     * 0 centre, +1 right. Here and not on the values page because that page
+     * is eight params against eight knobs. The E16 Mixer turns the same
+     * value (Shift+turn a level), so it is never set anywhere Move cannot
+     * show it. Sends stay pre-pan. */
+    { key: "pan", name: "Pan", type: "float", min: -1, max: 1, step: 0.02, default: 0 },
 ];
 
 /*
