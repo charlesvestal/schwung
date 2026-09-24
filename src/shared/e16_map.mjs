@@ -113,6 +113,39 @@ function occupiedBuses(slot, slotIndex) {
 }
 
 /*
+ * moduleOrdinal(chain, slot, component) -> 0-based position of `component`
+ * among the slot's occupied modules (MIDI FX, synth, audio FX, in chain
+ * order), or among its buses for a "bus<N>" -- the same order the map lists
+ * them in, so a module's map cell and its knobs can share one colour.
+ * -1 when the slot does not hold it.
+ */
+/*
+ * setOrdinal(chain, slot, component) -> 0-based position of the module in the
+ * WHOLE SET: every occupied module of slots before it, then its place in its
+ * own slot. Buses are numbered after all modules. -1 when absent. This is
+ * what gives each module in the set its own colour.
+ */
+export function setOrdinal(chain, slot, component) {
+  const slots = Array.isArray(chain && chain.slots) ? chain.slots : [];
+  const isBus = /^bus\d+$/.test(String(component || ''));
+  let n = 0;
+  if (isBus) for (let s = 0; s < slots.length; s++) n += occupiedComponents(slots[s], s).length;
+  for (let s = 0; s < (slot | 0); s++) {
+    n += (isBus ? occupiedBuses(slots[s], s) : occupiedComponents(slots[s], s)).length;
+  }
+  const own = moduleOrdinal(chain, slot, component);
+  return own < 0 ? -1 : n + own;
+}
+
+export function moduleOrdinal(chain, slot, component) {
+  const slots = Array.isArray(chain && chain.slots) ? chain.slots : [];
+  const sel = slots[slot | 0];
+  const list = /^bus\d+$/.test(String(component || ''))
+    ? occupiedBuses(sel, slot | 0) : occupiedComponents(sel, slot | 0);
+  return list.findIndex((c) => c.component === component);
+}
+
+/*
  * buildMap(chain, { slot, page, showBuses }) -> { cells, pageCount }
  *
  * chain.slots is a 4-element array; each slot may be `{}` or omit any of

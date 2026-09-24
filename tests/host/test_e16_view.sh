@@ -23,9 +23,9 @@ cd "$(dirname "$0")/../.."
 node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX,
-         mapRings, componentRgb, renderEmptySlot, SLOT_RGB, SLOT_RGB_OTHER }
+         mapRings, moduleRgb, renderEmptySlot, SLOT_RGB, SLOT_RGB_OTHER }
     from "./src/shared/e16_view.mjs";
-import { buildMap } from "./src/shared/e16_map.mjs";
+import { buildMap, setOrdinal } from "./src/shared/e16_map.mjs";
 import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
          WINDOW_PX_START, WINDOW_PX_MIN, REORDER_LOSS, rectPackets, ATOMIC_MAX_PACKETS } from "./src/shared/e16_surface.mjs";
 import { unpack7 } from "./src/shared/e16_protocol.mjs";
@@ -915,34 +915,57 @@ eq("rings pending is visible to the caller that gates the heartbeat",
 }
 
 /* COLOUR IS CONTINUITY. On the slot map the slot knobs are green and each
- * module knob wears its module colour; the knob view of that module wears the
+ * module knob wears its own colour -- unique across the whole SET, not just
+ * the slot (hardware: slot 1 module 1 and slot 2 module 2 came out the same
+ * when colour was keyed by kind); the knob view of that module wears the
  * same colour, so the knob you pressed and the knobs it opened match. */
 {
-  const chain = { slots: [{ midiFx: ["arp"], synth: "obxd", fx: ["freeverb", null, "tape"] }, {}, {}, {}] };
+  const chain = { slots: [{ midiFx: ["arp"], synth: "obxd", fx: ["freeverb", null, "tape"] },
+                          { synth: "braids", fx: ["cloud"] }, {}, { midiFx: ["chord", "arp"], synth: "dx7" }] };
+  const rgbOf = (cell) => moduleRgb(setOrdinal(chain, cell.slot, cell.component));
   const m = buildMap(chain, { slot: 0 });
-  const rings = mapRings(m);
+  const rings = mapRings(m, rgbOf);
   const rgb = (r) => [r.r, r.g, r.b];
   eq("the map describes all sixteen knobs", rings.length, 16);
   eq("the current slot knob is green, full", [rgb(rings[0]), rings[0].amount], [rgb(SLOT_RGB), RING_MAX]);
   eq("...the other slots dim green", rgb(rings[1]), rgb(SLOT_RGB_OTHER));
   const cells = m.cells.map((c, i) => [c, i]).filter(([c]) => c && c.kind !== "slot");
   eq("each module knob wears its module colour",
-     cells.map(([c, i]) => JSON.stringify(rgb(rings[i])) === JSON.stringify(rgb(componentRgb(c.component)))), cells.map(() => true));
-  eq("...and no two modules in the slot share one",
-     new Set(cells.map(([c]) => JSON.stringify(componentRgb(c.component)))).size, cells.length);
-  eq("...and none of them is the slot green",
-     cells.some(([c]) => JSON.stringify(componentRgb(c.component)) === JSON.stringify(SLOT_RGB)), false);
+     cells.map(([c, i]) => JSON.stringify(rgb(rings[i])) === JSON.stringify(rgb(rgbOf(c)))), cells.map(() => true));
+  /* Every module of every slot: distinct colours, none of them green. */
+  const all = [];
+  for (let s = 0; s < 4; s++) for (const c of buildMap(chain, { slot: s }).cells.slice(4)) if (c) all.push(JSON.stringify(rgb(rgbOf(c))));
+  eq("no two modules in the whole SET share a colour", new Set(all).size, all.length);
+  eq("...and none is green (green is the slots)",
+     all.map((k) => JSON.parse(k)).some(([r, g, b]) => g > r && g > b), false);
   eq("a knob with no cell on the map is dark", rings.slice(4 + cells.length).every((r) => !r.r && !r.g && !r.b && !r.amount), true);
-  /* The knob view of fx3 wears fx3 colour. */
   const kv = buildView([page("P", ["a"])], 0, { metaOf: () => ({ min: 0, max: 1 }), valueOf: () => 1 });
-  eq("the knob view of a module wears the colour its map knob had",
-     rgb(ringFor(kv, 0, componentRgb("fx3"))), rgb(componentRgb("fx3")));
+  const fx3 = rgbOf({ slot: 0, component: "fx3" });
+  eq("the knob view of a module wears the colour its map knob had", rgb(ringFor(kv, 0, fx3)), rgb(fx3));
   const ro = buildView([page("P", ["a"])], 0, { metaOf: () => ({ min: 0, max: 1, readOnly: true }), valueOf: () => 1 });
-  eq("...a read-only knob the same hue, dimmer",
-     ringFor(ro, 0, componentRgb("fx3")).b < componentRgb("fx3").b && ringFor(ro, 0, componentRgb("fx3")).b > 0, true);
+  const dim = ringFor(ro, 0, fx3);
+  eq("...a read-only knob the same hue, dimmer", dim.r + dim.g + dim.b < fx3.r + fx3.g + fx3.b && dim.r + dim.g + dim.b > 0, true);
 
   const cv = createCanvas(); renderEmptySlot(cv, 2);
   eq("an empty slot draws words, not a blank screen", Array.from(cv.toBuffer()).some((b) => b), true);
+}
+
+/* RINGS WAIT FOR AN IDLE DEVICE. A ring is unacknowledged, so one the device
+ * drops while still drawing rows is never repaired; it waits until no screen
+ * update is awaiting its answer. */
+{
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024);                             /* blank: the paint is ONE CLEAR */
+  d.invalidate();
+  d.tick(snd, () => b, { kind: "framebuffer" }, 0);          /* sent in full, unanswered */
+  eq("(the screen is fully sent, only unanswered)", d.repaintPending, false);
+  d.ringChanged(ringFor(null, 3));
+  const n0 = snd.log.length;
+  eq("a ring waits while an update is unanswered",
+     [d.tick(snd, () => b, { kind: "framebuffer" }, 1), snd.log.length - n0], [null, 0]);
+  answer(d, snd);
+  for (let i = 2; i < 20 && d.repaintPending; i++) { d.tick(snd, () => b, { kind: "framebuffer" }, i); answer(d, snd); }
+  eq("...and goes once everything is answered", d.tick(snd, () => b, { kind: "framebuffer" }, 30), "rings");
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
