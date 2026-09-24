@@ -208,6 +208,10 @@ import {
  * node; this file only draws it and wires the gestures. */
 import * as ModuleLists from '/data/UserData/schwung/shared/module_lists.mjs';
 
+/* Sort: Type in the swap picker — categories come from the manager's cached
+ * catalog; the grouping rule lives there so node can test it. */
+import * as ModuleCategories from '/data/UserData/schwung/shared/module_categories.mjs';
+
 import {
     announce,
     announceMenuItem,
@@ -13539,7 +13543,11 @@ function scanModulesForType(componentType) {
                                             const packId = (json.id || entry) + '-' + pe;
                                             const packName = info.name || pe;
                                             if (!result.find(m => m.id === packId)) {
-                                                result.push({ id: packId, name: packName });
+                                                /* A pack files under its host
+                                                 * module's category. */
+                                                result.push({ id: packId, name: packName,
+                                                              parentId: json.id || entry,
+                                                              subcategory: json.subcategory || "" });
                                             }
                                         } catch (e2) { /* skip */ }
                                     }
@@ -13551,7 +13559,10 @@ function scanModulesForType(componentType) {
                             if (!result.find(m => m.id === id)) {
                                 result.push({
                                     id: id,
-                                    name: json.name || entry
+                                    name: json.name || entry,
+                                    /* Rarely declared — the catalog is the
+                                     * usual source (module_categories.mjs). */
+                                    subcategory: json.subcategory || ""
                                 });
                             }
                         }
@@ -13611,6 +13622,40 @@ function dismissNotice() {
 const PICKER_FILTER_ID = "__list_filter__";
 let componentSelectFilter = null;
 
+/* ===== SWAP-PICKER SORT =====
+ *
+ * "A-Z" or "Type". Type groups the modules under their catalog category
+ * (Drum Machine, Polysynth, ...) with a heading row per group; see
+ * module_categories.mjs for where the category comes from. Session state for
+ * the same reason as the filter, and it persists across pickers the same way.
+ */
+const PICKER_SORT_ID = "__sort__";
+let componentSelectSort = "A-Z";
+
+/* The synthetic top rows the cursor must not OPEN on. */
+function pickerIsControlRow(row) {
+    const id = row && row.id;
+    return id === PICKER_FILTER_ID || id === PICKER_SORT_ID;
+}
+
+/* Regroup the MODULE rows of a scan by category, leaving None at the top and
+ * [Get more...] at the bottom. Runs before the Move rows are spliced in, so
+ * those still land directly under the loaded module wherever it now sits. */
+function pickerApplySort(entries, componentKey) {
+    if (componentSelectSort !== "Type") return entries;
+    const head = [], mods = [], tail = [];
+    for (const m of entries) {
+        if (!m) continue;
+        if (m.id === "") head.push(m);
+        else if (String(m.id).indexOf("__") === 0) tail.push(m);
+        else mods.push(m);
+    }
+    const catalog = ModuleCategories.loadCatalogCategories((path) => std.loadFile(path));
+    const grouped = ModuleCategories.groupRowsByCategory(
+        mods, ModuleCategories.taxonomyTypeFor(componentKey), catalog);
+    return [...head, ...grouped, ...tail];
+}
+
 /*
  * The MODULE ids among a set of picker rows.
  *
@@ -13669,7 +13714,10 @@ function pickerApplyFilter(entries, filterName) {
 function pickerFirstSelectableIndex(entries) {
     for (let i = 0; i < entries.length; i++) {
         const id = entries[i] && entries[i].id;
-        if (id === PICKER_FILTER_ID) continue;
+        /* Written out rather than via pickerIsControlRow / isCategoryHeader:
+         * tests lift this function on its own and drive it. */
+        if (id === PICKER_FILTER_ID || id === "__sort__") continue;
+        if (entries[i] && entries[i].type === "divider") continue;  /* a category heading */
         if (id === "__move_left__" || id === "__move_right__") continue;
         return i;
     }
@@ -13689,6 +13737,27 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
     /* Scan for available modules of this type */
     availableModules = scanModulesForType(comp.key);
+
+    /*
+     * Resolve the filter BEFORE applying it. A stored filter that matches
+     * nothing here — its list was deleted, or this component type has no
+     * member of it — falls back to All and SAYS so. A sticky filter that
+     * opens a near-empty screen is a trap: the row explaining it is one line
+     * up, and the user has no reason to suspect a filter they last touched in
+     * a different picker.
+     *
+     * Filter, then sort, then the Move rows: filtering after the sort would
+     * leave headings over groups it emptied, and sorting after the Move rows
+     * would carry them away from the module they belong under.
+     */
+    const eligible = pickerEligibleLists(availableModules);
+    let filterReset = false;
+    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
+        componentSelectFilter = null;
+        filterReset = true;
+    }
+    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+    availableModules = pickerApplySort(availableModules, comp.key);
 
     /* Where the loaded module sits in the scan list, or -1 if nothing is
      * loaded (or the loaded module is no longer installed). The rows added
@@ -13719,21 +13788,10 @@ function enterComponentSelect(slotIndex, componentIndex) {
     const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
     availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
-    /*
-     * Resolve the filter BEFORE applying it. A stored filter that matches
-     * nothing here — its list was deleted, or this component type has no
-     * member of it — falls back to All and SAYS so. A sticky filter that
-     * opens a near-empty screen is a trap: the row explaining it is one line
-     * up, and the user has no reason to suspect a filter they last touched in
-     * a different picker.
-     */
-    const eligible = pickerEligibleLists(availableModules);
-    let filterReset = false;
-    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
-        componentSelectFilter = null;
-        filterReset = true;
-    }
-    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+    /* Row 1: the sort. Same shape as the filter row above it. */
+    availableModules.unshift({ id: PICKER_SORT_ID, name: "Sort",
+                               value: componentSelectSort,
+                               clickVerb: "SORT" });
 
     /* Row 0, added LAST so the rows below are the finished, filtered set. */
     availableModules.unshift({ id: PICKER_FILTER_ID, name: "List",
@@ -13799,6 +13857,20 @@ function applyComponentSelection() {
         announce("List, " + (componentSelectFilter || "All"));
         return;
     }
+
+    /* The sort row toggles in place, exactly like the filter row. */
+    if (selected && selected.id === PICKER_SORT_ID) {
+        componentSelectSort = componentSelectSort === "Type" ? "A-Z" : "Type";
+        enterComponentSelect(selectedSlot, selectedChainComponent);
+        selectedModuleIndex = Math.max(0,
+            availableModules.findIndex(m => m && m.id === PICKER_SORT_ID));
+        announce("Sort, " + (componentSelectSort === "Type" ? "by type" : "A to Z"));
+        return;
+    }
+
+    /* A category heading is never under the cursor (the jog steps over it),
+     * but a click that somehow lands there must not load or leave. */
+    if (ModuleCategories.isCategoryHeader(selected)) return;
 
     /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
      * because applying it fills the very hole this recognises. */
@@ -21207,8 +21279,15 @@ function handleJog(delta, shift = isShiftHeld()) {
             }
             break;
         case VIEWS.COMPONENT_SELECT:
-            /* Navigate available modules list */
-            selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+            /* Navigate available modules list. Category headings are
+             * stepped over; a step that could only land on one stays put. */
+            {
+                const dir = delta > 0 ? 1 : -1;
+                let next = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+                while (next > 0 && next < availableModules.length - 1 &&
+                       ModuleCategories.isCategoryHeader(availableModules[next])) next += dir;
+                if (!ModuleCategories.isCategoryHeader(availableModules[next])) selectedModuleIndex = next;
+            }
             if (availableModules.length > 0) {
                 const mod = availableModules[selectedModuleIndex];
                 announceMenuItem("Module", mod.name || mod.id || "Unknown");
@@ -21832,7 +21911,8 @@ function handleSelect() {
                 /* The filter row loads nothing — it cycles in place, and
                  * applyComponentSelection announces the list it landed on.
                  * "Loading List" would name an action that is not happening. */
-                if (!selMod || selMod.id !== PICKER_FILTER_ID) {
+                if (!selMod || (!pickerIsControlRow(selMod) &&
+                                !ModuleCategories.isCategoryHeader(selMod))) {
                     announce(`Loading ${selMod.name || selMod.id || "module"}`);
                 }
             }
