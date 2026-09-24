@@ -168,6 +168,28 @@ export const FOREIGN_QUIET_MS = 250;
  */
 export const SETTLE_MS = 180;
 
+/*
+ * On firmware that can draw regions, the settle is not a price worth paying.
+ * It existed because a digit could only move by redrawing all 1024 bytes;
+ * a changed value is now one small acknowledged RECTANGLE. So during a turn
+ * the reading is redrawn LIVE, at most every LIVE_PAINT_MS -- not every tick,
+ * because the display sends one message per tick and a screen owed outranks
+ * a ring, so an unthrottled repaint would starve the ring the hand is
+ * watching. Reported on hardware 2026-09-24: "short turns update quickly but
+ * long turns dont" -- the settle only fired once the hand stopped.
+ */
+export const LIVE_PAINT_MS = 80;
+
+/*
+ * How often, on region-capable firmware, the surface re-renders and diffs
+ * against what the device shows, for changes that did NOT come from its own
+ * encoders -- a knob turned on Move, an LFO, a preset load. Nothing else
+ * repaints for those. It used to be covered by accident: the 1.5 s
+ * whole-screen heartbeat redrew everything, stale or not. A diff of an
+ * unchanged screen is empty, so this costs rendering, never the wire.
+ */
+export const LOOK_MS = 250;
+
 /**
  * The seek / hold / release machine.
  *
@@ -1150,6 +1172,11 @@ export function createSurface(io) {
      * reason. */
     let turnedAt = -Infinity;
     let settlePainted = true;
+    /* LIVE_PAINT_MS / LOOK_MS bookkeeping. ringSeen holds the last ring each
+     * encoder was seen with by the look, so only a CHANGED ring goes out. */
+    let lastLivePaintAt = -Infinity;
+    let lookAt = -Infinity;
+    const ringSeen = new Map();
 
     /*
      * "Has Move transmitted recently?" -- from the DELTA of a free-running
@@ -1548,9 +1575,16 @@ export function createSurface(io) {
             /* The settle. Deliberately BEFORE the send budget is spent, so the
              * repaint it owes is picked up by this same tick rather than the
              * next one. */
-            if (!settlePainted && t - turnedAt >= SETTLE_MS) {
-                settlePainted = true;
-                display.invalidate();
+            if (!settlePainted) {
+                const still = t - turnedAt >= SETTLE_MS;
+                const live = display.partial && t - lastLivePaintAt >= LIVE_PAINT_MS;
+                if (still || live) {
+                    display.invalidate();
+                    lastLivePaintAt = t;
+                    /* The last repaint of a gesture is still the one after the
+                     * hand stops, so the final value is always drawn. */
+                    if (still) settlePainted = true;
+                }
             }
 
             if (sentThisTick) return;
@@ -1589,6 +1623,26 @@ export function createSurface(io) {
                          : (wantLabels
                              ? (nav.mapVisible(t) ? mapScreen() : labelScreen())
                              : { kind: "framebuffer" });
+
+            /* THE LOOK -- see LOOK_MS. Region firmware and the drawn view only:
+             * on old firmware every invalidate() is a whole framebuffer, and
+             * LABELS mode does not diff. Skipped mid-gesture, where the live
+             * repaint and the turn's own rings already carry the change. */
+            if (display.partial && !wantLabels && probe < 0 && settlePainted &&
+                t - lookAt >= LOOK_MS) {
+                lookAt = t;
+                display.invalidate();
+                if (ctl && !nav.mapVisible(t)) {
+                    for (const desc of ringsFor(viewNow())) {
+                        if (!desc) continue;
+                        const k = JSON.stringify(desc);
+                        if (ringSeen.has(desc.enc) && ringSeen.get(desc.enc) !== k) {
+                            display.ringChanged(desc);
+                        }
+                        ringSeen.set(desc.enc, k);
+                    }
+                }
+            }
 
             /*
              * SELF-HEAL, BUT ONLY WHILE MOVE IS QUIET.
