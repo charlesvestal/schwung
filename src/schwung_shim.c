@@ -2412,19 +2412,6 @@ static inline void shadow_stem_frame_reset(void) {
     memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
 }
 
-/*
- * PAN, as a stereo BALANCE: at centre both channels are x1.0 exactly (every
- * existing mix bit-identical); turning one way fades the OPPOSITE channel
- * out on an equal-power curve and leaves the near one alone -- how Ableton
- * pans a stereo track. Applied where a slot joins the master mix and in its
- * stem (so stems still sum to the master); sends stay pre-pan.
- */
-static inline void shadow_pan_gains(int s, float *gl, float *gr) {
-    const float p = shadow_chain_slots[s].pan;
-    *gl = (p > 0.0f) ? cosf(p * (float)M_PI_2) : 1.0f;
-    *gr = (p < 0.0f) ? cosf(-p * (float)M_PI_2) : 1.0f;
-}
-
 static inline void shadow_stem_store(int idx, const int16_t *src, float gain);
 /* The slot stem, panned like the slot main mix. */
 static inline void shadow_stem_store_slot(int s, const int16_t *src, float gain) {
