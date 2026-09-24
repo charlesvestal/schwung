@@ -4306,6 +4306,7 @@ void shadow_inprocess_handle_param_request(void) {
                 strcmp(param_key, "usbc_out_source") == 0 ||
                 strcmp(param_key, "midi_channel") == 0 ||
                 strcmp(param_key, "skipback_save") == 0 ||
+                strcmp(param_key, "filter") == 0 ||
                 strncmp(param_key, "jack:", 5) == 0 ||
                 strcmp(param_key, "suspend_overtake") == 0) {
                 if (host.handle_param_special(req_type, req_id)) {

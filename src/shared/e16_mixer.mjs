@@ -11,7 +11,8 @@
  * second push brings the setting back (level -> mute, send / return -> 0),
  * so a quick kill never loses the mix; Shift+push is the row's hard set
  * (solo; a send or return to 100%). Row 4's third knob saves the Skipback
- * buffer on a push; the fourth is the master filter (not yet built -- dark).
+ * buffer on a push; the fourth is the master filter (master_filter.h): turn
+ * left low-pass, right high-pass; push off and back, Shift+push reset.
  *
  * The LEVEL is the slot volume, the same value Move's own track volume
  * drives (shadow_dbus.c writes it on a track-volume announcement), so the
@@ -32,6 +33,8 @@ export const VOLUME_MAX = 2;              /* slot:volume is linear 0..2 (+6 dB) 
 export const LEVEL_DB_STEP = 0.5;         /* per detent */
 export const LEVEL_DB_FLOOR = -60;        /* below this, the level is -inf (0) */
 export const SEND_STEP = 2;               /* per detent, of 127 */
+export const FILTER_STEP = 0.02;          /* per detent, of -1..1 */
+export const FILTER_DEADBAND = 0.02;      /* must match master_filter.h */
 
 /* One colour per ROW, so the four functions read apart at a glance. Green is
  * the slots' elsewhere; none of these are green. */
@@ -62,6 +65,8 @@ export function createMixer(io) {
     const tracks = [];
     for (let s = 0; s < TRACKS; s++) tracks.push({ vol: null, muted: null, soloed: null, send: [null, null] });
     const returns = [null, null];
+    let filter = null;
+    let filterMem = null;
     /* What a push-to-off remembers, so the second push restores it. */
     const sendMem = [[null, null], [null, null], [null, null], [null, null]];
     const returnMem = [null, null];
@@ -83,6 +88,7 @@ export function createMixer(io) {
     }
     READS.push(() => { returns[0] = num(getGlobal("send1:return")); });
     READS.push(() => { returns[1] = num(getGlobal("send2:return")); });
+    READS.push(() => { filter = num(getGlobal("master_fx:filter")); });
     let readAt = 0;
 
     const clampSend = (v) => Math.max(0, Math.min(SEND_MAX, Math.round(v)));
@@ -90,6 +96,10 @@ export function createMixer(io) {
     function writeSend(s, i, v) {
         v = clampSend(v);
         if (setSlot(s, "buses:main_send" + (i + 1), String(v)) !== false) tracks[s].send[i] = v;
+    }
+    function writeFilter(v) {
+        v = Math.max(-1, Math.min(1, Math.round(v * 1000) / 1000));
+        if (setGlobal("master_fx:filter", v.toFixed(3)) !== false) filter = v;
     }
     function writeReturn(i, v) {
         v = clampSend(v);
@@ -129,7 +139,12 @@ export function createMixer(io) {
                 writeReturn(s, returns[s] + ticks * SEND_STEP);
                 return true;
             }
-            return false;                                 /* capture; filter: step 2 */
+            if (s === 3) {                                /* the master filter */
+                if (filter === null) return false;
+                writeFilter(filter + ticks * FILTER_STEP);
+                return true;
+            }
+            return false;                                 /* capture: push only */
         },
 
         /** A push. Returns true when something changed. */
@@ -163,6 +178,13 @@ export function createMixer(io) {
                 return false;
             }
             if (s === 2 && !shift) { skipback(); return true; }
+            if (s === 3) {
+                if (shift) { filterMem = null; writeFilter(0); return true; }
+                if (filter === null) return false;
+                if (Math.abs(filter) > FILTER_DEADBAND) { filterMem = filter; writeFilter(0); return true; }
+                if (filterMem !== null) { writeFilter(filterMem); filterMem = null; return true; }
+                return false;
+            }
             return false;
         },
 
@@ -180,7 +202,10 @@ export function createMixer(io) {
             if (row === 1 || row === 2) return { label: row === 1 ? "SndA" : "SndB", value: pct(tracks[s].send[row - 1]) };
             if (s < 2) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
             if (s === 2) return { label: "Capt", value: "push" };
-            return { label: "Filt", value: "--" };
+            if (filter === null) return { label: "Filt", value: "" };
+            if (filter < -FILTER_DEADBAND) return { label: "Filt", value: "LP " + Math.round(-filter * 100) };
+            if (filter > FILTER_DEADBAND) return { label: "Filt", value: "HP " + Math.round(filter * 100) };
+            return { label: "Filt", value: "off" };
         },
 
         /** One ring descriptor for `ringMsg`. */
@@ -206,7 +231,11 @@ export function createMixer(io) {
                 c = { r: 40, g: 0, b: 0 };               /* capture: a dim red button */
                 amount = 1;
             } else {
-                c = { r: 0, g: 0, b: 0 };                /* filter: step 2 */
+                /* The filter: bipolar, centred when off. */
+                const x = filter === null ? 0 : filter;
+                return { enc, r: c.r, g: c.g, b: c.b,
+                         amount: Math.max(0, Math.min(RING_MAX, Math.round((x + 1) / 2 * RING_MAX))),
+                         bipolar: true };
             }
             return { enc, r: c.r, g: c.g, b: c.b,
                      amount: Math.max(0, Math.min(RING_MAX, Math.round(amount * RING_MAX))),
@@ -219,6 +248,7 @@ export function createMixer(io) {
         /* Test seams. */
         get tracks() { return tracks; },
         get returns() { return returns; },
+        get filter() { return filter; },
     };
     return mixer;
 }

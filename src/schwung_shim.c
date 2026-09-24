@@ -51,6 +51,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/master_filter.h"
 #include "host/recall_quantize.h"
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
@@ -2468,6 +2469,20 @@ static void shim_drain_slot_send(int s, const int16_t *post_fx) {
                                  vol127);
 }
 
+/*
+ * THE MASTER FILTER (master_filter.h): one knob, -1 low-pass .. 0 off .. +1
+ * high-pass, set by master_fx:filter from Master FX Settings or the E16
+ * Mixer. Not persisted -- a filter left closed after a reboot reads as a
+ * muffled Move. Two instances, because it runs on two buffers with their own
+ * history: the DAC mailbox and the capture view.
+ */
+static volatile float shadow_master_filter_x = 0.0f;
+static master_filter_t master_filter_dac, master_filter_cap;
+static inline int master_filter_engaged(void) {
+    return master_filter_mode_of(shadow_master_filter_x) != 0 ||
+           master_filter_dac.mix > 0.0f || master_filter_cap.mix > 0.0f;
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
@@ -2500,8 +2515,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
                          shadow_chain_process_fx && shim_move_channel_count() >= 4);
     int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
+    /* An engaged master filter needs the full path: it filters Move's audio
+     * too, so "nothing of ours is running" is no longer "leave it alone". */
+    int any_filter = master_filter_engaged();
 
-    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
+    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture && !any_filter) {
         int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
         memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
@@ -3292,6 +3310,20 @@ skip_la_rebuild:
          * are inside the four slot stems there, and a Move file repeating
          * them would double every instrument in a stem sum. */
         shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
+    }
+
+    /*
+     * THE MASTER FILTER, on the final mix in BOTH routing modes -- what you
+     * hear (the mailbox) and what is recorded (unity_view) -- so it behaves
+     * like the volumes do, not only where Master FX reaches. Before the
+     * metronome below, so the click stays unfiltered; after the capture view
+     * is built, so Skipback, the sampler and Song Mode record it. Bit-exact
+     * at centre (master_filter.h).
+     */
+    {
+        const float fx = shadow_master_filter_x;
+        master_filter_process(&master_filter_dac, mailbox_audio, FRAMES_PER_BLOCK, fx, (float)MOVE_SAMPLE_RATE);
+        master_filter_process(&master_filter_cap, unity_view, FRAMES_PER_BLOCK, fx, (float)MOVE_SAMPLE_RATE);
     }
 
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
@@ -5093,6 +5125,21 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         /* master_fx:skipback_save -- the Shift+Capture save, for a control
          * surface (the E16 Mixer's capture knob). A SET triggers it; the save
          * itself is handed to the worker, exactly as the gesture's is. */
+        if (strcmp(fx_key, "filter") == 0) {
+            if (req_type == 1) {
+                float v = strtof(shadow_param->value, NULL);
+                if (!(v >= -1.0f)) v = -1.0f;
+                if (v > 1.0f) v = 1.0f;
+                shadow_master_filter_x = v;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%.3f", shadow_master_filter_x);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
         if (strcmp(fx_key, "skipback_save") == 0) {
             if (req_type == 1) skipback_trigger_save();
             shadow_param->error = 0;
