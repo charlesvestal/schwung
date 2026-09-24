@@ -3729,7 +3729,7 @@ func main() {
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
-	// Display server proxy (/mirror and /stream-auto).
+	// Display server proxy (/mirror, /stream-auto and /stream-e16).
 	displayProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
@@ -3750,6 +3750,9 @@ func main() {
 	mux.Handle("GET /mirror", displayProxy)
 	mux.Handle("GET /mirror/", displayProxy)
 	mux.Handle("GET /stream-auto", displayProxy)
+	// The OXI E16 mirror (display_server /stream-e16), shown under Move's
+	// screen on /mirror while an E16 is live.
+	mux.Handle("GET /stream-e16", displayProxy)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	// SecurityHeaders runs outermost so headers are set even on responses

@@ -9304,7 +9304,11 @@ function saveChainConfigToDir(dir) {
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
             const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
-            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, forward_channel: fwd, muted: muted, soloed: soloed });
+            /* The sends the shim keeps for a slot with no module (a slot with
+             * one saves its sends in its own state). */
+            const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
+                                parseInt(getSlotParam(i, "slot:empty_send2") || "0", 10) || 0];
+            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, empty_sends: emptySends, forward_channel: fwd, muted: muted, soloed: soloed });
         }
         host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
     } catch (e) {
@@ -9478,6 +9482,9 @@ function loadChainConfigFromDir(dir) {
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
             /* Absent (a set saved before pan existed) means centre. */
             setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
+            const es = Array.isArray(s.empty_sends) ? s.empty_sends : [0, 0];
+            setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
+            setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
             /* Always write receive_channel: use saved value if present, else
              * default to slot index + 1. Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
@@ -10755,6 +10762,10 @@ const e16Surface = createE16Surface({
      * returns mark sendLevelsDirty like their grid; volume / mute / solo ride
      * the slot state like every other slot setting.
      */
+    /* The web mirror (display_server /stream-e16): what the E16 shows. */
+    mirror: (frame, rings, active) => {
+        if (typeof host_e16_mirror === "function") host_e16_mirror(frame, rings, !!active);
+    },
     mixer: {
         getSlot: (slot, key) => getSlotParam(slot, key),
         setSlot: (slot, key, value) => {

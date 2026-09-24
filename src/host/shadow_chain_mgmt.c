@@ -2871,7 +2871,35 @@ void shadow_process_fade_completions(void) {
  * Param Handling
  * ============================================================================ */
 
+/*
+ * AN EMPTY SLOT'S SENDS. A slot's Send A/B levels live in its module chain,
+ * so a slot with no module had nowhere to keep one -- and its Move track (under
+ * Move->Schwung) reached neither send bus. The shim keeps two levels for it:
+ * `buses:main_send<N>` lands here while the slot is empty (and in the chain
+ * otherwise), `slot:empty_send<N>` always does, for saving and restoring.
+ * Returns the send index 0/1, or -1.
+ */
+static int empty_send_index(int slot, const char *key) {
+    if (strcmp(key, "slot:empty_send1") == 0) return 0;
+    if (strcmp(key, "slot:empty_send2") == 0) return 1;
+    if (!shadow_chain_slots[slot].instance) {
+        if (strcmp(key, "buses:main_send1") == 0) return 0;
+        if (strcmp(key, "buses:main_send2") == 0) return 1;
+    }
+    return -1;
+}
+
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
+    {
+        const int es = empty_send_index(slot, key);
+        if (es >= 0) {
+            int v = atoi(value);
+            if (v < 0) v = 0;
+            if (v > 127) v = 127;
+            shadow_chain_slots[slot].empty_send[es] = (uint8_t)v;
+            return 1;
+        }
+    }
     if (strcmp(key, "slot:pan") == 0) {
         float p = (float)atof(value);
         if (!(p >= -1.0f)) p = -1.0f;
@@ -2944,6 +2972,10 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 }
 
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
+    {
+        const int es = empty_send_index(slot, key);
+        if (es >= 0) return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
+    }
     if (strcmp(key, "slot:volume") == 0) {
         /* Four places, not two: a surface stepping the level in dB (the E16
          * Mixer) re-reads it, and two decimals put -30 dB half a dB off. */

@@ -59,7 +59,7 @@ function fakeIo() {
   /* Send B of track 1 is 64: push kills it, push brings it back. */
   m.push(8, false);
   eq("push on a send takes it to 0", io.slots[0]["buses:main_send2"], "0");
-  eq("...drawn inverted, showing what a push brings back", m.cell(8), { label: "SndB", value: "50%", off: true });
+  eq("...drawn inverted, reading 0%", m.cell(8), { label: "SndB", value: "0%", off: true });
   m.push(8, false);
   eq("...and the second push restores it", io.slots[0]["buses:main_send2"], "64");
   eq("...no longer inverted", m.cell(8).off, undefined);
@@ -87,7 +87,7 @@ function fakeIo() {
   eq("turning left is a low-pass", [m.cell(15).value, io.glob["master_fx:filter"]], ["LP 40", "-0.400"]);
   m.push(15, false);
   eq("push switches it off", io.glob["master_fx:filter"], "0.000");
-  eq("...drawn inverted, showing what a push brings back", m.cell(15), { label: "Filt", value: "LP 40", off: true });
+  eq("...drawn inverted, reading off", m.cell(15), { label: "Filt", value: "off", off: true });
   m.push(15, false);
   eq("...and the second push brings it back", m.cell(15).value, "LP 40");
   m.turn(15, 40, false);

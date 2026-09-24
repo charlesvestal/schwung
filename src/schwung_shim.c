@@ -2917,6 +2917,19 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 float pass_l, pass_r;
                 shadow_pan_gains(s, &pass_l, &pass_r);
                 shadow_stem_store_slot(s, move_track, pass_vol);
+                /* ITS SENDS, when above 0: the same arithmetic as the chain
+                 * drain (send level x fader, post-fader, pre-pan), from the
+                 * levels the shim keeps for an empty slot (empty_send). */
+                {
+                    int vol127 = (int)lroundf(pass_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                    for (int sb = 0; sb < SEND_BUSES && sb < 2 && vol127 > 0; sb++) {
+                        const int amt = shadow_chain_slots[s].empty_send[sb];
+                        if (amt <= 0) continue;
+                        bus_mix_send(send_accum[sb], move_track, FRAMES_PER_BLOCK * 2,
+                                     (amt * vol127) / BUS_MIX_SEND_LEVEL_MAX);
+                    }
+                }
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     const float g = pass_vol * ((i & 1) ? pass_r : pass_l);
                     int32_t mixed = (int32_t)mailbox_audio[i] +

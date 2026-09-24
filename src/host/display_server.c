@@ -19,11 +19,13 @@
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "norns_display_shm.h"
+#include "e16_mirror_shm.h"
 #include "unified_log.h"
 
 #define DEFAULT_PORT       7681
@@ -70,6 +72,7 @@ typedef enum {
     STREAM_MODE_NONE = 0,
     STREAM_MODE_LEGACY = 1,
     STREAM_MODE_AUTO = 2,
+    STREAM_MODE_E16 = 3,      /* /stream-e16: the OXI E16 mirror (e16_mirror_shm.h) */
 } stream_mode_t;
 
 typedef enum {
@@ -114,10 +117,20 @@ static const char HTML_PAGE[] =
     "  body.fs #status { display: none; }\n"
     "  #status { color: #888; font: 12px monospace; margin-top: 8px; }\n"
     "  #status.connected { color: #4a4; }\n"
+    "  #e16 { display: none; margin-top: 18px; text-align: center; }\n"
+    "  #e16.on { display: block; }\n"
+    "  #e16 .label { color: #888; font: 12px monospace; margin-bottom: 6px; }\n"
+    "  #e16c { width: 512px; height: 256px; }\n"
+    "  #e16r { image-rendering: auto; width: 256px; height: 256px; border: none;\n"
+    "          cursor: default; margin-left: 12px; }\n"
+    "  body.fs #e16 { display: none; }\n"
     "</style>\n"
     "</head><body>\n"
     "<canvas id=\"c\" width=\"128\" height=\"64\"></canvas>\n"
     "<div id=\"status\">connecting... (tap to fullscreen)</div>\n"
+    "<div id=\"e16\"><div class=\"label\">OXI E16 (as last sent)</div>\n"
+    "<canvas id=\"e16c\" width=\"128\" height=\"64\"></canvas>"
+    "<canvas id=\"e16r\" width=\"256\" height=\"256\"></canvas></div>\n"
     "<script>\n"
     "const canvas = document.getElementById('c');\n"
     "const ctx = canvas.getContext('2d');\n"
@@ -207,6 +220,64 @@ static const char HTML_PAGE[] =
     "  };\n"
     "}\n"
     "connect();\n"
+    "\n"
+    "/* THE E16 MIRROR: the screen we last sent it and the last ring per knob,\n"
+    "   from /stream-e16. Hidden while no E16 is live. */\n"
+    "const e16El = document.getElementById('e16');\n"
+    "const e16c = document.getElementById('e16c').getContext('2d');\n"
+    "const e16r = document.getElementById('e16r').getContext('2d');\n"
+    "const e16img = e16c.createImageData(128, 64);\n"
+    "function e16Screen(raw) {\n"
+    "  const d = e16img.data;\n"
+    "  for (let page = 0; page < 8; page++) for (let col = 0; col < 128; col++) {\n"
+    "    const b = raw.charCodeAt(page * 128 + col);\n"
+    "    for (let bit = 0; bit < 8; bit++) {\n"
+    "      const idx = ((page * 8 + bit) * 128 + col) * 4;\n"
+    "      const on = (b >> bit) & 1;\n"
+    "      d[idx] = d[idx + 1] = d[idx + 2] = on ? 255 : 0; d[idx + 3] = 255;\n"
+    "    }\n"
+    "  }\n"
+    "  e16c.putImageData(e16img, 0, 0);\n"
+    "}\n"
+    "function e16Rings(raw) {\n"
+    "  const W = 256, cell = W / 4, R = cell * 0.36;\n"
+    "  e16r.fillStyle = '#000'; e16r.fillRect(0, 0, W, W);\n"
+    "  for (let e = 0; e < 16; e++) {\n"
+    "    const o = e * 6;\n"
+    "    const r = raw.charCodeAt(o), g = raw.charCodeAt(o + 1), b = raw.charCodeAt(o + 2);\n"
+    "    const amt = ((raw.charCodeAt(o + 3) << 8) | raw.charCodeAt(o + 4)) / 16383;\n"
+    "    const bip = raw.charCodeAt(o + 5);\n"
+    "    const cx = (e % 4) * cell + cell / 2, cy = Math.floor(e / 4) * cell + cell / 2;\n"
+    "    const col = 'rgb(' + Math.min(255, r * 2) + ',' + Math.min(255, g * 2) + ',' + Math.min(255, b * 2) + ')';\n"
+    "    const lit = r || g || b;\n"
+    "    const start = Math.PI * 0.75, span = Math.PI * 1.5;\n"
+    "    e16r.lineWidth = 6; e16r.lineCap = 'round';\n"
+    "    e16r.strokeStyle = '#1a1a1a';\n"
+    "    e16r.beginPath(); e16r.arc(cx, cy, R, start, start + span); e16r.stroke();\n"
+    "    if (lit) {\n"
+    "      e16r.strokeStyle = col;\n"
+    "      e16r.beginPath();\n"
+    "      if (bip) { const mid = start + span / 2, to = start + span * amt;\n"
+    "        if (to >= mid) e16r.arc(cx, cy, R, mid, Math.max(mid + 0.02, to)); else e16r.arc(cx, cy, R, to, mid); }\n"
+    "      else e16r.arc(cx, cy, R, start, start + Math.max(0.02, span * amt));\n"
+    "      e16r.stroke();\n"
+    "    }\n"
+    "    e16r.fillStyle = '#555'; e16r.font = '10px monospace'; e16r.textAlign = 'center';\n"
+    "    e16r.fillText(String(e + 1), cx, cy + 4);\n"
+    "  }\n"
+    "}\n"
+    "function connectE16() {\n"
+    "  const es = new EventSource('/stream-e16');\n"
+    "  es.onmessage = (e) => {\n"
+    "    let p; try { p = JSON.parse(e.data); } catch (_) { return; }\n"
+    "    if (!p.active) { e16El.className = ''; return; }\n"
+    "    e16El.className = 'on';\n"
+    "    if (p.hasFrame) e16Screen(atob(p.data || ''));\n"
+    "    else { e16c.fillStyle = '#000'; e16c.fillRect(0, 0, 128, 64); }\n"
+    "    e16Rings(atob(p.rings || ''));\n"
+    "  };\n"
+    "}\n"
+    "connectE16();\n"
     "</script>\n"
     "</body></html>\n";
 
@@ -231,6 +302,34 @@ static int norns_frame_is_live(const norns_display_shm_t *shm, long long now) {
     if (shm->last_update_ms == 0) return 0;
     age_ms = now - (long long)shm->last_update_ms;
     return age_ms >= 0 && age_ms <= NORNS_STALE_MS;
+}
+
+/*
+ * The E16 mirror payload: {"active":1,"hasFrame":..,"data":b64,"rings":b64}
+ * while the surface is live, {"active":0} otherwise. A frame is copied only
+ * between two equal, EVEN reads of the sequence counter (the writer makes it
+ * odd while writing), so a half-written frame is never sent. Returns the
+ * length written to `out`, or -1 when the read raced a write (try later).
+ */
+static int e16_mirror_payload(const e16_mirror_shm_t *m, long long now, char *out, size_t cap) {
+    if (!m || memcmp(m->magic, E16_MIRROR_MAGIC, 7) != 0 || m->version != 1 || !m->active ||
+        now - (long long)m->last_update_ms > E16_MIRROR_STALE_MS || now < (long long)m->last_update_ms)
+        return snprintf(out, cap, "{\"active\":0}");
+    static uint8_t frame[E16_MIRROR_FRAME_SIZE];
+    static uint8_t rings[E16_MIRROR_RINGS * E16_MIRROR_RING_BYTES];
+    static char fb64[E16_MIRROR_FRAME_SIZE * 2], rb64[E16_MIRROR_RINGS * E16_MIRROR_RING_BYTES * 2];
+    uint32_t s1 = __atomic_load_n(&m->seq, __ATOMIC_ACQUIRE);
+    if (s1 & 1u) return -1;
+    __sync_synchronize();
+    uint8_t has = m->has_frame;
+    memcpy(frame, m->frame, sizeof frame);
+    memcpy(rings, m->rings, sizeof rings);
+    __sync_synchronize();
+    if (__atomic_load_n(&m->seq, __ATOMIC_ACQUIRE) != s1) return -1;
+    (void)base64_encode(frame, (int)sizeof frame, fb64);
+    (void)base64_encode(rings, (int)sizeof rings, rb64);
+    return snprintf(out, cap, "{\"active\":1,\"hasFrame\":%d,\"data\":\"%s\",\"rings\":\"%s\"}",
+                    has ? 1 : 0, fb64, rb64);
 }
 
 /* Close and clear a client slot */
@@ -268,7 +367,22 @@ static void send_response(int idx, int code, const char *ctype,
 static void handle_http(int idx) {
     clients[idx].buf[clients[idx].buf_len] = '\0';
 
-    if (strncmp(clients[idx].buf, "GET /stream-auto", 16) == 0) {
+    if (strncmp(clients[idx].buf, "GET /stream-e16", 15) == 0) {
+        const char *sse_header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "\r\n";
+        if (write(clients[idx].fd, sse_header, strlen(sse_header)) > 0) {
+            clients[idx].stream_mode = STREAM_MODE_E16;
+            clients[idx].needs_initial_frame = 1;
+            LOG_INFO(DISPLAY_LOG_SOURCE, "e16 SSE client connected (slot %d)", idx);
+        } else {
+            client_remove(idx);
+        }
+    } else if (strncmp(clients[idx].buf, "GET /stream-auto", 16) == 0) {
         const char *sse_header =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -332,6 +446,10 @@ int main(int argc, char *argv[]) {
     norns_display_shm_t *norns_shm_ptr = NULL;
     int norns_shm_fd = -1;
     long long last_norns_shm_attempt = 0;
+    e16_mirror_shm_t *e16_shm_ptr = NULL;
+    long long last_e16_shm_attempt = 0;
+    static char e16_json[4096], e16_last[4096];
+    int e16_last_len = 0;
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -408,6 +526,28 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        /* The E16 mirror, made by shadow_ui only once an E16 is in use. A
+         * segment shorter than the struct is refused (a mapping past its end
+         * is SIGBUS), and retried. */
+        if (!e16_shm_ptr) {
+            long long now = now_ms();
+            if (now - last_e16_shm_attempt >= SHM_RETRY_MS) {
+                last_e16_shm_attempt = now;
+                int fd = open(E16_MIRROR_SHM_PATH, O_RDONLY);
+                if (fd >= 0) {
+                    struct stat st;
+                    if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(e16_mirror_shm_t)) {
+                        void *p = mmap(NULL, sizeof(e16_mirror_shm_t), PROT_READ, MAP_SHARED, fd, 0);
+                        if (p != MAP_FAILED) {
+                            e16_shm_ptr = (e16_mirror_shm_t *)p;
+                            LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s", E16_MIRROR_SHM_PATH);
+                        }
+                    }
+                    close(fd);
+                }
+            }
+        }
+
         /* Build fd_set for select */
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -475,10 +615,32 @@ int main(int argc, char *argv[]) {
 
                 last_push = now;
 
+                /* The E16 mirror: rebuild the payload, and send it to every
+                 * E16 client when it changed (a new client gets it below). */
+                {
+                    int n = e16_mirror_payload(e16_shm_ptr, now, e16_json, sizeof e16_json);
+                    if (n > 0 && n < (int)sizeof e16_json &&
+                        (n != e16_last_len || memcmp(e16_json, e16_last, (size_t)n) != 0)) {
+                        memcpy(e16_last, e16_json, (size_t)n);
+                        e16_last_len = n;
+                        for (int i = 0; i < MAX_CLIENTS; i++) {
+                            if (clients[i].fd < 0 || clients[i].stream_mode != STREAM_MODE_E16 ||
+                                clients[i].needs_initial_frame) continue;
+                            dprintf(clients[i].fd, "data: %.*s\n\n", n, e16_last);
+                        }
+                    }
+                }
+
                 /* Send initial frame to newly connected clients */
                 for (int i = 0; i < MAX_CLIENTS; i++) {
                     if (clients[i].fd < 0 || !clients[i].needs_initial_frame) continue;
                     clients[i].needs_initial_frame = 0;
+
+                    if (clients[i].stream_mode == STREAM_MODE_E16) {
+                        if (e16_last_len > 0) dprintf(clients[i].fd, "data: %.*s\n\n", e16_last_len, e16_last);
+                        else dprintf(clients[i].fd, "data: {\"active\":0}\n\n");
+                        continue;
+                    }
 
                     if (clients[i].stream_mode == STREAM_MODE_LEGACY) {
                         /* Send cached mono display if available */
@@ -605,6 +767,7 @@ int main(int argc, char *argv[]) {
     if (shm_ptr) munmap(shm_ptr, DISPLAY_SIZE);
     if (shm_fd >= 0) close(shm_fd);
     if (norns_shm_ptr) munmap(norns_shm_ptr, sizeof(norns_display_shm_t));
+    if (e16_shm_ptr) munmap(e16_shm_ptr, sizeof(e16_mirror_shm_t));
     if (norns_shm_fd >= 0) close(norns_shm_fd);
     unified_log_shutdown();
     return 0;
