@@ -429,6 +429,41 @@ function rig(opts) {
 }
 
 /* ===========================================================================
+ * NOTHING BLANKS THE SCREEN BUT A SCREEN WE REALLY LOST. Hardware 2026-09-24:
+ * periodic blanking while a knob turned. A NACK whose command byte was lost
+ * forced a full CLEAR repaint; and a corrupted message the E16 read as CLEAR
+ * blanked it with nothing on our side noticing.
+ * ========================================================================= */
+{
+  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const reply = (id, raw) => [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, id].concat(pack7(raw), [0xF7]);
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1); r.surface.feedMidi(NEW_ACK);
+  let quiet = 0;
+  for (let i = 0; i < 800 && quiet < 12; i++) {
+    if (i % 40 === 0) r.surface.feedMidi(NEW_ACK);
+    const b = r.send.log.length; r.ticks(1);
+    quiet = r.send.log.slice(b).some((p) => j(msgId(p)) !== j(ENTER)) ? 0 : quiet + 1;
+  }
+
+  /* A NACK that cannot name its command. */
+  const b0 = r.send.log.length;
+  r.surface.feedMidi(reply(0x54, [0x7F, 0x06, 0xFF, 0xFF, 0xFF, 0xFF]));
+  r.ticks(20);
+  ok(!r.send.log.slice(b0).some((p) => unpack(p)[6] === 0x07),
+     "a NACK that names no region does NOT blank the screen");
+
+  /* The device ACKs a CLEAR we never sent: it blanked itself. */
+  const b1 = r.send.log.length;
+  r.surface.feedMidi(reply(0x53, [0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF]));
+  r.ticks(40);
+  const after = r.send.log.slice(b1);
+  ok(after.some((p) => unpack(p)[6] === 0x07) && after.some((p) => unpack(p)[6] === 0x08),
+     "an unsolicited CLEAR ack is repainted at once, not at the next heartbeat");
+}
+
+/* ===========================================================================
  * OLED UPDATE NACK -- built against a draft spec, not yet on hardware. A
  * NACK must invalidate the surfaces belief about whats on screen (so the
  * NEXT repaint is a full one) without touching anything else -- not the
