@@ -211,6 +211,7 @@ export function buildView(pages, pageIndex, io) {
     const o = io || {};
     const metaOf = o.metaOf || (() => null);
     const valueOf = o.valueOf || (() => undefined);
+    const pageIndexOf = o.pageIndexOf || ((i) => i);
     const list = Array.isArray(pages) ? pages : [];
     const idx = pageIndex | 0;
 
@@ -239,7 +240,11 @@ export function buildView(pages, pageIndex, io) {
                 enc: half * KNOBS_PER_PAGE + slot,
                 half,
                 slot,
-                pageIndex: idx + half,
+                /* The CONTROLLER's index of this page, which a turn moves
+                 * to. The list shown may be a filtered one (the E16 skips
+                 * pages with no knob), so its position is not the
+                 * controller's: `io.pageIndexOf` maps one to the other. */
+                pageIndex: pageIndexOf(idx + half),
                 key,
                 /* The authored short label lives on the PAGE, not the
                  * meta: page_plan collects { key: short_name } into

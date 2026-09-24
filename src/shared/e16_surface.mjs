@@ -1743,8 +1743,20 @@ export function createSurface(io) {
     /* The Mixer: only when the host gives it a way to the parameters. */
     const mixer = o.mixer ? createMixer(o.mixer) : null;
     const knobPages = () => (ctl && ctl.pages ? ctl.pages.filter(pageHasKnobs) : []);
+    /* Filtered position -> the controller's own page index. A turn moves the
+     * controller to a cell's page BY INDEX, and the filtered list skips pages:
+     * on Hank the bottom row drove the page after a skipped one while the
+     * screen showed Main (hardware, 2026-09-24). */
+    const controllerPageOf = (j) => {
+        if (!ctl || !ctl.pages) return j;
+        let seen = -1;
+        for (let i = 0; i < ctl.pages.length; i++) {
+            if (pageHasKnobs(ctl.pages[i]) && ++seen === j) return i;
+        }
+        return j;
+    };
     const viewNow = () =>
-        buildView(knobPages(), nav ? nav.pageIndex : 0, { metaOf, valueOf });
+        buildView(knobPages(), nav ? nav.pageIndex : 0, { metaOf, valueOf, pageIndexOf: controllerPageOf });
 
     /* Each module in the set has its own colour (moduleRgb / setOrdinal);
      * the knobs wear the colour of the module they edit -- the same colour
