@@ -477,10 +477,13 @@ export function drawMenuList({
                 ctx.fillRect(0, midY, captionX - 2, 1, 1);
                 ctx.print(captionX, midY - 3, item.label, 1);
                 /* Line right of caption */
+                /* Stops at the scrollbar gutter, as the selected-row fill
+                 * does -- a rule run through the bar reads as a second bar. */
                 const rightStart = captionX + captionW + 2;
-                ctx.fillRect(rightStart, midY, SCREEN_WIDTH - rightStart, 1, 1);
+                const rightEnd = SCREEN_WIDTH - (scrolls ? BAR_GUTTER : 0);
+                ctx.fillRect(rightStart, midY, Math.max(0, rightEnd - rightStart), 1, 1);
             } else {
-                ctx.fillRect(2, midY, SCREEN_WIDTH - 4, 1, 1);
+                ctx.fillRect(2, midY, SCREEN_WIDTH - 4 - (scrolls ? BAR_GUTTER : 0), 1, 1);
             }
             continue;
         }

@@ -2,6 +2,7 @@
   "id": "linein",
   "name": "Line In",
   "abbrev": "LI",
+  "subcategory": "streaming-live-input",
   "version": "0.2.0",
   "description": "Line input with conditioning for Line, Guitar, and Phono sources",
   "dsp": "dsp.so",
