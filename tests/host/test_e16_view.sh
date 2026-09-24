@@ -25,7 +25,7 @@ import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
 import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
-         WINDOW_PX_START, WINDOW_PX_MIN } from "./src/shared/e16_surface.mjs";
+         WINDOW_PX_START, WINDOW_PX_MIN, REORDER_LOSS } from "./src/shared/e16_surface.mjs";
 import { unpack7 } from "./src/shared/e16_protocol.mjs";
 const STRIPS = 64 / STRIP_H;   /* strips in a fully inked screen */
 /* Messages in a FULL repaint of buf: one CLEAR, then one strip per STRIP_H
@@ -793,6 +793,68 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("a clock far past ACK_TIMEOUT_MS with replies unread is NOT a timeout", [d.ackTimeouts, snd.log.length], [0, n0]);
   d.tick(snd, () => b, { kind: "framebuffer" }, 5001, ACK_TIMEOUT_MS + 10);
   eq("...replies READ past it with no answer IS one", d.ackTimeouts, 1);
+}
+
+/* LOSS BY ORDER. Hardware, 2026-09-24: a fixed 250 ms timeout fired on live
+ * rows under load, re-sent them, and fed itself until the whole unchanged
+ * screen went out once a second. A region is lost when REORDER_LOSS later
+ * ones are answered without it -- never merely because it is slow. */
+{
+  const ackOne = (d, p, ok = true) => { const b = unpack(p);
+    const [x, y, w, h] = unpack7(b.slice(7, b.length - 1), 4);
+    d.acked({ ok, cmd: 0x08, addr: { x, y, w, h } }); };
+  const rowsOf = (log) => log.map((p) => { const b = unpack(p); return unpack7(b.slice(7, b.length - 1), 4)[1]; });
+  const mk = () => { const d = createDisplay(); const snd = mkSend();
+    const blank = new Uint8Array(1024); blank[0] = 1;
+    d.invalidate();
+    for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => blank, { kind: "framebuffer" }, i); answer(d, snd); }
+    return { d, snd }; };
+  /* Twelve short inked rows: they all fit the window. */
+  const pic = new Uint8Array(1024); pic[0] = 1;   /* the primed pixel stays */
+  for (let y = 10; y < 22; y++) pic[(y >> 3) * 128 + 3] |= 1 << (y & 7);
+
+  let { d, snd } = mk();
+  const n0 = snd.log.length;
+  d.invalidate();
+  for (let i = 0; i < 20 && d.repaintPending; i++) d.tick(snd, () => pic, { kind: "framebuffer" }, 100 + i);
+  const sent = snd.log.slice(n0);
+  eq("twelve rows out", sent.length, 12);
+  for (let i = 1; i < REORDER_LOSS; i++) ackOne(d, sent[i]);
+  eq("REORDER_LOSS - 1 later answers: the first is merely LATE", d.ackTimeouts, 0);
+  ackOne(d, sent[REORDER_LOSS]);
+  eq("the REORDER_LOSS-th later answer declares it LOST", d.ackTimeouts, 1);
+  const n1 = snd.log.length;
+  d.tick(snd, () => pic, { kind: "framebuffer" }, 130);
+  eq("...and exactly that row is re-sent", rowsOf(snd.log.slice(n1)), [10]);
+
+  ({ d, snd } = mk());
+  const m0 = snd.log.length;
+  d.invalidate();
+  for (let i = 0; i < 20 && d.repaintPending; i++) d.tick(snd, () => pic, { kind: "framebuffer" }, 100 + i);
+  const s2 = snd.log.slice(m0);
+  ackOne(d, s2[1]); ackOne(d, s2[0]);                  /* answered one place early */
+  for (let i = 2; i < s2.length; i++) ackOne(d, s2[i]);
+  eq("an answer one place early is not a loss", [d.ackTimeouts, d.outstandingCount], [0, 0]);
+  eq("...and a clock far past the OLD 250 ms is not one either, while answers flow",
+     ACK_TIMEOUT_MS > 400, true);
+}
+
+/* TWO REPAIRS OF ONE ROW DO NOT CANCEL. The repair used to XOR the belief,
+ * so a second NACK or loss on the same row before its re-send flipped it
+ * back and the row was silently never repaired. */
+{
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024); b[(20 >> 3) * 128 + 7] |= 1 << (20 & 7);
+  d.invalidate();
+  for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => b, { kind: "framebuffer" }, i); answer(d, snd); }
+  const n0 = snd.log.length;
+  d.invalidateRegion(0, 20, 128, 1); d.invalidateRegion(0, 20, 128, 1);
+  d.invalidate();
+  d.tick(snd, () => b, { kind: "framebuffer" }, 200);
+  eq("a row repaired twice is still re-sent", snd.log.length - n0, 1);
+  answer(d, snd);
+  d.invalidate();
+  eq("...and once re-sent it is clean", d.tick(snd, () => b, { kind: "framebuffer" }, 201), null);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
