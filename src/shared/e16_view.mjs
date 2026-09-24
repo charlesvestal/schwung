@@ -181,6 +181,13 @@ function slotsOf(page) {
     return pageSlotKeys(page);
 }
 
+/** The page puts at least one parameter under a knob. A page without one
+ *  (My Presets, the Module page, a preset browser) has nothing an encoder can
+ *  do, so the E16 pages past it -- presets stay on Move. */
+export function pageHasKnobs(page) {
+    return slotsOf(page).some(Boolean);
+}
+
 function headerOf(page, index, count) {
     if (!page) return null;
     return { name: page.name || "", index, count };

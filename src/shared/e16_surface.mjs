@@ -1565,7 +1565,7 @@ export function createNav(opts) {
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
 import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
-         mapRings, moduleRgb, renderEmptySlot }
+         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs }
     from "./e16_view.mjs";
 
 /**
@@ -1675,8 +1675,12 @@ export function createSurface(io) {
      * the two lookups above, so it costs no IPC -- and a cached view is a
      * fourth thing that can disagree with the controller about which page is
      * current. */
+    /* The pages the E16 shows: only those with a knob on them (pageHasKnobs).
+     * Page numbers on the E16 count THESE, so "2/3" means the second page you
+     * can turn, not the controller's index. */
+    const knobPages = () => (ctl && ctl.pages ? ctl.pages.filter(pageHasKnobs) : []);
     const viewNow = () =>
-        buildView(ctl ? ctl.pages : [], nav ? nav.pageIndex : 0, { metaOf, valueOf });
+        buildView(knobPages(), nav ? nav.pageIndex : 0, { metaOf, valueOf });
 
     /* Each module in the set has its own colour (moduleRgb / setOrdinal);
      * the knobs wear the colour of the module they edit -- the same colour
@@ -1872,7 +1876,7 @@ export function createSurface(io) {
         display,
         chainOf,
         followFocusOf,
-        pageCountOf: () => (ctl && ctl.pages ? ctl.pages.length : 1),
+        pageCountOf: () => Math.max(1, knobPages().length),
         renderParams: (ctx) => {
             /* A slot with no modules says so -- a blank screen reads as a
              * dead device. */
