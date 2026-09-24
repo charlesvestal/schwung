@@ -183,8 +183,8 @@ export const ACK_TIMEOUT_MS = 250;
  */
 export const WINDOW_PX_START = 384;
 export const WINDOW_PX_MIN = 128;
-export const WINDOW_PX_MAX = 1536;
-export const WINDOW_PX_GROW = 16;
+export const WINDOW_PX_MAX = 1024;
+export const WINDOW_PX_GROW = 128;
 
 /*
  * How long after Move's last transmission the restate is allowed to resume.
@@ -549,6 +549,7 @@ export function createDisplay(opts) {
     const onFull = (opts && opts.onFull) || (() => {});
     let nullReason = "first paint";
     let windowPx = WINDOW_PX_START;
+    let acks = 0, nacks = 0;
     let fbOwed = false;
     /*
      * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
@@ -824,6 +825,8 @@ export function createDisplay(opts) {
         get outstandingCount() { return outstanding.size; },
         get ackTimeouts() { return timeouts; },
         get windowPx() { return windowPx; },
+        get acks() { return acks; },
+        get nacks() { return nacks; },
         /* The device answered one region (ACK or NACK): it is no longer
          * outstanding. A NACK is repaired separately by the caller. */
         acked(reply) {
@@ -834,10 +837,17 @@ export function createDisplay(opts) {
             /* Returns false for an ACK of a CLEAR we never sent: a corrupted
              * message the device read as CLEAR -- it blanked ITSELF, and
              * nothing we believe about the screen holds. The caller repaints. */
+            const o = outstanding.get(k);
             const known = outstanding.delete(k);
             if (known) {
-                windowPx = reply.ok ? Math.min(WINDOW_PX_MAX, windowPx + WINDOW_PX_GROW)
-                                    : Math.max(WINDOW_PX_MIN, windowPx >> 1);
+                /* Additive increase of about one row per WINDOW of answers
+                 * (per answer: a share proportional to its size), not per
+                 * answer -- per answer grew ~1000 px across one repaint and
+                 * went straight back to the depth that fails. */
+                if (reply.ok) { acks++;
+                    const px = Math.min(regionPx(o.region), WINDOW_PX_MAX);
+                    windowPx = Math.min(WINDOW_PX_MAX, windowPx + Math.max(1, Math.round(WINDOW_PX_GROW * px / windowPx)));
+                } else { nacks++; windowPx = Math.max(WINDOW_PX_MIN, windowPx >> 1); }
             }
             return known || !(reply.ok && reply.cmd === 0x07);
         },
@@ -1618,12 +1628,24 @@ export function createSurface(io) {
      * an unthrottled per-message line would. */
     const NACK_LOG_RATE_MS = 1000;
     let lastNackLogAt = -Infinity;
+    const STATS_LOG_MS = 10000;
+    let lastStatsAt = -Infinity, statsAcks = 0, statsNacks = 0, statsTo = 0;
 
     const asm = createSysexAssembler({
         onMessage: (body) => {
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
+            /* One line per STATS_LOG_MS while replies flow: the NACK rate and
+             * where the window settled, measured rather than inferred from a
+             * rate-limited NACK line. */
+            const ts = now();
+            if (ts - lastStatsAt >= STATS_LOG_MS) {
+                if (lastStatsAt > -Infinity) console.log("e16: oled acks=" + (display.acks - statsAcks) +
+                    " nacks=" + (display.nacks - statsNacks) + " timeouts=" + (display.ackTimeouts - statsTo) +
+                    " window=" + display.windowPx + "px");
+                lastStatsAt = ts; statsAcks = display.acks; statsNacks = display.nacks; statsTo = display.ackTimeouts;
+            }
             if (!display.acked(reply)) {
                 /* The device ACKed a CLEAR we never sent: it read a corrupted
                  * message as CLEAR and blanked itself. Repaint now, not at the
