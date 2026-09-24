@@ -28,7 +28,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 node --input-type=module -e '
-import { createNav, createDisplay, MAP_MAX_HOLD_MS }
+import { createNav, createDisplay, MAP_MAX_HOLD_MS, MAP_SHOW_DELAY_MS }
     from "./src/shared/e16_surface.mjs";
 import { renderMap, pageStep, HALVES } from "./src/shared/e16_view.mjs";
 import { buildMap } from "./src/shared/e16_map.mjs";
@@ -95,6 +95,9 @@ function rig(opts) {
     chainOf: () => CHAIN,
     renderParams: PARAM_INK,
     pageCountOf: () => pages,
+    /* The map on the PRESS: these tests are about what the map does, not when
+     * it appears -- MAP_SHOW_DELAY_MS has its own tests. */
+    showDelayMs: 0,
     onFocus: (s, c) => focused.push([s, c]),
     ...(opts || {}),
   });
@@ -298,6 +301,43 @@ function rigMapPage(slot) {
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
+/* THE MAP APPEARS AFTER A HOLD, SO SHIFT+TURN CAN PAGE WITHOUT IT. The map
+ * drawn on the press flashed on every page turn. */
+{
+  const D = MAP_SHOW_DELAY_MS;
+  let r = rig({ showDelayMs: D });
+  r.at(1000); r.ev({ type: "shift", down: true });
+  eq("a fresh press does not show the map yet", r.nav.mapVisible(1000 + D - 1), false);
+  eq("...it shows once held MAP_SHOW_DELAY_MS", r.nav.mapVisible(1000 + D), true);
+  r.at(1000 + D); r.frame(); for (let i = 0; i < 16 && r.display.repaintPending; i++) r.frame();
+  eq("...and the frame drawn then is the map", r.cv.toBuffer().slice(0, 16).some((b) => b !== 0), true);
+
+  r = rig({ showDelayMs: D });
+  r.at(1000); r.ev({ type: "shift", down: true });
+  r.at(1000 + D / 2);
+  eq("Shift+turn inside the delay pages the parameters",
+     r.nav.handle({ type: "turn", enc: 2, ticks: 1 }, r.now()), { action: "page", pageIndex: 2 });
+  eq("...and the map stays hidden for the rest of the hold", r.nav.mapVisible(1000 + D * 4), false);
+  const p0 = r.paints();
+  r.at(1000 + D * 5);
+  eq("...release after paging is not a view change", r.ev({ type: "shift", down: false }), null);
+  eq("...the next press shows the map again", (r.at(2000 + D * 6), r.ev({ type: "shift", down: true }), r.nav.mapVisible(2000 + D * 7)), true);
+
+  r = rig({ showDelayMs: D });
+  r.at(900); r.frame(); for (let i = 0; i < 16 && r.display.repaintPending; i++) r.frame();   /* first paint */
+  const tap0 = r.paints();
+  r.at(1000); r.ev({ type: "shift", down: true });
+  r.at(1000 + D / 2); r.ev({ type: "shift", down: false });
+  r.at(1000 + D * 2); r.frame();
+  eq("a quick tap of Shift draws nothing", r.paints() - tap0, 0);
+
+  r = rig({ showDelayMs: D });
+  r.at(1000); r.ev({ type: "shift", down: true });
+  r.at(1000 + D / 4);
+  eq("a push inside the delay acts on the map", r.ev({ type: "push", enc: 1 }), { action: "slot", slot: 1 });
+  eq("...and reveals it at once", r.nav.mapVisible(r.now()), true);
+}
+
 process.exit(fails ? 1 : 0);
 '
 
