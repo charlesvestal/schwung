@@ -423,7 +423,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   d1.invalidate();
   const second = d1.tick(send1, frameBytes1, { kind: "framebuffer" }, 100);
   eq("single-pixel diff sends rect, not framebuffer", second, "rect");
-  eq("rect message id byte", unpackMsgId(send1.log[send1.log.length - 1]), [0x06]);
+  eq("rect message id byte (0x08, measured on hardware)", unpackMsgId(send1.log[send1.log.length - 1]), [0x08]);
 
   /* Two-region diff drains across two ticks. */
   const d2 = createDisplay();
