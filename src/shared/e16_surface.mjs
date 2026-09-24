@@ -165,6 +165,28 @@ export const SHIM_DEFAULT_PACE = 3;
 export const ACK_TIMEOUT_MS = 250;
 
 /*
+ * FLOW CONTROL: PIXELS IN FLIGHT. The E16 draws each region before it takes
+ * the next, and when it falls behind it does not push back -- it drops bytes
+ * and NACKs the region "interrupted" (status 06). Measured 2026-09-24 with
+ * frame-atomic placement, so no foreign bytes inside any message: narrow rows
+ * (<50 px) failed 0 of 755; rows of 100-128 px failed 315 of 2276, and almost
+ * all of those went out one frame after another wide row. ACKs came back a
+ * median 8-10 frames after the send -- a queue on the device, and it is the
+ * DEPTH of that queue, in pixels, that fails: ~8 x 20 px in flight is fine,
+ * ~10 x 128 px is not.
+ *
+ * So the next region waits until the pixels sent but not yet answered, plus
+ * its own, fit the window. The window is AIMD: halved by a NACK, grown a
+ * little by each ACK, so it settles at whatever this device keeps up with
+ * rather than at a number we guessed. Something always goes when nothing is
+ * outstanding, and ACK_TIMEOUT_MS frees a lost answer, so it cannot stall.
+ */
+export const WINDOW_PX_START = 384;
+export const WINDOW_PX_MIN = 128;
+export const WINDOW_PX_MAX = 1536;
+export const WINDOW_PX_GROW = 16;
+
+/*
  * How long after Move's last transmission the restate is allowed to resume.
  *
  * THE HEARTBEAT IS PURE REPAIR, AND WHILE MOVE IS TALKING IT IS ALSO THE MOST
@@ -495,6 +517,14 @@ function inkedStrips(buf) {
  * both SCANLINEs (2 of 52) against 0 of 194 RECTANGLEs. One opcode is one
  * thing to trust -- the packet it saved is not worth a second code path in
  * the device's firmware. */
+/* What a region costs the device to draw, for the in-flight window. A CLEAR
+ * is the whole screen: it goes alone. */
+function regionPx(r) {
+    if (r.kind === "clear") return Infinity;
+    if (r.kind === "scanline") return E16_WIDTH;
+    return r.w * r.h;
+}
+
 function stripRegion(x, y, w, h) {
     return { kind: "rect", x, y, w, h };
 }
@@ -518,6 +548,7 @@ export function createDisplay(opts) {
      * per blank would have named it. */
     const onFull = (opts && opts.onFull) || (() => {});
     let nullReason = "first paint";
+    let windowPx = WINDOW_PX_START;
     let fbOwed = false;
     /*
      * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
@@ -741,8 +772,13 @@ export function createDisplay(opts) {
              * leaves that region at the head of the queue. */
             let used = 0;
             let first = null;
+            let inFlight = 0;
+            if (nowMs !== undefined) for (const o of outstanding.values()) inFlight += regionPx(o.region);
             while (pendingRegions.length) {
                 const region = pendingRegions[0];
+                /* The window (see WINDOW_PX_START). Only where answers are
+                 * tracked: without nowMs nothing is ever outstanding. */
+                if (nowMs !== undefined && inFlight > 0 && inFlight + regionPx(region) > windowPx) break;
                 const bytes = region.kind === "clear" ? clearMsg()
                     : region.kind === "scanline"
                     ? scanlineMsg(region.y, packRowMajor(pendingBuf, 0, region.y, E16_WIDTH, 1))
@@ -753,7 +789,10 @@ export function createDisplay(opts) {
                 if (!emitMsg(send, bytes)) break;
                 used += packets;
                 if (first === null) first = region.kind;
-                if (nowMs !== undefined) outstanding.set(regionKey(region), { region, at: nowMs });
+                if (nowMs !== undefined) {
+                    outstanding.set(regionKey(region), { region, at: nowMs });
+                    inFlight += regionPx(region);
+                }
                 pendingRegions.shift();
                 shownKind = "framebuffer";
                 /*
@@ -784,6 +823,7 @@ export function createDisplay(opts) {
         get paintsCompleted() { return paintsCompleted; },
         get outstandingCount() { return outstanding.size; },
         get ackTimeouts() { return timeouts; },
+        get windowPx() { return windowPx; },
         /* The device answered one region (ACK or NACK): it is no longer
          * outstanding. A NACK is repaired separately by the caller. */
         acked(reply) {
@@ -795,6 +835,10 @@ export function createDisplay(opts) {
              * message the device read as CLEAR -- it blanked ITSELF, and
              * nothing we believe about the screen holds. The caller repaints. */
             const known = outstanding.delete(k);
+            if (known) {
+                windowPx = reply.ok ? Math.min(WINDOW_PX_MAX, windowPx + WINDOW_PX_GROW)
+                                    : Math.max(WINDOW_PX_MIN, windowPx >> 1);
+            }
             return known || !(reply.ok && reply.cmd === 0x07);
         },
         /* A repaint is in flight: some of its regions are still queued. */
@@ -1610,7 +1654,8 @@ export function createSurface(io) {
             if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
                 lastNackLogAt = t;
                 console.log("e16: OLED update NACK, cmd=0x" + reply.cmd.toString(16) +
-                            " status=0x" + reply.status.toString(16));
+                            " status=0x" + reply.status.toString(16) +
+                            " window=" + display.windowPx + "px");
             }
         },
     });

@@ -24,7 +24,9 @@ node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
-import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS } from "./src/shared/e16_surface.mjs";
+import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
+         WINDOW_PX_START, WINDOW_PX_MIN } from "./src/shared/e16_surface.mjs";
+import { unpack7 } from "./src/shared/e16_protocol.mjs";
 const STRIPS = 64 / STRIP_H;   /* strips in a fully inked screen */
 /* Messages in a FULL repaint of buf: one CLEAR, then one strip per STRIP_H
  * rows holding any ink (blank strips are not sent). */
@@ -187,6 +189,21 @@ const unpack = (p) => { const out = [];
     for (let k = 0; k < n; k++) out.push(p[i + 1 + k]);
   }
   return out; };
+/* THE DEVICE ANSWERS: ACK (or NACK) every OLED update in send.log not yet
+ * answered, as the E16 does. The display holds the next region back while
+ * too many pixels are unanswered (WINDOW_PX_START), so a harness that never
+ * answers stalls it after the first few rows -- which is the point. */
+const answer = (d, send, ok = true) => {
+  const from = send.answered || 0;
+  for (let i = from; i < send.log.length; i++) {
+    const b = unpack(send.log[i]);
+    if (b[6] === 0x07) d.acked({ ok, cmd: 0x07, addr: { x: null, y: null, w: null, h: null } });
+    else if (b[6] === 0x08) {
+      const [x, y, w, h] = unpack7(b.slice(7, b.length - 1), 4);
+      d.acked({ ok, cmd: 0x08, addr: { x, y, w, h } });
+    }
+  }
+  send.answered = send.log.length; };
 const kindOf = (packets) => { const b = unpack(packets);
   if (b[0] !== 0xF0) return "?";
   if (b[6] === 0x08) return "rect";
@@ -455,6 +472,7 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   /* Ticks until the repaint has fully drained; returns the per-tick kinds. */
   const paintAll = (d, send, fb, t) => { const k = [];
     for (let i = 0; i < 64; i++) { k.push(d.tick(send, fb, { kind: "framebuffer" }, t + i));
+      answer(d, send);
       if (!d.repaintPending) break; } return k; };
   const allRect = (k) => k.length > 0 && k.every((x) => x === "rect");
 
@@ -587,14 +605,17 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const d = createDisplay(); const snd = mkSend();
   const b = new Uint8Array(1024); px(b, 40, 50); px(b, 45, 51);
   d.invalidate();
-  for (let i = 0; i < 8 && (i === 0 || d.repaintPending); i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
+  /* The CLEAR goes alone (it is the whole screen to the in-flight window);
+   * the device ACKs it, and the rows follow. It never answers the rows. */
+  d.tick(snd, () => b, { kind: "framebuffer" }, 0);
+  eq("a CLEAR goes out alone, ahead of any row", snd.log.map((p) => unpack(p)[6]), [0x07]);
+  d.acked({ ok: true, cmd: 0x07, addr: {} });
+  for (let i = 1; i < 8 && d.repaintPending; i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
   eq("full repaint = CLEAR + one row for each inked row",
      snd.log.map((p) => unpack(p)[6]), [0x07, 0x08, 0x08]);
   eq("...each trimmed to its own ink", [addr(snd.log[1]), addr(snd.log[2])],
      [[40, 50, 1, 1], [45, 51, 1, 1]]);
 
-  /* The device ACKs the CLEAR but never answers the rows. */
-  d.acked({ cmd: 0x07, addr: {} });
   eq("the unanswered rows are outstanding", d.outstandingCount, 2);
   const n0 = snd.log.length;
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS - 50);
@@ -721,6 +742,39 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("a module string and the same number draw identically", draw("11.000"), draw(11));
   eq("...and an unread value still draws nothing where the value goes",
      draw(undefined) === draw(null), true);
+}
+
+/* FLOW CONTROL: the next row waits for the pixels in flight. Hardware,
+ * 2026-09-24: wide rows sent one a frame were NACKed "interrupted" at ~15%
+ * (315 of 2276) while narrow ones never were -- the device queue overflows by
+ * PIXELS. So: never more than the window unanswered, a NACK halves it, it can
+ * never stall, and an answer is what lets the next row go. */
+{
+  const full = new Uint8Array(1024).fill(0xFF);
+  const d = createDisplay(); const snd = mkSend();
+  const blank = new Uint8Array(1024); blank[0] = 1;
+  d.invalidate();
+  for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => blank, { kind: "framebuffer" }, i); answer(d, snd); }
+  const w0 = d.windowPx;
+  const n0 = snd.log.length;
+  d.invalidate();
+  for (let i = 0; i < 20; i++) d.tick(snd, () => full, { kind: "framebuffer" }, 100 + i);
+  const rows = Math.max(1, Math.floor(w0 / 128));
+  eq("unanswered: no more full-width rows than the window holds", snd.log.length - n0, rows);
+  eq("...and the rest stays owed, not dropped", d.repaintPending, true);
+  answer(d, snd);
+  d.tick(snd, () => full, { kind: "framebuffer" }, 130);
+  eq("an answer is what lets the next rows go", snd.log.length - n0 > rows, true);
+  const before = d.windowPx;
+  answer(d, snd, false);                      /* the device NACKs them */
+  eq("a NACK halves the window", d.windowPx < before, true);
+  for (let i = 0; i < 40; i++) {              /* NACK everything, repeatedly */
+    d.tick(snd, () => full, { kind: "framebuffer" }, 200 + i); answer(d, snd, false); }
+  eq("...never below WINDOW_PX_MIN", d.windowPx, WINDOW_PX_MIN);
+  const n1 = snd.log.length;
+  d.tick(snd, () => full, { kind: "framebuffer" }, 300);
+  eq("...and a row still goes when nothing is in flight -- it cannot stall", snd.log.length > n1, true);
+  eq("the window starts at WINDOW_PX_START", createDisplay().windowPx, WINDOW_PX_START);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
