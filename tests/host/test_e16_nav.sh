@@ -336,6 +336,19 @@ console.log(fails ? "FAILED " + fails : "PASS");
   r.at(1000 + D / 4);
   eq("a push inside the delay acts on the map", r.ev({ type: "push", enc: 1 }), { action: "slot", slot: 1 });
   eq("...and reveals it at once", r.nav.mapVisible(r.now()), true);
+
+  /* THE TURN HINT is on exactly while Shift is held over the knob view. */
+  r = rig({ showDelayMs: D });
+  eq("no hint without Shift", r.nav.turnHint(1000), false);
+  r.at(1000); r.ev({ type: "shift", down: true });
+  eq("hint while held, before the map", r.nav.turnHint(1000 + D / 2), true);
+  eq("no hint once the map is up", r.nav.turnHint(1000 + D), false);
+  r = rig({ showDelayMs: D });
+  r.at(1000); r.ev({ type: "shift", down: true });
+  r.at(1000 + D / 2); r.nav.handle({ type: "turn", enc: 2, ticks: 1 }, r.now());
+  eq("hint stays through a Shift+turn", r.nav.turnHint(1000 + D * 4), true);
+  r.at(1000 + D * 5); r.ev({ type: "shift", down: false });
+  eq("no hint after release", r.nav.turnHint(1000 + D * 5), false);
 }
 
 process.exit(fails ? 1 : 0);

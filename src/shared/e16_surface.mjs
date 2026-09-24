@@ -1508,6 +1508,8 @@ export function createNav(opts) {
          * -- the hold has a timeout, so "is the map up" is a question only this
          * object can answer correctly. */
         mapVisible(now) { return mapVisible(now); },
+        /** Shift is held and the knob view is still showing: a turn pages. */
+        turnHint(now) { return held(now) && !mapVisible(now); },
     };
 }
 
@@ -1686,6 +1688,7 @@ export function createSurface(io) {
      * page restates all sixteen at once rather than waiting for the look. */
     let ringContext = null;
     let ringEchoAt = null;
+    let shownTurnHint = false;
 
     /*
      * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
@@ -1859,7 +1862,7 @@ export function createSurface(io) {
             /* A slot with no modules says so -- a blank screen reads as a
              * dead device. */
             if (slotEmpty()) renderEmptySlot(ctx, nav.slot);
-            else renderView(ctx, viewNow());
+            else renderView(ctx, viewNow(), { turnHint: nav.turnHint(now()) });
         },
         /* The jump has already moved nav's focus; the controller catches up in
          * syncFocus() on the next tick. Reloading from here instead would put a
@@ -2198,6 +2201,9 @@ export function createSurface(io) {
              * opinion about what a map is.
              */
             const probe = testPattern();
+            /* The turn hint follows Shift in the knob view (see renderView). */
+            const hint = nav.turnHint(t);
+            if (hint !== shownTurnHint) { shownTurnHint = hint; display.invalidate(); }
             /* The rings follow the VIEW at once: map up or down, another slot,
              * module or page -- all sixteen restated in the new view's colours
              * (the controller's `loaded` is in the key, so a module's values

@@ -322,8 +322,11 @@ function rig(opts) {
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map again */
   /* The map is drawn MAP_SHOW_DELAY_MS into the last hold, once. */
   r.ticks(30);
-  eq("three invalidations in one tick are one repaint",
-     r.surface.display.paintsCompleted - p0, 1);
+  /* Three presses inside one tick collapse: ONE repaint for the turn hint
+   * (Shift held, knob view still up) and ONE for the map when it is due --
+   * not one per press. */
+  eq("three invalidations in one tick are one repaint per view",
+     r.surface.display.paintsCompleted - p0, 2);
 }
 
 /* ===========================================================================
