@@ -523,6 +523,43 @@ static void test_second_drain_in_a_frame_wipes_the_first(void)
           "-- so the caller must drain once per frame");
 }
 
+/*
+ * A MESSAGE THAT ENDS ENDS THE FRAME'S PACED RUN. The paced path kept placing
+ * into the NEXT message after one closed, appending its head to the closed
+ * message's retry copy -- a retry then re-sent A plus half of B.
+ */
+static void test_paced_run_stops_at_the_end_of_a_message(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    ui_midi_carry_set_pace(12);
+    push_msg(&c, 60, 1);                 /* 20 packets: the paced path */
+    push_msg(&c, 9, 2);                  /* 3 packets behind it */
+    uint8_t r1[REGION] = {0}, r2[REGION] = {0};
+    CHECK(ui_midi_carry_drain(&c, r1, REGION) == 12, "the long message: 12 this frame");
+    CHECK(ui_midi_carry_drain(&c, r2, REGION) == 8,
+          "...its last 8 next frame, and NOTHING of the message behind it");
+    CHECK(c.len == 3 * 4, "...which is still whole in the carry for a later frame");
+    ui_midi_carry_set_pace(UI_MIDI_CARRY_PACKETS_PER_FRAME);
+}
+
+/*
+ * LAST FRAME'S PACKETS ARE CLEARED EVEN WHEN THE CARRY IS NOW EMPTY. The check
+ * ran after the empty-carry early return, so it was skipped on exactly the
+ * frame after a message went out -- when its packets are still in the
+ * (copied-back) mailbox and would be sent a second time.
+ */
+static void test_leftovers_cleared_when_the_carry_empties(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t region[REGION] = {0};
+    push_msg(&c, 28, 3);
+    CHECK(ui_midi_carry_drain(&c, region, REGION) == 10, "a message goes out");
+    CHECK(c.len == 0, "...and the carry is empty");
+    /* Next frame: the mailbox still holds it (the post-transfer copy-back). */
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(region_used(region) == 0, "its packets are cleared, not transmitted twice");
+}
+
 int main(void)
 {
     test_fits_in_one_frame();
@@ -545,6 +582,8 @@ int main(void)
     test_atomic_waits_whole_rather_than_splitting();
     test_atomic_no_note_ever_inside_a_message();
     test_second_drain_in_a_frame_wipes_the_first();
+    test_paced_run_stops_at_the_end_of_a_message();
+    test_leftovers_cleared_when_the_carry_empties();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");

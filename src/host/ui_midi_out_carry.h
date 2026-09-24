@@ -426,7 +426,7 @@ static inline int ui_midi_carry_small_msg_len(const ui_midi_carry_t *c, int at)
 static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
                                       int region_bytes)
 {
-    if (!c || !midi_out || c->len <= 0 || region_bytes < 4) return 0;
+    if (!c || !midi_out || region_bytes < 4) return 0;
 
     int placed = 0;
     int slot = 0;
@@ -468,6 +468,12 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         }
     }
     ui_midi_carry_last_n = 0;
+    /* ...and only now may an EMPTY carry return. This check used to follow
+     * the early return on `c->len <= 0`, so it was skipped on exactly the
+     * frame after the carry emptied -- the one frame where our last packets
+     * (a burst's tail, or a whole message) are most likely still sitting in
+     * the mailbox to be transmitted a second time. */
+    if (c->len <= 0) return 0;
 
     /* Count foreign cable-2 traffic BEFORE placing anything, so we measure what
      * Move put there and never our own packets from this frame. Only while the
@@ -614,6 +620,13 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
          * written by the control side, so a torn read is not possible on any
          * platform this runs on and a stale one costs one frame. */
         if (placed >= ui_midi_carry_pace) break;
+        /* A MESSAGE THAT ENDS ENDS THE FRAME'S PACED RUN. Placing on into the
+         * next message appended its head to THIS message's retry copy (msg
+         * is only reset after the loop), so a retry re-sent A plus half of B
+         * -- a spliced message -- and B's own collision state was lost. The
+         * next message starts on a later frame, where it may also take the
+         * atomic path it is entitled to. */
+        if (run_closed) break;
     }
 
     if (read > 0) {
