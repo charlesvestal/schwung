@@ -53,7 +53,7 @@ const mk = () => createSurface({
   makeController: () => ({ pages: [], pageIndex: 0, load() {}, tick() {},
                            state: { values: {} } }),
 });
-const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x06, 0x53, 0xF7];
+const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7]  /* the ENTER ack, as captured 2026-09-24 */;
 
 const s1 = mk();
 s1.setEnabled(true); t += 30; s1.tick(); s1.feedMidi(ACK);
@@ -68,7 +68,7 @@ const s2 = mk();
 s2.setEnabled(true); t += 30; s2.tick(); s2.feedMidi(ACK);
 for (let i = 0; i < 50; i++) { t += 30; s2.tick(); }
 eq("a refused send is not a paint", s2.display.shownKind, null);
-ok(s2.display.framebufferOwed, "...and the frame stays owed, not dropped");
+ok(s2.display.repaintPending, "...and the frame stays owed, not dropped");
 
 
 /* --- disarming the probe REPAINTS --------------------------------------
@@ -103,11 +103,11 @@ ok(s2.display.framebufferOwed, "...and the frame stays owed, not dropped");
   tt += 30; surface.tick();
   for (let i = 0; i < 10; i++) { tt += 30; surface.tick(); }
   eq("after disarming, the screen is not left owing a frame forever",
-     surface.display.framebufferOwed, false);
+     surface.display.repaintPending, false);
 
   /* Re-arm: the change alone must owe a repaint, with no other gesture. */
   armed = 3;
-  const owedBefore = surface.display.framebufferOwed;
+  const owedBefore = surface.display.repaintPending;
   eq("nothing owed before the probe changes", owedBefore, false);
   tt += 30; surface.tick();
   ok(surface.display.shownKind !== null,
