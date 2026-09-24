@@ -777,6 +777,24 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("the window starts at WINDOW_PX_START", createDisplay().windowPx, WINDOW_PX_START);
 }
 
+/* A STALLED FRAME IS NOT A LOST ANSWER. Replies are read before the UI tick;
+ * a tick that stalls (slot switch, blocking reads) reaches this sweep with
+ * answers still unread. Timers age against when replies were last READ. */
+{
+  const d = createDisplay(); const snd = mkSend();
+  const b = new Uint8Array(1024); b[5] = 1;
+  d.invalidate();
+  d.tick(snd, () => b, { kind: "framebuffer" }, 0);
+  answer(d, snd);
+  for (let i = 1; i < 8 && d.repaintPending; i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
+  eq("a row is outstanding", d.outstandingCount, 1);
+  const n0 = snd.log.length;
+  d.tick(snd, () => b, { kind: "framebuffer" }, 5000, 20);
+  eq("a clock far past ACK_TIMEOUT_MS with replies unread is NOT a timeout", [d.ackTimeouts, snd.log.length], [0, n0]);
+  d.tick(snd, () => b, { kind: "framebuffer" }, 5001, ACK_TIMEOUT_MS + 10);
+  eq("...replies READ past it with no answer IS one", d.ackTimeouts, 1);
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
