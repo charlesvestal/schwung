@@ -41,7 +41,7 @@ fi
 # the real line.
 node --input-type=module -e '
 const R = process.cwd();
-const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_MS, PARTIAL_HEARTBEAT_MS } =
+const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_MS, PARTIAL_HEARTBEAT_MS, MAP_SHOW_DELAY_MS } =
   await import(R + "/src/shared/e16_surface.mjs");
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
 /* LABELS is no longer the default view, so its payload shape is pinned by
@@ -316,12 +316,13 @@ function rig(opts) {
   /* Let any repaint in flight finish AND the rig values finish arriving:
    * each first read changes one value cell, which the 250 ms look repaints. */
   r.ticks(200);
+  r.ack();                                  /* the device answers its keepalive */
   const p0 = r.surface.display.paintsCompleted;
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map */
   r.surface.feedMidi([0x80, 0x10, 0x00]);   /* shift up    -> params */
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map again */
   /* The map is drawn MAP_SHOW_DELAY_MS into the last hold, once. */
-  r.ticks(30);
+  r.ticks(Math.ceil(MAP_SHOW_DELAY_MS / 25) + 80);
   /* Three presses inside one tick collapse: ONE repaint for the turn hint
    * (Shift held, knob view still up) and ONE for the map when it is due --
    * not one per press. */
@@ -783,7 +784,7 @@ function rig(opts) {
   r.ticks(4); r.ack(); r.ticks(120); r.ack();   /* the device answers its keepalives */
   let b = r.send.log.length;
   r.surface.feedMidi([0x90, 0x10, 0x7F]);        /* hold Shift: the map */
-  r.ticks(20);
+  r.ticks(Math.ceil(MAP_SHOW_DELAY_MS / 25) + 20);
   let st = ringState(r.send.log.slice(b));
   eq("map: the current slot knob is green", rgbOf(st[0]), rgbOf(SLOT_RGB));
   ok([1, 2, 3].every((e) => st[e] && st[e].g > 0 && !st[e].r && !st[e].b), "map: the other slot knobs are green");
@@ -807,7 +808,7 @@ function rig(opts) {
     const { RING_ECHO_MS } = await import(R + "/src/shared/e16_surface.mjs");
     r.ack();
     const rb = r.send.log.length;
-    r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(Math.ceil((250 + RING_ECHO_MS) / 25) + 20);
+    r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(Math.ceil((MAP_SHOW_DELAY_MS + RING_ECHO_MS) / 25) + 20);
     const ringMsgs = r.send.log.slice(rb).filter((p) => j(msgId(p)) === j(RING)).length;
     ok(ringMsgs >= 12, "a view change sends its sixteen rings twice (got " + ringMsgs + " ring messages)");
     r.surface.feedMidi([0x80, 0x10, 0x00]); r.ticks(40);
@@ -815,7 +816,7 @@ function rig(opts) {
 
   /* An empty slot: Shift, push slot 3, let go. */
   r.ack();
-  r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(20);
+  r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(Math.ceil(MAP_SHOW_DELAY_MS / 25) + 20);
   r.surface.feedMidi([0x90, 0x02, 0x7F]); r.surface.feedMidi([0x80, 0x02, 0x00]); r.ticks(4);
   b = r.send.log.length;
   r.surface.feedMidi([0x80, 0x10, 0x00]); r.ticks(40);

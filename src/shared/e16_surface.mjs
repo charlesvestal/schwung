@@ -1174,7 +1174,7 @@ export const MAP_MAX_HOLD_MS = 10000;
  * row is a fixed position, so Shift+top-row switches slot without waiting to
  * see it.
  */
-export const MAP_SHOW_DELAY_MS = 250;
+export const MAP_SHOW_DELAY_MS = 1000;
 
 /* The top row is the four slots; everything below is the selected slot's
  * content. Both halves of that split are already `e16_map.mjs`'s, and this is
@@ -1389,6 +1389,15 @@ export function createNav(opts) {
                      * of this hold -- the hand is paging, not looking for a
                      * module. */
                     turnedThisHold = true;
+                    /* PAGING KEEPS THE HOLD ALIVE. A Shift+turn is a
+                     * legitimate reason to hold Shift for a long time, and
+                     * the MAP_MAX_HOLD_MS expiry ended it mid-turn (hardware,
+                     * 2026-09-24: "it lost the shift hold"). Each page step
+                     * restarts the expiry, so it now means "10 s after the
+                     * last turn". A stranded Shift stays escapable: the turn
+                     * glyph shows it is held, and a tap of Shift clears it.
+                     * (Map turns still do NOT re-arm -- see the header.) */
+                    shiftDownAt = now;
                     const next = pageStep(pageIndex, ev.ticks, pageCountOf());
                     if (next === pageIndex) return { action: "page", pageIndex };
                     pageIndex = next;
