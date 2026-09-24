@@ -126,7 +126,7 @@ const LABELS      = [0x06, 0x03];
  * rather than that anything was drawn at all. */
 /* The drawn view goes out as RECTANGLE regions (0x08, one id byte) -- a full
  * repaint is eight 128x8 bands -- never as a whole FRAMEBUFFER any more. */
-const isRegion = (p) => unpack(p)[6] === 0x08;
+const isRegion = (p) => unpack(p)[6] === 0x08 || unpack(p)[6] === 0x05;
 const isScreen = (p) => j(msgId(p)) === j(LABELS) || isRegion(p);
 const RING = [0x06, 0x04];
 const EXIT = [0x06, 0x00];
@@ -376,8 +376,8 @@ function rig(opts) {
   }
   const restates = r.send.log.slice(b3).filter((p) => j(msgId(p)) === j(RING));
   ok(restates.length >= 2, "an idle surface restates its rings on the keepalive");
-  eq("...all sixteen chunks in one message",
-     unpack(restates[0]).length > 100, true);
+  eq("...every ring message fits one SPI frame (<= 12 packets)",
+     restates.every((p) => p.length / 4 <= 12), true);
 
   /* Within the budget, or a single message -- one message always goes, so
    * the all-rings restate (~44 packets) can be a tick on its own. */
@@ -469,6 +469,33 @@ function rig(opts) {
   const after = r.send.log.slice(b1);
   ok(after.some((p) => unpack(p)[6] === 0x07) && after.some((p) => unpack(p)[6] === 0x08),
      "an unsolicited CLEAR ack is repainted at once, not at the next heartbeat");
+}
+
+/* ===========================================================================
+ * EVERY MESSAGE FITS ONE SPI FRAME. The outbound queue places a message of at
+ * most 12 packets WHOLE in one frame, after the cable-2 packets of Move, so
+ * notes from Move can never be spliced into it -- the splice behind every garble
+ * on this cable. A single bigger message would reopen that, silently. So a
+ * busy session -- connect, paint, spin, map up and down, slot jumps -- must
+ * never send one.
+ * ========================================================================= */
+{
+  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1); r.surface.feedMidi(NEW_ACK); r.ticks(40);
+  for (let i = 0; i < 30; i++) { r.surface.feedMidi([0xB0, 1 + (i % 16), i % 2 ? 0x01 : 0x7F]); r.ticks(1); }
+  for (let k = 0; k < 4; k++) {
+    r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(6);        /* Shift: map up */
+    r.surface.feedMidi([0x90, k % 4, 0x7F]); r.ticks(6);       /* jump slot */
+    r.surface.feedMidi([0x80, 0x10, 0x00]); r.ticks(10);       /* map down */
+    if (k % 2) r.surface.feedMidi(NEW_ACK);
+  }
+  r.ticks(80);
+  const big = r.send.log.filter((p) => p.length / 4 > 12);
+  ok(r.send.log.length > 50, "the session sent real traffic (positive control)");
+  eq("no message larger than one SPI frame (12 packets) was ever sent",
+     big.map((p) => p.length / 4), []);
 }
 
 /* ===========================================================================

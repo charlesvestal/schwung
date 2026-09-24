@@ -159,6 +159,42 @@ _Static_assert(UI_MIDI_CARRY_BYTES == SHADOW_MIDI_OUT_BUFFER_SIZE,
 
 static int ui_midi_carry_pace = UI_MIDI_CARRY_PACKETS_PER_FRAME;
 
+/*
+ * FRAME-ATOMIC MESSAGES -- the fix for the splice, rather than a repair of it.
+ *
+ * Move's own cable-2 output (notes to external gear) shares this mailbox, and
+ * a SysEx is a RUN of packets the receiver assembles as one message. Two ways
+ * a Move packet ends up INSIDE one of ours:
+ *
+ *   ACROSS frames -- a message straddles an SPI frame, and Move's note in the
+ *   next frame goes on the wire between its halves. The pace made every long
+ *   message straddle.
+ *   WITHIN a frame -- placement took the first free slots ANYWHERE, so with a
+ *   Move note in slot 4 ours could fill 0-3 and 5+: the note in the middle.
+ *
+ * The strongest measurement in the whole E16 investigation (2026-09-11): a
+ * message placed entirely in ONE frame arrived intact 78/78 under a flood of
+ * notes, clock and aftertouch. So a message that FITS is placed WHOLE, in one
+ * frame, only in free slots AFTER the last of Move's cable-2 packets in that
+ * frame -- or not at all this frame. A Move packet can then only sit before
+ * or after one of ours on the wire, never inside it. Cable-0 packets (Move's
+ * LED traffic) are a different virtual cable and never reach the device, so
+ * they may sit between ours freely.
+ *
+ * "Fits" is a complete run of at most UI_MIDI_CARRY_ATOMIC_MAX packets: the
+ * same 12 the pace may never exceed, leaving Move its reserve. At least one
+ * whole message goes per frame even when it is larger than the pace -- the
+ * pace protects Move's share of the mailbox, and a 10-packet message in a
+ * frame is inside the 12 it already allows. Longer messages (a framebuffer,
+ * LABELS, another tool's bulk dump) and malformed runs take the paced,
+ * splittable path below, unchanged.
+ */
+#define UI_MIDI_CARRY_ATOMIC_MAX UI_MIDI_CARRY_PACE_MAX
+static int ui_midi_carry_atomic_placed = 0;   /* whole messages placed atomically */
+static int ui_midi_carry_atomic_waits = 0;    /* frames a whole message did not fit */
+static inline int ui_midi_carry_atomic_count(void) { return ui_midi_carry_atomic_placed; }
+static inline int ui_midi_carry_atomic_wait_count(void) { return ui_midi_carry_atomic_waits; }
+
 static inline void ui_midi_carry_set_pace(int pace)
 {
     if (pace < UI_MIDI_CARRY_PACE_MIN) pace = UI_MIDI_CARRY_PACE_MIN;
@@ -370,6 +406,23 @@ static inline int ui_midi_carry_stranded_count(void) { return ui_midi_carry_stra
 
 static inline int ui_midi_carry_foreign_count(void) { return ui_midi_carry_foreign; }
 
+/* Packets in the complete message at `at`, if it is small enough to place
+ * atomically: 1 for a single non-SysEx packet, N for a SysEx run whose closing
+ * packet is within UI_MIDI_CARRY_ATOMIC_MAX. 0 = take the splittable path
+ * (too long, not closed yet, or not a run we recognise). */
+static inline int ui_midi_carry_small_msg_len(const ui_midi_carry_t *c, int at)
+{
+    if (at + 4 > c->len) return 0;
+    const uint8_t cin0 = UI_MIDI_CIN(&c->buf[at]);
+    if (cin0 != 0x04) return 1;
+    for (int k = 1; k < UI_MIDI_CARRY_ATOMIC_MAX && at + 4 * k + 4 <= c->len; k++) {
+        const uint8_t cin = UI_MIDI_CIN(&c->buf[at + 4 * k]);
+        if (cin == 0x04) continue;
+        return ui_midi_cin_closes_run(cin) ? k + 1 : 0;
+    }
+    return 0;
+}
+
 static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
                                       int region_bytes)
 {
@@ -421,13 +474,67 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
      * carry is non-empty: a packet from Move between two complete messages of
      * ours is ordinary MIDI, not interference. */
     int foreign_this_frame = 0;
+    int last_foreign = -4;   /* byte offset of Move's last cable-2 packet */
     for (int q = 0; q + 4 <= region_bytes; q += 4) {
         if (!midi_out[q] && !midi_out[q + 1] && !midi_out[q + 2] && !midi_out[q + 3])
             continue;
         if (((midi_out[q] >> 4) & 0x0F) == 0x02) {
             ui_midi_carry_foreign++;
             foreign_this_frame++;
+            last_foreign = q;
         }
+    }
+
+    /*
+     * THE ATOMIC PATH -- see UI_MIDI_CARRY_ATOMIC_MAX. Only between runs: a
+     * long run already on the wire must finish on the splittable path, in
+     * order. Whole small messages, placed after Move's last cable-2 packet,
+     * until the next one does not fit this frame -- then it waits WHOLE.
+     */
+    if (c->msg_len == 0) {
+        int after = last_foreign + 4;   /* first slot we may use */
+        int blocked = 0;
+        for (;;) {
+            const int L = ui_midi_carry_small_msg_len(c, read);
+            if (L == 0) break;                                   /* long: below */
+            const int cap = ui_midi_carry_pace > L ? ui_midi_carry_pace : L;
+            if (placed + L > (placed ? cap : UI_MIDI_CARRY_ATOMIC_MAX)) { blocked = 1; break; }
+            int slots[UI_MIDI_CARRY_ATOMIC_MAX];
+            int n = 0;
+            for (int q = after; q + 4 <= region_bytes && n < L; q += 4) {
+                if (!midi_out[q] && !midi_out[q + 1] && !midi_out[q + 2] && !midi_out[q + 3])
+                    slots[n++] = q;
+            }
+            if (n < L) { blocked = 1; break; }                  /* whole or not at all */
+            for (int k = 0; k < L; k++) {
+                memcpy(&midi_out[slots[k]], &c->buf[read + 4 * k], 4);
+                if (ui_midi_carry_last_n < UI_MIDI_CARRY_TRACK) {
+                    const int q = ui_midi_carry_last_n++;
+                    ui_midi_carry_last_slot[q] = slots[k];
+                    memcpy(ui_midi_carry_last_pkt[q], &c->buf[read + 4 * k], 4);
+                }
+            }
+            ui_midi_carry_placed_total += L;
+            ui_midi_carry_atomic_placed++;
+            placed += L;
+            read += 4 * L;
+            after = slots[L - 1] + 4;   /* keep this frame's messages in order */
+        }
+        if (read > 0) {
+            const int remain = c->len - read;
+            if (remain > 0) memmove(c->buf, &c->buf[read], (size_t)remain);
+            c->len = remain;
+            read = 0;
+        }
+        if (blocked || c->len == 0) {
+            if (blocked && placed == 0) ui_midi_carry_atomic_waits++;
+            c->start_defers = 0;
+            return placed;
+        }
+        /* A long message is next: it goes below, paced, in THIS frame only if
+         * the atomic path placed nothing -- one kind of placement per frame
+         * keeps the two from interleaving their slots. */
+        if (placed > 0) return placed;
     }
 
     /* Were we already mid-run when this frame began? A foreign packet now is
