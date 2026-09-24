@@ -46,7 +46,7 @@ const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_M
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
 /* LABELS is no longer the default view, so its payload shape is pinned by
  * building one directly rather than fishing it out of the wire log. */
-const { packetize, labelsMsg } = await import(R + "/src/shared/e16_protocol.mjs");
+const { packetize, labelsMsg, pack7, unpack7 } = await import(R + "/src/shared/e16_protocol.mjs");
 
 let fails = 0;
 const ok = (c, m) => { if (!c) { console.log("FAIL: " + m); fails++; } else console.log("ok   " + m); };
@@ -177,10 +177,25 @@ function rig(opts) {
     /* PACKETS per tick: the budget is in packets now, since small region
      * messages share a tick up to TICK_PACKET_BUDGET. */
     perTickPackets: [],
+    /* THE FAKE DEVICE ACKS every region it receives, echoing the address as
+     * the real E16 does (captured 2026-09-24). Without it every region would
+     * time out as lost and be re-sent forever -- which is exactly what the
+     * surface SHOULD do with a device that never answers. */
+    autoAck: true,
     ticks(n, ms) { for (let i = 0; i < (n || 1); i++) {
         t += (ms === undefined ? 25 : ms);
         const before = send.log.length;
         surface.tick();
+        if (this.autoAck) for (const p of send.log.slice(before)) {
+          const u = unpack(p), id = u[6];
+          if (id !== 0x08 && id !== 0x05 && id !== 0x07) continue;
+          let addr = [0x7F, 0x7F, 0x7F, 0x7F];
+          if (id === 0x08) addr = unpack7(u.slice(7, u.length - 1), 4);
+          if (id === 0x05) addr = [unpack7(u.slice(7, u.length - 1), 1)[0], 0xFF, 0xFF, 0xFF];
+          if (id === 0x07) addr = [0xFF, 0xFF, 0xFF, 0xFF];
+          surface.feedMidi([0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53]
+            .concat(pack7([id, 0].concat(addr)), [0xF7]));
+        }
         this.perTick.push(send.log.length - before);
         this.perTickPackets.push(send.log.slice(before)
           .reduce((a, p) => a + p.length / 4, 0)); } },
