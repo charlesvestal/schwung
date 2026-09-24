@@ -3689,6 +3689,28 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
      * packet always carries at least one nonzero byte, so the all-zero case
      * is now rejected too. See src/host/shadow_midi_filter.c. */
     if (!shadow_midi_forwardable(head, status, d1, d2)) return;
+    /*
+     * A SYSEX THAT LOST A PACKET LOSES THE REST OF ITSELF TOO. Dropping one
+     * packet of a message and delivering the ones after it hands JS a head
+     * and a tail with a hole between -- which can assemble into a well-framed
+     * WRONG message (an OLED reply with a shifted address). So once a SysEx
+     * packet is dropped, the rest of that message is dropped with it, up to
+     * its end or the next F0; JS then sees a truncated head, which its
+     * assembler discards at the next F0. Per cable, on the SPI callback: a
+     * few compares, no allocation, no logging.
+     */
+    static uint8_t sysex_dropping[16];
+    const uint8_t cable = (uint8_t)((head >> 4) & 0x0F);
+    const uint8_t cin = (uint8_t)(head & 0x0F);
+    const int is_sysex = (cin >= 0x04 && cin <= 0x07);
+    const int starts = is_sysex && status == 0xF0;
+    const int ends = (cin >= 0x05 && cin <= 0x07);
+    if (sysex_dropping[cable] && is_sysex && !starts) {
+        if (ends) sysex_dropping[cable] = 0;   /* the damaged message is over */
+        shim_ui_midi_drops++;
+        return;
+    }
+    if (starts) sysex_dropping[cable] = 0;
     /* IN ARRIVAL ORDER -- a ring cursor, not the lowest free slot, which
      * reordered every burst that straddled a drain. See ui_midi_ring.h. */
     static int ui_midi_wr = 0;
@@ -3697,6 +3719,7 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
         shadow_control->midi_ready++;
         return;
     }
+    if (is_sysex && !ends) sysex_dropping[cable] = 1;
     /* Ring full: this packet is gone.
      *
      * Falling off the end and returning is what made a 6.9% packet loss on

@@ -1516,6 +1516,13 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
     JS_ToInt32(ctx, &len, len_val);
     JS_FreeValue(ctx, len_val);
 
+    /* WHOLE PACKETS ONLY. The ring's indices advance by `len`, and every
+     * reader walks it four bytes at a time: a 3- or 7-byte push would shift
+     * both indices off the packet grid for good, and every later packet
+     * would decode shifted -- no error, just garbage from then on. Refused,
+     * never padded: padding would invent bytes the caller did not send. */
+    if (len <= 0 || (len & 3) != 0) return JS_FALSE;
+
     /* A message too large to EVER fit is not a transient refusal.
      *
      * The caller's contract is "false means retry", and that is right for a
