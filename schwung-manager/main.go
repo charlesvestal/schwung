@@ -1128,6 +1128,9 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		data["CSRFToken"] = cookie.Value
 	}
+	// Every page that names a channel or hints at a beta asks this first;
+	// the feature is hidden unless manager-config.json switches it on.
+	data["BetaEnabled"] = app.channelPref.Enabled()
 	// Inject mirror enabled state for nav bar.
 	if app.shm != nil {
 		data["MirrorEnabled"] = app.shm.DisplayMirror()
@@ -1269,7 +1272,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		hostOfferedIsBeta = hostServedChannel == ChannelBeta
 		// Stable users get the same "beta X.Y.Z available" nudge that
 		// modules do, when the host publishes a beta ahead of stable.
-		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
 			beta := cat.Host.Channels.Beta.Version
 			stable := cat.Host.LatestVersion
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
@@ -1332,6 +1335,10 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 // re-rendering the whole list is cleaner than dozens of partial swaps.
 func (app *App) handleModulesChannelSet(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("channel")
+	if !app.channelPref.Enabled() {
+		http.Redirect(w, r, "/modules?flash=Beta+channel+is+not+enabled", http.StatusSeeOther)
+		return
+	}
 	if !app.channelPref.SetChannel(value) {
 		http.Redirect(w, r, "/modules?flash=Unknown+channel", http.StatusSeeOther)
 		return
@@ -2291,7 +2298,7 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 			b := rm.Channels.Beta.Version
 			am.OfferedIsBeta = b != "" && versionNewer(b, channelStableVersion(rm))
 		}
-		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
+		if app.channelPref.Enabled() && channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
 			if b != "" && versionNewer(b, channelStableVersion(rm)) {
 				am.BetaAvailable = b
@@ -3094,7 +3101,7 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
 		updateAvailable = hostOfferIsUpdate(latestVersion, version)
 		offeredIsBeta = served == ChannelBeta
-		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
 			beta := cat.Host.Channels.Beta.Version
 			stable := cat.Host.LatestVersion
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {

@@ -151,6 +151,7 @@ func TestResolveMultiModule(t *testing.T) {
 // trips. An invalid value is rejected and the previous value stays.
 func TestChannelPrefRoundTrip(t *testing.T) {
 	dir := t.TempDir()
+	writeManagerConfig(t, dir, `{"beta_channel_enabled": true}`)
 	cp := NewChannelPref(dir)
 
 	if cp.Channel() != ChannelStable {
@@ -220,6 +221,7 @@ func TestModulesTemplateRendersWithChannel(t *testing.T) {
 			"HasInstalled": true,
 			"ReleaseMeta":  meta,
 			"Taxonomy":     CatalogTaxonomy{}, "Channel": channel,
+			"BetaEnabled": true,
 		}
 		var buf bytes.Buffer
 		if err := tmpl.ExecuteTemplate(&buf, "modules.html", data); err != nil {
@@ -242,6 +244,86 @@ func TestModulesTemplateRendersWithChannel(t *testing.T) {
 			if strings.Contains(out, "beta v1.3.0-beta.1 available") {
 				t.Errorf("beta: teaser should not appear on beta channel")
 			}
+		}
+	}
+}
+
+func writeManagerConfig(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "manager-config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With beta_channel_enabled absent (the default) or false, the feature
+// is OFF: a stored "beta" choice reads as stable, SetChannel refuses, and
+// the stored choice is left on disk so re-enabling restores it.
+func TestChannelPrefDisabledForcesStable(t *testing.T) {
+	for _, cfg := range []string{
+		`{"module_channel": "beta"}`,
+		`{"module_channel": "beta", "beta_channel_enabled": false}`,
+	} {
+		dir := t.TempDir()
+		writeManagerConfig(t, dir, cfg)
+		cp := NewChannelPref(dir)
+		if cp.Enabled() {
+			t.Errorf("%s: Enabled() = true", cfg)
+		}
+		if cp.Channel() != ChannelStable {
+			t.Errorf("%s: Channel() = %q, want stable", cfg, cp.Channel())
+		}
+		if cp.SetChannel("stable") {
+			t.Errorf("%s: SetChannel accepted a write while disabled", cfg)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "manager-config.json"))
+		if string(data) != cfg {
+			t.Errorf("%s: config rewritten while disabled: %s", cfg, data)
+		}
+	}
+
+	// Switching it on restores the stored choice.
+	dir := t.TempDir()
+	writeManagerConfig(t, dir, `{"module_channel": "beta", "beta_channel_enabled": true}`)
+	if got := NewChannelPref(dir).Channel(); got != ChannelBeta {
+		t.Errorf("enabled: Channel() = %q, want beta", got)
+	}
+}
+
+// Disabled, modules.html shows no toggle and no "beta available" teaser
+// -- the teaser tells the user to flip a toggle that is not there.
+func TestModulesTemplateHidesBetaWhenDisabled(t *testing.T) {
+	tmpls, err := loadTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable := ChannelEntry{Version: "1.2.3", DownloadURL: "https://x/1.2.3.tar.gz"}
+	beta := ChannelEntry{Version: "1.3.0-beta.1", DownloadURL: "https://x/beta.tar.gz"}
+	data := map[string]any{
+		"Title":     "Modules",
+		"CSRFToken": "csrf",
+		"Modules": []CatalogModule{
+			{ID: "has-beta", Name: "Has Beta", ComponentType: "sound_generator", GithubRepo: "u/r"},
+			{ID: "inst-beta", Name: "Inst Beta", ComponentType: "audio_fx", GithubRepo: "u/r"},
+		},
+		"Installed":    map[string]InstalledModule{"inst-beta": {ID: "inst-beta", Version: "1.2.3"}},
+		"HasInstalled": true,
+		"ReleaseMeta": map[string]ReleaseMeta{
+			"has-beta":  {Version: "1.2.3", Channels: &ChannelSet{Stable: &stable, Beta: &beta}},
+			"inst-beta": {Version: "1.2.3", Channels: &ChannelSet{Stable: &stable, Beta: &beta}},
+		},
+		"Taxonomy":       CatalogTaxonomy{},
+		"Channel":        ChannelStable,
+		"BetaEnabled":    false,
+		"HostBetaTeaser": "9.9.9-beta.1",
+	}
+	var buf bytes.Buffer
+	if err := tmpls["modules.html"].ExecuteTemplate(&buf, "modules.html", data); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, bad := range []string{"channel-toggle", "beta-teaser", "/modules/channel"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("disabled: output contains %q", bad)
 		}
 	}
 }

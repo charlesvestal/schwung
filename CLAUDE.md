@@ -1767,7 +1767,9 @@ instead. Installing never changes `default`. See `docs/BOOT_TARGETS.md`.
 ```
 
 An optional `channels` block adds beta/stable channels — see
-`docs/MODULE_CHANNELS.md`. Old release.json without it keeps working
+`docs/MODULE_CHANNELS.md`. **The manager hides the whole feature unless
+`manager-config.json` sets `"beta_channel_enabled": true`** (default off,
+read at startup); off, everyone resolves as Stable. Old release.json without it keeps working
 unchanged; the channel feature is strictly additive.
 
 Repositories that publish multiple catalog modules may key each release by

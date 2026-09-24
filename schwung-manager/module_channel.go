@@ -31,7 +31,14 @@
 //     user from getting stranded on an old beta after stable catches up.
 //
 // The user-selected channel is a manager-global preference stored in
-// <basePath>/manager-cache/manager-config.json. Default is stable.
+// <basePath>/manager-config.json. Default is stable.
+//
+// The whole feature sits behind "beta_channel_enabled": true in that same
+// file, OFF by default. Off, every reader is told stable, the toggle and
+// every beta hint are hidden, and a POST to /modules/channel is refused --
+// but a stored "module_channel" is left alone, so switching the feature
+// back on restores the user's choice instead of forgetting it. Read once at
+// startup: flipping it takes a manager restart.
 // Nothing outside the manager depends on it — the on-device shadow UI
 // doesn't fetch modules.
 
@@ -204,6 +211,7 @@ type ChannelPref struct {
 	basePath string
 	mu       sync.RWMutex
 	channel  string
+	enabled  bool // beta_channel_enabled; false hides the feature entirely
 }
 
 // NewChannelPref loads the on-disk preference. Nil-safe callers welcome:
@@ -245,25 +253,39 @@ func (cp *ChannelPref) loadFromDisk() {
 			cp.channel = c
 		}
 	}
+	if v, ok := raw["beta_channel_enabled"].(bool); ok {
+		cp.enabled = v
+	}
 }
 
-// Channel returns the current channel — always a valid non-empty value.
+// Enabled reports whether the beta channel feature is switched on.
+func (cp *ChannelPref) Enabled() bool {
+	if cp == nil {
+		return false
+	}
+	cp.mu.RLock()
+	defer cp.mu.RUnlock()
+	return cp.enabled
+}
+
+// Channel returns the EFFECTIVE channel — always a valid non-empty value,
+// and always stable while the feature is disabled, whatever is stored.
 func (cp *ChannelPref) Channel() string {
 	if cp == nil {
 		return ChannelStable
 	}
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
-	if cp.channel == "" {
+	if !cp.enabled || cp.channel == "" {
 		return ChannelStable
 	}
 	return cp.channel
 }
 
-// SetChannel persists a new channel choice. An unknown value is
-// rejected with a bool false — callers surface that as an HTTP 400.
+// SetChannel persists a new channel choice. An unknown value, or any
+// value while the feature is disabled, is rejected with a bool false.
 func (cp *ChannelPref) SetChannel(v string) bool {
-	if cp == nil {
+	if cp == nil || !cp.Enabled() {
 		return false
 	}
 	c := normalizeChannel(v)

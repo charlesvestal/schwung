@@ -7,9 +7,19 @@ channel and one for an opt-in `beta` channel — so a module author can
 ship a pre-release to adventurous users without pushing it to
 everyone.
 
-Users pick a channel with the Stable / Beta toggle at the top of the
-Modules page. The default is **Stable** and nobody is opted into
-Beta automatically.
+**The feature is OFF by default and hidden behind a config flag.** Add
+`"beta_channel_enabled": true` to
+`/data/UserData/schwung/manager-config.json` and restart
+schwung-manager to turn it on. Off, the manager behaves as though
+every user is on Stable: the toggle, the Channel rows on the module
+and System pages and every "beta … available" hint are hidden, a POST
+to `/modules/channel` is refused, and `/api/modules` reports no
+`beta_available`. A stored `module_channel` is left untouched, so
+switching the flag back on restores the user's previous choice.
+
+With the flag on, users pick a channel with the Stable / Beta toggle
+at the top of the Modules page. The default is **Stable** and nobody
+is opted into Beta automatically.
 
 The **same channel selection also governs the Schwung Host itself.**
 The catalog's `host` block gains the same optional `channels` field
@@ -199,8 +209,9 @@ tarballs; the tag suffix decides which channel entries get rewritten.
   button for the newest beta host.
 
 The chosen channel is stored in
-`/data/UserData/schwung/manager-cache/manager-config.json` under the
-key `"module_channel"`. Nothing outside Schwung Manager reads that
+`/data/UserData/schwung/manager-config.json` under the key
+`"module_channel"` (not under `manager-cache/`, which is disposable),
+beside the `"beta_channel_enabled"` flag. Nothing outside Schwung Manager reads that
 file — on-device UIs don't fetch module updates.
 
 ## Non-goals
