@@ -620,7 +620,19 @@ export function createDisplay() {
 
             if (pendingRegions.length === 0) {
                 const buf = frameBytes();
-                const diff = diffFramebuffers(lastSentBuf, buf);
+                /*
+                 * NEVER ESCALATE A KNOWN SCREEN TO "FULL". The region-count and
+                 * area caps existed because one framebuffer used to be cheaper
+                 * than many regions; a full repaint is now every inked strip, of
+                 * which "only the changed strips" is always a subset. Escalating
+                 * made a feedback loop on hardware (2026-09-24): a few NACKed
+                 * strips on different rows crossed MAX_REGIONS, the diff called
+                 * it full, the full repaint's extra traffic drew more NACKs --
+                 * about four whole-screen repaints a second. "Full" is now only
+                 * for a screen we know nothing about (prev === null).
+                 */
+                const diff = diffFramebuffers(lastSentBuf, buf,
+                    { maxRegions: Infinity, fullRepaintThreshold: Infinity });
                 if (diff.kind === "none") {
                     fbOwed = false;
                     shownKind = "framebuffer";
