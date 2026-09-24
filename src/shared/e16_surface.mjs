@@ -1151,6 +1151,7 @@ export function createDisplay(opts) {
  * ---------------------------------------------------------------------------
  */
 import { buildMap, setOrdinal } from "./e16_map.mjs";
+import { createMixer, renderMixer } from "./e16_mixer.mjs";
 import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
 
 /* How long a Shift hold can live without a note-off.
@@ -1175,6 +1176,15 @@ export const MAP_MAX_HOLD_MS = 10000;
  * see it.
  */
 export const MAP_SHOW_DELAY_MS = 400;
+
+/*
+ * DOUBLE-TAP SHIFT TOGGLES THE MIXER (e16_mixer.mjs). Two complete presses,
+ * each released within this long of its press, the second within this long
+ * of the first release. A double TAP, not a held state: nothing is left
+ * latched on a lost note-off, which is the whole reason the map is a hold.
+ * A press that did anything (a turn, a push, a map) is not a tap.
+ */
+export const DOUBLE_TAP_MS = 350;
 
 /* The top row is the four slots; everything below is the selected slot's
  * content. Both halves of that split are already `e16_map.mjs`'s, and this is
@@ -1209,6 +1219,13 @@ export function createNav(opts) {
     /* A page turn happened during this hold: the map stays hidden until the
      * next press (see MAP_SHOW_DELAY_MS). */
     let turnedThisHold = false;
+    /* The Mixer view is up (double-tap Shift; see DOUBLE_TAP_MS). */
+    const renderMixerView = o.renderMixer || null;
+    let mixerOn = false;
+    /* When the last TAP (a press released quickly, having done nothing) ended,
+     * so the next press can recognise a double tap. */
+    let lastTapUpAt = null;
+    let actedThisHold = false;
 
     let slot = o.slot | 0;
     let component = o.component || "synth";
@@ -1311,8 +1328,20 @@ export function createNav(opts) {
                     /* Deliberately not a re-arm: a repeat down while up leaves
                      * the original deadline standing (see the header). */
                     if (held(now)) return null;
+                    if (renderMixerView && lastTapUpAt !== null && now - lastTapUpAt <= DOUBLE_TAP_MS) {
+                        /* THE SECOND TAP: toggle the Mixer. This press is
+                         * spent -- no map, and its release is not a tap. */
+                        lastTapUpAt = null;
+                        mixerOn = !mixerOn;
+                        shiftDownAt = now;
+                        turnedThisHold = true;
+                        actedThisHold = true;
+                        invalidate();
+                        return { action: "mixer", on: mixerOn };
+                    }
                     shiftDownAt = now;
                     turnedThisHold = false;
+                    actedThisHold = false;
                     mapPage = 0;
                     showBuses = false;
                     /* With a delay, no repaint yet: the map is drawn after
@@ -1321,6 +1350,9 @@ export function createNav(opts) {
                     return { action: "hold" };
                 }
                 const wasShown = mapVisible(now);
+                /* A TAP: released quickly, having done nothing. */
+                lastTapUpAt = (!actedThisHold && !wasShown && shiftDownAt !== null &&
+                               now - shiftDownAt <= DOUBLE_TAP_MS) ? now : null;
                 shiftDownAt = null;
                 turnedThisHold = false;
                 /* Only a map that was actually up needs taking down. A tap, a
@@ -1338,6 +1370,14 @@ export function createNav(opts) {
             if (ev.type === "release") return null;
 
             if (ev.type === "push") {
+                if (mixerOn && !mapVisible(now)) {
+                    /* THE MIXER: a push, or Shift+push (solo, 100%). The
+                     * Shift+push spends the hold -- no map under it. */
+                    const sh = held(now);
+                    if (sh) { turnedThisHold = true; actedThisHold = true; }
+                    return { action: "mixerPush", enc: ev.enc, shift: sh };
+                }
+                if (held(now)) actedThisHold = true;
                 if (!held(now)) return { action: "click", enc: ev.enc };
                 if (!mapVisible(now)) {
                     /* Held, map not drawn yet (or suppressed by a page turn):
@@ -1380,15 +1420,24 @@ export function createNav(opts) {
                 component = cell.component;
                 pageIndex = 0;
                 shiftDownAt = null;   /* the jump ends the gesture */
+                mixerOn = false;      /* ...and lands on the module's knobs */
                 onFocus(slot, component);
                 invalidate();
                 return { action: "focus", slot, component };
             }
 
             if (ev.type === "turn") {
+                if (mixerOn && !mapVisible(now)) {
+                    /* THE MIXER: a turn, or Shift+turn (pan) -- which keeps
+                     * the hold alive and the map hidden, as paging does. */
+                    const sh = held(now);
+                    if (sh) { turnedThisHold = true; actedThisHold = true; shiftDownAt = now; }
+                    return { action: "mixerTurn", enc: ev.enc, ticks: ev.ticks, shift: sh };
+                }
                 if (!held(now)) {
                     return { action: "turn", enc: ev.enc, ticks: ev.ticks };
                 }
+                actedThisHold = true;
                 if (!mapVisible(now)) {
                     /* SHIFT+TURN BEFORE THE MAP SHOWS PAGES THE PARAMETERS,
                      * from any encoder, and keeps the map hidden for the rest
@@ -1502,6 +1551,7 @@ export function createNav(opts) {
         render(ctx, now) {
             const up = mapVisible(now);
             if (up) renderMap(ctx, currentMap(), { page: mapPage, showBuses });
+            else if (mixerOn && renderMixerView) renderMixerView(ctx);
             else renderParams(ctx);
             shownMap = up;
         },
@@ -1524,7 +1574,9 @@ export function createNav(opts) {
          * object can answer correctly. */
         mapVisible(now) { return mapVisible(now); },
         /** Shift is held and the knob view is still showing: a turn pages. */
-        turnHint(now) { return held(now) && !mapVisible(now); },
+        turnHint(now) { return !mixerOn && held(now) && !mapVisible(now); },
+        /** The Mixer view is up. */
+        get mixer() { return mixerOn; },
     };
 }
 
@@ -1678,6 +1730,8 @@ export function createSurface(io) {
     /* The pages the E16 shows: only those with a knob on them (pageHasKnobs).
      * Page numbers on the E16 count THESE, so "2/3" means the second page you
      * can turn, not the controller's index. */
+    /* The Mixer: only when the host gives it a way to the parameters. */
+    const mixer = o.mixer ? createMixer(o.mixer) : null;
     const knobPages = () => (ctl && ctl.pages ? ctl.pages.filter(pageHasKnobs) : []);
     const viewNow = () =>
         buildView(knobPages(), nav ? nav.pageIndex : 0, { metaOf, valueOf });
@@ -1702,6 +1756,7 @@ export function createSurface(io) {
      */
     const desiredRings = (t) => (nav && nav.mapVisible(t))
         ? mapRings(nav.map(), cellRgb)
+        : (nav && nav.mixer && mixer) ? mixer.rings()
         : (slotEmpty() ? ringsFor(null) : ringsFor(viewNow(), knobRgb()));
     /* What the rings last described, so a change of view / slot / module /
      * page restates all sixteen at once rather than waiting for the look. */
@@ -1877,6 +1932,9 @@ export function createSurface(io) {
         chainOf,
         followFocusOf,
         pageCountOf: () => Math.max(1, knobPages().length),
+        /* The Mixer view (double-tap Shift), when the host can reach the
+         * slot volumes and sends -- see e16_mixer.mjs. */
+        renderMixer: mixer ? (ctx) => renderMixer(ctx, mixer) : null,
         renderParams: (ctx) => {
             /* A slot with no modules says so -- a blank screen reads as a
              * dead device. */
@@ -2080,6 +2138,28 @@ export function createSurface(io) {
             if (!ev) return null;
             const t = now();
             const act = nav.handle(ev, t);
+            if (act && mixer) {
+                if (act.action === "mixer") {
+                    /* Entering reads the whole mixer once (~18 round trips,
+                     * one time); after that our own writes keep it, and the
+                     * look re-reads one value at a time. */
+                    if (act.on) mixer.load();
+                    return act;
+                }
+                if (act.action === "mixerTurn" || act.action === "mixerPush") {
+                    const changed = act.action === "mixerTurn"
+                        ? mixer.turn(act.enc, act.ticks, act.shift)
+                        : mixer.push(act.enc, act.shift);
+                    if (changed) {
+                        /* The ring at once; the digits (and a MUTE/SOLO
+                         * label) follow as a live repaint, as a turn does. */
+                        display.ringChanged(mixer.ringFor(act.enc));
+                        turnedAt = t;
+                        settlePainted = false;
+                    }
+                    return act;
+                }
+            }
             if (!act || !ctl) return act;
 
             if (act.action === "turn") {
@@ -2228,7 +2308,7 @@ export function createSurface(io) {
              * (the controller's `loaded` is in the key, so a module's values
              * are restated again once they have actually arrived). */
             if (probe < 0) {
-                const rctx = [nav.mapVisible(t), nav.slot, nav.component, nav.pageIndex,
+                const rctx = [nav.mapVisible(t), nav.mixer, nav.slot, nav.component, nav.pageIndex,
                               nav.mapPage, nav.showBuses, loaded].join("|");
                 const restate = () => {
                     for (const desc of desiredRings(t)) {
@@ -2277,6 +2357,9 @@ export function createSurface(io) {
             if (!wantLabels && probe < 0 && settlePainted &&
                 t - lookAt >= LOOK_MS) {
                 lookAt = t;
+                /* The mixer notices changes made elsewhere (Move's track
+                 * volume, Slot Settings) one read per look. */
+                if (mixer && nav.mixer && !nav.mapVisible(t)) mixer.refreshNext();
                 display.invalidate();
                 for (const desc of desiredRings(t)) {
                     const k = JSON.stringify(desc);
