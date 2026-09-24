@@ -1174,7 +1174,7 @@ export const MAP_MAX_HOLD_MS = 10000;
  * row is a fixed position, so Shift+top-row switches slot without waiting to
  * see it.
  */
-export const MAP_SHOW_DELAY_MS = 1000;
+export const MAP_SHOW_DELAY_MS = 600;
 
 /* The top row is the four slots; everything below is the selected slot's
  * content. Both halves of that split are already `e16_map.mjs`'s, and this is
