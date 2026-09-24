@@ -326,7 +326,9 @@ function world() {
         selects the filter row -- but an unbound name is a ReferenceError at
         CALL time, not at branch time. */
      "PICKER_FILTER_ID", "ModuleLists", "componentSelectFilter",
-     "pickerEligibleLists", "scanModulesForType", "enterComponentSelect"])(
+     "pickerEligibleLists", "scanModulesForType", "enterComponentSelect",
+     /* ...and the sort row beside it, the same way. */
+     "PICKER_SORT_ID", "componentSelectSort", "ModuleCategories"])(
     slotChainComponents, 0, w.picker.selectedChainComponent, w.picker.availableModules,
     w.picker.selectedModuleIndex, isChainModuleKey, noop, VIEWS, getChainComponentModule,
     w.chainConfigs, noop, getComponentParamPrefix, noop,
@@ -334,7 +336,8 @@ function world() {
     w.lastChainComponent,
     noop, false, pend.pendingChainInsertFor, pend.cancelPendingChainInsert,
     applyChainComponentPick,
-    "__list_filter__", null, null, noop, noop, noop)();
+    "__list_filter__", null, null, noop, noop, noop,
+    "__sort__", "A-Z", { isCategoryHeader: (r) => !!(r && r.type === "divider") })();
 
   /*
    * The `+` click, lifted out of the CHAIN_EDIT jog-click switch.

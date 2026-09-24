@@ -232,9 +232,11 @@ function makeEnter(st, opts) {
     ["slotChainComponents", "isChainModuleKey", "scanModulesForType",
      "getChainComponentModule", "chainConfigs", "chainMoveEntries",
      "pickerEligibleLists", "pickerApplyFilter", "pickerFirstSelectableIndex",
-     "PICKER_FILTER_ID", "setView", "VIEWS", "announce"],
+     "PICKER_FILTER_ID", "setView", "VIEWS", "announce",
+     "pickerApplySort", "PICKER_SORT_ID"],
     ["availableModules", "selectedModuleIndex", "selectedSlot",
-     "selectedChainComponent", "componentSelectFilter", "needsRedraw"])(
+     "selectedChainComponent", "componentSelectFilter", "componentSelectSort",
+     "needsRedraw"])(
     st,
     () => [{ key: "synth", label: "Synth" }],
     () => true,
@@ -245,11 +247,15 @@ function makeEnter(st, opts) {
     pickerEligibleLists, pickerApplyFilter, pickerFirstSelectableIndex,
     PICKER_FILTER_ID,
     () => {}, { COMPONENT_SELECT: "cs" },
-    (m) => { st.announced = String(m); });
+    (m) => { st.announced = String(m); },
+    /* Sort is tested in test_module_categories.sh; here it is the identity, so
+       these cases keep asserting what the FILTER builds. */
+    (entries) => entries, "__sort__");
 }
 function freshState(filter) {
   return { availableModules: [], selectedModuleIndex: 0, selectedSlot: 0,
            selectedChainComponent: 0, componentSelectFilter: filter || null,
+           componentSelectSort: "A-Z",
            needsRedraw: false, announced: "" };
 }
 
@@ -267,7 +273,7 @@ function freshState(filter) {
   makeEnter(st)(0, 0);
   eq(st.availableModules[0].value, "Live", "row 0 shows the active list as its value");
   eq(st.availableModules.map(m => m.id),
-     [PICKER_FILTER_ID, "", "braids", "dx7", "__get_more__"],
+     [PICKER_FILTER_ID, "__sort__", "", "braids", "dx7", "__get_more__"],
      "the rows below are filtered to the list, synthetics kept");
 }
 /* Criterion 8: the cursor opens on the loaded module... */
@@ -281,7 +287,7 @@ function freshState(filter) {
 {
   const st = freshState(null);
   makeEnter(st, { loaded: null })(0, 0);
-  eq(st.selectedModuleIndex, 1, "an empty position opens on None, not on the filter row");
+  eq(st.selectedModuleIndex, 2, "an empty position opens on None, not on the filter or sort row");
 }
 /* ...and never on a move row when the filter HIDES the loaded module. This is
    the case the obvious arithmetic gets wrong: the moves are spliced under the
@@ -315,7 +321,7 @@ function freshState(filter) {
   eq(st.availableModules[0].value, "All", "...and row 0 says All");
   if (/reset to All/i.test(st.announced)) ok("...and the fallback is ANNOUNCED: " + st.announced);
   else fail("the fallback to All was silent -- announced: " + st.announced);
-  eq(st.availableModules.map(m => m.id).slice(1),
+  eq(st.availableModules.map(m => m.id).slice(2),
      ["", "braids", "dx7", "sf2", "__get_more__"], "...showing everything again");
 }
 /* Criterion 6: the filter is session state, so a second picker keeps it. */
@@ -357,7 +363,7 @@ function freshState(filter) {
 {
   const sel = ui.slice(ui.indexOf("case VIEWS.COMPONENT_SELECT:", ui.indexOf("function handleSelect")));
   const head = sel.slice(0, sel.indexOf("applyComponentSelection()"));
-  if (/PICKER_FILTER_ID/.test(head)) ok("handleSelect does not announce Loading for the filter row");
+  if (/pickerIsControlRow|PICKER_FILTER_ID/.test(head)) ok("handleSelect does not announce Loading for the filter row");
   else fail("handleSelect announces Loading for the filter row, which loads nothing");
 }
 
