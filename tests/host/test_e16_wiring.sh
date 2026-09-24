@@ -454,6 +454,14 @@ function rig(opts) {
   ok(!r.send.log.slice(b0).some((p) => unpack(p)[6] === 0x07),
      "a NACK that names no region does NOT blank the screen");
 
+  /* An INTERRUPTED strip: the device never read the address, so it comes
+   * back FF -- captured on hardware 2026-09-24 right before each blank. */
+  const b2 = r.send.log.length;
+  r.surface.feedMidi(reply(0x54, [0x08, 0x06, 0x00, 0xFF, 0xFF, 0xFF]));
+  r.ticks(20);
+  ok(!r.send.log.slice(b2).some((p) => unpack(p)[6] === 0x07),
+     "an interrupted strip whose NACK carries no address does NOT blank the screen");
+
   /* The device ACKs a CLEAR we never sent: it blanked itself. */
   const b1 = r.send.log.length;
   r.surface.feedMidi(reply(0x53, [0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF]));

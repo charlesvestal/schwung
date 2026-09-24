@@ -792,11 +792,19 @@ export function createDisplay(opts) {
          * address) falls back to invalidateBuf's full repaint.
          */
         invalidateRegion(x, y, w, h) {
-            if (!lastSentBuf || ![x, y, w, h].every((v) => typeof v === "number")) {
-                if (lastSentBuf) nullReason = "a repair with no usable address";
-                lastSentBuf = null; pendingRegions = []; pendingBuf = null;
-                return;
-            }
+            /* No belief at all: nothing to repair against -- repaint. */
+            if (!lastSentBuf) { pendingRegions = []; pendingBuf = null; return; }
+            /*
+             * An address we cannot use is NOT a reason to blank the screen.
+             * Measured 2026-09-24: an INTERRUPTED strip (NACK 0x06, Move's
+             * notes spliced in) comes back with the address fields the device
+             * never read filled with FF, decoded as null -- and this used to
+             * throw the whole belief away, a CLEAR + full repaint on every
+             * such NACK: the "periodic blanking while turning a knob". The
+             * region that failed is still OUTSTANDING (its NACK could not name
+             * it), so it times out and is re-sent by itself.
+             */
+            if (![x, y, w, h].every((v) => typeof v === "number")) return;
             for (let yy = y; yy < Math.min(64, y + h); yy++) {
                 for (let xx = x; xx < Math.min(E16_WIDTH, x + w); xx++) {
                     lastSentBuf[(yy >> 3) * E16_WIDTH + xx] ^= (1 << (yy & 7));
