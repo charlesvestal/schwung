@@ -32,6 +32,7 @@
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
 #include "host/ui_midi_out_ring.h"   /* SPSC discipline for /schwung-midi-out */
+#include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
@@ -3521,7 +3522,14 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onExternal) {
     if (!shadow_ui_midi_shm) return 0;
     int handled = 0;
-    for (int i = 0; i < SHADOW_UI_MIDI_BYTES; i += 4) {
+    /* IN ARRIVAL ORDER: a ring cursor that persists across calls, bounded to
+     * one ring's worth per call. Draining in INDEX order reordered every
+     * burst that straddled a drain -- see src/host/ui_midi_ring.h. */
+    static int ui_midi_rd = 0;
+    for (int n = 0; n < SHADOW_UI_MIDI_BYTES / 4; n++) {
+        int i = ui_midi_ring_next(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES, &ui_midi_rd);
+        if (i < 0) break;
+        ui_midi_ring_advance(&ui_midi_rd, SHADOW_UI_MIDI_BYTES);
         /* Acquire-load the gate byte: pairs with the producer's release-store
          * in shadow_ui_midi_publish() (schwung_shim.c). Ensures bytes 1-3 are
          * visible whenever byte 0 is nonzero. */
@@ -3529,8 +3537,13 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         uint8_t cin = head & 0x0F;
         uint8_t cable = (head >> 4) & 0x0F;
 
-        /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
-        if (cin < 0x04 || cin > 0x0E) continue;
+        /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc. A slot we skip
+         * is still CLEARED: with a ring cursor the producer comes back to it,
+         * and a slot left full would read as "ring full" to it forever. */
+        if (cin < 0x04 || cin > 0x0E) {
+            __atomic_store_n(&shadow_ui_midi_shm[i], 0, __ATOMIC_RELEASE);
+            continue;
+        }
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
         handled = 1;
         if (cable == 2) {

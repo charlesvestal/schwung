@@ -37,6 +37,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_ui_midi_ring_order \
 	$(BUILD_DIR)/test_midi_in_compact \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
@@ -129,6 +130,9 @@ $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host
 	$(CC) $(CFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_ui_midi_ring_order: test_ui_midi_ring_order.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)

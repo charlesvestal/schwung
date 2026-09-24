@@ -41,6 +41,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/e16_claim.h"
+#include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_test_stream.h"
 #include "host/shadow_metronome.h"
@@ -3587,15 +3588,13 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
      * packet always carries at least one nonzero byte, so the all-zero case
      * is now rejected too. See src/host/shadow_midi_filter.c. */
     if (!shadow_midi_forwardable(head, status, d1, d2)) return;
-    for (int slot = 0; slot < SHADOW_UI_MIDI_BYTES; slot += 4) {
-        if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
-            shadow_ui_midi_shm[slot + 1] = status;
-            shadow_ui_midi_shm[slot + 2] = d1;
-            shadow_ui_midi_shm[slot + 3] = d2;
-            __atomic_store_n(&shadow_ui_midi_shm[slot], head, __ATOMIC_RELEASE);
-            shadow_control->midi_ready++;
-            return;
-        }
+    /* IN ARRIVAL ORDER -- a ring cursor, not the lowest free slot, which
+     * reordered every burst that straddled a drain. See ui_midi_ring.h. */
+    static int ui_midi_wr = 0;
+    if (ui_midi_ring_put(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES, &ui_midi_wr,
+                         head, status, d1, d2)) {
+        shadow_control->midi_ready++;
+        return;
     }
     /* Ring full: this packet is gone.
      *
