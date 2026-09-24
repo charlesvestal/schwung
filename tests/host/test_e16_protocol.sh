@@ -8,7 +8,8 @@ cd "$(dirname "$0")/../.."
 node --input-type=module -e '
 import { pack7, enterMsg, exitMsg, ringMsg, framebufferMsg, packetize }
   from "./src/shared/e16_protocol.mjs";
-import { scanlineMsg, rectangleMsg, clearMsg, parseOledUpdateReply, unpack7 }
+import { scanlineMsg, rectangleMsg, clearMsg, parseOledUpdateReply, unpack7,
+         isAck, ACK_BODY, ACK_BODY_NO_CATEGORY }
   from "./src/shared/e16_protocol.mjs";
 
 let fails = 0;
@@ -101,6 +102,21 @@ eq("oled nack parses", parseOledUpdateReply(nackAsm),
 eq("remote-mode ack is not an oled reply",
    parseOledUpdateReply([0x00,0x21,0x5B,0x02,0x01,0x06,0x53]), null);
 eq("garbage is not an oled reply", parseOledUpdateReply([1,2,3]), null);
+
+/* BOTH ENTER-ACK FORMS. Captured off the wire 2026-09-24 with the XMOS SysEx
+ * tap, against firmware that ships the partial-update opcodes: the reply to
+ * our ENTER is F0 00 21 5B 02 01 53 F7 -- NO 0x06. The old form must keep
+ * working for devices on older firmware. */
+eq("old-firmware ack (06 53) is an ack", isAck(ACK_BODY), true);
+eq("new-firmware ack (53, no category) is an ack",
+   isAck([0x00,0x21,0x5B,0x02,0x01,0x53]), true);
+eq("the captured bytes are exactly ACK_BODY_NO_CATEGORY",
+   ACK_BODY_NO_CATEGORY, [0x00,0x21,0x5B,0x02,0x01,0x53]);
+/* Same header, same 0x53 -- the payload length is the only thing separating
+ * an ENTER ack from an OLED UPDATE ack, in both directions. */
+eq("new-firmware ENTER ack is NOT an oled reply",
+   parseOledUpdateReply(ACK_BODY_NO_CATEGORY), null);
+eq("an OLED UPDATE ack is NOT an ENTER ack", isAck(ackAsm), false);
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
