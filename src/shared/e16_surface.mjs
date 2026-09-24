@@ -619,6 +619,9 @@ export function createDisplay(opts) {
      * blank. "Periodic blanking" cost a session of inference; one log line
      * per blank would have named it. */
     const onFull = (opts && opts.onFull) || (() => {});
+    /* Told of every region declared lost, and why -- the measurement that
+     * separates "the device never answered" from "we misread the answer". */
+    const onLost = (opts && opts.onLost) || (() => {});
     let nullReason = "first paint";
     let windowPx = WINDOW_PX_START;
     let acks = 0, nacks = 0;
@@ -676,8 +679,9 @@ export function createDisplay(opts) {
 
     /* A region the device will never answer (see REORDER_LOSS): out of the
      * window, and re-sent. A lost CLEAR means nothing we believe holds. */
-    function lose(o) {
+    function lose(o, why) {
         timeouts++;
+        onLost(regionKey(o.region), why, o.passed);
         if (o.region.kind === "clear") {
             lastSentBuf = null; pendingRegions = []; pendingBuf = null; dirty.fill(0);
             nullReason = "CLEAR never acknowledged";
@@ -776,7 +780,7 @@ export function createDisplay(opts) {
             if (ref !== undefined && outstanding.length) {
                 for (let i = 0; i < outstanding.length; ) {
                     if (ref - outstanding[i].at < ACK_TIMEOUT_MS) { i++; continue; }
-                    lose(outstanding.splice(i, 1)[0]);
+                    lose(outstanding.splice(i, 1)[0], "clock");
                 }
             }
             const want = screen ? screen.kind : "framebuffer";
@@ -982,7 +986,7 @@ export function createDisplay(opts) {
                 /* Everything sent BEFORE this one and still unanswered was
                  * passed over once more; REORDER_LOSS passes is a loss. */
                 for (let i = 0; i < idx && i < outstanding.length; ) {
-                    if (++outstanding[i].passed >= REORDER_LOSS) lose(outstanding.splice(i, 1)[0]);
+                    if (++outstanding[i].passed >= REORDER_LOSS) lose(outstanding.splice(i, 1)[0], "order");
                     else i++;
                 }
                 /* Additive increase of about one row per WINDOW of answers
@@ -1556,6 +1560,12 @@ export function createSurface(io) {
             lastFullLogAt = t;
             console.log("e16: full repaint (CLEAR) -- " + reason);
         },
+        onLost: (key, why, passed) => {
+            const t = now();
+            if (t - lostLogWindowAt >= 1000) { lostLogWindowAt = t; lostLogged = 0; }
+            if (lostLogged++ >= 8) return;
+            console.log("e16: lost " + key + " by " + why + " (passed " + passed + ")");
+        },
     });
 
     let ctl = null;
@@ -1770,6 +1780,7 @@ export function createSurface(io) {
     const NACK_LOG_RATE_MS = 1000;
     let lastNackLogAt = -Infinity;
     const STATS_LOG_MS = 10000;
+    let unparsed = 0, lostLogWindowAt = -Infinity, lostLogged = 0;
     let heardAt = null;
     let lastStatsAt = -Infinity, statsAcks = 0, statsNacks = 0, statsTo = 0;
 
@@ -1777,7 +1788,14 @@ export function createSurface(io) {
         onMessage: (body) => {
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
-            if (!reply) return;
+            if (!reply) {
+                /* Ours by header and id, but not a well-formed reply: an
+                 * answer that arrived and could not be read. Counted, since
+                 * it would otherwise look exactly like no answer at all. */
+                if (body.length > 6 && body[0] === 0x00 && body[1] === 0x21 && body[2] === 0x5B &&
+                    (body[5] === 0x53 || body[5] === 0x54)) unparsed++;
+                return;
+            }
             /* One line per STATS_LOG_MS while replies flow: the NACK rate and
              * where the window settled, measured rather than inferred from a
              * rate-limited NACK line. */
@@ -1785,7 +1803,7 @@ export function createSurface(io) {
             if (ts - lastStatsAt >= STATS_LOG_MS) {
                 if (lastStatsAt > -Infinity) console.log("e16: oled acks=" + (display.acks - statsAcks) +
                     " nacks=" + (display.nacks - statsNacks) + " timeouts=" + (display.ackTimeouts - statsTo) +
-                    " window=" + display.windowPx + "px");
+                    " window=" + display.windowPx + "px unparsed=" + unparsed);
                 lastStatsAt = ts; statsAcks = display.acks; statsNacks = display.nacks; statsTo = display.ackTimeouts;
             }
             if (!display.acked(reply)) {
