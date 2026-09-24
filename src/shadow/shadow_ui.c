@@ -3545,16 +3545,21 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
             continue;
         }
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
+        /* A SysEx packet carries only as many REAL bytes as its CIN says --
+         * 1 for 0x05, 2 for 0x06, 3 for 0x04/0x07 -- and hands over exactly
+         * those. The rest is padding, and padding (00) is indistinguishable
+         * from SysEx data once the CIN is gone. Voice CINs keep all three. */
+        int n = (cin == 0x05) ? 1 : (cin == 0x06) ? 2 : 3;
         handled = 1;
         if (cable == 2) {
             /* Re-lookup onMidiMessageExternal each time in case overtake module replaced it */
             JSValue freshExternal;
             if (getGlobalFunction(ctx, "onMidiMessageExternal", &freshExternal)) {
-                callGlobalFunction(ctx, &freshExternal, msg);
+                callGlobalFunctionN(ctx, &freshExternal, msg, n);
                 JS_FreeValue(ctx, freshExternal);
             }
         } else {
-            callGlobalFunction(ctx, onInternal, msg);
+            callGlobalFunctionN(ctx, onInternal, msg, n);
         }
         /* Release the slot back to the producer. Producer overwrites bytes
          * 1-3 unconditionally on next claim, so we only need to clear byte 0. */

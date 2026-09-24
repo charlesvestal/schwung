@@ -49,7 +49,16 @@ int shadow_midi_forwardable(uint8_t head, uint8_t status, uint8_t d1, uint8_t d2
     switch (cin) {
     case 0x04: return 1;
     case 0x05: return (status & 0x80) ? 1 : 0;
-    case 0x06: return (d1 == 0xF7) ? 1 : 0;
+    /* 0x06 has TWO forms on real hardware. The spec's: two bytes ENDING the
+     * message, d1 == F7. And the OXI E16's (measured 2026-09-24): a TWO-BYTE
+     * CONTINUATION -- `26 00 02 00` -- followed by a lone `25 F7`. Rejecting
+     * the second dropped the last two payload bytes of every E16 OLED
+     * ACK/NACK, so not one ever parsed, while the ENTER ack (whose CIN 6 does
+     * carry F7) always did. Accepted when both bytes are 7-bit data; the
+     * all-zero slot, the stale case, is still refused. */
+    case 0x06:
+        if (d1 == 0xF7) return 1;
+        return (!(status & 0x80) && !(d1 & 0x80) && (status | d1)) ? 1 : 0;
     case 0x07: return (d2 == 0xF7) ? 1 : 0;
     default:   return 0;
     }

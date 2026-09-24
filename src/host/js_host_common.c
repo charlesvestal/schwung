@@ -99,6 +99,27 @@ int getGlobalFunction(JSContext *ctx, const char *func_name, JSValue *retFunc) {
     return 1;
 }
 
+/* As callGlobalFunction, but the array carries exactly `n` bytes (1-3). For a
+ * SysEx packet the CIN says how many bytes are real, and padding is not
+ * distinguishable from data once the CIN is stripped: `00` is a valid SysEx
+ * data byte. The OXI E16 ends every OLED ACK with a two-byte CIN 6
+ * continuation (`26 00 02 00`) -- handed over as three bytes, its padding 00
+ * landed INSIDE the message. */
+int callGlobalFunctionN(JSContext *ctx, JSValue *pfunc, unsigned char *data, int n) {
+    if (n < 1 || n > 3) n = 3;
+    JSValue arr = JS_NewArray(ctx);
+    for (int i = 0; i < n; i++) {
+        JS_SetPropertyUint32(ctx, arr, i, JS_NewInt32(ctx, data[i]));
+    }
+    JSValue args[1] = { arr };
+    JSValue ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
+    JS_FreeValue(ctx, arr);
+    int is_exception = JS_IsException(ret);
+    if (is_exception) js_std_dump_error(ctx);
+    JS_FreeValue(ctx, ret);
+    return is_exception;
+}
+
 int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *data) {
     JSValue ret;
     int is_exception;
