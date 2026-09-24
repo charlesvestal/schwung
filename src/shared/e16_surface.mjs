@@ -29,7 +29,7 @@
  * machine with no device, no timers and no globals.  The host half is three
  * call sites in shadow_ui.js.
  */
-import { enterMsg, exitMsg, isAck, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
+import { enterMsg, exitMsg, isAck, ackFirmware, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
 
 /* Seeking cadence.  Slow enough to be free, fast enough that plugging a device
  * in feels immediate. */
@@ -89,6 +89,18 @@ export const LOSS_MS = 6000;
  * Rings still outrank it, so a heartbeat never interrupts a turn.
  */
 export const SCREEN_HEARTBEAT_MS = 1500;
+
+/*
+ * The same restate on firmware that can draw regions -- far rarer, because
+ * the reason for 1.5 s is gone. That cadence existed because a corruption
+ * could be neither prevented nor DETECTED. With regions, every update is
+ * ACKed or NACKed (measured 2026-09-24: both corrupted rectangles in a 20 s
+ * capture came back NACKed, naming themselves), and a NACK repairs its own
+ * region at once. What is left for the heartbeat is only damage the device
+ * could not see -- and it now costs eight acknowledged bands, not an
+ * unacknowledged framebuffer.
+ */
+export const PARTIAL_HEARTBEAT_MS = 10000;
 
 /*
  * How long after Move's last transmission the restate is allowed to resume.
@@ -386,6 +398,18 @@ export function createDisplay() {
     let lastSentBuf = null;
     let pendingRegions = [];
     let pendingBuf = null;
+    /*
+     * CAN THIS DEVICE DRAW A REGION AT ALL? Off until proven.
+     *
+     * Only firmware that ships SCANLINE/RECTANGLE has them, and older
+     * firmware IGNORES them silently -- no NACK, nothing drawn -- so a surface
+     * that assumed support would leave an old E16 showing stale pixels
+     * forever. The proof is the ENTER ack's own shape (measured 2026-09-24):
+     * new firmware answers `53`, old answers `06 53`. Off means exactly the
+     * behaviour before partial updates existed: every repaint is one
+     * FRAMEBUFFER.
+     */
+    let partial = false;
     /* When the last screen actually went out, for the heartbeat below. */
     let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
@@ -477,21 +501,41 @@ export function createDisplay() {
 
             if (pendingRegions.length === 0) {
                 const buf = frameBytes();
-                const diff = diffFramebuffers(lastSentBuf, buf);
+                /* No region support: exactly the pre-partial behaviour -- the
+                 * whole screen, every time, content unexamined. */
+                const diff = partial ? diffFramebuffers(lastSentBuf, buf) : { kind: "full" };
                 if (diff.kind === "none") {
                     fbOwed = false;
                     shownKind = "framebuffer";
                     return null;
                 }
-                if (diff.kind === "full") {
+                if (diff.kind === "full" && partial) {
+                    /*
+                     * A FULL REPAINT IS EIGHT ACKNOWLEDGED BANDS, NOT ONE
+                     * FRAMEBUFFER. Measured on hardware 2026-09-24: every
+                     * RECTANGLE the device accepted landed exactly, and every
+                     * corrupted one came back NACKed -- while a FRAMEBUFFER
+                     * gets no reply at all, so a splice inside it is drawn
+                     * and never reported (the shifted-row photo). A band is
+                     * 128x8 (~50 packets against 394), and a garble costs one
+                     * band and names it, instead of costing a silent screen.
+                     */
+                    pendingBuf = buf.slice();
+                    pendingRegions = [];
+                    for (let y = 0; y < 64; y += 8) {
+                        pendingRegions.push({ kind: "rect", x: 0, y, w: E16_WIDTH, h: 8 });
+                    }
+                    fbOwed = false;
+                } else if (diff.kind === "full") {
                     if (!emitMsg(send, framebufferMsg(buf))) return null;
                     fbOwed = false; shownKind = "framebuffer"; lastSentBuf = buf.slice();
                     if (nowMs !== undefined) shownAt = nowMs;
                     return "framebuffer";
+                } else {
+                    pendingBuf = buf.slice();
+                    pendingRegions = diff.regions.slice();
+                    fbOwed = false;
                 }
-                pendingBuf = buf.slice();
-                pendingRegions = diff.regions.slice();
-                fbOwed = false;
             }
 
             const region = pendingRegions[0];
@@ -531,6 +575,38 @@ export function createDisplay() {
          * the PIXELS are suspect -- the next diff sees prev === null and
          * sends a full repaint regardless of whether content changed. */
         invalidateBuf() { lastSentBuf = null; pendingRegions = []; pendingBuf = null; },
+
+        /* Whether the device can draw regions -- see `partial`. A change in
+         * either direction forgets what we believe is shown: a different
+         * device may be on the cable now. */
+        setPartial(on) {
+            on = !!on;
+            if (on === partial) return;
+            partial = on;
+            lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+        },
+        get partial() { return partial; },
+
+        /*
+         * The device NACKed ONE region and named it. Make only that area
+         * look changed to the next diff, which then re-sends a region the
+         * size of the one that failed -- not the whole screen. Done by
+         * inverting our BELIEF of those pixels: the diff compares belief
+         * against the fresh render, so every pixel in the rect now differs.
+         * Anything we cannot localise (no belief yet, a reply without an
+         * address) falls back to invalidateBuf's full repaint.
+         */
+        invalidateRegion(x, y, w, h) {
+            if (!lastSentBuf || ![x, y, w, h].every((v) => typeof v === "number")) {
+                lastSentBuf = null; pendingRegions = []; pendingBuf = null;
+                return;
+            }
+            for (let yy = y; yy < Math.min(64, y + h); yy++) {
+                for (let xx = x; xx < Math.min(E16_WIDTH, x + w); xx++) {
+                    lastSentBuf[(yy >> 3) * E16_WIDTH + xx] ^= (1 << (yy & 7));
+                }
+            }
+        },
         get ringsPending() { return rings.size; },
     };
 }
@@ -1235,22 +1311,23 @@ export function createSurface(io) {
 
     const asm = createSysexAssembler({
         onMessage: (body) => {
+            const fw = ackFirmware(body);
+            if (fw) display.setPartial(fw === "new");
             if (lifecycle.onSysex(body, now())) return;
             const reply = parseOledUpdateReply(body);
             if (!reply) return;
             if (reply.ok) return;   /* ACK: we already advanced optimistically on send */
-            /* invalidateBuf(), not forgetShown(): the device told us the
-             * PIXELS are wrong, not that it forgot what mode it's in --
-             * shownKind stays trusted, only lastSentBuf is suspect. AND
-             * invalidate(): invalidateBuf() alone only clears what we
-             * believe is on the device -- it does not, by itself, mark a
-             * repaint OWED. Without this second call, a NACK'd screen with
-             * otherwise-unchanged content sits uncorrected until something
-             * else happens to invalidate() (a real change, or the heartbeat
-             * up to SCREEN_HEARTBEAT_MS later) -- silently defeating the
-             * exact recovery this handler exists to provide, the same
-             * mistake the heartbeat site above had to be fixed for. */
-            display.invalidateBuf();
+            /* The NACK NAMES the region that failed, so only that region is
+             * re-sent (invalidateRegion); a reply we cannot localise falls
+             * back to invalidateBuf's full repaint. Never forgetShown(): the
+             * device still knows what mode it is in, only some PIXELS are
+             * wrong. AND invalidate(): clearing a belief does not by itself
+             * mark a repaint OWED -- without it a NACKed region sits
+             * uncorrected until something unrelated repaints. */
+            const a = reply.addr || {};
+            if (reply.cmd === 0x08) display.invalidateRegion(a.x, a.y, a.w, a.h);
+            else if (reply.cmd === 0x05) display.invalidateRegion(0, a.y, 128, 1);
+            else display.invalidateBuf();
             display.invalidate();
             const t = now();
             if (t - lastNackLogAt >= NACK_LOG_RATE_MS) {
@@ -1529,7 +1606,8 @@ export function createSurface(io) {
              * is worse than a garbled one that obviously is not.
              */
             const age = display.screenAge(t);
-            if (age !== null && age >= SCREEN_HEARTBEAT_MS &&
+            const heartbeatMs = display.partial ? PARTIAL_HEARTBEAT_MS : SCREEN_HEARTBEAT_MS;
+            if (age !== null && age >= heartbeatMs &&
                 settlePainted && !display.ringsPending) {
                 /* invalidateBuf() FIRST: this repaint's whole job is to
                  * resend content that, as far as OUR buffer is concerned,

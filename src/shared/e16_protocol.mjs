@@ -121,6 +121,16 @@ export function isAck(asm) {
     return bodyIs(asm, ACK_BODY) || bodyIs(asm, ACK_BODY_NO_CATEGORY);
 }
 
+/* Which firmware answered: "new" (has SCANLINE/RECTANGLE/CLEAR -- its ENTER
+ * ack drops the category byte), "old" (06 53, framebuffer only), or null for
+ * anything that is not an ENTER ack. The ack's shape is the only capability
+ * signal the device gives: old firmware ignores the new opcodes SILENTLY. */
+export function ackFirmware(asm) {
+    if (bodyIs(asm, ACK_BODY_NO_CATEGORY)) return "new";
+    if (bodyIs(asm, ACK_BODY)) return "old";
+    return null;
+}
+
 /*
  * ---------------------------------------------------------------------------
  * PARTIAL OLED UPDATES -- built against OXI's DRAFT spec (shared 2026-09-21,

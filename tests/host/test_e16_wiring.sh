@@ -293,6 +293,38 @@ function rig(opts) {
 }
 
 /* ===========================================================================
+ * THE ACK SHAPE IS THE CAPABILITY. Measured 2026-09-24: firmware with
+ * SCANLINE/RECTANGLE answers ENTER with 53, older firmware with 06 53 -- and
+ * the older firmware IGNORES the new opcodes without a word. So a new-shape
+ * ack must turn region updates ON (a repaint goes out as 0x08 bands), and an
+ * old-shape ack must leave the surface on whole FRAMEBUFFERs.
+ * ========================================================================= */
+{
+  const NEW_ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const rn = rig();
+  rn.surface.setEnabled(true);
+  rn.ticks(1);
+  rn.surface.feedMidi(NEW_ACK);
+  const b0 = rn.send.log.length;
+  rn.ticks(12);
+  const ids = rn.send.log.slice(b0).map((p) => unpack(p)[6]);
+  ok(ids.includes(0x08), "a NEW-firmware ack switches repaints to RECTANGLE bands");
+  ok(!rn.send.log.slice(b0).some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
+     "...and no whole FRAMEBUFFER goes out");
+
+  const ro = rig();
+  ro.surface.setEnabled(true);
+  ro.ticks(1);
+  ro.ack();                                  /* the OLD 06 53 shape */
+  const b1 = ro.send.log.length;
+  ro.ticks(12);
+  ok(ro.send.log.slice(b1).some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
+     "an OLD-firmware ack keeps whole FRAMEBUFFERs");
+  ok(!ro.send.log.slice(b1).some((p) => unpack(p)[6] === 0x08),
+     "...and never sends a RECTANGLE it would silently ignore");
+}
+
+/* ===========================================================================
  * OLED UPDATE NACK -- built against a draft spec, not yet on hardware. A
  * NACK must invalidate the surfaces belief about whats on screen (so the
  * NEXT repaint is a full one) without touching anything else -- not the
