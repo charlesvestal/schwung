@@ -645,6 +645,18 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("the NACKed strip goes out TWICE: original, then its repair -- not forgotten", sends, 2);
 }
 
+/* THE BUDGET FOLLOWS THE PACE: a display handed a bigger budget puts more
+ * strips out per tick, a smaller one fewer -- never more than one message
+ * past the budget. */
+{
+  const perTick = (budget) => { const d = createDisplay({ budgetOf: () => budget });
+    const snd = mkSend(); const b = new Uint8Array(1024).fill(0xFF);
+    d.invalidate(); d.tick(snd, () => b, { kind: "framebuffer" });
+    return snd.log.reduce((a, p) => a + p.length / 4, 0); };
+  eq("a pace-12 budget (60) sends more per tick than pace 8 (40)", perTick(60) > perTick(40), true);
+  eq("...and each stays within its budget", perTick(60) <= 60 && perTick(40) <= 40, true);
+}
+
 /* ONE VALUE, ONE PICTURE. The drawn view printed String(cell.value), so the
  * same reading drew as the module own string before a turn (hank ratio
  * "11.000") and as the controller number after one ("11"). It goes through
