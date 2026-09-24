@@ -9,8 +9,10 @@
  *
  * ONE PUSH RULE ACROSS THE ROWS: a push takes the control to its "off" and a
  * second push brings the setting back (level -> mute, send / return -> 0),
- * so a quick kill never loses the mix; a switched-off cell is drawn inverted
- * (like MUTE) and reads 0% / off. Shift+push is the row's
+ * so a quick kill never loses the mix. SWITCHED OFF IS A STATE, like MUTE,
+ * not a value: the cell is inverted and still shows the level, a turn while
+ * off sets the level it comes back at (dial a send to 100% silently, then
+ * push it in), and Move sees 0 until it is switched on. Shift+push is the row's
  * hard set (solo; a send or return to 100%). Row 4's third knob saves the
  * Skipback buffer on a push; the fourth is the master filter
  * (master_filter.h): turn left low-pass, right high-pass; push off and back,
@@ -86,13 +88,15 @@ export function createMixer(io) {
         READS.push(() => { tracks[s].vol = num(getSlot(s, "slot:volume")); });
         READS.push(() => { const v = num(getSlot(s, "slot:muted")); tracks[s].muted = v === null ? null : v > 0; });
         READS.push(() => { const v = num(getSlot(s, "slot:soloed")); tracks[s].soloed = v === null ? null : v > 0; });
-        READS.push(() => { tracks[s].send[0] = num(getSlot(s, "buses:main_send1")); });
-        READS.push(() => { tracks[s].send[1] = num(getSlot(s, "buses:main_send2")); });
+        /* A send switched off here but found above 0 was turned on
+         * elsewhere (Move, Slot Settings): it is on again. */
+        READS.push(() => { tracks[s].send[0] = num(getSlot(s, "buses:main_send1")); if (tracks[s].send[0] > 0) sendMem[s][0] = null; });
+        READS.push(() => { tracks[s].send[1] = num(getSlot(s, "buses:main_send2")); if (tracks[s].send[1] > 0) sendMem[s][1] = null; });
         READS.push(() => { tracks[s].pan = num(getSlot(s, "slot:pan")); });
     }
-    READS.push(() => { returns[0] = num(getGlobal("send1:return")); });
-    READS.push(() => { returns[1] = num(getGlobal("send2:return")); });
-    READS.push(() => { filter = num(getGlobal("master_fx:filter")); });
+    READS.push(() => { returns[0] = num(getGlobal("send1:return")); if (returns[0] > 0) returnMem[0] = null; });
+    READS.push(() => { returns[1] = num(getGlobal("send2:return")); if (returns[1] > 0) returnMem[1] = null; });
+    READS.push(() => { filter = num(getGlobal("master_fx:filter")); if (filter !== null && Math.abs(filter) > FILTER_DEADBAND) filterMem = null; });
     let readAt = 0;
 
     const clampSend = (v) => Math.max(0, Math.min(SEND_MAX, Math.round(v)));
@@ -141,23 +145,25 @@ export function createMixer(io) {
             }
             if (row === 1 || row === 2) {
                 const i = row - 1, cur = tracks[s].send[i];
+                /* SWITCHED OFF: the turn sets the value it comes back at, and
+                 * has no effect until a push switches it on. */
+                if (sendMem[s][i] !== null) { sendMem[s][i] = clampSend(sendMem[s][i] + ticks * SEND_STEP); return true; }
                 if (cur === null) return false;
-                /* Turning a switched-off send takes it out of the toggle:
-                 * the value you now see is the value, and a later push
-                 * must not bring back the old one. */
-                sendMem[s][i] = null;
                 writeSend(s, i, cur + ticks * SEND_STEP);
                 return true;
             }
             if (s < 2) {                                  /* row 4: returns */
+                if (returnMem[s] !== null) { returnMem[s] = clampSend(returnMem[s] + ticks * SEND_STEP); return true; }
                 if (returns[s] === null) return false;
-                returnMem[s] = null;
                 writeReturn(s, returns[s] + ticks * SEND_STEP);
                 return true;
             }
             if (s === 3) {                                /* the master filter */
+                if (filterMem !== null) {
+                    filterMem = Math.max(-1, Math.min(1, Math.round((filterMem + ticks * FILTER_STEP) * 1000) / 1000));
+                    return true;
+                }
                 if (filter === null) return false;
-                filterMem = null;
                 writeFilter(filter + ticks * FILTER_STEP);
                 return true;
             }
@@ -180,27 +186,31 @@ export function createMixer(io) {
             }
             if (row === 1 || row === 2) {
                 const i = row - 1, cur = tracks[s].send[i];
-                if (shift) { writeSend(s, i, SEND_MAX); return true; }
+                if (shift) { sendMem[s][i] = null; writeSend(s, i, SEND_MAX); return true; }
+                if (sendMem[s][i] !== null) {                /* off -> on, at its value */
+                    const v = sendMem[s][i]; sendMem[s][i] = null; writeSend(s, i, v); return true;
+                }
                 if (cur === null) return false;
-                if (cur > 0) { sendMem[s][i] = cur; writeSend(s, i, 0); return true; }
-                if (sendMem[s][i] !== null) { writeSend(s, i, sendMem[s][i]); sendMem[s][i] = null; return true; }
-                return false;
+                sendMem[s][i] = cur; writeSend(s, i, 0);      /* on -> off, keeping it */
+                return true;
             }
             if (s < 2) {
                 const cur = returns[s];
-                if (shift) { writeReturn(s, SEND_MAX); return true; }
+                if (shift) { returnMem[s] = null; writeReturn(s, SEND_MAX); return true; }
+                if (returnMem[s] !== null) {
+                    const v = returnMem[s]; returnMem[s] = null; writeReturn(s, v); return true;
+                }
                 if (cur === null) return false;
-                if (cur > 0) { returnMem[s] = cur; writeReturn(s, 0); return true; }
-                if (returnMem[s] !== null) { writeReturn(s, returnMem[s]); returnMem[s] = null; return true; }
-                return false;
+                returnMem[s] = cur; writeReturn(s, 0);
+                return true;
             }
             if (s === 2 && !shift) { skipback(); return true; }
             if (s === 3) {
                 if (shift) { filterMem = null; writeFilter(0); return true; }
-                if (filter === null) return false;
-                if (Math.abs(filter) > FILTER_DEADBAND) { filterMem = filter; writeFilter(0); return true; }
-                if (filterMem !== null) { writeFilter(filterMem); filterMem = null; return true; }
-                return false;
+                if (filterMem !== null) { const v = filterMem; filterMem = null; writeFilter(v); return true; }
+                if (filter === null || Math.abs(filter) <= FILTER_DEADBAND) return false;
+                filterMem = filter; writeFilter(0);
+                return true;
             }
             return false;
         },
@@ -220,22 +230,27 @@ export function createMixer(io) {
                 return { label, value: isFinite(db) ? (db > 0 ? "+" : "") + db.toFixed(1) : "-inf" };
             }
             const pct = (v) => (v === null ? "" : Math.round(v / SEND_MAX * 100) + "%");
-            /* SWITCHED OFF by a push is drawn inverted, like MUTE, and reads
-             * what it IS -- 0% -- so a send turned down to 0 and a send
-             * switched off differ only by the inversion. */
+            /* SWITCHED OFF by a push is drawn inverted, like MUTE, and shows
+             * the value it keeps -- the level it comes back at, which a turn
+             * sets while it is off. */
             if (row === 1 || row === 2) {
                 const i = row - 1, mem = sendMem[s][i];
-                if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(0), off: true };
+                if (mem !== null) return { label: row === 1 ? "SndA" : "SndB", value: pct(mem), off: true };
                 return { label: row === 1 ? "SndA" : "SndB", value: pct(tracks[s].send[i]) };
             }
             if (s < 2) {
-                if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(0), off: true };
+                if (returnMem[s] !== null) return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returnMem[s]), off: true };
                 return { label: s === 0 ? "RtnA" : "RtnB", value: pct(returns[s]) };
             }
             if (s === 2) return { label: "Capt", value: "push" };
             if (filter === null) return { label: "Filt", value: "" };
-            /* Switched off by a push: inverted, reading off. */
-            if (filterMem !== null) return { label: "Filt", value: "off", off: true };
+            /* Switched off by a push: inverted, reading the position it
+             * comes back at. */
+            if (filterMem !== null) {
+                const fv = Math.abs(filterMem) <= FILTER_DEADBAND ? "off"
+                    : (filterMem < 0 ? "LP " : "HP ") + Math.round(Math.abs(filterMem) * 100);
+                return { label: "Filt", value: fv, off: true };
+            }
             if (filter < -FILTER_DEADBAND) return { label: "Filt", value: "LP " + Math.round(-filter * 100) };
             if (filter > FILTER_DEADBAND) return { label: "Filt", value: "HP " + Math.round(filter * 100) };
             return { label: "Filt", value: "off" };
@@ -256,16 +271,22 @@ export function createMixer(io) {
                  * track is silent -- unless solo overrides the mute. */
                 if (t.muted && !t.soloed) c = { r: 16, g: 16, b: 16 };
             } else if (row === 1 || row === 2) {
-                const v = tracks[s].send[row - 1];
+                const mem = sendMem[s][row - 1];
+                const v = mem !== null ? mem : tracks[s].send[row - 1];
                 amount = v === null ? 0 : v / SEND_MAX;
+                if (mem !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
             } else if (s < 2) {
-                amount = returns[s] === null ? 0 : returns[s] / SEND_MAX;
+                const v = returnMem[s] !== null ? returnMem[s] : returns[s];
+                amount = v === null ? 0 : v / SEND_MAX;
+                if (returnMem[s] !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
             } else if (s === 2) {
                 c = { r: 40, g: 0, b: 0 };               /* capture: a dim red button */
                 amount = 1;
             } else {
-                /* The filter: bipolar, centred when off. */
-                const x = filter === null ? 0 : filter;
+                /* The filter: bipolar, centred when off; switched off, dim at
+                 * the position it comes back at. */
+                const x = filterMem !== null ? filterMem : (filter === null ? 0 : filter);
+                if (filterMem !== null) c = { r: Math.round(c.r / 5), g: Math.round(c.g / 5), b: Math.round(c.b / 5) };
                 return { enc, r: c.r, g: c.g, b: c.b,
                          amount: Math.max(0, Math.min(RING_MAX, Math.round((x + 1) / 2 * RING_MAX))),
                          bipolar: true };
