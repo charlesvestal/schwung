@@ -12,11 +12,12 @@
  * so a quick kill never loses the mix. SWITCHED OFF IS A STATE, like MUTE,
  * not a value: the cell is inverted and still shows the level, a turn while
  * off sets the level it comes back at (dial a send to 100% silently, then
- * push it in), and Move sees 0 until it is switched on. Shift+push is the row's
+ * push it in), and Move sees 0 until it is switched on. The FILTER is the
+ * exception: a sweep, not a switch -- a push resets it to centre. Shift+push is the row's
  * hard set (solo; a send or return to 100%). Row 4's third knob saves the
  * Skipback buffer on a push; the fourth is the master filter
- * (master_filter.h): turn left low-pass, right high-pass; push off and back,
- * Shift+push reset.
+ * (master_filter.h): turn left low-pass, right high-pass; a push resets it
+ * to centre (off), ready for the next sweep.
  *
  * The LEVEL is the slot volume, the same value Move's own track volume
  * drives (shadow_dbus.c writes it on a track-volume announcement), so the
@@ -74,7 +75,6 @@ export function createMixer(io) {
     for (let s = 0; s < TRACKS; s++) tracks.push({ vol: null, muted: null, soloed: null, pan: null, send: [null, null] });
     const returns = [null, null];
     let filter = null;
-    let filterMem = null;
     /* What a push-to-off remembers, so the second push restores it. */
     const sendMem = [[null, null], [null, null], [null, null], [null, null]];
     const returnMem = [null, null];
@@ -99,7 +99,7 @@ export function createMixer(io) {
     }
     READS.push(() => { returns[0] = num(getGlobal("send1:return")); if (returns[0] > 0) returnMem[0] = null; });
     READS.push(() => { returns[1] = num(getGlobal("send2:return")); if (returns[1] > 0) returnMem[1] = null; });
-    READS.push(() => { filter = num(getGlobal("master_fx:filter")); if (filter !== null && Math.abs(filter) > FILTER_DEADBAND) filterMem = null; });
+    READS.push(() => { filter = num(getGlobal("master_fx:filter")); });
     let readAt = 0;
 
     const clampSend = (v) => Math.max(0, Math.min(SEND_MAX, Math.round(v)));
@@ -162,10 +162,6 @@ export function createMixer(io) {
                 return true;
             }
             if (s === 3) {                                /* the master filter */
-                if (filterMem !== null) {
-                    filterMem = Math.max(-1, Math.min(1, Math.round((filterMem + ticks * FILTER_STEP) * 1000) / 1000));
-                    return true;
-                }
                 if (filter === null) return false;
                 writeFilter(filter + ticks * FILTER_STEP);
                 return true;
@@ -209,10 +205,11 @@ export function createMixer(io) {
             }
             if (s === 2 && !shift) { skipback(); return true; }
             if (s === 3) {
-                if (shift) { filterMem = null; writeFilter(0); return true; }
-                if (filterMem !== null) { const v = filterMem; filterMem = null; writeFilter(v); return true; }
+                /* THE FILTER IS A SWEEP, not a switch: a push (or Shift+push)
+                 * resets it to centre, so the next sweep starts from off.
+                 * Nothing is kept -- there is no "disabled" filter. */
                 if (filter === null || Math.abs(filter) <= FILTER_DEADBAND) return false;
-                filterMem = filter; writeFilter(0);
+                writeFilter(0);
                 return true;
             }
             return false;
@@ -251,13 +248,6 @@ export function createMixer(io) {
             }
             if (s === 2) return { label: "Capt", value: "push" };
             if (filter === null) return { label: "Filt", value: "" };
-            /* Switched off by a push: inverted, reading the position it
-             * comes back at. */
-            if (filterMem !== null) {
-                const fv = Math.abs(filterMem) <= FILTER_DEADBAND ? "off"
-                    : (filterMem < 0 ? "LP " : "HP ") + Math.round(Math.abs(filterMem) * 100);
-                return { label: "Filt", value: fv, off: true };
-            }
             if (filter < -FILTER_DEADBAND) return { label: "Filt", value: "LP " + Math.round(-filter * 100) };
             if (filter > FILTER_DEADBAND) return { label: "Filt", value: "HP " + Math.round(filter * 100) };
             return { label: "Filt", value: "off" };
@@ -290,10 +280,8 @@ export function createMixer(io) {
                 c = { r: 40, g: 0, b: 0 };               /* capture: a dim red button */
                 amount = 1;
             } else {
-                /* The filter: bipolar, centred when off; switched off, dim at
-                 * the position it comes back at. */
-                const x = filterMem !== null ? filterMem : (filter === null ? 0 : filter);
-                if (filterMem !== null) c = MIXER_OFF_RGB;
+                /* The filter: bipolar, centred when off. */
+                const x = filter === null ? 0 : filter;
                 return { enc, r: c.r, g: c.g, b: c.b,
                          amount: Math.max(0, Math.min(RING_MAX, Math.round((x + 1) / 2 * RING_MAX))),
                          bipolar: true };
