@@ -41,7 +41,7 @@ fi
 # the real line.
 node --input-type=module -e '
 const R = process.cwd();
-const { createSurface, KEEPALIVE_MS, LOSS_MS } =
+const { createSurface, KEEPALIVE_MS, LOSS_MS, TICK_PACKET_BUDGET, RING_RESTATE_MS } =
   await import(R + "/src/shared/e16_surface.mjs");
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
 /* LABELS is no longer the default view, so its payload shape is pinned by
@@ -174,11 +174,16 @@ function rig(opts) {
     /* Records the per-tick send count, so rule 6 can assert the ONE-MESSAGE
      * budget over the whole session rather than at one chosen moment. */
     perTick: [],
+    /* PACKETS per tick: the budget is in packets now, since small region
+     * messages share a tick up to TICK_PACKET_BUDGET. */
+    perTickPackets: [],
     ticks(n, ms) { for (let i = 0; i < (n || 1); i++) {
         t += (ms === undefined ? 25 : ms);
         const before = send.log.length;
         surface.tick();
-        this.perTick.push(send.log.length - before); } },
+        this.perTick.push(send.log.length - before);
+        this.perTickPackets.push(send.log.slice(before)
+          .reduce((a, p) => a + p.length / 4, 0)); } },
     ack: () => surface.feedMidi(ACK_BYTES),
   };
 }
@@ -285,13 +290,14 @@ function rig(opts) {
 
   /* RATE DISCIPLINE: never more than one framebuffer in flight. Three
    * invalidations inside one tick is ONE repaint. */
-  const b2 = r.send.log.length;
+  r.ticks(40);                              /* let any repaint in flight finish */
+  const p0 = r.surface.display.paintsCompleted;
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map */
   r.surface.feedMidi([0x80, 0x10, 0x00]);   /* shift up    -> params */
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map again */
-  r.ticks(1);
-  const fbs = r.send.log.slice(b2).filter((p) => isScreen(p));
-  eq("three invalidations in one tick are one repaint", fbs.length, 1);
+  r.ticks(30);
+  eq("three invalidations in one tick are one repaint",
+     r.surface.display.paintsCompleted - p0, 1);
 }
 
 /* ===========================================================================
@@ -331,10 +337,29 @@ function rig(opts) {
   r.ticks(40);
   const b2 = r.send.log.length;
   r.ticks(80);
-  const idle = r.send.log.slice(b2).filter((p) => j(msgId(p)) !== j(ENTER));
-  eq("an idle, unchanged screen sends nothing but keepalives", idle.length, 0);
+  const idle = r.send.log.slice(b2).filter((p) => j(msgId(p)) !== j(ENTER) && j(msgId(p)) !== j(RING));
+  eq("an idle, unchanged screen sends no screen traffic", idle.length, 0);
 
-  ok(Math.max.apply(null, r.perTick) <= 1, "never more than one message in a tick");
+  /* RING KEEPALIVE: rings get no ACK, so a lost ring message -- or LED state
+   * the device drops -- stayed wrong until that knob moved (hardware,
+   * 2026-09-24: every ring blank, screen fine). An idle surface restates all
+   * of them on RING_RESTATE_MS. */
+  const b3 = r.send.log.length;
+  /* A real device answers every keepalive; without that the surface would
+   * rightly decide it was gone after LOSS_MS and stop sending. */
+  for (let i = 0; i < Math.ceil((RING_RESTATE_MS * 2 + 200) / 25); i++) {
+    if (i % 40 === 0) r.surface.feedMidi(NEW_ACK);
+    r.ticks(1);
+  }
+  const restates = r.send.log.slice(b3).filter((p) => j(msgId(p)) === j(RING));
+  ok(restates.length >= 2, "an idle surface restates its rings on the keepalive");
+  eq("...all sixteen chunks in one message",
+     unpack(restates[0]).length > 100, true);
+
+  /* Within the budget, or a single message -- one message always goes, so
+   * the all-rings restate (~44 packets) can be a tick on its own. */
+  ok(r.perTickPackets.every((n, i) => n <= TICK_PACKET_BUDGET || r.perTick[i] === 1),
+     "never more than the packet budget in a tick");
 }
 
 /* ===========================================================================
@@ -490,7 +515,10 @@ function rig(opts) {
 }
 
 /* ===========================================================================
- * RULE 6 -- ONE MESSAGE PER TICK, ACROSS BOTH PRODUCERS, and a replug repaints.
+ * RULE 6 -- A PACKET BUDGET PER TICK, ONE PRODUCER PER TICK, and a replug
+ * repaints. (It was "one message per tick" while a repaint was one 391-packet
+ * framebuffer; regions are small, so several share a tick up to
+ * TICK_PACKET_BUDGET -- but the keepalive still never shares one.)
  *
  * createDisplay enforces its own budget but cannot see the lifecycle, which is
  * a second producer on the same port. A keepalive ENTER in the same tick as a
@@ -507,7 +535,10 @@ function rig(opts) {
   r.ticks(4); r.ack(); r.ticks(60);
   r.surface.feedMidi([0xB0, 0x01, 0x01]);
   r.ticks(60);
-  eq("no tick ever sent two messages", Math.max.apply(null, r.perTick), 1);
+  /* Within the budget, or a single message -- one message always goes, so
+   * the all-rings restate (~44 packets) can be a tick on its own. */
+  ok(r.perTickPackets.every((n, i) => n <= TICK_PACKET_BUDGET || r.perTick[i] === 1),
+     "no tick ever exceeded the packet budget");
 
   /* The case that actually collides: a KEEPALIVE falls due on the same tick as
    * an owed repaint. 25 ms ticks never reach it, so it is driven deliberately

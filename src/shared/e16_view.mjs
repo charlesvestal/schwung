@@ -192,6 +192,9 @@ export function buildView(pages, pageIndex, io) {
                 label: (p.shortNames && p.shortNames[key]) ||
                        meta.short_name || meta.label || key,
                 value: valueOf(key),
+                /* Kept so the value is PRINTED through the shared formatter
+                 * (see renderView), never as the raw cached string. */
+                meta,
                 min,
                 max,
                 /* Bipolar is READ FROM THE RANGE, exactly as render_page_movy
@@ -277,8 +280,18 @@ export function renderView(ctx, view) {
         if (!cell) continue;
         const r = cellRect(e);
         ctx.print(r.x + 1, r.y + 1, clip(ctx, cell.label, r.w - 2), 1);
-        const v = cell.value === undefined || cell.value === null ? "" : String(cell.value);
-        if (v !== "") ctx.print(r.x + 1, r.y + 7, clip(ctx, v, r.w - 2), 1);
+        /*
+         * THE VALUE GOES THROUGH displayValue, THE SAME FORMATTER MOVE'S KNOB
+         * GRID USES. Printing String(cell.value) showed whatever form the
+         * cache happened to hold: the module's own reading before a turn
+         * (hank's ratio as "11.000") and the controller's written number
+         * after one ("11") -- one value, two pictures, reported on hardware
+         * 2026-09-24. An unread value still draws nothing.
+         */
+        if (cell.value !== undefined && cell.value !== null) {
+            const v = String(displayValue(cell.value, cell.meta || {}));
+            if (v !== "") ctx.print(r.x + 1, r.y + 7, clip(ctx, v, r.w - 2), 1);
+        }
     }
 }
 
