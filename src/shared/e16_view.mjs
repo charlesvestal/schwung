@@ -68,12 +68,57 @@ export const CELL_H = (HALF_H - HEADER_BAR_H) / 2;  /* 12 */
  * rather than allowed to run under the position text. */
 export const HEADER_TEXT_W = WIDTH / 2;
 
-/* Ring colours. Two, not a palette: the ring's JOB is to show a value, and a
- * per-cell hue would encode something this view does not know. The dim pair is
- * for a read-only cell, so a readout is visibly not a control -- the same
- * distinction `access: "read"` draws as a dotted stroke on the knob grid. */
-export const RING_RGB = { r: 0, g: 40, b: 40 };
+/*
+ * Ring colours. A ring's JOB is to show a value; its HUE says WHOSE value.
+ *
+ * On the slot map the four slot knobs are green and each module knob wears
+ * its module's colour; in the knob view every knob wears the colour of the
+ * module being edited. The colour is keyed by the module's POSITION in the
+ * slot (synth, midi_fx1, fx1..fx8, bus1..8), so the knob you pressed on the
+ * map and the knobs it opens are the same colour -- continuity across the two
+ * views. Green is reserved for slots. A read-only cell is the dim version, so
+ * a readout is visibly not a control (the grid draws the same distinction as
+ * a dotted stroke). Tuned by eye on hardware: change them HERE, in one table.
+ */
+export const RING_RGB = { r: 0, g: 40, b: 40 };          /* no known module */
 export const RING_RGB_READONLY = { r: 0, g: 8, b: 8 };
+export const RING_DARK = { r: 0, g: 0, b: 0 };
+export const SLOT_RGB = { r: 0, g: 90, b: 0 };           /* the current slot */
+export const SLOT_RGB_OTHER = { r: 0, g: 18, b: 0 };
+const FX_PALETTE = [
+    { r: 100, g: 30, b: 0 },    /* orange  */
+    { r: 90, g: 0, b: 70 },     /* magenta */
+    { r: 50, g: 0, b: 100 },    /* purple  */
+    { r: 0, g: 70, b: 70 },     /* cyan    */
+    { r: 100, g: 0, b: 10 },    /* red     */
+    { r: 80, g: 80, b: 80 },    /* white   */
+    { r: 100, g: 40, b: 50 },   /* pink    */
+    { r: 110, g: 90, b: 40 },   /* warm    */
+];
+const SYNTH_RGB = { r: 0, g: 20, b: 100 };             /* blue    */
+const MIDI_FX_RGB = { r: 90, g: 70, b: 0 };            /* yellow  */
+
+/** The colour of a module position ("synth", "fx3", "midi_fx1", "bus2"). */
+export function componentRgb(component) {
+    const c = String(component || "");
+    if (c === "synth") return SYNTH_RGB;
+    if (c.startsWith("midi_fx")) return MIDI_FX_RGB;
+    const m = /^(fx|bus)(\d+)$/.exec(c);
+    if (m) return FX_PALETTE[((m[2] | 0) - 1 + FX_PALETTE.length) % FX_PALETTE.length];
+    return RING_RGB;
+}
+
+/* A read-only cell's colour: the same hue, a fifth as bright. */
+function dimRgb(rgb) {
+    return { r: Math.round(rgb.r / 5), g: Math.round(rgb.g / 5), b: Math.round(rgb.b / 5) };
+}
+
+/* An unlit ring. Sent, not omitted: the E16 keeps whatever a ring last
+ * showed, so a knob with nothing to drive must be TOLD to go dark or it keeps
+ * the previous page's (or the other view's) value. */
+export function darkRing(enc) {
+    return { enc, r: 0, g: 0, b: 0, amount: 0, bipolar: false };
+}
 
 /* The E16 ring position is 14-bit. */
 export const RING_MAX = 16383;
@@ -223,23 +268,46 @@ export function ringAmount(cell) {
     return Math.max(0, Math.min(RING_MAX, Math.round(t * RING_MAX)));
 }
 
-/** One ring descriptor for `ringMsg`, or null for an empty cell. */
-export function ringFor(view, enc) {
+/** One ring descriptor for `ringMsg`: the cell's value in `rgb` (the
+ * edited module's colour), or DARK for an empty cell. */
+export function ringFor(view, enc, rgb) {
     const cell = view && view.cells ? view.cells[enc] : null;
-    if (!cell) return null;
-    const rgb = cell.readOnly ? RING_RGB_READONLY : RING_RGB;
-    return { enc, r: rgb.r, g: rgb.g, b: rgb.b,
+    if (!cell) return darkRing(enc);
+    const base = rgb || RING_RGB;
+    const c = cell.readOnly ? (rgb ? dimRgb(base) : RING_RGB_READONLY) : base;
+    return { enc, r: c.r, g: c.g, b: c.b,
              amount: ringAmount(cell), bipolar: cell.bipolar };
 }
 
-/** Every occupied cell's ring, for the one full refresh that follows a nav. */
-export function ringsFor(view) {
+/** All sixteen rings of the knob view -- empty cells DARK, never omitted. */
+export function ringsFor(view, rgb) {
+    const out = [];
+    for (let e = 0; e < ENCODERS; e++) out.push(ringFor(view, e, rgb));
+    return out;
+}
+
+/** All sixteen rings of the slot map: slot knobs green (the current slot
+ * bright), each module knob full in its module's colour, the rest dark. */
+export function mapRings(map) {
+    const cells = (map && map.cells) || [];
     const out = [];
     for (let e = 0; e < ENCODERS; e++) {
-        const r = ringFor(view, e);
-        if (r) out.push(r);
+        const cell = cells[e];
+        if (!cell) { out.push(darkRing(e)); continue; }
+        const c = cell.kind === "slot" ? (cell.current ? SLOT_RGB : SLOT_RGB_OTHER)
+                                       : componentRgb(cell.component);
+        out.push({ enc: e, r: c.r, g: c.g, b: c.b, amount: RING_MAX, bipolar: false });
     }
     return out;
+}
+
+/** The knob view of a slot with nothing in it: say so, rather than a blank
+ * screen that reads as a dead device. */
+export function renderEmptySlot(ctx, slotIndex) {
+    ctx.clear();
+    const a = "Slot " + ((slotIndex | 0) + 1), b = "Empty";
+    ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 22, a, 1);
+    ctx.print(Math.floor((WIDTH - ctx.textWidth(b)) / 2), 34, b, 1);
 }
 
 function clip(ctx, text, w) {

@@ -755,6 +755,59 @@ function rig(opts) {
   ok(r.send.log.length > settled, "replug: recovery actually sent something");
 }
 
+/* ===========================================================================
+ * THE RINGS FOLLOW THE VIEW. Holding Shift for the slot map lights the four
+ * slot knobs green and each module knob in its module colour; letting go
+ * lights the knob view in the edited module colour; anything with nothing
+ * to show is sent DARK (the E16 keeps a ring lit until told otherwise). An
+ * empty slot says so on screen, with every ring dark.
+ * ========================================================================= */
+{
+  const { componentRgb, SLOT_RGB } = await import(R + "/src/shared/e16_view.mjs");
+  const ringState = (log) => { const st = {};
+    for (const p of log) { if (j(msgId(p)) !== j(RING)) continue;
+      const u = unpack(p); const packed = u.slice(8, u.length - 1);
+      const raw = unpack7(packed, packed.length - Math.ceil(packed.length / 8));
+      for (let i = 0; i + 7 <= raw.length; i += 7)
+        st[raw[i]] = { r: raw[i + 1], g: raw[i + 2], b: raw[i + 3], amount: (raw[i + 4] << 7) | raw[i + 5] };
+    }
+    return st; };
+  const lit = (x) => x && (x.r || x.g || x.b);
+  const rgbOf = (x) => [x.r, x.g, x.b];
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(4); r.ack(); r.ticks(120); r.ack();   /* the device answers its keepalives */
+  let b = r.send.log.length;
+  r.surface.feedMidi([0x90, 0x10, 0x7F]);        /* hold Shift: the map */
+  r.ticks(20);
+  let st = ringState(r.send.log.slice(b));
+  eq("map: the current slot knob is green", rgbOf(st[0]), rgbOf(SLOT_RGB));
+  ok([1, 2, 3].every((e) => st[e] && st[e].g > 0 && !st[e].r && !st[e].b), "map: the other slot knobs are green");
+  ok([4, 5, 6].every((e) => lit(st[e]) && !(st[e].g > 0 && !st[e].r && !st[e].b)), "map: each module knob is lit in a non-green colour");
+  ok([7, 8, 9, 10, 11, 12, 13, 14, 15].every((e) => st[e] && !lit(st[e]) && !st[e].amount), "map: every other knob is DARK");
+
+  b = r.send.log.length;
+  r.surface.feedMidi([0x80, 0x10, 0x00]);        /* let go: the knob view */
+  r.ticks(20);
+  st = ringState(r.send.log.slice(b));
+  const want = rgbOf(componentRgb(r.surface.component));
+  ok(Object.values(st).every((x) => !lit(x) || j(rgbOf(x)) === j(want) ||
+       (x.r <= want[0] && x.g <= want[1] && x.b <= want[2])),
+     "knobs: every lit ring wears the edited module colour (or its dim)");
+  ok([0, 1, 2, 3].every((e) => !st[e] || !(st[e].g > 0 && !st[e].r && !st[e].b) || j(rgbOf(st[e])) === j(want)),
+     "knobs: no slot green is left over from the map");
+
+  /* An empty slot: Shift, push slot 3, let go. */
+  r.ack();
+  r.surface.feedMidi([0x90, 0x10, 0x7F]); r.ticks(20);
+  r.surface.feedMidi([0x90, 0x02, 0x7F]); r.surface.feedMidi([0x80, 0x02, 0x00]); r.ticks(4);
+  b = r.send.log.length;
+  r.surface.feedMidi([0x80, 0x10, 0x00]); r.ticks(40);
+  st = ringState(r.send.log.slice(b));
+  ok(Object.keys(st).length === 16 && Object.values(st).every((x) => !lit(x) && !x.amount),
+     "an empty slot darkens all sixteen rings");
+}
+
 if (fails) { console.log("FAILED " + fails); process.exit(1); }
 console.log("PASS: the surface runs end to end");
 '

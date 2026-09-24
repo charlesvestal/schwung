@@ -1486,6 +1486,9 @@ export function createNav(opts) {
         get pageIndex() { return pageIndex; },
         get mapPage() { return mapPage; },
         get showBuses() { return showBuses; },
+        /** The slot map as it stands (whether or not it is on screen). */
+        map() { return currentMap(); },
+        get showBuses() { return showBuses; },
         get followEnabled() { return follow; },
         /* The DISPLAY MODE depends on this: a map is a picture and the
          * parameter view is sixteen labels, and the two modes override each
@@ -1532,7 +1535,8 @@ export function createNav(opts) {
  */
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
-import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick }
+import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
+         mapRings, componentRgb, renderEmptySlot }
     from "./e16_view.mjs";
 
 /**
@@ -1644,6 +1648,29 @@ export function createSurface(io) {
      * current. */
     const viewNow = () =>
         buildView(ctl ? ctl.pages : [], nav ? nav.pageIndex : 0, { metaOf, valueOf });
+
+    /* The knobs wear the colour of the module they edit (see componentRgb):
+     * the same colour its knob had on the slot map. */
+    const knobRgb = () => componentRgb(nav ? nav.component : null);
+    /* The focused slot holds no module at all. */
+    const slotEmpty = () => {
+        if (!nav) return false;
+        const m = buildMap(chainOf(), { slot: nav.slot });
+        return !m.cells.slice(4).some(Boolean);
+    };
+    /*
+     * ALL SIXTEEN RINGS FOR WHAT IS ON SCREEN. The map lights slots and
+     * modules; the knob view lights knobs. Every knob is described -- the ones
+     * with nothing to show as DARK -- because the E16 keeps whatever a ring
+     * last showed: a page with no knobs (presets), an empty slot, or the view
+     * you just left would otherwise keep its old rings lit.
+     */
+    const desiredRings = (t) => (nav && nav.mapVisible(t))
+        ? mapRings(nav.map())
+        : (slotEmpty() ? ringsFor(null) : ringsFor(viewNow(), knobRgb()));
+    /* What the rings last described, so a change of view / slot / module /
+     * page restates all sixteen at once rather than waiting for the look. */
+    let ringContext = null;
 
     /*
      * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
@@ -1813,7 +1840,12 @@ export function createSurface(io) {
         chainOf,
         followFocusOf,
         pageCountOf: () => (ctl && ctl.pages ? ctl.pages.length : 1),
-        renderParams: (ctx) => renderView(ctx, viewNow()),
+        renderParams: (ctx) => {
+            /* A slot with no modules says so -- a blank screen reads as a
+             * dead device. */
+            if (slotEmpty()) renderEmptySlot(ctx, nav.slot);
+            else renderView(ctx, viewNow());
+        },
         /* The jump has already moved nav's focus; the controller catches up in
          * syncFocus() on the next tick. Reloading from here instead would put a
          * contract read (two blocking param round trips) on the MIDI callback
@@ -1953,7 +1985,7 @@ export function createSurface(io) {
          * restate costs one send.
          */
         if (!ensureController()) return;
-        for (const desc of ringsFor(viewNow())) display.ringChanged(desc);
+        for (const desc of desiredRings(now())) display.ringChanged(desc);
     }
 
     return {
@@ -1980,7 +2012,7 @@ export function createSurface(io) {
                 if (!cell) continue;
                 if (k !== cell.key && k !== nav.component + ":" + cell.key) continue;
                 ctl.state.values[cell.key] = String(value);
-                display.ringChanged(ringFor(viewNow(), cell.enc));
+                display.ringChanged(ringFor(viewNow(), cell.enc, knobRgb()));
                 turnedAt = now();
                 settlePainted = false;
             }
@@ -2022,7 +2054,7 @@ export function createSurface(io) {
                  * is rebuilt AFTER the write so the ring carries the new value.
                  */
                 if (moved) {
-                    display.ringChanged(ringFor(viewNow(), act.enc));
+                    display.ringChanged(ringFor(viewNow(), act.enc, knobRgb()));
                     /*
                      * THE NUMBER FOLLOWS THE HAND. The ring moves on every
                      * detent; the printed digits are a region repaint, owed
@@ -2050,7 +2082,7 @@ export function createSurface(io) {
                  * page). Only the second is worth a screen. */
                 if (ctl.pageIndex !== before) display.invalidate();
                 else if (hit) {
-                    display.ringChanged(ringFor(viewNow(), act.enc));
+                    display.ringChanged(ringFor(viewNow(), act.enc, knobRgb()));
                     display.invalidateLabels();
                 }
                 focusEnc = act.enc;
@@ -2151,6 +2183,21 @@ export function createSurface(io) {
              * opinion about what a map is.
              */
             const probe = testPattern();
+            /* The rings follow the VIEW at once: map up or down, another slot,
+             * module or page -- all sixteen restated in the new view's colours
+             * (the controller's `loaded` is in the key, so a module's values
+             * are restated again once they have actually arrived). */
+            if (probe < 0) {
+                const rctx = [nav.mapVisible(t), nav.slot, nav.component, nav.pageIndex,
+                              nav.mapPage, nav.showBuses, loaded].join("|");
+                if (rctx !== ringContext) {
+                    ringContext = rctx;
+                    for (const desc of desiredRings(t)) {
+                        display.ringChanged(desc);
+                        ringSeen.set(desc.enc, JSON.stringify(desc));
+                    }
+                }
+            }
             /*
              * LABELS FOR BOTH VIEWS. The framebuffer is reserved for the
              * layout probe and is otherwise never sent.
@@ -2181,15 +2228,12 @@ export function createSurface(io) {
                 t - lookAt >= LOOK_MS) {
                 lookAt = t;
                 display.invalidate();
-                if (ctl && !nav.mapVisible(t)) {
-                    for (const desc of ringsFor(viewNow())) {
-                        if (!desc) continue;
-                        const k = JSON.stringify(desc);
-                        if (ringSeen.has(desc.enc) && ringSeen.get(desc.enc) !== k) {
-                            display.ringChanged(desc);
-                        }
-                        ringSeen.set(desc.enc, k);
+                for (const desc of desiredRings(t)) {
+                    const k = JSON.stringify(desc);
+                    if (ringSeen.has(desc.enc) && ringSeen.get(desc.enc) !== k) {
+                        display.ringChanged(desc);
                     }
+                    ringSeen.set(desc.enc, k);
                 }
             }
 
@@ -2233,11 +2277,11 @@ export function createSurface(io) {
 
             /* RING KEEPALIVE -- see RING_RESTATE_MS. Not mid-gesture (the
              * turn is already sending the ring under the hand) and not over
-             * the map or the layout probe, which own the picture. */
-            if (ctl && probe < 0 && settlePainted && !nav.mapVisible(t) &&
-                t - ringRestateAt >= RING_RESTATE_MS) {
+             * the layout probe, which owns the picture. The map's rings are
+             * restated too: they are what the map shows. */
+            if (probe < 0 && settlePainted && t - ringRestateAt >= RING_RESTATE_MS) {
                 ringRestateAt = t;
-                for (const desc of ringsFor(viewNow())) if (desc) display.ringChanged(desc);
+                for (const desc of desiredRings(t)) display.ringChanged(desc);
             }
 
             /* Arming or disarming the probe is a screen change like any other. */
