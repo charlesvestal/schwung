@@ -174,14 +174,17 @@ export const ACK_TIMEOUT_MS = 1000;
  * queue until EVERY row timed out: the whole unchanged screen re-sent once a
  * second, forever, 7886 of 7915 rows answered on the wire the whole time.
  *
- * The device answers in the order it receives (99% in that capture; the rest
- * arrive at most 5 places early, and are then answered too). So a region is
- * LOST once REORDER_LOSS regions sent after it have been answered without it
- * -- TCP's duplicate-ACK rule. The clock remains for the tail (the LAST
+ * The device answers in the order it receives -- mostly: in 11,253 rows
+ * (hardware, 2026-09-24) 92% came back in order, most of the rest 1-4 places
+ * early, and ~2% as far as 20+ places early, all answered in the end; 36
+ * (0.3%) were truly never answered. So a region is LOST once REORDER_LOSS
+ * regions sent after it have been answered without it -- TCP's duplicate-ACK
+ * rule, with a margin past the deepest reorder seen (8 declared ~8% of rows
+ * lost against 0.3% real). The clock remains for the tail (the LAST
  * message lost has nothing after it to be answered), at a length no live
  * answer reaches.
  */
-export const REORDER_LOSS = 8;
+export const REORDER_LOSS = 24;
 
 /*
  * FLOW CONTROL: PIXELS IN FLIGHT. The E16 draws each region before it takes
@@ -514,21 +517,6 @@ function regionKey(r) {
 
 /* After a CLEAR: one strip per STRIP_H rows that holds any ink, trimmed to
  * that ink's x-range. A blank strip is not sent at all. */
-function inkedStrips(buf) {
-    const out = [];
-    for (let y = 0; y < 64; y += STRIP_H) {
-        let x0 = -1, x1 = -1;
-        for (let x = 0; x < E16_WIDTH; x++) {
-            let on = false;
-            for (let yy = y; yy < y + STRIP_H && yy < 64; yy++) {
-                if (buf[(yy >> 3) * E16_WIDTH + x] & (1 << (yy & 7))) { on = true; break; }
-            }
-            if (on) { if (x0 < 0) x0 = x; x1 = x; }
-        }
-        if (x0 >= 0) out.push(stripRegion(x0, y, x1 - x0 + 1, Math.min(STRIP_H, 64 - y)));
-    }
-    return out;
-}
 
 /* EVERY strip is a RECTANGLE, full-width rows included. A full-width row
  * used to go out as a SCANLINE to save ONE packet (10 vs 11); measured on
@@ -552,12 +540,77 @@ function toStrips(regions) {
     const out = [];
     for (const r of regions) {
         if (r.kind === "scanline") { out.push(stripRegion(0, r.y, E16_WIDTH, 1)); continue; }
-        if (r.kind !== "rect" || r.h <= STRIP_H) { out.push(r); continue; }
-        for (let y = r.y; y < r.y + r.h; y += STRIP_H) {
-            out.push(stripRegion(r.x, y, r.w, Math.min(STRIP_H, r.y + r.h - y)));
+        if (r.kind !== "rect") { out.push(r); continue; }
+        /* As many rows of this width as fit ONE message (see rectPackets). */
+        let hMax = 1;
+        while (hMax < r.h && rectPackets(r.w, hMax + 1) <= ATOMIC_MAX_PACKETS) hMax++;
+        for (let y = r.y; y < r.y + r.h; y += hMax) {
+            out.push(stripRegion(r.x, y, r.w, Math.min(hMax, r.y + r.h - y)));
         }
     }
     return out;
+}
+
+/*
+ * Packets a RECTANGLE message of w x h costs on the wire: 4 address bytes and
+ * the row-major bits, 8-to-7 packed, inside F0, the 5-byte header, the id and
+ * F7, three bytes to a USB-MIDI packet. A message must fit ATOMIC_MAX_PACKETS
+ * (one SPI frame, the only placement Move's notes cannot splice into), so a
+ * message holds ~16 bytes of pixels whatever its SHAPE: one full-width row, or
+ * a 16-px-wide label six rows tall. Narrow content is where blocks save
+ * messages -- and each message is ~13 bytes of header the pixels ride under.
+ */
+export function rectPackets(w, h) {
+    const raw = 4 + Math.ceil(w / 8) * h;
+    return Math.ceil((raw + Math.ceil(raw / 7) + 8) / 3);
+}
+
+/* The INK of a picture as blocks: each row trimmed to its inked extent, then
+ * consecutive inked rows merged while the union still fits one message. */
+function inkedBlocks(buf) {
+    const ext = [];
+    for (let y = 0; y < 64; y++) {
+        let x0 = -1, x1 = -1;
+        const bit = 1 << (y & 7), row = (y >> 3) * E16_WIDTH;
+        for (let x = 0; x < E16_WIDTH; x++) if (buf[row + x] & bit) { if (x0 < 0) x0 = x; x1 = x; }
+        ext.push(x0 < 0 ? null : [x0, x1]);
+    }
+    const out = [];
+    for (let y = 0; y < 64; ) {
+        if (!ext[y]) { y++; continue; }
+        let [x0, x1] = ext[y];
+        let h = 1;
+        while (y + h < 64 && ext[y + h]) {
+            const n0 = Math.min(x0, ext[y + h][0]), n1 = Math.max(x1, ext[y + h][1]);
+            if (rectPackets(n1 - n0 + 1, h + 1) > ATOMIC_MAX_PACKETS) break;
+            x0 = n0; x1 = n1; h++;
+        }
+        out.push(stripRegion(x0, y, x1 - x0 + 1, h));
+        y += h;
+    }
+    return out;
+}
+
+/* A genuine picture change this many rows deep may be drawn as CLEAR + ink. */
+export const CLEAR_MIN_ROWS = 16;
+
+/* Rows whose pixels differ between two pictures (belief vs target, without
+ * any repair marks). */
+function changedRows(a, b) {
+    if (!a) return 64;
+    let n = 0;
+    for (let y = 0; y < 64; y++) {
+        const bit = 1 << (y & 7), row = (y >> 3) * E16_WIDTH;
+        for (let x = 0; x < E16_WIDTH; x++) if ((a[row + x] ^ b[row + x]) & bit) { n++; break; }
+    }
+    return n;
+}
+
+/* What a list of regions costs on the wire, in packets. */
+function listPackets(list) {
+    let n = 0;
+    for (const r of list) n += r.kind === "clear" ? 3 : r.kind === "scanline" ? 10 : rectPackets(r.w, r.h);
+    return n;
 }
 
 export function createDisplay(opts) {
@@ -824,11 +877,29 @@ export function createDisplay(opts) {
                      * the win; the map, boxed on most rows, gains less.
                      */
                     pendingBuf = buf.slice();
-                    pendingRegions = [{ kind: "clear" }].concat(inkedStrips(pendingBuf));
+                    pendingRegions = [{ kind: "clear" }].concat(inkedBlocks(pendingBuf));
                     fbOwed = false;
                 } else {
                     pendingBuf = buf.slice();
                     pendingRegions = toStrips(diff.regions);
+                    /*
+                     * A SWITCH TO A SPARSER VIEW IS A CLEAR AND ITS INK. The
+                     * diff re-sends every changed row -- rows that only need
+                     * ERASING included -- while a CLEAR erases the whole panel
+                     * in one 3-packet message and the new view then costs only
+                     * its ink. Taken when it is fewer packets AND the PICTURE
+                     * really changed across at least CLEAR_MIN_ROWS rows -- a
+                     * view switch. Never for a repair: a heartbeat or a lost
+                     * row on a sparse screen can also be "cheaper" via CLEAR,
+                     * and that blanks the whole panel to fix one line.
+                     */
+                    const viaClear = [{ kind: "clear" }].concat(inkedBlocks(pendingBuf));
+                    if (changedRows(lastSentBuf, pendingBuf) >= CLEAR_MIN_ROWS &&
+                        listPackets(viaClear) < listPackets(pendingRegions)) {
+                        onFull("view change: CLEAR + ink is " + listPackets(viaClear) +
+                               " packets vs " + listPackets(pendingRegions) + " for the diff");
+                        pendingRegions = viaClear;
+                    }
                     fbOwed = false;
                 }
             }

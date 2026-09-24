@@ -25,7 +25,7 @@ import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
 import { createDisplay, SCREEN_HEARTBEAT_MS, STRIP_H, TICK_PACKET_BUDGET, ACK_TIMEOUT_MS,
-         WINDOW_PX_START, WINDOW_PX_MIN, REORDER_LOSS } from "./src/shared/e16_surface.mjs";
+         WINDOW_PX_START, WINDOW_PX_MIN, REORDER_LOSS, rectPackets, ATOMIC_MAX_PACKETS } from "./src/shared/e16_surface.mjs";
 import { unpack7 } from "./src/shared/e16_protocol.mjs";
 const STRIPS = 64 / STRIP_H;   /* strips in a fully inked screen */
 /* Messages in a FULL repaint of buf: one CLEAR, then one strip per STRIP_H
@@ -287,18 +287,18 @@ d.invalidate(); d.invalidate(); d.invalidate();
 const p0 = d.paintsCompleted;
 drain(d, send, PICTURE);
 eq("three invalidations are ONE repaint", d.paintsCompleted - p0, 1);
-/* The screen was primed, so this is a DIFF against a known picture: every
- * row changed, so every strip goes -- no CLEAR (that is for a screen we know
- * nothing about). One repaint, not three. */
-eq("...of exactly one set of changed strips, not three", send.log.length, STRIPS);
-eq("...only RECTANGLEs: no CLEAR for a known screen, never a framebuffer",
-   send.log.every(p => kindOf(p) === "rect"), true);
+/* Every row of the picture changed: a view switch. One repaint, not three --
+ * a CLEAR and the new ink when that is fewer packets, never a FRAMEBUFFER. */
+const oneRepaint = send.log.length;
+eq("...of one set of messages, not three", oneRepaint <= STRIPS + 1, true);
+eq("...RECTANGLEs after at most one leading CLEAR, never a framebuffer",
+   send.log.every((p, i) => kindOf(p) === "rect" || (i === 0 && kindOf(p) === "clear")), true);
 /* Full-width rows included: SCANLINE was the only opcode the device NACKed
  * after frame-atomic placement (2 of 52 vs 0 of 194 rects, 2026-09-24). */
 eq("...and never a SCANLINE, even for a full-width row",
    send.log.some(p => kindOf(p) === "scanline"), false);
 eq("nothing more owed", d.tick(send, frame, PICTURE), null);
-eq("still one repaint on the wire", send.log.length, STRIPS);
+eq("still one repaint on the wire", send.log.length, oneRepaint);
 
 /* A repaint never shares a tick with rings, and finishes before them: a
  * half-drawn screen is worse than a ring that arrives a few ticks late. */
@@ -588,10 +588,12 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   const { unpack7 } = await import("./src/shared/e16_protocol.mjs");
   const resent = send6.log.slice(before6).map((p) => { const u = unpack(p);
     return unpack7(u.slice(7, u.length - 1), 4); });
-  /* Rows 47..51 of x 40..85, cut to STRIP_H-row strips -- and nothing else. */
+  /* Rows 47..51 of x 40..85, cut into blocks as tall as fit one message --
+   * and nothing else, and never a CLEAR for a repair. */
+  let hMax6 = 1; while (rectPackets(46, hMax6 + 1) <= ATOMIC_MAX_PACKETS) hMax6++;
   const want6 = [];
-  for (let y = 47; y < 52; y += STRIP_H) want6.push([40, y, 46, Math.min(STRIP_H, 52 - y)]);
-  eq("a NACKed region re-sends exactly that region, as strips", resent, want6);
+  for (let y = 47; y < 52; y += hMax6) want6.push([40, y, 46, Math.min(hMax6, 52 - y)]);
+  eq("a NACKed region re-sends exactly that region, as message-sized blocks", resent, want6);
   eq("...and nothing else goes out after it", d6.tick(send6, frameBytes6, { kind: "framebuffer" }, 200), null);
 }
 
@@ -611,22 +613,18 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   eq("a CLEAR goes out alone, ahead of any row", snd.log.map((p) => unpack(p)[6]), [0x07]);
   d.acked({ ok: true, cmd: 0x07, addr: {} });
   for (let i = 1; i < 8 && d.repaintPending; i++) d.tick(snd, () => b, { kind: "framebuffer" }, i);
-  eq("full repaint = CLEAR + one row for each inked row",
-     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08, 0x08]);
-  eq("...each trimmed to its own ink", [addr(snd.log[1]), addr(snd.log[2])],
-     [[40, 50, 1, 1], [45, 51, 1, 1]]);
+  eq("full repaint = CLEAR + the ink, adjacent inked rows in ONE block",
+     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08]);
+  eq("...trimmed to its own ink", addr(snd.log[1]), [40, 50, 6, 2]);
 
-  eq("the unanswered rows are outstanding", d.outstandingCount, 2);
+  eq("the unanswered block is outstanding", d.outstandingCount, 1);
   const n0 = snd.log.length;
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS - 50);
   eq("...not re-sent before ACK_TIMEOUT_MS", snd.log.length, n0);
   d.tick(snd, () => b, { kind: "framebuffer" }, ACK_TIMEOUT_MS + 10);
-  /* The repair is re-DIFFED, so damage on adjacent rows merges into one
-   * row-run covering both marks (x 40..45), still cut to one row a message. */
   const resent = snd.log.slice(n0).map(addr);
-  eq("...re-sent once they time out: rows 50 and 51, covering both marks",
-     resent, [[40, 50, 6, 1], [40, 51, 6, 1]]);
-  eq("...and counted", d.ackTimeouts, 2);
+  eq("...re-sent once it times out, the same block", resent, [[40, 50, 6, 2]]);
+  eq("...and counted", d.ackTimeouts, 1);
 
   /* An answered region is never re-sent. */
   for (const [x, y, w, h] of resent) d.acked({ cmd: 0x08, addr: { x, y, w, h } });
@@ -804,39 +802,43 @@ eq("rings pending is visible to the caller that gates the heartbeat",
     const [x, y, w, h] = unpack7(b.slice(7, b.length - 1), 4);
     d.acked({ ok, cmd: 0x08, addr: { x, y, w, h } }); };
   const rowsOf = (log) => log.map((p) => { const b = unpack(p); return unpack7(b.slice(7, b.length - 1), 4)[1]; });
+  /* A fully inked screen, then 40 of its rows changed: full-width rows, one
+   * message each, and a DIFF (a CLEAR would re-send all 64). */
+  const base = new Uint8Array(1024), pic = new Uint8Array(1024);
+  for (let y = 0; y < 64; y++) for (let x = 0; x < 128; x++) {
+    if ((x + y) % 3 === 1) base[(y >> 3) * 128 + x] |= 1 << (y & 7);
+    if ((x + y) % 3 === ((y >= 10 && y < 50) ? 0 : 1)) pic[(y >> 3) * 128 + x] |= 1 << (y & 7);
+  }
   const mk = () => { const d = createDisplay(); const snd = mkSend();
-    const blank = new Uint8Array(1024); blank[0] = 1;
     d.invalidate();
-    for (let i = 0; i < 64 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => blank, { kind: "framebuffer" }, i); answer(d, snd); }
+    for (let i = 0; i < 200 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => base, { kind: "framebuffer" }, i); answer(d, snd); }
     return { d, snd }; };
-  /* Twelve short inked rows: they all fit the window. */
-  const pic = new Uint8Array(1024); pic[0] = 1;   /* the primed pixel stays */
-  for (let y = 10; y < 22; y++) pic[(y >> 3) * 128 + 3] |= 1 << (y & 7);
+  const run = (skip) => { const { d, snd } = mk();
+    const n0 = snd.log.length;
+    d.invalidate();
+    const answeredIdx = new Set(); let lossAt = null;
+    for (let t = 0; t < 400 && (d.repaintPending || d.outstandingCount); t++) {
+      d.tick(snd, () => pic, { kind: "framebuffer" }, 100 + t);
+      const sent = snd.log.slice(n0);
+      for (let i = 0; i < sent.length; i++) if (!answeredIdx.has(i) && !skip(i, sent.length)) { answeredIdx.add(i); ackOne(d, sent[i]);
+        if (d.ackTimeouts && lossAt === null) lossAt = answeredIdx.size; }
+      if (d.ackTimeouts) break;
+    }
+    return { d, snd, n0, lossAt }; };
 
-  let { d, snd } = mk();
-  const n0 = snd.log.length;
-  d.invalidate();
-  for (let i = 0; i < 20 && d.repaintPending; i++) d.tick(snd, () => pic, { kind: "framebuffer" }, 100 + i);
-  const sent = snd.log.slice(n0);
-  eq("twelve rows out", sent.length, 12);
-  for (let i = 1; i < REORDER_LOSS; i++) ackOne(d, sent[i]);
-  eq("REORDER_LOSS - 1 later answers: the first is merely LATE", d.ackTimeouts, 0);
-  ackOne(d, sent[REORDER_LOSS]);
-  eq("the REORDER_LOSS-th later answer declares it LOST", d.ackTimeouts, 1);
-  const n1 = snd.log.length;
-  d.tick(snd, () => pic, { kind: "framebuffer" }, 130);
-  eq("...and exactly that row is re-sent", rowsOf(snd.log.slice(n1)), [10]);
+  /* Never answer the FIRST message: it is declared lost only once
+   * REORDER_LOSS later ones are answered, and then re-sent. */
+  let r = run((i) => i === 0);
+  eq("the first row is LOST only after REORDER_LOSS later answers", [r.d.ackTimeouts, r.lossAt], [1, REORDER_LOSS]);
+  const n1 = r.snd.log.length;
+  r.d.tick(r.snd, () => pic, { kind: "framebuffer" }, 900);
+  eq("...and exactly that row is re-sent first", rowsOf(r.snd.log.slice(n1, n1 + 1)), [rowsOf(r.snd.log.slice(r.n0, r.n0 + 1))[0]]);
 
-  ({ d, snd } = mk());
-  const m0 = snd.log.length;
-  d.invalidate();
-  for (let i = 0; i < 20 && d.repaintPending; i++) d.tick(snd, () => pic, { kind: "framebuffer" }, 100 + i);
-  const s2 = snd.log.slice(m0);
-  ackOne(d, s2[1]); ackOne(d, s2[0]);                  /* answered one place early */
-  for (let i = 2; i < s2.length; i++) ackOne(d, s2[i]);
-  eq("an answer one place early is not a loss", [d.ackTimeouts, d.outstandingCount], [0, 0]);
-  eq("...and a clock far past the OLD 250 ms is not one either, while answers flow",
-     ACK_TIMEOUT_MS > 400, true);
+  /* Answer the first one place LATE (after the second): not a loss. */
+  let held = true;
+  r = run((i, n) => { if (i === 0 && held) { if (n > 2) { held = false; return false; } return true; } return false; });
+  eq("an answer one place out of order is not a loss", [r.d.ackTimeouts, r.d.outstandingCount], [0, 0]);
+  eq("the clock backstop is far past the OLD 250 ms that fired on live rows", ACK_TIMEOUT_MS >= 1000, true);
 }
 
 /* TWO REPAIRS OF ONE ROW DO NOT CANCEL. The repair used to XOR the belief,
@@ -855,6 +857,52 @@ eq("rings pending is visible to the caller that gates the heartbeat",
   answer(d, snd);
   d.invalidate();
   eq("...and once re-sent it is clean", d.tick(snd, () => b, { kind: "framebuffer" }, 201), null);
+}
+
+/* BLOCKS, AND A CLEAR ONLY FOR A VIEW CHANGE. A message holds ~16 bytes of
+ * pixels whatever its shape (one SPI frame), so narrow content goes as a
+ * block many rows tall, not a message per row. A switch to a sparser view is
+ * a CLEAR and its ink; a small change never blanks the panel. */
+{
+  const { rectangleMsg } = await import("./src/shared/e16_protocol.mjs");
+  let formulaOk = true;
+  for (const [w, h] of [[1, 1], [8, 16], [16, 7], [46, 3], [128, 1], [64, 2], [20, 5]]) {
+    const real = Math.ceil(rectangleMsg(0, 0, w, h, new Uint8Array(Math.ceil(w / 8) * h)).length / 3);
+    if (real !== rectPackets(w, h)) formulaOk = false;
+  }
+  eq("rectPackets matches the real message length", formulaOk, true);
+
+  const label = new Uint8Array(1024);   /* a 14 x 7 "text" block at 20,30 */
+  for (let y = 30; y < 37; y++) for (let x = 20; x < 34; x += 2) label[(y >> 3) * 128 + x] |= 1 << (y & 7);
+  let d = createDisplay(); let snd = mkSend();
+  d.invalidate();
+  for (let i = 0; i < 20 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => label, { kind: "framebuffer" }, i); answer(d, snd); }
+  eq("a 7-row label is ONE block after the CLEAR, not seven rows",
+     snd.log.map((p) => unpack(p)[6]), [0x07, 0x08]);
+
+  /* Dense view, then a sparse one: a view switch leads with a CLEAR. */
+  const dense = new Uint8Array(1024).fill(0x55);
+  d = createDisplay(); snd = mkSend();
+  d.invalidate();
+  for (let i = 0; i < 200 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => dense, { kind: "framebuffer" }, i); answer(d, snd); }
+  let n0 = snd.log.length;
+  d.invalidate();
+  for (let i = 0; i < 20 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => label, { kind: "framebuffer" }, 300 + i); answer(d, snd); }
+  eq("switch to a sparser view: CLEAR, then only its ink",
+     snd.log.slice(n0).map((p) => unpack(p)[6]), [0x07, 0x08]);
+
+  /* A few rows changing never CLEARs, however sparse the screen. */
+  const label2 = label.slice(); label2[(31 >> 3) * 128 + 21] |= 1 << (31 & 7);
+  n0 = snd.log.length;
+  d.invalidate();
+  for (let i = 0; i < 20 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => label2, { kind: "framebuffer" }, 400 + i); answer(d, snd); }
+  eq("a one-pixel change is a region, never a CLEAR",
+     snd.log.slice(n0).map((p) => unpack(p)[6]), [0x08]);
+  /* ...nor a repair of the whole sparse screen (the heartbeat restate). */
+  n0 = snd.log.length;
+  d.invalidateRegion(0, 0, 128, 64); d.invalidate();
+  for (let i = 0; i < 40 && (i === 0 || d.repaintPending); i++) { d.tick(snd, () => label2, { kind: "framebuffer" }, 500 + i); answer(d, snd); }
+  eq("a whole-screen REPAIR never CLEARs", snd.log.slice(n0).some((p) => unpack(p)[6] === 0x07), false);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
