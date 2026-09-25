@@ -255,6 +255,7 @@ export const GLOBAL_ROUTING = {
      * report on a control that is working.
      */
     connect:                { read: "js.stateless",           write: "action.connect",           persist: null,   cache: null,                     modal: null },
+    ec4_setup:              { read: "js.stateless",           write: "action.ec4_setup",         persist: null,   cache: null,                     modal: null },
     help:                   { read: "js.stateless",           write: "action.help",              persist: null,   cache: null,                     modal: null },
 };
 
@@ -621,7 +622,7 @@ export const SYSTEM_PARAMS = [
     /* Both options already fit the enum square, so there is no short form to
      * declare -- a second list to keep in step for nothing. */
     { key: "external_surface", name: "Ext Surface", type: "enum",
-      options: ["Off", "E16"], default: 0 },
+      options: ["Off", "E16", "EC4"], default: 0 },
     /*
      * Does the surface mirror Move's screen, or hold its own focus?
      *
@@ -643,6 +644,15 @@ export const SYSTEM_PARAMS = [
      * src/shared/e16_surface.mjs for why there is no mode where both navigate.
      */
     bool("follow_focus", "Follow Focus", 0),
+    /*
+     * INSTALLS SCHWUNG'S SETUP ONTO AN EC4 plugged into Move -- a door, like
+     * Web Manager and Help, so a write-only two-option enum: a click opens the
+     * screen and a knob cannot. Beside Ext Surface because it is the second
+     * half of choosing EC4 there: the EC4 has no remote mode, and only a
+     * setup carrying Schwung's map makes it a surface (ec4_surface.mjs).
+     */
+    { key: "ec4_setup", name: "EC4 Setup", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
     /*
      * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
      *

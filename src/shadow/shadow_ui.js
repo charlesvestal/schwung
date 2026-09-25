@@ -137,6 +137,9 @@ import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
 import { createSurface as createE16Surface }
     from '/data/UserData/schwung/shared/e16_surface.mjs';
+import { createEc4Surface, DEFAULT_SETUP as EC4_DEFAULT_SETUP,
+         DEFAULT_PULSES_PER_DETENT as EC4_DEFAULT_PULSES }
+    from '/data/UserData/schwung/shared/ec4_surface.mjs';
 import { createController as createPageController }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import {
@@ -482,6 +485,7 @@ const VIEWS = {
      */
     NOTICE: "notice",         // One-shot message screen: title, lines, dismiss
     CONNECT: "connect",       // Device address + QR for Schwung Manager
+    EC4_SETUP: "ec4_setup",   // Install Schwung's setup onto a Faderfox EC4
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
     OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
     GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
@@ -7566,6 +7570,7 @@ function setSlotParam(slot, key, value) {
         /* Tell the E16 surface at once -- see noteParamWrite. A const declared
          * later in this file is in its TDZ during early init: caught. */
         try { e16Surface.noteParamWrite(slot, key, value); } catch (e) {}
+        try { ec4Surface.noteParamWrite(slot, key, value); } catch (e) {}
 
         /* Re-check MIDI FX warnings immediately after sync/module changes. */
         if (key === "midi_fx1:module") {
@@ -10801,6 +10806,198 @@ const e16Surface = createE16Surface({
     },
 });
 
+/*
+ * THE FADERFOX EC4 (Ext Surface = EC4). The E16's navigator, pages and Mixer
+ * on a device whose screen is text -- see src/shared/ec4_surface.mjs. Same
+ * seams as the E16 above, plus one: which EC4 setup holds Schwung's map.
+ *
+ * That is setup 13 unless /data/UserData/schwung/ec4_setup names another
+ * (1-16). EC4 Setup (below) writes it, with the setup it installed into; by
+ * hand it is
+ *   ssh ableton@move.local "echo 14 > /data/UserData/schwung/ec4_setup"
+ * Read ~1 Hz, like the E16's other armed files.
+ */
+let ec4SetupCheckedAt = 0;
+let ec4SetupValue = EC4_DEFAULT_SETUP;
+function ec4Setup() {
+    const now = Date.now();
+    if (now - ec4SetupCheckedAt < 1000) return ec4SetupValue;
+    ec4SetupCheckedAt = now;
+    ec4SetupValue = EC4_DEFAULT_SETUP;
+    try {
+        const path = "/data/UserData/schwung/ec4_setup";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+            if (n >= 1 && n <= 16) ec4SetupValue = n - 1;
+        }
+    } catch (e) {}
+    return ec4SetupValue;
+}
+
+/*
+ * How many EC4 pulses make one of Move's detents -- the ratio behind every
+ * continuous knob's feel on the EC4 (see ec4_surface.mjs). The default is
+ * 72/210, measured on Move and taken from Faderfox for the EC4; override it
+ * without a rebuild (a fraction, bigger = slower):
+ *   ssh ableton@move.local "echo 0.4 > /data/UserData/schwung/ec4_knob_scale"
+ * Read ~1 Hz.
+ */
+let ec4ScaleCheckedAt = 0;
+let ec4ScaleValue = EC4_DEFAULT_PULSES;
+function ec4KnobScale() {
+    const now = Date.now();
+    if (now - ec4ScaleCheckedAt < 1000) return ec4ScaleValue;
+    ec4ScaleCheckedAt = now;
+    ec4ScaleValue = EC4_DEFAULT_PULSES;
+    try {
+        const path = "/data/UserData/schwung/ec4_knob_scale";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseFloat(String(host_read_file(path) || "").trim());
+            if (n > 0 && n <= 32) ec4ScaleValue = n;
+        }
+    } catch (e) {}
+    return ec4ScaleValue;
+}
+
+const ec4Surface = createEc4Surface({
+    now: () => Date.now(),
+    send: e16Send,
+    chainOf: e16ChainShape,
+    followFocusOf: e16FollowFocus,
+    setupOf: ec4Setup,
+    pulsesPerDetentOf: ec4KnobScale,
+    onInstalled: ec4Installed,
+    log: (line) => console.log(line),
+    makeController: (focus) => createPageController({
+        getParam: (key) => getSlotParam(focus.slot, key),
+        setParam: (key, value) => setSlotParam(focus.slot, key, value),
+    }),
+    mixer: {
+        getSlot: (slot, key) => getSlotParam(slot, key),
+        setSlot: (slot, key, value) => {
+            const ok = setSlotParam(slot, key, value);
+            if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
+            return ok;
+        },
+        getGlobal: (key) => {
+            try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
+            catch (e) { return null; }
+        },
+        setGlobal: (key, value) => {
+            let ok = false;
+            try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
+            catch (e) { ok = false; }
+            if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
+            return ok;
+        },
+        skipback: () => {
+            try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
+            catch (e) { return false; }
+        },
+        nameOf: (slot) => {
+            const sl = (e16ChainShape().slots || [])[slot] || {};
+            return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
+        },
+    },
+});
+
+/*
+ * EC4 SETUP (Global Settings -> System -> EC4 Setup): put Schwung's setup onto
+ * an EC4 plugged into Move, with no computer. The steps and the transfer are
+ * the surface's (ec4_surface.mjs, INSTALLING THE SCHWUNG SETUP); this is the
+ * screen and the three presses:
+ *
+ *   click  take the setup the EC4 is on as the one to replace
+ *   click  send, once the EC4 is in receive mode
+ *   click  done
+ *
+ * Opening it sets Ext Surface to EC4: the E16 surface's probes would otherwise
+ * share the port with the transfer.
+ */
+let ec4SetupReturnView = null;
+
+function enterEc4Setup(returnView) {
+    ec4SetupReturnView = returnView || VIEWS.SLOTS;
+    if (externalSurfaceMode !== 2) {
+        setExternalSurfaceMode(2);
+        saveExternalSurfaceConfig();
+    }
+    ec4Surface.installBegin();
+    setView(VIEWS.EC4_SETUP);
+    needsRedraw = true;
+    announce("EC4 Setup. On the EC4, choose the setup to replace, then click.");
+}
+
+function exitEc4Setup() {
+    const st = ec4Surface.installState;
+    /* Mid-transfer, Back is refused: an EC4 left in receive mode with half a
+     * message has to be cancelled on the EC4 itself. */
+    if (st && st.phase === "sending") return;
+    ec4Surface.installEnd();
+    const back = ec4SetupReturnView || VIEWS.SLOTS;
+    ec4SetupReturnView = null;
+    if (back === VIEWS.GLOBAL_SETTINGS) { enterGlobalSettings(); return; }
+    setView(back);
+    needsRedraw = true;
+}
+
+function ec4SetupClick() {
+    const st = ec4Surface.installState;
+    if (!st) return;
+    if (st.phase === "pick") {
+        if (!ec4Surface.installArm()) { announce("No EC4 answering on USB-A."); return; }
+        announce("Setup " + (ec4Surface.installState.setup + 1) +
+                 ". Put the EC4 in receive mode: function and encoder 4, then encoder 14. Then click.");
+    } else if (st.phase === "ready") {
+        ec4Surface.installSend();
+        announce("Sending.");
+    } else if (st.phase === "done") {
+        exitEc4Setup();
+        return;
+    }
+    needsRedraw = true;
+}
+
+/* The surface calls this when the whole message has gone out. */
+function ec4Installed(setup) {
+    try { host_write_file("/data/UserData/schwung/ec4_setup", String(setup + 1)); } catch (e) {}
+    ec4SetupCheckedAt = 0;
+    announce("Done. EC4 setup " + (setup + 1) + " is Schwung's. Its name is unchanged; rename it on the EC4 to label it.");
+    needsRedraw = true;
+}
+
+function drawEc4Setup() {
+    clear_screen();
+    const st = ec4Surface.installState || { phase: "pick", current: null };
+    const lines = [];
+    let foot = "Back: exit";
+    if (st.phase === "pick" && st.current === null) {
+        lines.push("Plug the EC4 into", "Move's USB-A port.");
+    } else if (st.phase === "pick") {
+        lines.push("On the EC4, choose the", "setup to replace:", "  setup " + (st.current + 1));
+        foot = "Click: use it";
+    } else if (st.phase === "ready") {
+        lines.push("Setup " + (st.setup + 1) + ". Now on EC4:", "FUNC+enc 4, then", "enc 14 (receive)");
+        foot = "Click: send";
+    } else if (st.phase === "sending") {
+        lines.push("Sending to setup " + (st.setup + 1), Math.round(st.progress * 100) + "%");
+        foot = "";
+    } else {
+        /* A single-setup download carries no name, so the setup keeps the
+         * one it had; say so, or "SCHW" not appearing reads as a failure. */
+        lines.push("Setup " + (st.setup + 1) + " is Schwung's.", "Its name is unchanged:",
+                   "rename it on the EC4.");
+        foot = "Click: done";
+    }
+    print(2, 1, "EC4 SETUP", 1);
+    fill_rect(0, 10, 128, 1, 1);
+    lines.forEach((l, i) => print(2, 14 + i * 10, l, 1));
+    if (foot) drawFooter([foot]);
+    /* The EC4's setup number and the progress change without input. */
+    needsRedraw = true;
+}
+
+
 function setExternalSurfaceFollow(v) {
     const mode = (parseInt(v, 10) || 0) ? 1 : 0;
     if (mode === externalSurfaceFollow) return;
@@ -10808,6 +11005,7 @@ function setExternalSurfaceFollow(v) {
     /* The surface parks its own focus on the OFF->ON edge and restores it on
      * the way back, so it must see the EDGE, not poll the setting. */
     e16Surface.setFollow(mode === 1);
+    ec4Surface.setFollow(mode === 1);
 }
 
 /*
@@ -10828,13 +11026,16 @@ function e16FollowFocus() {
 }
 
 function setExternalSurfaceMode(v) {
-    const mode = (v === 1) ? 1 : 0;
+    /* 1 = OXI E16, 2 = Faderfox EC4. One device at a time: both are read
+     * from the same claimed CCs (src/host/e16_claim.h). */
+    const mode = (v === 1 || v === 2) ? v : 0;
     if (mode === externalSurfaceMode) return;
     externalSurfaceMode = mode;
     /* EXIT is sent from here, once, or the device is left blank with the
      * feature switched off. An EXIT the buffer refuses is owed and drained by
      * externalSurfaceTick(). */
     e16Surface.setEnabled(mode === 1);
+    ec4Surface.setEnabled(mode === 2);
 }
 
 function saveExternalSurfaceConfig() {
@@ -10869,6 +11070,7 @@ function loadExternalSurfaceConfig() {
  * nothing is owed, this is two comparisons. */
 function externalSurfaceTick() {
     e16Surface.tick();
+    ec4Surface.tick();
 }
 
 /* Cable-2 bytes, three at a time with the CIN already stripped. Fed
@@ -10878,6 +11080,7 @@ function externalSurfaceTick() {
  * the assembler is gated on the setting inside the surface. */
 function externalSurfaceMidi(data) {
     e16Surface.feedMidi(data);
+    ec4Surface.feedMidi(data);
 }
 
 let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */
@@ -12539,6 +12742,10 @@ function handleGlobalSettingsAction(key) {
     }
     if (key === "connect") {
         enterConnect(VIEWS.GLOBAL_SETTINGS);
+        return;
+    }
+    if (key === "ec4_setup") {
+        enterEc4Setup(VIEWS.GLOBAL_SETTINGS);
         return;
     }
 }
@@ -14757,6 +14964,7 @@ function globalGridIoFor() {
              * on a control that works. See GLOBAL_ROUTING's `js.stateless`. */
             case "connect":
             case "help":
+            case "ec4_setup":
                 return "0";
             }
             return "";
@@ -21757,6 +21965,9 @@ function handleSelect() {
         case VIEWS.CONNECT:
             exitConnect();
             break;
+        case VIEWS.EC4_SETUP:
+            ec4SetupClick();
+            break;
         case VIEWS.CHAIN_SETTINGS:
             {
                 if (showingNamePreview) {
@@ -22543,6 +22754,9 @@ function handleBack() {
             break;
         case VIEWS.CONNECT:
             exitConnect();
+            break;
+        case VIEWS.EC4_SETUP:
+            exitEc4Setup();
             break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
@@ -25123,6 +25337,7 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
         case VIEWS.NOTICE:               drawNotice(); break;
         case VIEWS.CONNECT:              drawConnect(); break;
+        case VIEWS.EC4_SETUP:            drawEc4Setup(); break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
         default:
             /* Unknown view in co-run — render slot list as a recoverable
@@ -26494,6 +26709,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.CONNECT:
             drawConnect();
+            break;
+        case VIEWS.EC4_SETUP:
+            drawEc4Setup();
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();
