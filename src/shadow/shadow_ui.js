@@ -10466,7 +10466,11 @@ function e16ChainShape() {
     const idOf = (entry) => (entry && entry.module ? String(entry.module) : null);
     const slotsOut = [];
     for (let s = 0; s < 4; s++) {
-        const cfg = chainConfigs[s] || createEmptyChainConfig();
+        /* ensureChainConfigFresh, not chainConfigs[s]: the mirror is filled
+         * LAZILY, when a slot is opened in this UI, so a slot never visited
+         * since boot read as empty and its row on the map was blank. A fresh
+         * slot costs nothing; a stale one is read once and cached. */
+        const cfg = ensureChainConfigFresh(s) || createEmptyChainConfig();
         slotsOut.push({
             midiFx: (cfg.midiFx || []).map(idOf),
             synth: idOf(cfg.synth),
