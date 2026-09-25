@@ -2261,7 +2261,7 @@
       "description": "Scrolling sight-reading trainer: read the staff, hit the pad in time. 27 pieces in up to four levels, one hand to both, with pause-and-scrub to drill a bar. Plus timed note and chord drills by sight, by ear or multiple choice. Brings its own piano synth, so no Move track is needed.",
       "author": "graebe",
       "component_type": "tool",
-      "subcategory": "tuner-analysis",
+      "subcategory": "assistant",
       "tags": [
         "chord"
       ],
