@@ -2254,6 +2254,19 @@
       "default_branch": "main",
       "asset_name": "chonk-module.tar.gz",
       "min_host_version": "0.9.10"
+    },
+    {
+      "id": "snake",
+      "name": "Snake",
+      "description": "Snake game on Move's pads with wraparound steering and scale-aware notes or chords sent to a selected Move track",
+      "author": "Samir Caus",
+      "component_type": "overtake",
+      "subcategory": "utility",
+      "tags": ["chord"],
+      "github_repo": "samircaus/move-anything-snake",
+      "default_branch": "main",
+      "asset_name": "snake-module.tar.gz",
+      "min_host_version": "0.9.18"
     }
   ]
 }
