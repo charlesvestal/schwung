@@ -111,6 +111,33 @@ dir = "/sets/B";
 run(100);
 eq("a set change loads THAT set document", host.controls().surface.pages.map((p) => p.name), ["B1", "B2"]);
 
+/* ================= the same document on the EC4 ================= */
+{
+  const { createEc4Surface, DEFAULT_SETUP } = await import("./src/shared/ec4_surface.mjs");
+  dir = "/sets/A";
+  files["/sets/A/controls.json"] = JSON.stringify({ version: 1, surface: { pages: [
+    { name: "Drums", knobs: [{ kind: "param", slot: 0, component: "synth", key: "cutoff", module: "obxd", label: "Cutoff" }] }] } });
+  host.load();
+  const ec4 = createEc4Surface({ now: () => t, send: () => true, chainOf: () => chain, navigationOf: () => "custom",
+    controls: () => host.controls(), editControls: (fn) => host.edit(fn), targets: host.targets, learn: host.learn,
+    pulsesPerDetentOf: () => 1 });
+  const HDR = [0xF0, 0x00, 0x00, 0x00, 0x4E, 0x2C, 0x1B];
+  const report = HDR.concat([0x4E, 0x28, 0x10 | DEFAULT_SETUP, 0x4E, 0x24, 0x10, 0xF7]);
+  const erun = (ms) => { for (let i = 0; i < ms / 16; i++) { t += 16; if (i % 30 === 0) ec4.feedMidi(report); host.reconcile(); ec4.tick(); } };
+  ec4.setEnabled(true);
+  erun(300);
+  const names = () => ec4.screen().names;
+  eq("EC4: the Custom page shows as names, from the same per-set document", names().slice(0, 4), "CUTO");
+  writes.length = 0;
+  t += 1000; ec4.feedMidi([0xB0, 1, 1]);
+  ok("EC4: a turn writes the knob target", writes.some((w) => w[1] === "synth:cutoff"));
+  ec4.feedMidi([0x90, 1, 0x7F]); erun(LEARN_HOLD_MS + 50); ec4.feedMidi([0x80, 1, 0]);
+  ok("EC4: holding a push arms learn (its release reached the layout)", host.learn.armed);
+  setSlotParam(0, "synth:reso", "0.4");
+  eq("EC4: ...and the next write on Move assigns that knob, in the shared document",
+     JSON.parse(files["/sets/A/controls.json"]).surface.pages[0].knobs[1].key, "reso");
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
