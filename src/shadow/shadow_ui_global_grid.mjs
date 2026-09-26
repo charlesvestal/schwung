@@ -604,6 +604,9 @@ export const SHORTCUTS_PARAMS = [
  * place per-set layout mapping will go. They were rows at the foot of System,
  * where four settings about one device sat between Analytics and Help.
  */
+/* A row that only means something with a remote surface (E16, EC4) chosen. */
+const SURFACE_ON = { param: "external_surface", not_equals: "0" };
+
 export const SURFACES_PARAMS = [
     /*
      * An external control surface, driven over its own remote protocol.
@@ -626,8 +629,16 @@ export const SURFACES_PARAMS = [
      */
     /* Both options already fit the enum square, so there is no short form to
      * declare -- a second list to keep in step for nothing. */
-    { key: "external_surface", name: "Ext Surface", type: "enum",
-      options: ["Off", "E16", "EC4"], default: 0 },
+    /*
+     * "CC Only", not "Off": with no remote surface, a controller -- an E16 in
+     * its own non-remote mode included -- is a plain CC controller, and the
+     * CC map (Master FX Settings) is what drives parameters from it. The
+     * stored value is unchanged (0), so no config migrates.
+     */
+    /* "Surface", not "Ext Surface": the row lives on the Surfaces page, so
+     * "Ext" said nothing -- and it cost the 2px "CC Only" needs. */
+    { key: "external_surface", name: "Surface", type: "enum",
+      options: ["CC Only", "E16", "EC4"], short_options: ["CC", "E16", "EC4"], default: 0 },
     /*
      * Does the surface mirror Move's screen, or hold its own focus?
      *
@@ -648,7 +659,9 @@ export const SURFACES_PARAMS = [
      * navigating on the E16 never moves Move's screen. See createNav in
      * src/shared/e16_surface.mjs for why there is no mode where both navigate.
      */
-    bool("follow_focus", "Follow Focus", 0),
+    /* Only for a surface with a screen: under CC Only there is nothing to
+     * follow with. */
+    Object.assign(bool("follow_focus", "Follow Focus", 0), { visible_if: SURFACE_ON }),
     /*
      * HOW THE SURFACE'S KNOBS NAVIGATE (layout_common.mjs): MAP -- sixteen
      * parameters, hold Shift for the slot map -- or KNOBS -- eight parameters
@@ -657,7 +670,8 @@ export const SURFACES_PARAMS = [
      * (the E16 starts on Map, the EC4 on Knobs, as each was designed).
      */
     { key: "surface_nav", name: "Surface Nav", type: "enum",
-      options: ["Map", "Knobs", "Custom"], short_options: ["MAP", "KNB", "CUS"], default: 0 },
+      options: ["Map", "Knobs", "Custom"], short_options: ["MAP", "KNB", "CUS"], default: 0,
+      visible_if: SURFACE_ON },
     /*
      * INSTALLS SCHWUNG'S SETUP ONTO AN EC4 plugged into Move -- a door, like
      * Web Manager and Help, so a write-only two-option enum: a click opens the
@@ -831,7 +845,8 @@ export function buildGlobalSettingsContract(io) {
         const level = {
             label: s.label,
             knobs: s.params.map((p) => p.key),
-            params: s.params.map((p) => ({ key: p.key })),
+            /* visible_if travels on the LEVEL param, where the planner reads it. */
+            params: s.params.map((p) => (p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key })),
         };
         if (s.menu) {
             level.menu = s.menu.map((m) => ({ label: m.label, action: m.action }));
@@ -911,6 +926,27 @@ export function createGlobalGridIo(io) {
     };
 
     return {
+        /*
+         * visible_if, answered from THESE settings. Without it the grid falls
+         * back to the host's evaluator, which reads the condition key through
+         * the param channel -- where no Global Setting lives -- and fails open.
+         * A read that did not answer is visible (fail-open), as everywhere.
+         */
+        visible(condition) {
+            if (!condition || typeof condition !== "object") return true;
+            const key = condition.param || condition.key;
+            if (!key || !GLOBAL_ROUTING[key]) return true;
+            /* CACHE-FIRST, as the host's own evaluator is: the grid's value
+             * carries a turn whose write may still be debounced. Defensive --
+             * the host test passes either way -- and it costs nothing. */
+            const held = typeof io.cachedValue === "function" ? io.cachedValue(key) : undefined;
+            const v = held !== undefined ? held : readGlobalParam(io, key);
+            if (v === null || v === undefined) return true;
+            if (condition.equals !== undefined) return String(v) === String(condition.equals);
+            if (condition.not_equals !== undefined) return String(v) !== String(condition.not_equals);
+            return true;
+        },
+
         getParam(fullKey) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(contract.hierarchy);

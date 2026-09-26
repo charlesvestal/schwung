@@ -183,7 +183,7 @@ function recorder() {
   const p = (system ? system.params : []).find((x) => x.key === "external_surface");
   if (!p) { console.log("FAIL external_surface is not on the Surfaces section"); fails++; }
   else {
-    eq("Off / E16 / EC4", p.options, ["Off", "E16", "EC4"]);
+    eq("CC Only / E16 / EC4", p.options, ["CC Only", "E16", "EC4"]);
     eq("default off", p.default, 0);
     eq("routed", !!GLOBAL_ROUTING.external_surface, true);
   }
