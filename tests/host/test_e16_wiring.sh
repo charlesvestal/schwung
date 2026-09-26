@@ -361,7 +361,9 @@ function rig(opts) {
   /* A value changed from Move -- nothing touches the E16. */
   r.ticks(40);                                            /* let the spin settle */
   const b1 = r.send.log.length;
-  r.params.set(0, "p0", "0.95");
+  /* A value the spin cannot have reached: at a slower knob feel the spin
+   * ended on 0.95 itself, and an unchanged value rightly repaints nothing. */
+  r.params.set(0, "p0", "0.15");
   r.ticks(80);
   const after = r.send.log.slice(b1);
   ok(after.some(isRect), "a value changed on Move repaints the E16 region");

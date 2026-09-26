@@ -19,7 +19,7 @@ if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 
 
 node --input-type=module -e '
 import { createEc4Surface, DEFAULT_SETUP, SELECTOR_PULSES } from "./src/shared/ec4_surface.mjs";
-import { createSurface, drawScreen } from "./src/shared/e16_surface.mjs";
+import { createSurface, drawScreen, E16_SELECTOR } from "./src/shared/e16_surface.mjs";
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { screenLabels } from "./src/shared/layout_common.mjs";
 import { MAP_SHOW_DELAY_MS } from "./src/shared/layout_map.mjs";
@@ -134,12 +134,12 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
   eq("E16+knobs: the bottom row is navigation", labels().slice(8, 16),
      ["<PG", "MAIN", "1/3", "PG>", "SL 1", "OBXD", "VOL", "PAN"]);
 
-  /* Selectors step by ANGLE on the E16: 4 ticks a page, 8 a slot. */
-  for (let i = 0; i < 4; i++) turn(9, 1);
+  /* Selectors step by ANGLE on the E16 (E16_SELECTOR ticks a step). */
+  for (let i = 0; i < E16_SELECTOR.nav; i++) turn(9, 1);
   eq("E16+knobs: the page knob pages by one", s.focus.pageIndex, 1);
   eq("E16+knobs: ...and the header counts the module pages, not the one shown",
      [s.layout.screen(t).view.headers[0].index, s.layout.screen(t).view.headers[0].count], [1, 3]);
-  for (let i = 0; i < 8; i++) turn(12, 1);
+  for (let i = 0; i < E16_SELECTOR.slot; i++) turn(12, 1);
   run(50);
   eq("E16+knobs: the slot knob enters the next slot at its synth", [s.slot, s.component], [1, "synth"]);
   t += 1000;
