@@ -196,10 +196,12 @@ export function createControlHost(io) {
 
     let armed = null;   /* { owner, cb } */
     const learn = {
-        arm(owner, cb) {
+        /* quiet: a re-arm inside a learn MODE (the CC map), which announced
+         * itself once rather than on every capture. */
+        arm(owner, cb, quiet) {
             if (armed && armed.owner !== owner) { const prev = armed; armed = null; prev.cb(null); }
             armed = { owner, cb };
-            announce("Learn: move a parameter");
+            if (!quiet) announce("Learn: move a parameter");
         },
         cancel(owner) { if (armed && armed.owner === owner) armed = null; },
         get armed() { return !!armed; },

@@ -49,7 +49,7 @@ import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
 import { RULE_Y as MOVY_RULE_Y,
-         drawHeader as drawMovyHeader, drawFooter as drawMovyFooter }
+         drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, hintPairWidth }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 /* The enum option screen. Shared with the PEEK the knob grid raises on a turn:
  * opposite commit semantics, so they cannot be one view, but one screen — see
@@ -3676,10 +3676,8 @@ function drawSurfaceLayoutEditor() {
         : r.kind === "add" ? "Click: add" : r.kind === "rename" ? "Click: rename"
         : r.kind === "knob" ? (r.value === "--" ? "" : "Click: clear")
         : r.kind === "delete" ? "Click: delete" : r.kind === "mode" ? "Click: toggle"
-        : r.kind === "learn" ? (ccMap.learning ? "Click: cancel" : "Click: learn") : "Click: move";
+        : r.kind === "learn" ? (ccMap.learning ? "Click: stop" : "Click: learn") : "Click: move";
     drawFooter(verb ? [verb, "Back"] : ["Back"]);
-    /* Learn progresses without input on this screen. */
-    if (r && r.kind === "learn") needsRedraw = true;
 }
 
 function surfaceLayoutJog(delta) {
@@ -10899,9 +10897,27 @@ const ccMap = createCCMap({
     targets: controlHost.targets,
     learn: controlHost.learn,
     setShimLearn: (on) => { if (typeof host_cc_learn === "function") host_cc_learn(!!on); },
-    /* On screen wherever the user is (the overlay also speaks). */
+    /* Only the idle end is shown this way; while learn is on, the FOOTER
+     * carries it (drawCcLearnFooter). */
     notify: (title, text) => { showOverlay(title, text, 90); needsRedraw = true; },
+    announce: (text) => announce(text),
 });
+
+/*
+ * While CC learn mode is on, the FOOTER of whatever screen is up says where it
+ * is -- "LEARN  Cutoff: CC18" -- replacing that screen's hints. Painted after
+ * the view switch, with the other on-top overlays, so it reaches every view
+ * without each one knowing. Learn progresses without input on the screen (a
+ * controller CC), so the TICK notices a change and asks for a frame -- the
+ * draw path does not run without one.
+ */
+let ccLearnFooterShown = null;
+function drawCcLearnFooter() {
+    const text = ccLearnFooterShown;
+    if (!text || shadowDisplayHidden()) return;
+    fill_rect(0, MOVY_RULE_Y, SCREEN_WIDTH, SCREEN_HEIGHT - MOVY_RULE_Y, 0);
+    drawFooter([text]);
+}
 /* The claim table follows the document: restated whenever it changes. */
 let ccClaimRev = -1;
 function reconcileCcClaim_() {
@@ -11320,6 +11336,8 @@ function externalSurfaceTick() {
     controlHost.reconcile();
     reconcileCcClaim_();
     ccMap.tick();
+    const learnText = ccMap.learnFooter((action) => hintPairWidth("Learn", action) <= SCREEN_WIDTH - 2);
+    if (learnText !== ccLearnFooterShown) { ccLearnFooterShown = learnText; needsRedraw = true; }
     for (const sf of externalSurfaces()) sf.tick();
 }
 
@@ -27217,6 +27235,7 @@ globalThis.tick = function() {
         /* ...and the armed-recall mark, after it: the toast is transient and
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
+        drawCcLearnFooter();
     }
 
     } catch (e) {

@@ -19,16 +19,23 @@
  * per binding is written ONCE per tick(), never per message -- a parameter
  * write is an IPC round trip.
  *
- * LEARN needs both halves, in either order: a CC moved on the controller and
- * a parameter moved on Move. The CC half is ours (the shim publishes every CC
- * while `setShimLearn(true)`); the parameter half is the shared learn broker.
+ * LEARN is a MODE, parameter first, as in a DAW: while it is on, the last
+ * parameter moved on Move is the one being learned (the shared learn broker,
+ * re-armed after every capture), and the next controller CC moved binds to it
+ * -- replacing whatever that CC or that parameter was bound to before. Then
+ * move another parameter and another CC, as many as you like, without
+ * re-arming. The footer says where it is (`learnFooter`). The CC half is ours:
+ * the shim publishes every CC while `setShimLearn(true)`. It ends by the CC
+ * Map's Stop Learn, or after CC_LEARN_IDLE_MS with nothing moved.
  */
 import { knobInit, knobStep } from "./knob_engine.mjs";
 import { enumIndexOf, KIND_ENUM } from "./param_pages/param_meta.mjs";
 import { formatParamForSet, learnEnumWireFormat } from "./param_format.mjs";
 import { bindCC } from "./control_map.mjs";
+import { sameTarget } from "./control_target.mjs";
 
-export const CC_LEARN_TIMEOUT_MS = 30000;
+/* Learn mode ends by itself after this long with nothing moved. */
+export const CC_LEARN_IDLE_MS = 120000;
 /* A relative binding idle this long re-reads its value before stepping, so a
  * change made elsewhere (Move's grid) is where it continues from. */
 export const REL_RESEED_MS = 2000;
@@ -60,7 +67,8 @@ export function createCCMap(io) {
     const setShimLearn = o.setShimLearn || (() => {});
     /* Learn reports each step ON SCREEN (the host's overlay), not only by
      * speech: it is armed while you are elsewhere, finding the parameter. */
-    const notify = o.notify || ((title, text) => (o.announce || (() => {}))(title + ": " + text));
+    const announce = o.announce || (() => {});
+    const notify = o.notify || ((title, text) => announce(title + ": " + text));
     const now = o.now || (() => Date.now());
 
     const bindings = () => (controls().cc || []);
@@ -75,7 +83,7 @@ export function createCCMap(io) {
     const wireKnown = new Set();
 
     /* ---- learn ---- */
-    let learning = null;   /* { cc: {channel, cc} | null, target | null, at } */
+    let learning = null;   /* { target | null, at } -- at: the last activity */
     const owner = { id: "ccmap" };
 
     function endLearn(title, text) {
@@ -86,28 +94,47 @@ export function createCCMap(io) {
         if (title) notify(title, text || "");
     }
 
-    function maybeBind() {
-        if (!learning || !learning.cc || !learning.target) return;
-        const { cc, target } = learning;
-        edit((doc) => bindCC(doc, { channel: cc.channel, cc: cc.cc, mode: "abs", target }));
-        knobStates.delete(key(cc.channel, cc.cc));
-        endLearn("CC Bound", "CC" + cc.cc + " > " + (target.label || target.key));
+    /* The broker fires ONCE per arm, so it is re-armed after every capture:
+     * that is what makes learn a mode rather than a one-shot. */
+    function armBroker() {
+        if (!broker || !learning) return;
+        broker.arm(owner, (target) => {
+            if (!learning) return;
+            if (!target) { endLearn(); return; }   /* another learn took over */
+            learning.target = target;
+            learning.at = now();
+            armBroker();
+        }, true);
     }
 
     function beginLearn() {
         if (learning) endLearn();
-        learning = { cc: null, target: null, at: now() };
+        learning = { target: null, at: now() };
         setShimLearn(true);
-        if (broker) {
-            broker.arm(owner, (target) => {
-                if (!learning) return;
-                if (!target) { endLearn(); return; }   /* another learn took over */
-                learning.target = target;
-                if (!learning.cc) notify("CC Learn", (target.label || target.key) + ": now a knob");
-                maybeBind();
-            });
-        }
-        notify("CC Learn", "move a knob + a param");
+        armBroker();
+        announce("CC Learn on: move a parameter, then a control");
+    }
+
+    /* The CC a target is bound to, or null. */
+    function bindingOf(target) {
+        return bindings().find((b) => sameTarget(b.target, target)) || null;
+    }
+
+    /* Bind (ch, cc) to the target being learned. One CC per parameter: a
+     * second CC brushed while learning MOVES the binding rather than adding a
+     * duplicate, as in a DAW. Returns true if the document changed. */
+    function learnBind(ch, cc) {
+        const target = learning.target;
+        const cur = find(ch, cc);
+        if (cur && sameTarget(cur.target, target)) return false;
+        edit((doc) => {
+            const kept = Object.assign({}, doc, { cc: (doc.cc || []).filter((b) => !sameTarget(b.target, target)) });
+            return bindCC(kept, { channel: ch, cc, mode: cur ? cur.mode : "abs", target });
+        });
+        knobStates.delete(key(ch, cc));
+        wireKnown.delete(key(ch, cc));
+        announce((target.label || target.key) + ": CC" + cc);
+        return true;
     }
 
     function writeBinding(b, engineValue, meta) {
@@ -126,11 +153,13 @@ export function createCCMap(io) {
         feed(status, cc, value, claimed) {
             if ((status & 0xF0) !== 0xB0 || claimed) return false;
             const ch = status & 0x0F;
-            if (learning && !learning.cc) {
-                learning.cc = { channel: ch, cc };
-                if (!learning.target) notify("CC Learn", "CC" + cc + ": now a param");
-                maybeBind();
-                return true;
+            if (learning) {
+                learning.at = now();
+                /* No parameter yet: nothing to bind to. The footer says so. */
+                if (!learning.target) return true;
+                /* The binding message itself moves nothing -- an absolute
+                 * knob would otherwise jump the parameter on the first touch. */
+                if (learnBind(ch, cc)) return true;
             }
             const b = find(ch, cc);
             if (!b) return false;
@@ -174,7 +203,7 @@ export function createCCMap(io) {
         /** Flush the owed writes (one per binding) and expire a stale learn. */
         tick(t) {
             const at = t === undefined ? now() : t;
-            if (learning && at - learning.at >= CC_LEARN_TIMEOUT_MS) endLearn("CC Learn", "timed out");
+            if (learning && at - learning.at >= CC_LEARN_IDLE_MS) endLearn("CC Learn", "ended (idle)");
             if (!pending.size) return;
             for (const { b, wire } of pending.values()) targets.write(b.target, wire);
             pending.clear();
@@ -184,8 +213,31 @@ export function createCCMap(io) {
         claimPairs() { return bindings().map((b) => [b.channel, b.cc]); },
 
         beginLearn,
-        cancelLearn() { endLearn("CC Learn", "cancelled"); },
-        get learning() { return learning ? { cc: learning.cc, target: learning.target } : null; },
+        cancelLearn() { endLearn(); announce("CC Learn off"); },
+        get learning() { return learning ? { target: learning.target } : null; },
+
+        /**
+         * What the footer says while learn mode is on, as "Learn: <action>",
+         * or null when it is off:
+         *   Learn: move a param     nothing chosen yet
+         *   Learn: Cutoff > CC?     a parameter chosen, no CC bound to it
+         *   Learn: Cutoff: CC18     bound (Ch2 CC18 off channel 1)
+         * `fits(action)` is the caller's pixel measure; the name is shortened
+         * until the action fits.
+         */
+        learnFooter(fits) {
+            if (!learning) return null;
+            const t = learning.target;
+            if (!t) return "Learn: move a param";
+            const b = bindingOf(t);
+            const tail = !b ? " > CC?" : ": " + (b.channel ? "Ch" + (b.channel + 1) + " " : "") + "CC" + b.cc;
+            /* The NAME gives way, never the CC: the footer drops a hint that
+             * does not fit rather than clipping it. `fits` measures. */
+            let name = String(t.label || t.key);
+            const ok = fits || (() => true);
+            while (name.length > 1 && !ok(name + tail)) name = name.slice(0, -1);
+            return "Learn: " + name + tail;
+        },
         /** The document changed: relative knob states may name old targets. */
         reload() { knobStates.clear(); pending.clear(); wireKnown.clear(); },
     };
