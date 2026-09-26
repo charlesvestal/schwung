@@ -234,12 +234,13 @@ process.exit(fails ? 1 : 0);
 # ---------------------------------------------------------------------------
 if ! node --input-type=module -e '
 import * as FS from "node:fs";
-const src = FS.readFileSync("src/shared/e16_surface.mjs", "utf8");
+/* The nav (and applyFollow) moved to the map layout. */
+const src = FS.readFileSync("src/shared/layout_map.mjs", "utf8");
 /* The follow application function, comments stripped so prose naming onFocus
  * does not count as a call. */
 const m = src.match(/function applyFollow\(\)[\s\S]*?\n    \};/) ||
           src.match(/const applyFollow = [\s\S]*?\n    \};/);
-if (!m) { console.log("FAIL: no applyFollow in e16_surface.mjs"); process.exit(1); }
+if (!m) { console.log("FAIL: no applyFollow in layout_map.mjs"); process.exit(1); }
 const code = m[0].replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 if (/onFocus\s*\(/.test(code)) {
   console.log("FAIL: the follow path calls onFocus -- follow is ONE-WAY, and a");
