@@ -140,6 +140,12 @@ function rig(opts) {
   eq("...and drops back to parameters", r.nav.mapVisible(r.now()), false);
   eq("...telling the caller once", r.focused, [[1, "midi_fx3"]]);
 
+  /* Still holding Shift after the jump: the hold carries on, so a turn pages
+   * the module just picked -- no second Shift press. */
+  eq("still held after a jump, a turn pages the new module",
+     r.ev({ type: "turn", enc: 3, ticks: 1 }), { action: "page", pageIndex: 2 });
+  eq("...with the map still hidden", r.nav.mapVisible(r.now() + 1000), false);
+
   eq("shift up after a jump changes nothing",
      r.ev({ type: "shift", down: false }), null);
 

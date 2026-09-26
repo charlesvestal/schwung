@@ -338,7 +338,18 @@ export function createNav(opts) {
                  * or a mis-hit would drop the map the user is still reading. */
                 if (!cell) return null;
                 focus.set(cell.slot, cell.component);
-                shiftDownAt = null;   /* the jump ends the gesture */
+                /*
+                 * THE JUMP ENDS THE MAP, NOT THE HOLD. The finger is still on
+                 * Shift, and the next thing it wants is usually a page of the
+                 * module just picked -- ending the gesture here meant a second
+                 * Shift press before Shift+turn would page (hardware,
+                 * 2026-09-26). So the hold carries on exactly as after a
+                 * Shift+turn: map hidden for the rest of it, turns page, the
+                 * expiry restarted, and its release is not a tap.
+                 */
+                shiftDownAt = now;
+                turnedThisHold = true;
+                actedThisHold = true;
                 mixerOn = false;      /* ...and lands on the module's knobs */
                 onFocus(focus.slot, focus.component);
                 invalidate();
