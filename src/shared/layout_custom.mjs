@@ -34,6 +34,20 @@ import { addPage, assignKnob, clearKnob, KNOBS_PER_PAGE, MAX_PAGES } from "./con
 import { NAV_HOLD_MS, isChoice, choiceList, mixerReading, createReadings } from "./layout_common.mjs";
 
 export const NAV_CUSTOM = "custom";
+
+/* The Custom layout's host seams, with inert defaults so a surface built
+ * without them (the tests of the other layouts) still constructs: no pages,
+ * every target dark, no learn. */
+export function customSeams(o) {
+    const doc = { surface: { pages: [] } };
+    return {
+        controls: o.controls || (() => doc),
+        edit: o.editControls || (() => null),
+        targets: o.targets || { status: () => "dark", metaOf: () => null, read: () => null, write: () => false },
+        learn: o.learn || null,
+    };
+}
+
 /* Held this long, a push arms LEARN rather than clicking. */
 export const LEARN_HOLD_MS = 600;
 /* An armed learn nobody answered gives up after this. */

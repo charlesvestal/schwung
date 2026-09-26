@@ -961,6 +961,7 @@ import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
 export { createNav, MAP_MAX_HOLD_MS, MAP_SHOW_DELAY_MS } from "./layout_map.mjs";
 import { createMapLayout } from "./layout_map.mjs";
 import { createKnobsLayout } from "./layout_knobs.mjs";
+import { createCustomLayout, customSeams, NAV_CUSTOM } from "./layout_custom.mjs";
 import { NAV_MAP, NAV_KNOBS, screenLabels } from "./layout_common.mjs";
 
 /* The E16's step for choices: its relative encoders already carry their own
@@ -976,6 +977,8 @@ export function drawScreen(ctx, scr) {
     case "empty": renderEmptySlot(ctx, scr.slot); break;
     case "message": renderMessage(ctx, scr.component || ("Slot " + ((scr.slot | 0) + 1)), scr.text); break;
     case "knobs": renderKnobsView(ctx, scr); break;
+    case "custom": renderCustomPage(ctx, scr); break;
+    case "pagemap": renderPageMap(ctx, scr); break;
     default: renderView(ctx, scr.view, { turnHint: scr.turnHint });
     }
 }
@@ -1017,7 +1020,8 @@ export function drawScreen(ctx, scr) {
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
 import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
-         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs, renderKnobsView, renderMessage }
+         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs, renderKnobsView, renderMessage,
+         renderCustomPage, renderPageMap }
     from "./e16_view.mjs";
 
 /**
@@ -1146,7 +1150,8 @@ export function createSurface(io) {
          */
         valueMoved: (t) => { turnedAt = t; settlePainted = false; },
     };
-    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx) };
+    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx),
+                      [NAV_CUSTOM]: createCustomLayout(Object.assign({}, layoutCtx, customSeams(o))) };
     let layout = layouts[NAV_MAP];
     /* The setting is read every tick; a switch drops the old layout's Mixer
      * and hold and repaints -- the rings follow through context(). */
@@ -1354,6 +1359,9 @@ export function createSurface(io) {
      * most of a frame.
      */
     function syncFocus() {
+        /* The Custom layout addresses its targets directly: the focus's
+         * controller is not what it shows, so it is neither loaded nor read. */
+        if (layout.usesBinding === false) return;
         /* A different component is a different screen. */
         if (binding.sync(layout.pagesShown)) display.invalidate();
     }
@@ -1418,6 +1426,7 @@ export function createSurface(io) {
          */
         noteParamWrite(slot, key, value) {
             if (!lifecycle.enabled) return;
+            layouts[NAV_CUSTOM].noteWrite(slot, key, value);
             for (const cell of binding.noteWrite(slot, key, value, viewNow())) {
                 display.ringChanged(layout.ring(cell.enc));
                 turnedAt = now();
@@ -1524,7 +1533,7 @@ export function createSurface(io) {
             syncLayout();
             layout.tick(t);
             syncFocus();
-            binding.tick();
+            if (layout.usesBinding !== false) binding.tick();
             /*
              * NOTHING IS DRAWN AT A DEVICE THAT HAS NOT ANSWERED.
              *
@@ -1737,6 +1746,8 @@ export function createSurface(io) {
         /* The map layout's gesture half (tests drive it); `layout` is live. */
         get nav() { return layouts[NAV_MAP].nav; },
         get layout() { return layout; },
+        /** The control document changed (a set load, the web editor). */
+        reloadControls() { layouts[NAV_CUSTOM].reload(); },
         get focus() { return focus; },
         get display() { return display; },
         view: viewNow,

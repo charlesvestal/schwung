@@ -657,7 +657,7 @@ export const SURFACES_PARAMS = [
      * (the E16 starts on Map, the EC4 on Knobs, as each was designed).
      */
     { key: "surface_nav", name: "Surface Nav", type: "enum",
-      options: ["Map", "Knobs"], short_options: ["MAP", "KNB"], default: 0 },
+      options: ["Map", "Knobs", "Custom"], short_options: ["MAP", "KNB", "CUS"], default: 0 },
     /*
      * INSTALLS SCHWUNG'S SETUP ONTO AN EC4 plugged into Move -- a door, like
      * Web Manager and Help, so a write-only two-option enum: a click opens the

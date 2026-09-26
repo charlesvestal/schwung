@@ -536,6 +536,52 @@ export function renderMap(ctx, map, opts) {
     }
 }
 
+/*
+ * THE CUSTOM LAYOUT'S PAGE MAP (layout_custom.mjs): renderMap's boxes with a
+ * page in each -- the current page inverted, a "+" in the first empty cell
+ * (a push there adds a page), nothing in the rest.
+ */
+export function renderPageMap(ctx, scr) {
+    ctx.clear();
+    let added = false;
+    for (let i = 0; i < ENCODERS; i++) {
+        const name = (scr.names || [])[i];
+        const r = mapCellRect(i);
+        if (!name) {
+            if (!added && scr.canAdd !== false) {
+                added = true;
+                ctx.print(r.x + Math.floor((r.w - ctx.textWidth("+")) / 2), r.y + 5, "+", 1);
+            }
+            continue;
+        }
+        const fill = i === scr.current;
+        if (fill) ctx.fillRect(r.x, r.y, r.w - 1, r.h - 1, 1);
+        else {
+            ctx.drawLine(r.x, r.y, r.x + r.w - 2, r.y, 1);
+            ctx.drawLine(r.x, r.y + r.h - 2, r.x + r.w - 2, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x, r.y, r.x, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x + r.w - 2, r.y, r.x + r.w - 2, r.y + r.h - 2, 1);
+        }
+        ctx.print(r.x + 2, r.y + 2, clip(ctx, name, r.w - 4), fill ? 0 : 1);
+        ctx.print(r.x + 2, r.y + 9, String(i + 1), fill ? 0 : 1);
+    }
+}
+
+/*
+ * A CUSTOM PAGE: the parameter view's picture, with the Custom layout's two
+ * states said in the cell -- a DARK knob (its module is gone) keeps its name
+ * over "--", and the knob armed for LEARN says so.
+ */
+export function renderCustomPage(ctx, scr) {
+    const view = scr.view || { cells: [], headers: [null, null] };
+    const cells = view.cells.map((c, e) => {
+        if (e === scr.armed) return { label: "LEARN", value: "move", meta: {}, enc: e };
+        if (!c || c.status === "live") return c;
+        return Object.assign({}, c, { value: "--", meta: {} });
+    });
+    renderView(ctx, { cells, headers: view.headers }, { turnHint: scr.turnHint });
+}
+
 /**
  * Step the parameter view's page pair.
  *
