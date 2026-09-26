@@ -19,10 +19,14 @@
  * 15-row box it still read as thin. This is 11 rows with 2px stems and a plain
  * bowl, which is what a value meant to be read across a room wants.
  *
- * ONLY 12 GLYPHS, matching what `bigNumberText` can emit — the digits, the
- * sign, and the "--" an unread value draws. `missingGlyphs` reports anything
- * else rather than drawing it wrong, and tests/host/test_big_number_font.sh
- * sweeps the fleet against that.
+ * SIXTEEN GLYPHS: what `bigNumberText` can emit — the digits, the sign, and
+ * the "--" an unread value draws — plus `:` `%` `/` `.`, because a param may
+ * declare `display: "big"` and bring its own reading with it (a 2:4 trig
+ * condition, a 54% swing, a 1/16 division, a 0.5). Same source, same +1
+ * advance. `missingGlyphs` reports anything else rather than drawing it wrong,
+ * tests/host/test_big_number_font.sh sweeps the fleet against that, and a
+ * declared value asking for a missing glyph falls back rather than drawing a
+ * hole (see bigValueText in render_page_movy.mjs).
  *
  * The advance carries movy's 1px inter-glyph gap folded in: its blitter adds
  * BIG_GAP separately, ours does not, so every advance here is theirs plus one.
@@ -30,7 +34,7 @@
  * [advance, yOff, w, h, ...rowBits], bit0 = leftmost pixel.
  */
 
-const CHARS = '0123456789+-';
+const CHARS = '0123456789+-:%/.';
 const G = [
     [10, 0, 9, 11, 62, 127, 99, 99, 99, 99, 99, 99, 99, 127, 62],  /* 0 */
     [9, 0, 8, 11, 48, 56, 60, 60, 48, 48, 48, 48, 48, 48, 48],  /* 1 */
@@ -44,6 +48,10 @@ const G = [
     [10, 0, 9, 11, 62, 127, 99, 99, 99, 127, 126, 96, 99, 127, 62],  /* 9 */
     [9, 3, 8, 6, 12, 12, 63, 63, 12, 12],  /* + */
     [8, 5, 7, 2, 31, 31],  /* - */
+    [5, 5, 4, 6, 3, 3, 0, 0, 3, 3],  /* : */
+    [11, 0, 10, 11, 102, 101, 117, 51, 56, 24, 28, 204, 174, 166, 102],  /* % */
+    [7, 0, 6, 11, 12, 12, 12, 14, 6, 6, 6, 7, 3, 3, 3],  /* / */
+    [5, 9, 4, 2, 3, 3],  /* . */
 ];
 
 export const HEIGHT = 11;
