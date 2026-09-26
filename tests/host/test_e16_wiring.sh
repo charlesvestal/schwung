@@ -292,6 +292,10 @@ function rig(opts) {
   r.surface.feedMidi([0x90, 0x01, 0x7F]);   /* push encoder 1 -> slot 2 */
   r.ticks(1);
   r.surface.feedMidi([0x90, 0x04, 0x7F]);   /* push encoder 4 -> its first component */
+  /* ...and Shift let go. The jump no longer ends the hold (a turn straight
+   * after it pages the module just picked), so a script that never releases
+   * Shift is still holding it. */
+  r.surface.feedMidi([0x80, 0x10, 0x00]);
   r.ticks(3);
 
   ok(r.send.log.slice(before).some(isRegion),
