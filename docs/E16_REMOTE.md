@@ -346,6 +346,21 @@ the `0x06`. We build against the literal examples (single-byte id, no
 0x03 (CRC mismatch) nor an actual CRC is used — the algorithm is
 undocumented.
 
+**NACK status codes seen on hardware** (2026-09-24 and 2026-09-26):
+
+| status | meaning | how it was provoked |
+|---|---|---|
+| `0x01` | payload length does not match w×h | a RECTANGLE with no pixel bytes, or half of them |
+| `0x03` | CRC mismatch | a deliberately wrong CRC (the dispatch probe) |
+| `0x06` | interrupted — bytes dropped mid-message | wide rows sent faster than the device draws |
+
+**A short RECTANGLE is not a fill.** Measured 2026-09-26 on a white screen: a
+32×16 RECTANGLE with no payload and one with half its payload were both
+NACKed `0x01` and left the panel **untouched**; the full payload of zeros
+drew its black box. The length is checked before anything is drawn, so there
+is no way to clear a region cheaper than sending its pixels — a FILL_RECT has
+to come from OXI.
+
 **RECTANGLE/SCANLINE are row-major; our framebuffer is page/column.**
 `e16_canvas.mjs`'s `packRowMajor` is the one place that transpose happens.
 
