@@ -974,6 +974,7 @@ export function drawScreen(ctx, scr) {
     case "map": renderMap(ctx, scr.map, { page: scr.page, showBuses: scr.showBuses }); break;
     case "mixer": renderMixer(ctx, scr.mixer); break;
     case "empty": renderEmptySlot(ctx, scr.slot); break;
+    case "message": renderMessage(ctx, scr.component || ("Slot " + ((scr.slot | 0) + 1)), scr.text); break;
     case "knobs": renderKnobsView(ctx, scr); break;
     default: renderView(ctx, scr.view, { turnHint: scr.turnHint });
     }
@@ -1016,7 +1017,7 @@ export function drawScreen(ctx, scr) {
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
 import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
-         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs, renderKnobsView }
+         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs, renderKnobsView, renderMessage }
     from "./e16_view.mjs";
 
 /**

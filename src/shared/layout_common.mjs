@@ -3,7 +3,7 @@
  *
  * Every external surface is a 4x4 of push encoders with a screen, so how the
  * sixteen knobs navigate is not a property of the device. There are two
- * layouts and every surface can run either (Global Settings -> System ->
+ * layouts and every surface can run either (Global Settings -> Surfaces ->
  * Surface Nav):
  *
  *   MAP    (layout_map.mjs)    all sixteen knobs are parameters, two pages at
@@ -28,6 +28,8 @@
  *                     { kind: "map",    map, page, showBuses, slot }
  *                     { kind: "mixer",  mixer, alt }
  *                     { kind: "empty",  slot }
+ *                     { kind: "message", slot, component, text }  (no controls /
+ *                                        loading: never a blank page)
  *                     { kind: "knobs",  view, component, navCells, empty }
  *                   A device renders every kind; screenLabels() below turns
  *                   any of them into sixteen short names for a text device.
@@ -54,6 +56,13 @@ import { detentsPerStep } from "./knob_engine.mjs";
  * less, since it confirms where you went and covers what you came to see. */
 export const READING_HOLD_MS = 1500;
 export const NAV_HOLD_MS = 800;
+
+/* What a surface says instead of a blank page (binding.controls()). */
+export const NO_CONTROLS_TEXT = "No controls";
+export const LOADING_TEXT = "Loading...";
+export function controlsText(state) {
+    return state === "none" ? NO_CONTROLS_TEXT : state === "loading" ? LOADING_TEXT : "";
+}
 
 export const NAV_MAP = "map";
 export const NAV_KNOBS = "knobs";
@@ -196,7 +205,14 @@ export function screenLabels(screen, opts) {
         }
         return { title: "MIXER", labels };
     }
+    if (s.kind === "message") {
+        return { title: String(s.text || "").toUpperCase().slice(0, 16), labels };
+    }
     if (s.kind === "knobs") {
+        if (s.message) {
+            for (let i = 0; i < 8; i++) labels[8 + i] = (s.navCells[i] && s.navCells[i].short) || "";
+            return { title: String(s.message).toUpperCase().slice(0, 16), labels };
+        }
         if (!s.empty) {
             const l = labelsFor(s.view, { metaOf: o.metaOf });
             for (let e = 0; e < 8; e++) labels[e] = l.labels[e];

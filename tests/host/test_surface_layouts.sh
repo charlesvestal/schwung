@@ -159,6 +159,31 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
   eq("E16+knobs: a Shift TAP is the Mixer here too", s.layout.mixerOn, true);
 }
 
+/* ================= NOTHING TO TURN IS SAID, NOT DRAWN BLANK ================= */
+{
+  /* A module whose contract never answers (Teng refuses ui_hierarchy) is
+   * given up on; one still reading has no plan yet. Neither is a blank page. */
+  for (const nav of ["map", "knobs"]) {
+    let t = 1000;
+    const ctl = { pages: [], pageIndex: 0, contractUnresolved: true, state: { values: {} },
+                  load() {}, tick() {}, goToPage() {}, onKnobTurn() {} };
+    const s = createSurface({ now: () => t, send: () => true, chainOf: () => chain,
+      makeController: () => ctl, navigationOf: () => nav });
+    s.setEnabled(true);
+    const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+    s.feedMidi(ACK); for (let i = 0; i < 5; i++) { t += 16; s.tick(); }
+    const msgOf = (scr) => scr.kind === "message" ? scr.text : scr.message;
+    eq(nav + ": still reading says so", msgOf(s.layout.screen(t)), "Loading...");
+    ctl.contractUnresolved = false; ctl.state.contractGaveUp = true;
+    eq(nav + ": given up says No controls", msgOf(s.layout.screen(t)), "No controls");
+    eq(nav + ": ...and a text device names it", screenLabels(s.layout.screen(t)).title, "NO CONTROLS");
+    const cv = createCanvas(); drawScreen(cv, s.layout.screen(t));
+    ok(nav + ": ...and it is DRAWN, not blank", Array.from(cv.toBuffer()).some((b) => b));
+    if (nav === "knobs") eq("knobs: the navigation row stays, so you can leave",
+      screenLabels(s.layout.screen(t)).labels[12], "SL 1");
+  }
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
@@ -185,5 +210,12 @@ perl -0ne 'exit(!/function currentEditFocus\(\) \{.*?if \(view === VIEWS\.COMPON
   || note "Follow Focus cannot see a module that draws its own screen"
 perl -0ne 'exit(!/function e16FollowFocus\(\) \{.*?\^\(synth\|fx\\d\+\|midi_fx\\d\+\)\$.*?\n\}/s)' "$UI" \
   || note "Follow Focus follows synthesised settings components"
-[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav, and Follow follows modules" || exit 1
+# A MODULE THAT DRAWS ITS OWN SCREEN publishes its knobs as ui_pages: both
+# surfaces read through surfaceGetParam, which falls back to it ONLY when the
+# hierarchy read failed.
+[ "$(grep -c 'getParam: (key) => surfaceGetParam(focus.slot, key),' "$UI")" = 2 ] \
+  || note "a surface controller does not read through surfaceGetParam"
+perl -0ne 'exit(!/function surfaceGetParam\(slot, key\) \{.*?if \(\(v === null \|\| v === undefined\) && \/:ui_hierarchy\$\/.*?:ui_pages/s)' "$UI" \
+  || note "surfaceGetParam no longer falls back to ui_pages on a failed hierarchy read"
+[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav, Follow follows modules, and ui_pages is read" || exit 1
 

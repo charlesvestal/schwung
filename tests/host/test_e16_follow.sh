@@ -273,18 +273,18 @@ else {
   const r = M.measureRow(p);
   if (!r.fits) fail("the Follow Focus row needs " + r.need + "px in " + r.room + "px");
 }
-const sys = hierarchy.levels && hierarchy.levels.system;
+const sys = hierarchy.levels && hierarchy.levels.surfaces;
 const keys = (sys && sys.params ? sys.params : []).map((x) => x.key);
-if (!keys.includes("follow_focus")) fail("follow_focus is not on the System section");
+if (!keys.includes("follow_focus")) fail("follow_focus is not on the Surfaces section");
 /* Beside External Surface, not somewhere else on the page: the two are one
  * question asked twice, and a row between them makes them read as unrelated. */
 if (keys.indexOf("follow_focus") !== keys.indexOf("external_surface") + 1) {
   fail("follow_focus should sit immediately after external_surface, got " + keys.join(", "));
 }
 if (!G.GLOBAL_ROUTING.follow_focus) fail("follow_focus has no GLOBAL_ROUTING entry -- it would read blank and write nowhere");
-/* A menu on this level would cost the System section a SECOND page. */
-if (sys && sys.menu) fail("the System level gained a menu -- that plans a second page");
-console.log(fails ? "FAILED " + fails : "ok   the Follow Focus row is on System, beside Ext Surface, and routed");
+/* A menu on this level would cost the Surfaces section a SECOND page. */
+if (sys && sys.menu) fail("the Surfaces level gained a menu -- that plans a second page");
+console.log(fails ? "FAILED " + fails : "ok   the Follow Focus row is on Surfaces, beside Ext Surface, and routed");
 process.exit(fails ? 1 : 0);
 '
 

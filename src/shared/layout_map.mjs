@@ -512,7 +512,7 @@ import { setOrdinal } from "./e16_map.mjs";
 import { renderMixer } from "./e16_mixer.mjs";
 import { ENUM_DELTA_DIV } from "./knob_engine.mjs";
 import { NAV_MAP, NAV_HOLD_MS, isChoice, moduleNameFor, paramReading, pageReading, mixerReading,
-         createReadings } from "./layout_common.mjs";
+         createReadings, controlsText } from "./layout_common.mjs";
 
 /* One Mixer value re-read this often while it is up, to notice changes made
  * elsewhere (Move's track volume, Slot Settings). */
@@ -660,6 +660,10 @@ export function createMapLayout(ctx) {
             }
             if (mixer && nav.mixer) return { kind: "mixer", mixer, alt: nav.held(t) };
             if (slotEmpty()) return { kind: "empty", slot: focus.slot };
+            const controls = binding.controls();
+            if (controls !== "ok") {
+                return { kind: "message", slot: focus.slot, component: moduleName(), text: controlsText(controls) };
+            }
             return { kind: "params", view: viewNow(), component: moduleName(), turnHint: nav.turnHint(t), focusEnc };
         },
 
@@ -676,7 +680,7 @@ export function createMapLayout(ctx) {
 
         context(t) {
             return [NAV_MAP, nav.mapVisible(t), nav.mixer, focus.slot, focus.component, focus.pageIndex,
-                    nav.mapPage, nav.showBuses].join("|");
+                    nav.mapPage, nav.showBuses, binding.controls()].join("|");
         },
         reading(t) { return readings.at(t); },
         turnHint(t) { return nav.turnHint(t); },

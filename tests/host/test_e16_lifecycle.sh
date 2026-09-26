@@ -177,22 +177,23 @@ function recorder() {
   eq("the buffer is capped", capped.pending <= 8, true);
 }
 
-/* ---- 7. the setting, on the System page ------------------------------- */
+/* ---- 7. the setting, on the Surfaces page ----------------------------- */
 {
-  const system = GLOBAL_SECTIONS.find((s) => s.id === "system");
+  const system = GLOBAL_SECTIONS.find((s) => s.id === "surfaces");
   const p = (system ? system.params : []).find((x) => x.key === "external_surface");
-  if (!p) { console.log("FAIL external_surface is not on the System section"); fails++; }
+  if (!p) { console.log("FAIL external_surface is not on the Surfaces section"); fails++; }
   else {
     eq("Off / E16 / EC4", p.options, ["Off", "E16", "EC4"]);
     eq("default off", p.default, 0);
     eq("routed", !!GLOBAL_ROUTING.external_surface, true);
   }
-  /* SIX PAGES STILL. A section carrying a `menu` plans a second page, and the
-   * one-section-one-page property is what makes sections-as-levels work. */
+  /* ONE PAGE PER SECTION. A section carrying a `menu` plans a second page,
+   * and the one-section-one-page property is what makes sections-as-levels
+   * work. Surfaces is a section of its own now (2026-09-26). */
   const plan = planPages(Object.assign({ paginate: false }, buildGlobalSettingsContract()));
   eq("the page list is unchanged",
      plan.pages.map((x) => x.name),
-     ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts", "System"]);
+     ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts", "Surfaces", "System"]);
 }
 
 /* ---- 8. the host actually calls it ------------------------------------ */

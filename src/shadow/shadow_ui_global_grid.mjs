@@ -598,9 +598,13 @@ export const SHORTCUTS_PARAMS = [
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
-export const SYSTEM_PARAMS = [
-    /* Opt-in, default off — see docs/plans on analytics. */
-    bool("analytics_enabled", "Analytics", 0),
+/*
+ * CONTROL SURFACES, a section of their own: the device, whether it follows
+ * Move's screen, how its knobs navigate, and the EC4's setup door -- and the
+ * place per-set layout mapping will go. They were rows at the foot of System,
+ * where four settings about one device sat between Analytics and Help.
+ */
+export const SURFACES_PARAMS = [
     /*
      * An external control surface, driven over its own remote protocol.
      * `docs/E16_REMOTE.md` is the only one so far; the enum names the DEVICE
@@ -663,6 +667,11 @@ export const SYSTEM_PARAMS = [
      */
     { key: "ec4_setup", name: "EC4 Setup", type: "enum", options: ["Open", "Open"],
       short_options: ["OPN", "OPN"], access: "write", default: 0 },
+];
+
+export const SYSTEM_PARAMS = [
+    /* Opt-in, default off — see docs/plans on analytics. */
+    bool("analytics_enabled", "Analytics", 0),
     /*
      * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
      *
@@ -777,6 +786,7 @@ export const GLOBAL_SECTIONS = [
     { id: "accessibility", label: "Screen Reader", params: ACCESSIBILITY_PARAMS },
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
+    { id: "surfaces", label: "Surfaces", params: SURFACES_PARAMS },
     { id: "system", label: "System", params: SYSTEM_PARAMS },
 ];
 

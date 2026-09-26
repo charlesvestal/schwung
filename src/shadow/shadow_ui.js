@@ -10384,7 +10384,7 @@ function loadSaveStems() {
  * Move->Schwung -- outside it Move's own enhancer is in the path.
  */
 /*
- * EXTERNAL CONTROL SURFACE (Global Settings -> System -> Ext Surface).
+ * EXTERNAL CONTROL SURFACE (Global Settings -> Surfaces -> Ext Surface).
  *
  * 0 = off, 1 = OXI E16. The lifecycle itself is pure and lives in
  * src/shared/e16_surface.mjs; what is here is the three seams it needs -- a
@@ -10499,7 +10499,7 @@ function e16ChainShape() {
 }
 
 /*
- * FOLLOW FOCUS (Global Settings -> System -> Follow Focus), 0 = off, 1 = on.
+ * FOLLOW FOCUS (Global Settings -> Surfaces -> Follow Focus), 0 = off, 1 = on.
  *
  * On, the surface mirrors whatever component Move's screen is editing instead
  * of holding its own focus, and its map is disabled while it does. It is
@@ -10513,7 +10513,7 @@ function e16ChainShape() {
 let externalSurfaceFollow = 0;
 
 /*
- * SURFACE NAV (Global Settings -> System -> Surface Nav), PER DEVICE: how
+ * SURFACE NAV (Global Settings -> Surfaces -> Surface Nav), PER DEVICE: how
  * that device's knobs navigate -- "map" or "knobs" (layout_common.mjs).
  * Keyed by Ext Surface value; each device starts on the layout it was
  * designed around. The surfaces read it every tick through navigationOf,
@@ -10752,6 +10752,25 @@ function e16ReconcilePace() {
 }
 
 /*
+ * A SURFACE'S PARAMETER READ, with one substitution: a module that draws its
+ * own screen may REFUSE ui_hierarchy -- serving one would stop the host from
+ * loading its ui_chain.js (Teng: "that is what takes the pads") -- and publish
+ * the same shape as `ui_pages` for anything else that wants its knobs. Teng's
+ * own ui_chain.js makes exactly this rewrite for its own controller. Only a
+ * FAILED hierarchy read falls back, and only to an answer: a module serving
+ * neither keeps the null, so the tri-state rule is untouched (a timed-out
+ * read of a module that has no ui_pages is still a timeout).
+ */
+function surfaceGetParam(slot, key) {
+    const v = getSlotParam(slot, key);
+    if ((v === null || v === undefined) && /:ui_hierarchy$/.test(String(key))) {
+        const alt = getSlotParam(slot, String(key).replace(/:ui_hierarchy$/, ":ui_pages"));
+        if (alt) return alt;
+    }
+    return v;
+}
+
+/*
  * THE MIXER'S WAY TO THE PARAMETERS, one object for every surface: the E16's
  * and the EC4's Mixer drive the same slot volumes, sends and returns as Slot
  * Settings writes -- slot:volume is also what Move's own track volume drives
@@ -10832,7 +10851,7 @@ const e16Surface = createE16Surface({
      * was born with would keep addressing that slot after the first jump.
      */
     makeController: (focus) => createPageController({
-        getParam: (key) => getSlotParam(focus.slot, key),
+        getParam: (key) => surfaceGetParam(focus.slot, key),
         setParam: (key, value) => setSlotParam(focus.slot, key, value),
     }),
     /* THE MIXER (a tap of Shift; e16_mixer.mjs) -- see surfaceMixerIo. */
@@ -10905,14 +10924,14 @@ const ec4Surface = createEc4Surface({
     onInstalled: ec4Installed,
     log: (line) => console.log(line),
     makeController: (focus) => createPageController({
-        getParam: (key) => getSlotParam(focus.slot, key),
+        getParam: (key) => surfaceGetParam(focus.slot, key),
         setParam: (key, value) => setSlotParam(focus.slot, key, value),
     }),
     mixer: surfaceMixerIo,
 });
 
 /*
- * EC4 SETUP (Global Settings -> System -> EC4 Setup): put Schwung's setup onto
+ * EC4 SETUP (Global Settings -> Surfaces -> EC4 Setup): put Schwung's setup onto
  * an EC4 plugged into Move, with no computer. The steps and the transfer are
  * the surface's (ec4_surface.mjs, INSTALLING THE SCHWUNG SETUP); this is the
  * screen and the three presses:
