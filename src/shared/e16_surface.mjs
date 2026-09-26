@@ -953,477 +953,30 @@ export function createDisplay(opts) {
     };
 }
 
-/*
- * ---------------------------------------------------------------------------
- * NAVIGATION -- the Shift-held map, and what the sixteen buttons mean.
- *
- * =================== THE MODIFIER CANNOT BE A LATCH =========================
- *
- * There is exactly one piece of modifier state here and it is a TIMESTAMP, not
- * a boolean. `mapVisible(now)` is COMPUTED from it on every read; nothing
- * anywhere stores "the map is up".
- *
- * That shape is chosen against a specific, expensive failure. CLAUDE.md's
- * account of `pad_block` is the precedent: a flag that could only be lowered by
- * an event stuck on a field device for THIRTEEN HOURS across two shim inits,
- * and enumerating the ways it could end failed on hardware TWICE -- once for a
- * jump that keeps the module loaded, once for co-run. The conclusion recorded
- * there is that such a flag is released by an INVARIANT restated every frame,
- * never by an exit list.
- *
- * Shift is the same problem with a worse channel. The note-off is one MIDI
- * message on a USB-A port that is known to drop whole packets under traffic
- * (docs/E16_REMOTE.md; 34 packets amid other traffic lost 8), the E16 has no
- * battery so unplugging it silently power-cycles it mid-hold, and the shim's
- * forwarding gate can be closed while a finger is down. Every one of those is a
- * note-on with no note-off, and NONE of them generates an event we could add to
- * an exit list -- which is precisely why the escape cannot be one.
- *
- * So the hold EXPIRES. `MAP_MAX_HOLD_MS` after the press, `mapVisible` answers
- * false because time moved, with no message, no tick, and no cooperation from
- * anything. There is no state that could be left behind, because the only
- * state is a number being compared against a clock that only goes forwards.
- * The map is momentary by design -- it exists while the modifier is held and
- * there is no mode to be lost in -- and this keeps that true even when the
- * device stops talking to us mid-gesture.
- *
- * Two consequences worth stating so they are not later "fixed":
- *
- *   - A DOWN WHILE THE MAP IS ALREADY UP DOES NOT RE-ARM IT. Refreshing the
- *     deadline from input would make a stranded hold immortal for exactly the
- *     user who is trying to work through it: a hand turning knobs would keep
- *     feeding the very state that is eating its turns.
- *   - A LOWER PUSH CONSUMES THE HOLD. The jump ends the gesture, so the surface
- *     you land on is the one you can see. It is also the common-case escape:
- *     most strandings end on the next thing the user does anyway.
- *
- * `tick()` is the restatement. It compares the DERIVED visibility against what
- * was last actually drawn and invalidates on a difference -- so the expiry
- * repaints itself with no event, the same way `reconcilePadBlock()` restates
- * its flag every frame rather than trusting the exits.
- *
- * =================== WHY THE CURRENT SLOT'S OWN CELL IS THE BUS DOOR ========
- *
- * The design asks for "a dedicated cell" that swaps the lower twelve to buses,
- * and `buildMap` leaves none: all sixteen are slots or components. Stealing one
- * of the twelve would shrink the component capacity of every slot to pay for a
- * view most slots have nothing to show in. So the door is the top-row cell of
- * the slot you are ALREADY on -- a press there cannot mean "switch to this
- * slot", which makes it free, and it reads as the slot's own handle: press it
- * to change what is listed beneath it, turn it to page that list.
- *
- * =================== FOLLOW FOCUS: ONE VARIABLE, TWO SOURCES ===============
- *
- * With follow on, Move's screen writes the focus and the E16 mirrors it. The
- * mode is deliberately narrow, and the narrowness is the design:
- *
- *   - ONE FOCUS VARIABLE. Follow does not add a focus; it decides who writes
- *     the one there is. Two owners is a surface that disagrees with itself.
- *   - THE MAP IS DISABLED. That is what stops the two surfaces fighting, and
- *     it is what lets the setting mean one sentence -- is the E16 showing what
- *     Move shows, or its own thing? A mode where both can navigate has no
- *     answer to "who wins", so there is no such mode.
- *   - ONE-WAY. Nothing on this side ever reports focus back: navigating the
- *     E16 must never move Move's screen. In code that is simply "applyFollow
- *     does not call onFocus", and it is pinned in tests/host because the
- *     tempting future edit -- telling the caller what we are showing, for
- *     symmetry -- would read as helpful.
- *   - OFF RESTORES, IT DOES NOT RESET. Follow is something you switch on to
- *     look at something; `parked` is what you come back to.
- *
- * Everything is pure and injected, like the rest of this file: the chain, the
- * page count, the parameter renderer, the follow source and the focus callback
- * are all the caller's. This module never reads or writes a parameter -- a
- * jump is REPORTED through `onFocus`, and `e16_view.mjs` remains the only path
- * a value can travel.
- * ---------------------------------------------------------------------------
- */
+/* NAVIGATION lives in the layouts now (layout_map.mjs, layout_knobs.mjs);
+ * createNav and its constants are re-exported for the tests that drive it. */
 import { buildMap, setOrdinal } from "./e16_map.mjs";
 import { createMixer, renderMixer } from "./e16_mixer.mjs";
 import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
+export { createNav, MAP_MAX_HOLD_MS, MAP_SHOW_DELAY_MS } from "./layout_map.mjs";
+import { createMapLayout } from "./layout_map.mjs";
+import { createKnobsLayout } from "./layout_knobs.mjs";
+import { NAV_MAP, NAV_KNOBS, screenLabels } from "./layout_common.mjs";
 
-/* How long a Shift hold can live without a note-off.
- *
- * Ten seconds is a judgement, and the direction of the error is the point. The
- * map is a jump-target picker: every hold that produces a jump ends when the
- * jump does, so a hold that has produced nothing for ten seconds is far more
- * likely to be a lost note-off than a decision. Erring long strands the
- * surface; erring short costs one more press. */
-export const MAP_MAX_HOLD_MS = 10000;
+/* The E16's step for choices: its relative encoders already carry their own
+ * acceleration, so an enum goes through the knob engine as on Move, and a
+ * page / slot / module selector moves once per message. */
+export const E16_SELECTOR = { choice: null, nav: 1, slot: 1 };
 
-/*
- * THE MAP APPEARS AFTER A SHORT HOLD, NOT ON THE PRESS.
- *
- * Shift is also the page modifier: Shift+turn steps the parameter pages. With
- * the map drawn on the press, every page turn flashed the whole map first (a
- * view switch and back -- two repaints for a gesture that wanted neither).
- * Now the map is drawn only once Shift has been held this long with nothing
- * turned; a turn inside the hold pages the parameters and SUPPRESSES the map
- * for the rest of that hold. A push acts as if the map were up -- the slot
- * row is a fixed position, so Shift+top-row switches slot without waiting to
- * see it.
- */
-export const MAP_SHOW_DELAY_MS = 400;
-
-/*
- * A TAP OF SHIFT TOGGLES THE MIXER (e16_mixer.mjs) -- the same grammar as every
- * other surface (surface_core.mjs, SHIFT_TAP_MS): released within that long,
- * having done nothing. A tap, not a held state: nothing is left latched on a
- * lost note-off, which is the whole reason the map is a hold. A press that did
- * anything (a turn, a push, a map) is not a tap. It was a DOUBLE tap while the
- * E16 was the only surface; the EC4, which has no map on its hold, made the
- * single tap the natural gesture, and one grammar across devices won.
- */
-
-/* The top row is the four slots; everything below is the selected slot's
- * content. Both halves of that split are already `e16_map.mjs`'s, and this is
- * the input side of the same fact. */
-const SLOT_CELLS = 4;
-
-export function createNav(opts) {
-    const o = opts || {};
-    const display = o.display || null;
-    const chainOf = o.chainOf || (() => ({ slots: [] }));
-    const onFocus = o.onFocus || (() => {});
-    const renderParams = o.renderParams || (() => {});
-    const pageCountOf = o.pageCountOf || (() => 1);
-    const maxHoldMs = o.maxHoldMs === undefined ? MAP_MAX_HOLD_MS : o.maxHoldMs;
-    const showDelayMs = o.showDelayMs === undefined ? MAP_SHOW_DELAY_MS : o.showDelayMs;
-    /*
-     * FOLLOW FOCUS -- the second source for the ONE focus variable below.
-     *
-     * `followFocusOf()` answers what Move's own screen is showing, as
-     * `{ slot, component }`, or NULL when it could not answer. There is no
-     * second focus here and there must never be one: `slot` / `component` /
-     * `pageIndex` are the surface's focus whichever source is writing them, and
-     * a mode with its own copy is a surface that disagrees with itself -- the
-     * rings drawn for one component, the screen for another, with nothing
-     * logged because both halves are behaving correctly.
-     */
-    const followFocusOf = o.followFocusOf || (() => null);
-    /* THE focus (surface_core createFocus): owned by the surface and handed
-     * in, so the nav, the controller binding and the host see one. A nav
-     * built alone (tests) makes its own. */
-    const focus = o.focus || createFocus({
-        chainOf, followFocusOf, slot: o.slot, component: o.component, follow: o.follow,
-    });
-
-    /* THE ONLY MODIFIER STATE. Null means no hold; a number is when it began.
-     * Never a boolean -- see the header. */
-    let shiftDownAt = null;
-    /* A page turn happened during this hold: the map stays hidden until the
-     * next press (see MAP_SHOW_DELAY_MS). */
-    let turnedThisHold = false;
-    /* The Mixer view is up (a tap of Shift; see SHIFT_TAP_MS). */
-    const renderMixerView = o.renderMixer || null;
-    let mixerOn = false;
-    let actedThisHold = false;
-
-    let mapPage = 0;
-    let showBuses = false;
-
-    /* What the last framebuffer that actually went out was showing. Compared
-     * against the derived visibility in tick(); it is a record of the PAST, so
-     * it cannot be the thing that decides the present. */
-    let shownMap = false;
-
-    /*
-     * THE MAP IS DISABLED WHILE FOLLOW IS ON, and it is disabled HERE rather
-     * than at each gesture.
-     *
-     * Every branch in handle() already asks this one question, so one term
-     * closes all of them at once -- a push under a held Shift falls through to
-     * the ordinary `click` path, a Shift+turn to the ordinary `turn`. Gating
-     * the gestures individually instead would leave whichever branch was
-     * written next as a way to navigate while following, and that is the mode
-     * with no answer to "who wins": Move drives the E16, and the E16 must not
-     * be able to drive back.
-     */
-    /* The modifier is HELD (gestures mean map things) ... */
-    const held = (now) =>
-        !focus.follow && shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
-    /* ... and the map is SHOWN once it has been held MAP_SHOW_DELAY_MS with
-     * no page turn (see MAP_SHOW_DELAY_MS). Both derived from the timestamp,
-     * so the delay needs no timer: tick() notices the change and repaints. */
-    const mapVisible = (now) =>
-        held(now) && !turnedThisHold && !mixerOn && (now - shiftDownAt) >= showDelayMs;
-
-    const invalidate = () => { if (display) display.invalidate(); };
-
-    /*
-     * Take one reading from the follow source.
-     *
-     * A NULL IS NOT A PLAN. CLAUDE.md's tri-state rule: a read that did not
-     * complete must never become a default. The source is consulted every
-     * frame, so collapsing null into "slot 0, synth" would drag the surface to
-     * slot 0 on any tick the shadow UI could not answer and drag it back on the
-     * next -- which reads as a flickering surface rather than as a failed read.
-     *
-     * It reports NOTHING through onFocus. That silence is the one-way rule:
-     * onFocus is the only channel this module has to move anything outside
-     * itself, and firing it here would be Move's screen jumping because the
-     * E16 mirrored Move's screen.
-     */
-    const applyFollow = () => {
-        if (focus.poll()) invalidate();
-    };
-
-    const currentMap = () =>
-        buildMap(chainOf(), { slot: focus.slot, page: mapPage, showBuses });
-
-    return {
-        /**
-         * One surface event -- whatever `e16_input.decode()` produced.
-         *
-         * @returns a description of what happened, or null for an event that
-         *          meant nothing here. A push or turn arriving while the map is
-         *          DOWN is handed straight back as `click` / `turn` for the
-         *          caller to route through the grid: this module decides what a
-         *          gesture MEANS, never what a parameter becomes.
-         */
-        handle(ev, now) {
-            if (!ev) return null;
-
-            if (ev.type === "shift") {
-                /* The modifier itself is inert while following. `mapVisible`
-                 * already answers false, but without this the DOWN edge would
-                 * still arm `shiftDownAt` and repaint -- and the hold would
-                 * then be live the instant follow was switched off, with the
-                 * map appearing under a finger that is no longer on Shift. */
-                if (focus.follow) return null;
-                if (ev.down) {
-                    /* Deliberately not a re-arm: a repeat down while up leaves
-                     * the original deadline standing (see the header). */
-                    if (held(now)) return null;
-                    shiftDownAt = now;
-                    turnedThisHold = false;
-                    actedThisHold = false;
-                    mapPage = 0;
-                    showBuses = false;
-                    /* With a delay, no repaint yet: the map is drawn after
-                     * MAP_SHOW_DELAY_MS, by tick() noticing it is due. */
-                    if (mapVisible(now)) { invalidate(); return { action: "map" }; }
-                    return { action: "hold" };
-                }
-                const wasShown = mapVisible(now);
-                /* A TAP: released quickly, having done nothing. It toggles
-                 * the Mixer. */
-                const tap = !!renderMixerView && !actedThisHold && !wasShown &&
-                            shiftDownAt !== null && now - shiftDownAt < SHIFT_TAP_MS;
-                shiftDownAt = null;
-                turnedThisHold = false;
-                if (tap) {
-                    mixerOn = !mixerOn;
-                    invalidate();
-                    return { action: "mixer", on: mixerOn };
-                }
-                /* Only a map that was actually up needs taking down. A tap, a
-                 * hold spent paging, or a hold that already ended (a jump, an
-                 * expiry) leaves a screen that is already correct. */
-                if (!wasShown) return null;
-                invalidate();
-                return { action: "params" };
-            }
-
-            /* A button release is inert. Pushes act on the DOWN edge, so acting
-             * on the up edge too would run every gesture twice -- and a jump
-             * run twice is a second onFocus for a component the user selected
-             * once. */
-            if (ev.type === "release") return null;
-
-            if (ev.type === "push") {
-                if (mixerOn && !mapVisible(now)) {
-                    /* THE MIXER: a push, or Shift+push (solo, 100%). The
-                     * Shift+push spends the hold -- no map under it. */
-                    const sh = held(now);
-                    if (sh) { turnedThisHold = true; actedThisHold = true; }
-                    return { action: "mixerPush", enc: ev.enc, shift: sh };
-                }
-                if (held(now)) actedThisHold = true;
-                if (!held(now)) return { action: "click", enc: ev.enc };
-                if (!mapVisible(now)) {
-                    /* Held, map not drawn yet (or suppressed by a page turn):
-                     * a push asks for the map, so it appears NOW and the push
-                     * acts on it -- a blind slot switch would change nothing
-                     * the knobs drive, since that takes a module pick. */
-                    turnedThisHold = false;
-                    shiftDownAt = Math.min(shiftDownAt, now - showDelayMs);
-                    invalidate();
-                }
-                const enc = ev.enc | 0;
-                if (enc < SLOT_CELLS) {
-                    if (enc === focus.slot) {
-                        /* The bus view of a slot with no buses is an empty
-                         * list -- every lower knob went dark, which read as a
-                         * broken page (hardware, 2026-09-24). Only a slot that
-                         * HAS buses toggles; otherwise the tap is inert. */
-                        const hasBuses = buildMap(chainOf(), { slot: focus.slot, showBuses: true }).cells.slice(SLOT_CELLS).some(Boolean);
-                        if (!showBuses && !hasBuses) return null;
-                        showBuses = !showBuses;
-                        mapPage = 0;
-                        invalidate();
-                        return { action: "buses", showBuses };
-                    }
-                    /* The slot is entered at the module last edited there
-                     * (createFocus) -- never at the old slot's position name,
-                     * which on this slot may be empty or another module. */
-                    focus.enterSlot(enc);
-                    mapPage = 0;
-                    /* Leaving bus view on a slot change is not tidiness: the
-                     * new slot's components would otherwise be hidden behind a
-                     * mode the user set while looking at a different slot. */
-                    showBuses = false;
-                    invalidate();
-                    return { action: "slot", slot: focus.slot };
-                }
-                const cell = currentMap().cells[enc];
-                /* A hole is not a destination (e16_map.mjs). Nothing moves and
-                 * nothing repaints -- in particular the hold is NOT consumed,
-                 * or a mis-hit would drop the map the user is still reading. */
-                if (!cell) return null;
-                focus.set(cell.slot, cell.component);
-                shiftDownAt = null;   /* the jump ends the gesture */
-                mixerOn = false;      /* ...and lands on the module's knobs */
-                onFocus(focus.slot, focus.component);
-                invalidate();
-                return { action: "focus", slot: focus.slot, component: focus.component };
-            }
-
-            if (ev.type === "turn") {
-                if (mixerOn && !mapVisible(now)) {
-                    /* THE MIXER: a turn, or Shift+turn (pan) -- which keeps
-                     * the hold alive and the map hidden, as paging does. */
-                    const sh = held(now);
-                    if (sh) { turnedThisHold = true; actedThisHold = true; shiftDownAt = now; }
-                    return { action: "mixerTurn", enc: ev.enc, ticks: ev.ticks, shift: sh };
-                }
-                if (!held(now)) {
-                    return { action: "turn", enc: ev.enc, ticks: ev.ticks };
-                }
-                actedThisHold = true;
-                if (!mapVisible(now)) {
-                    /* SHIFT+TURN BEFORE THE MAP SHOWS PAGES THE PARAMETERS,
-                     * from any encoder, and keeps the map hidden for the rest
-                     * of this hold -- the hand is paging, not looking for a
-                     * module. */
-                    turnedThisHold = true;
-                    /* PAGING KEEPS THE HOLD ALIVE. A Shift+turn is a
-                     * legitimate reason to hold Shift for a long time, and
-                     * the MAP_MAX_HOLD_MS expiry ended it mid-turn (hardware,
-                     * 2026-09-24: "it lost the shift hold"). Each page step
-                     * restarts the expiry, so it now means "10 s after the
-                     * last turn". A stranded Shift stays escapable: the turn
-                     * glyph shows it is held, and a tap of Shift clears it.
-                     * (Map turns still do NOT re-arm -- see the header.) */
-                    shiftDownAt = now;
-                    const next = pageStep(focus.pageIndex, ev.ticks, pageCountOf());
-                    if (!focus.setPage(next)) return { action: "page", pageIndex: focus.pageIndex };
-                    invalidate();
-                    return { action: "page", pageIndex: focus.pageIndex };
-                }
-                if ((ev.enc | 0) < SLOT_CELLS) {
-                    /* The slot row owns the map's own list, so turning it pages
-                     * that list. Splitting the two paging axes by WHICH encoder
-                     * moved keeps both available at once; deciding by whether
-                     * the map happens to overflow would make one gesture mean
-                     * two things depending on the rig. */
-                    const count = currentMap().pageCount;
-                    const next = Math.max(0, Math.min(count - 1,
-                        mapPage + (ev.ticks > 0 ? 1 : -1)));
-                    if (next === mapPage) return { action: "mapPage", mapPage };
-                    mapPage = next;
-                    invalidate();
-                    return { action: "mapPage", mapPage };
-                }
-                const next = pageStep(focus.pageIndex, ev.ticks, pageCountOf());
-                if (!focus.setPage(next)) return { action: "page", pageIndex: focus.pageIndex };
-                invalidate();
-                return { action: "page", pageIndex: focus.pageIndex };
-            }
-
-            return null;
-        },
-
-        /**
-         * Restate the invariant. Call every frame, before the display's tick.
-         *
-         * This is the stranded-modifier escape made visible: the hold can end
-         * with no event, so something has to notice that the screen no longer
-         * matches the derived state. It compares against what was last DRAWN
-         * rather than tracking transitions, so it cannot miss one -- a
-         * transition counter has to be right at every site that changes the
-         * state, and this has to be right once.
-         *
-         * (It reconciles what THIS process has drawn. A device still showing a
-         * frame from a previous process is the lifecycle's problem, not this
-         * one's -- see createLifecycle.)
-         */
-        /**
-         * Switch the focus SOURCE. Idempotent, and the idempotence is not
-         * tidiness: the park happens on the OFF->ON edge only, so a
-         * setFollow(true) that parked unconditionally would, on its second
-         * call, park the FOLLOW source as if it were the user's own focus --
-         * and the user's real focus would be gone with no gesture that could
-         * bring it back.
-         */
-        setFollow(on, now) {
-            /* The park and the restore are the focus's (createFocus). */
-            if (!focus.setFollow(on)) return;
-            /* A hold in progress cannot survive: the map is gone, so its
-             * modifier would be a note-off owed to a view that no longer
-             * exists. The timestamp shape means dropping it is the whole job
-             * -- there is no latch anywhere else to unwind. */
-            if (focus.follow) shiftDownAt = null;
-            invalidate();
-        },
-
-        tick(now) {
-            /* Follow is a POLL, not a subscription: shadow_ui.js does not tell
-             * anyone when its component changes, and adding a notification for
-             * this one consumer would be a second thing to keep in step with
-             * every path that moves that focus (see reconcileCcClaim, which
-             * re-derives the same tuple for the same reason). Reading it is
-             * cheap -- the shadow UI already holds it -- and applyFollow
-             * repaints only on a CHANGE, so an unchanged source costs nothing
-             * on the wire. */
-            applyFollow();
-            if (mapVisible(now) !== shownMap) invalidate();
-        },
-
-        /**
-         * Draw whichever view is current. Handed to the display's tick as the
-         * frame producer, so it runs ONLY when a repaint is actually going out.
-         */
-        render(ctx, now) {
-            const up = mapVisible(now);
-            if (up) renderMap(ctx, currentMap(), { page: mapPage, showBuses });
-            else if (mixerOn && renderMixerView) renderMixerView(ctx);
-            else renderParams(ctx);
-            shownMap = up;
-        },
-
-        mapVisible,
-
-        get slot() { return focus.slot; },
-        get component() { return focus.component; },
-        get pageIndex() { return focus.pageIndex; },
-        get mapPage() { return mapPage; },
-        /** The slot map as it stands (whether or not it is on screen). */
-        map() { return currentMap(); },
-        get showBuses() { return showBuses; },
-        get followEnabled() { return focus.follow; },
-        get focus() { return focus; },
-        /* The DISPLAY MODE depends on this: a map is a picture and the
-         * parameter view is sixteen labels, and the two modes override each
-         * other on the device. Exposed rather than re-derived at the call site
-         * -- the hold has a timeout, so "is the map up" is a question only this
-         * object can answer correctly. */
-        mapVisible(now) { return mapVisible(now); },
-        /** Shift is held and the knob view is still showing: a turn pages. */
-        turnHint(now) { return !mixerOn && held(now) && !mapVisible(now); },
-        /** The Mixer view is up. */
-        get mixer() { return mixerOn; },
-    };
+/* Draw any layout's screen (layout_common.mjs) into an E16 canvas. */
+export function drawScreen(ctx, scr) {
+    switch (scr.kind) {
+    case "map": renderMap(ctx, scr.map, { page: scr.page, showBuses: scr.showBuses }); break;
+    case "mixer": renderMixer(ctx, scr.mixer); break;
+    case "empty": renderEmptySlot(ctx, scr.slot); break;
+    case "knobs": renderKnobsView(ctx, scr); break;
+    default: renderView(ctx, scr.view, { turnHint: scr.turnHint });
+    }
 }
 
 /*
@@ -1463,7 +1016,7 @@ export function createNav(opts) {
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
 import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick,
-         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs }
+         mapRings, moduleRgb, renderEmptySlot, pageHasKnobs, renderKnobsView }
     from "./e16_view.mjs";
 
 /**
@@ -1569,30 +1122,44 @@ export function createSurface(io) {
     const mixer = o.mixer ? createMixer(o.mixer) : null;
     /* Knob pages only, mapped back to the controller's own index (binding). */
     const knobPages = binding.knobPages;
-    const viewNow = () => binding.view(focus.pageIndex);
 
-    /* Each module in the set has its own colour (moduleRgb / setOrdinal);
-     * the knobs wear the colour of the module they edit -- the same colour
-     * its knob had on the slot map. */
-    const cellRgb = (cell) => moduleRgb(setOrdinal(chainOf(), cell.slot, cell.component));
-    const knobRgb = () => nav ? moduleRgb(setOrdinal(chainOf(), nav.slot, nav.component)) : moduleRgb(-1);
-    /* The focused slot holds no module at all. */
-    const slotEmpty = () => {
-        if (!nav) return false;
-        const m = buildMap(chainOf(), { slot: nav.slot });
-        return !m.cells.slice(4).some(Boolean);
-    };
     /*
-     * ALL SIXTEEN RINGS FOR WHAT IS ON SCREEN. The map lights slots and
-     * modules; the knob view lights knobs. Every knob is described -- the ones
-     * with nothing to show as DARK -- because the E16 keeps whatever a ring
-     * last showed: a page with no knobs (presets), an empty slot, or the view
-     * you just left would otherwise keep its old rings lit.
+     * THE LAYOUTS (layout_common.mjs): what the sixteen knobs DO and what each
+     * cell SHOWS. Both are built on the one focus, controller and Mixer, the
+     * one navigationOf() names is live, and this file draws the screen the
+     * live one describes and keeps its rings -- ALL SIXTEEN, dark ones
+     * included, because the E16 keeps whatever a ring last showed.
      */
-    const desiredRings = (t) => (nav && nav.mapVisible(t))
-        ? mapRings(nav.map(), cellRgb)
-        : (nav && nav.mixer && mixer) ? mixer.rings()
-        : (slotEmpty() ? ringsFor(null) : ringsFor(viewNow(), knobRgb()));
+    const navigationOf = o.navigationOf || (() => NAV_MAP);
+    const layoutCtx = {
+        focus, binding, mixer, feel, chainOf, now,
+        selector: E16_SELECTOR,
+        invalidate: () => display.invalidate(),
+        invalidateLabels: () => display.invalidateLabels(),
+        ringChanged: (desc) => display.ringChanged(desc),
+        /*
+         * THE NUMBER FOLLOWS THE HAND. The ring moves on every detent; the
+         * printed digits are a region repaint, owed here and paid by the tick
+         * at most every LIVE_PAINT_MS while turning, plus once more after the
+         * hand stops (SETTLE_MS) so the final value is always drawn.
+         */
+        valueMoved: (t) => { turnedAt = t; settlePainted = false; },
+    };
+    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx) };
+    let layout = layouts[NAV_MAP];
+    /* The setting is read every tick; a switch drops the old layout's Mixer
+     * and hold and repaints -- the rings follow through context(). */
+    function syncLayout() {
+        let want = NAV_MAP;
+        try { want = navigationOf(); } catch (e) {}
+        const next = layouts[want] || layouts[NAV_MAP];
+        if (next === layout) return;
+        layout.reset();
+        layout = next;
+        display.invalidate();
+    }
+    const viewNow = () => layout.view();
+    const desiredRings = (t) => layout.rings(t);
     /* What the rings last described, so a change of view / slot / module /
      * page restates all sixteen at once rather than waiting for the look. */
     let ringContext = null;
@@ -1602,16 +1169,8 @@ export function createSurface(io) {
     const mirrorOut = o.mirror || null;
     let mirrorShownVersion = -1, mirrorAt = -Infinity;
 
-    /*
-     * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
-     *
-     * A number, not a boolean: the title has to say WHICH parameter is moving,
-     * and the labels beneath it are four characters each, so the title is the
-     * only place a full name and a full reading ever appear. It is cleared by
-     * nothing -- the last thing touched stays named, which is what you want
-     * when you look up a second later to read the value you just set.
-     */
-    let focusEnc = null;
+    /* The encoder under the hand (the title's subject) is the map layout's
+     * now: it rides in the params screen as `focusEnc`. */
     /* When the last detent arrived, and whether the repaint it owes has gone
      * out. Two variables rather than one timestamp cleared on paint, because
      * "nothing has been turned yet" and "the turn has been drawn" are
@@ -1699,93 +1258,21 @@ export function createSurface(io) {
      * keeps the reading in the title honest without a second staleness stamp to
      * get wrong. */
     /*
-     * THE MODULE'S NAME, not the position id.
-     *
-     * nav.component is "synth" / "fx1" / "midi_fx2" -- an ADDRESS, not a name
-     * -- and passing it straight to the title is why the first LABELS build
-     * showed the word "SYNTH" on the device instead of "9W9". The one
-     * affordance that makes a 4-character grid workable is a title naming what
-     * you are actually touching, so getting this wrong disabled the feature
-     * while appearing to work.
+     * THE LABELS SCREEN for this frame, from whatever the layout shows:
+     * sixteen four-character names and a 16-character title
+     * (layout_common screenLabels). Cheap enough to rebuild per tick -- string
+     * work over a view that costs no IPC -- and rebuilding keeps the reading
+     * in the title honest without a second staleness stamp. On the knobs
+     * layout the title carries the last READING while it is up.
      */
-    const moduleNameFor = (slot, component) => {
-        const chain = chainOf() || {};
-        const sl = (chain.slots || [])[slot] || {};
-        if (component === "synth") return sl.synth || "";
-        let m = /^fx(\d+)$/.exec(component);
-        if (m) return (sl.fx || [])[Number(m[1]) - 1] || "";
-        m = /^midi_fx(\d+)$/.exec(component);
-        if (m) return (sl.midiFx || [])[Number(m[1]) - 1] || "";
-        m = /^bus(\d+)$/.exec(component);
-        if (m) return (sl.buses || [])[Number(m[1]) - 1] || "";
-        return component || "";
+    const labelScreen = (t) => {
+        const scr = layout.screen(t);
+        const l = screenLabels(scr, { metaOf });
+        let title = l.title;
+        const r = scr.kind === "knobs" ? layout.reading(t) : null;
+        if (r) title = (String(r.name) + " " + String(r.value)).toUpperCase().slice(0, 16);
+        return { kind: "labels", title, labels: l.labels };
     };
-
-    const labelScreen = () => {
-        const l = labelsFor(viewNow(), {
-            component: moduleNameFor(nav ? nav.slot : 0, nav ? nav.component : ""),
-            focusEnc,
-            metaOf,
-        });
-        return { kind: "labels", title: l.title, labels: l.labels };
-    };
-
-    /*
-     * THE MAP AS LABELS TOO, so the framebuffer is never sent at all.
-     *
-     * A map cell is a slot number or a module name, both of which fit four
-     * characters as well as anything else does -- and the title says which
-     * slot's components are listed, which the framebuffer's two headers used
-     * to carry between them.
-     *
-     * The current slot is marked with a leading '>' rather than the inverted
-     * box the picture drew: four characters is not much to spend one on, and
-     * an unmarked map cannot say where you are.
-     */
-    const mapScreen = () => {
-        /* Built here from the nav's public state rather than reaching into
-         * its private one: buildMap is pure and cheap, and a second accessor
-         * on the nav would be a second thing to keep in step. */
-        const m = buildMap(chainOf(), {
-            slot: nav ? nav.slot : 0,
-            page: nav ? nav.mapPage : 0,
-            showBuses: nav ? nav.showBuses : false,
-        });
-        const labels = new Array(16).fill("");
-        for (let i = 0; i < 16; i++) {
-            const c = m.cells[i];
-            if (!c) continue;
-            const name = c.kind === "slot" ? String(c.slot + 1) : String(c.label || "");
-            labels[i] = (c.current ? ">" : "") + name;
-        }
-        return {
-            kind: "labels",
-            title: "SLOT " + ((nav ? nav.slot : 0) + 1) + " PICK",
-            labels,
-        };
-    };
-
-    const nav = createNav({
-        display,
-        focus,
-        chainOf,
-        followFocusOf,
-        pageCountOf: () => Math.max(1, knobPages().length),
-        /* The Mixer view (a tap of Shift), when the host can reach the
-         * slot volumes and sends -- see e16_mixer.mjs. */
-        renderMixer: mixer ? (ctx) => renderMixer(ctx, mixer) : null,
-        renderParams: (ctx) => {
-            /* A slot with no modules says so -- a blank screen reads as a
-             * dead device. */
-            if (slotEmpty()) renderEmptySlot(ctx, nav.slot);
-            else renderView(ctx, viewNow(), { turnHint: nav.turnHint(now()) });
-        },
-        /* The jump has already moved nav's focus; the controller catches up in
-         * syncFocus() on the next tick. Reloading from here instead would put a
-         * contract read (two blocking param round trips) on the MIDI callback
-         * that delivered the button press. */
-        onFocus: () => {},
-    });
 
     /* Rate-limited so a run of NACKs (unlikely, but the whole point of
      * having them is to react to the unlikely) can't flood the log the way
@@ -1931,7 +1418,7 @@ export function createSurface(io) {
         noteParamWrite(slot, key, value) {
             if (!lifecycle.enabled) return;
             for (const cell of binding.noteWrite(slot, key, value, viewNow())) {
-                display.ringChanged(ringFor(viewNow(), cell.enc, knobRgb()));
+                display.ringChanged(layout.ring(cell.enc));
                 turnedAt = now();
                 settlePainted = false;
             }
@@ -1939,7 +1426,13 @@ export function createSurface(io) {
 
         /** Follow Focus. The surface parks its own focus on the OFF->ON edge,
          *  so this must be told the EDGE and not poll a setting. */
-        setFollow(on) { nav.setFollow(!!on, now()); },
+        setFollow(on) {
+            /* The focus parks once (the map layout's nav owns the edge); the
+             * other layout only drops its own hold. */
+            layouts[NAV_MAP].setFollow(!!on, now());
+            layouts[NAV_KNOBS].setFollow(!!on, now());
+            display.invalidate();
+        },
 
         /**
          * Cable-2 bytes, 1-3 at a time with the USB-MIDI CIN already stripped.
@@ -1961,79 +1454,10 @@ export function createSurface(io) {
             const ev = decode(data);
             if (!ev) return null;
             const t = now();
-            const act = nav.handle(ev, t);
-            if (act && mixer) {
-                if (act.action === "mixer") {
-                    /* Entering reads the whole mixer once (~18 round trips,
-                     * one time); after that our own writes keep it, and the
-                     * look re-reads one value at a time. */
-                    if (act.on) mixer.load();
-                    return act;
-                }
-                if (act.action === "mixerTurn" || act.action === "mixerPush") {
-                    /* A turn through the knob engine, as a module's knob
-                     * (surface_core createKnobFeel). */
-                    const changed = act.action === "mixerTurn"
-                        ? (feel.begin(act.enc, t),
-                           feel.mixerTurn(mixer, act.enc, feel.detents(act.enc, act.ticks), act.shift, t))
-                        : mixer.push(act.enc, act.shift);
-                    if (changed) {
-                        /* The ring at once; the digits (and a MUTE/SOLO
-                         * label) follow as a live repaint, as a turn does. */
-                        display.ringChanged(mixer.ringFor(act.enc));
-                        turnedAt = t;
-                        settlePainted = false;
-                    }
-                    return act;
-                }
-            }
-            const ctl = binding.controller;
-            if (!act || !ctl) return act;
-
-            if (act.action === "turn") {
-                const moved = applyTurn(viewNow(), ctl, act.enc, act.ticks, t);
-                /* ONE RING, NEVER A REPAINT. This is the common case -- a knob
-                 * under a hand makes one of these per detent -- and turning it
-                 * into a framebuffer is how a surface that measured fine in
-                 * isolation drops packets in use (docs/E16_REMOTE.md). The view
-                 * is rebuilt AFTER the write so the ring carries the new value.
-                 */
-                if (moved) {
-                    display.ringChanged(ringFor(viewNow(), act.enc, knobRgb()));
-                    /*
-                     * THE NUMBER FOLLOWS THE HAND. The ring moves on every
-                     * detent; the printed digits are a region repaint, owed
-                     * here and paid by the tick at most every LIVE_PAINT_MS
-                     * while turning, plus once more after the hand stops
-                     * (SETTLE_MS) so the final value is always drawn.
-                     */
-                    turnedAt = t;
-                    settlePainted = false;
-                    /* The TITLE is the only surface carrying the full name and
-                     * the reading, so a turn owes one -- but as a separate,
-                     * lower-priority debt than the ring. A spin makes many
-                     * detents and the display sends one message per tick, so
-                     * the ring (the thing being watched) goes first and the
-                     * text catches up when the hand pauses. */
-                    display.invalidateLabels();
-                }
-                focusEnc = act.enc;
-                return act;
-            }
-            if (act.action === "click") {
-                const before = ctl.pageIndex;
-                const hit = applyClick(viewNow(), ctl, act.enc);
-                /* A click can flip a value (a ring) or open a door (a new
-                 * page). Only the second is worth a screen. */
-                if (ctl.pageIndex !== before) display.invalidate();
-                else if (hit) {
-                    display.ringChanged(ringFor(viewNow(), act.enc, knobRgb()));
-                    display.invalidateLabels();
-                }
-                focusEnc = act.enc;
-                return act;
-            }
-            return act;
+            /* What a turn or push MEANS, and which rings and repaints it
+             * owes, is the layout's (layout_map.mjs, layout_knobs.mjs). */
+            syncLayout();
+            return layout.handle(ev, t);
         },
 
         /** One frame. Off, this is the lifecycle's two comparisons. */
@@ -2096,7 +1520,8 @@ export function createSurface(io) {
             /* Before the display's tick: nav.tick() is the stranded-Shift
              * escape and may invalidate, and a repaint noticed after the send
              * would wait a whole frame. */
-            nav.tick(t);
+            syncLayout();
+            layout.tick(t);
             syncFocus();
             binding.tick();
             /*
@@ -2147,15 +1572,14 @@ export function createSurface(io) {
              */
             const probe = testPattern();
             /* The turn hint follows Shift in the knob view (see renderView). */
-            const hint = nav.turnHint(t);
+            const hint = layout.turnHint(t);
             if (hint !== shownTurnHint) { shownTurnHint = hint; display.invalidate(); }
             /* The rings follow the VIEW at once: map up or down, another slot,
              * module or page -- all sixteen restated in the new view's colours
              * (the controller's `loaded` is in the key, so a module's values
              * are restated again once they have actually arrived). */
             if (probe < 0) {
-                const rctx = [nav.mapVisible(t), nav.mixer, nav.slot, nav.component, nav.pageIndex,
-                              nav.mapPage, nav.showBuses, binding.loaded].join("|");
+                const rctx = layout.context(t) + "|" + binding.loaded;
                 const restate = () => {
                     for (const desc of desiredRings(t)) {
                         display.ringChanged(desc);
@@ -2193,7 +1617,7 @@ export function createSurface(io) {
             const wantLabels = screenModeOf() === "labels";
             const screen = probe >= 0 ? { kind: "framebuffer" }
                          : (wantLabels
-                             ? (nav.mapVisible(t) ? mapScreen() : labelScreen())
+                             ? labelScreen(t)
                              : { kind: "framebuffer" });
 
             /* THE LOOK -- see LOOK_MS. The drawn view only: LABELS mode does
@@ -2205,7 +1629,6 @@ export function createSurface(io) {
                 lookAt = t;
                 /* The mixer notices changes made elsewhere (Move's track
                  * volume, Slot Settings) one read per look. */
-                if (mixer && nav.mixer && !nav.mapVisible(t)) mixer.refreshNext();
                 display.invalidate();
                 for (const desc of desiredRings(t)) {
                     const k = JSON.stringify(desc);
@@ -2284,7 +1707,7 @@ export function createSurface(io) {
                  * once a second, so two reads in one tick can straddle an
                  * arming and paint a pattern the mode decision did not choose. */
                 if (probe >= 0) drawTestPattern(canvas, probe, { paints, fps: paintFps });
-                else nav.render(canvas, t);
+                else { drawScreen(canvas, layout.screen(t)); layout.markDrawn(t); }
                 return canvas.toBuffer();
             }, screen, t, heardAt === null ? t : heardAt);
 
@@ -2307,10 +1730,12 @@ export function createSurface(io) {
         /* Read-only views, for the host's settings rows and for tests. */
         get enabled() { return lifecycle.enabled; },
         get present() { return lifecycle.present; },
-        get slot() { return nav.slot; },
-        get component() { return nav.component; },
+        get slot() { return focus.slot; },
+        get component() { return focus.component; },
         get controller() { return binding.controller; },
-        get nav() { return nav; },
+        /* The map layout's gesture half (tests drive it); `layout` is live. */
+        get nav() { return layouts[NAV_MAP].nav; },
+        get layout() { return layout; },
         get focus() { return focus; },
         get display() { return display; },
         view: viewNow,

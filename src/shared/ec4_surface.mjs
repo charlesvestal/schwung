@@ -35,12 +35,16 @@
  * Pure: every host call is injected, so tests/host drives the whole path.
  */
 import { decode } from "./e16_input.mjs";
-import { labelsFor, applyTurn, applyClick, abbrev4, ENCODERS, ringAmount, RING_MAX } from "./e16_view.mjs";
+import { abbrev4 } from "./e16_view.mjs";
 import { createMixer } from "./e16_mixer.mjs";
-import { displayValue } from "./param_pages/render_page_movy.mjs";
-import { ENUM_DELTA_DIV, detentsPerStep } from "./knob_engine.mjs";
 import { SHIFT_TAP_MS, TURN_IDLE_MS, ATOMIC_MAX_PACKETS, createSysexAssembler, createPresence,
          createFocus, createBinding, createKnobFeel } from "./surface_core.mjs";
+import { NAV_MAP, NAV_KNOBS, NAV_HOLD_MS, screenLabels } from "./layout_common.mjs";
+import { createMapLayout } from "./layout_map.mjs";
+import { createKnobsLayout } from "./layout_knobs.mjs";
+export { CELL_PREV, CELL_PAGE, CELL_COUNT, CELL_NEXT, CELL_SLOT, CELL_MODULE, CELL_VOL, CELL_PAN }
+    from "./layout_knobs.mjs";
+export { NAV_HOLD_MS };
 import * as ec4 from "./ec4_protocol.mjs";
 
 /* The focus, the controller binding, the knob feel, presence and the Shift
@@ -76,8 +80,8 @@ export const MSGS_PER_TICK = 2;
 /* With nothing owed, one chunk of the screen is resent this often, so the
  * whole names page is restated every ~2.5 s. */
 export const RESTATE_MS = 250;
-/* The overlay stays up this long after the last turn. */
-export const OVERLAY_HOLD_MS = 1500;
+/* The overlay's hold is the layout's reading hold (layout_common). */
+export { READING_HOLD_MS as OVERLAY_HOLD_MS } from "./layout_common.mjs";
 
 const NAMES_LEN = ec4.NAMES_CHARS;
 const TOTAL_LEN = ec4.TOTAL_CHARS;
@@ -202,15 +206,6 @@ export function listRow(items, index) {
 /* The value, centred in brackets; empty stays empty. */
 const valueRow = (v) => (v === "" || v == null ? "" : centre("[" + ascii(v) + "]"));
 
-/* The 4x4 cells of the MODULE view that are not page knobs. */
-export const CELL_PREV = 8, CELL_PAGE = 9, CELL_COUNT = 10, CELL_NEXT = 11;
-export const CELL_SLOT = 12, CELL_MODULE = 13, CELL_VOL = 14, CELL_PAN = 15;
-const PAGE_KNOBS_N = 8;
-/* A navigation reading is shorter than a value reading: it is confirming
- * where you went, and the names it covers are what you came to see. */
-export const NAV_HOLD_MS = 800;
-/* One Mixer value re-read this often, to notice changes made elsewhere. */
-const MIXER_REFRESH_MS = 250;
 
 /*
  * ONE FEEL FOR EVERY KNOB: the EC4's pulses are scaled to Move's detents
@@ -242,6 +237,8 @@ export const SELECTOR_PULSES = 6;
 /* A slot is a bigger move than an option -- the whole surface changes under
  * the hand -- so it takes twice the turn: six a rotation. */
 export const SLOT_PULSES = 12;
+/* The EC4's step for choices and selectors, for whichever layout is live. */
+export const EC4_SELECTOR = { choice: SELECTOR_PULSES, nav: SELECTOR_PULSES, slot: SLOT_PULSES };
 /*
  * INSTALLING THE SCHWUNG SETUP FROM MOVE.
  *
@@ -311,284 +308,51 @@ export function createEc4Surface(io) {
     let restateTurn = 0;
     let acks = 0, sentMsgs = 0;
 
-    let overlayRows = null;
-    let overlayUntil = -Infinity;
 
     /* ---- the focus and its controller: every surface's (surface_core) ---- */
     const focus = createFocus({ chainOf, followFocusOf });
     const binding = createBinding({ makeController, focus });
     const feel = createKnobFeel({ pulsesPerDetentOf });
     const { metaOf } = binding;
-    const knobPages = binding.knobPages;
-    /* ONE page: cells 0-7 are the current page, the rest navigation. */
-    const viewNow = () => binding.pageView(focus.pageIndex);
-    const pageName = () => binding.pageName(focus.pageIndex);
-    const componentsOf = (s) => focus.components(s);
-    let mixerOn = false;
+    const mixer = o.mixer ? createMixer(o.mixer) : null;
 
-    /* Shift: when it went down (null = up), and whether anything was done
-     * under it -- a press that did nothing is a TAP, and a tap switches view. */
-    let shiftDownAt = null;
-    let shiftActed = false;
-
-    const mixerIo = o.mixer || null;
-    const mixer = mixerIo ? createMixer(mixerIo) : null;
-    let mixerLoaded = false;
-    let mixerRefreshAt = -Infinity;
-
-    const moduleNameFor = (s, comp) => {
-        const c = componentsOf(s).find((x) => x.component === comp);
-        return c ? String(c.label || "") : "";
-    };
-
-    /* ---- the screen ---- */
-
-    const PAGE_COUNT_MAX = 4;
-    function moduleNames() {
-        const cells = new Array(ENCODERS).fill("");
-        const comps = componentsOf(focus.slot);
-        const here = comps.find((c) => c.component === focus.component);
-        if (here) {
-            const l = labelsFor(viewNow(), { metaOf });
-            for (let e = 0; e < PAGE_KNOBS_N; e++) cells[e] = l.labels[e];
-        }
-        const n = knobPages().length;
-        cells[CELL_PREV] = "<PG";
-        cells[CELL_NEXT] = "PG>";
-        cells[CELL_PAGE] = n ? abbrev4(pageName()) : "----";
-        const count = (focus.pageIndex + 1) + "/" + n;
-        cells[CELL_COUNT] = !n ? "" : (count.length <= PAGE_COUNT_MAX ? count : "P" + (focus.pageIndex + 1));
-        cells[CELL_SLOT] = "SL " + (focus.slot + 1);
-        cells[CELL_MODULE] = here ? abbrev4(here.label) : "EMPT";
-        const t = mixer ? mixer.tracks[focus.slot] : null;
-        /* Names of what the knob DOES; a state that changes what it does
-         * (mute) is the only exception. A pan position is a value, and a
-         * value is for the overlay. */
-        cells[CELL_VOL] = t && t.muted ? "MUTE" : "VOL";
-        cells[CELL_PAN] = "PAN";
-        return cells;
+    /*
+     * ---- the layouts (layout_common.mjs) ----
+     *
+     * What the sixteen knobs do is the layout's; this file only shows it --
+     * sixteen names diffed onto the device, and the layout's READING as the
+     * 4x20 overlay. So the layout's repaint and ring callbacks are no-ops
+     * here: every tick restates what should be shown and the text writer
+     * sends only what differs.
+     */
+    const navigationOf = o.navigationOf || (() => NAV_KNOBS);
+    const layoutCtx = { focus, binding, mixer, feel, chainOf, now, selector: EC4_SELECTOR };
+    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx) };
+    let layout = layouts[NAV_KNOBS];
+    function syncLayout() {
+        let want = NAV_KNOBS;
+        try { want = navigationOf(); } catch (e) {}
+        const next = layouts[want] || layouts[NAV_KNOBS];
+        if (next === layout) return;
+        layout.reset();
+        layout = next;
     }
-
-    function panLabel(p) {
-        if (p === null || p === undefined || Math.abs(p) < 0.01) return "PAN";
-        return (p < 0 ? "L" : "R") + Math.round(Math.abs(p) * 100);
-    }
-
-    /* The Mixer's names, or its alternate layer while Shift is held. */
-    function mixerNames(shiftHeld) {
-        const cells = new Array(ENCODERS).fill("");
-        for (let e = 0; e < ENCODERS; e++) {
-            const row = Math.floor(e / 4), col = e % 4;
-            if (!shiftHeld) {
-                /* The E16 Mixer's own label puts a panned track's position
-                 * ("L 26") where its level's name goes; ours does not. */
-                if (row === 0) {
-                    const tr = mixer.tracks[col];
-                    cells[e] = tr.soloed ? "SOLO" : tr.muted ? "MUTE" : "VOL";
-                } else cells[e] = mixer.cell(e).label || "";
-                continue;
-            }
-            if (row === 0) cells[e] = "PAN";
-            else if (row === 1 || row === 2) cells[e] = "100%";
-            else cells[e] = col < 2 ? "100%" : "";
-        }
-        return cells;
-    }
+    const viewNow = () => layout.view();
 
     function namesNow() {
-        const cells = (mixerOn && mixer) ? mixerNames(shiftHeldNow()) : moduleNames();
-        return cells.map((c) => pad(ascii(c), 4)).join("");
+        const l = screenLabels(layout.screen(now()), { metaOf });
+        return l.labels.map((c) => pad(ascii(c), 4)).join("");
     }
 
-    function showReading(rows, t, holdMs) {
-        overlayRows = rows.map((r) => pad(ascii(r), ec4.TOTAL_COLS));
-        overlayUntil = t + (holdMs || OVERLAY_HOLD_MS);
-    }
-
-    function paramReading(enc, t) {
-        const c = viewNow().cells[enc];
-        if (!c) return;
-        /* A bar only for a value that has one: an enum or a text value has
-         * no position between min and max to fill to. */
-        const numeric = isFinite(Number(c.value)) && c.max > c.min;
-        let last = numeric ? barRow(ringAmount(c) / RING_MAX, c.bipolar) : "";
-        if (isChoice(c.meta)) { const l = choiceList(c); last = listRow(l.items, l.index); }
-        showReading([
-            headline(pageName(), String(c.label || c.key), abbrev4(c.label || c.key)),
-            "",
-            valueRow(displayValue(c.value, metaOf(c.key) || {})),
-            last,
-        ], t);
-    }
-
-    /* The page knob's reading: the page, and the list you are moving along,
-     * current one centred. */
-    function pageReading(t) {
-        const names = knobPages().map((p) => String(p.name || ""));
-        showReading([headline(moduleNameFor(focus.slot, focus.component) || "Module", "Page"), "",
-                     valueRow(pageName()), listRow(names, focus.pageIndex)], t, NAV_HOLD_MS);
-    }
-    function slotLevelReading(which, t) {
-        const tr = mixer.tracks[focus.slot];
-        if (which === "vol") {
-            const c = mixer.cell(focus.slot), r = mixer.ringFor(focus.slot);
-            showReading([headline("Slot " + (focus.slot + 1), tr.muted ? "Volume (muted)" : "Volume"), "",
-                         valueRow(c.value ? c.value + " dB" : ""), barRow(r.amount / RING_MAX, false)], t);
-        } else {
-            const p = tr.pan === null ? 0 : tr.pan;
-            showReading([headline("Slot " + (focus.slot + 1), "Pan"), "",
-                         valueRow(Math.abs(p) < 0.01 ? "C" : panLabel(p)), barRow((p + 1) / 2, true)], t);
-        }
-    }
-
-    function mixerReading(enc, t, alt) {
-        const c = mixer.cell(enc), r = mixer.ringFor(enc);
-        const track = mixer.nameOf(enc % 4);
-        if (alt && enc < 4) {
-            const p = mixer.tracks[enc].pan === null ? 0 : mixer.tracks[enc].pan;
-            showReading([headline(track, "Pan"), "", valueRow(Math.abs(p) < 0.01 ? "C" : panLabel(p)),
-                         barRow((p + 1) / 2, true)], t);
-            return;
-        }
-        /* Row 1 is the LEVEL, whatever the E16 label says (it shows pan). */
-        showReading([headline(track, enc < 4 ? "Volume" : (c.label || "")), "",
-                     valueRow((c.value || "") + (c.off ? " (off)" : "")),
-                     barRow(r.amount / RING_MAX, r.bipolar)], t);
-    }
-
-    function overlayNow(t) { return t < overlayUntil ? overlayRows : null; }
-
-    /* ---- input ---- */
-
-    /* EC4 pulses -> Move detents, for a continuous control; choices step by
-     * angle (SELECTOR_PULSES). Both surface_core createKnobFeel. */
-    const detents = (enc, pulses) => feel.detents(enc, pulses);
-    const choiceStep = (enc, pulses, per) => feel.steps(enc, pulses, per || SELECTOR_PULSES);
-
-    /* A parameter that is a CHOICE: an enum, or an int the engine already
-     * steps like one. Those get the selector's physical step. */
-    const isChoice = (meta) => !!meta && (meta.type === "enum" || meta.kind === "enum" ||
-        meta.type === "bool" || Array.isArray(meta.options) || detentsPerStep(meta) > 1 ||
-        (meta.type === "int" && meta.max - meta.min === 1));
-
-    /* A choice's options and which one is current, for listRow. */
-    function choiceList(cell) {
-        const meta = cell.meta || {};
-        const v = cell.value;
-        if (Array.isArray(meta.options) && meta.options.length) {
-            const opts = meta.options.map(String);
-            let i = opts.findIndex((x) => x.toLowerCase() === String(v).toLowerCase());
-            if (i < 0 && isFinite(Number(v))) i = Number(v) - (typeof meta.min === "number" ? meta.min : 0);
-            return { items: opts, index: i };
-        }
-        const lo = typeof meta.min === "number" ? meta.min : 0, hi = typeof meta.max === "number" ? meta.max : 1;
-        if (hi - lo === 1 && lo === 0) return { items: ["Off", "On"], index: Number(v) > 0 ? 1 : 0 };
-        const items = [];
-        for (let x = lo; x <= hi && items.length < 128; x++) items.push(String(x));
-        return { items, index: Math.round(Number(v)) - lo };
-    }
-
-    const step = (ticks) => (ticks > 0 ? 1 : -1);
-
-    /* The <PG / PG> buttons step quietly; the page KNOB shows the list. */
-    function stepPage(d, t, quiet) {
-        const n = knobPages().length;
-        const next = Math.max(0, Math.min(n - 1, focus.pageIndex + d));
-        if (n) focus.setPage(next);
-        if (!quiet) pageReading(t);
-    }
-
-    function turn(enc, pulses, t) {
-        if (shiftDownAt !== null) shiftActed = true;
-        const alt = shiftDownAt !== null;
-        feel.begin(enc, t);
-        if (mixerOn && mixer) {
-            const d = detents(enc, pulses);
-            if (d && feel.mixerTurn(mixer, enc, d, alt, t)) mixerReading(enc, t, alt);
-            return;
-        }
-        if (enc < PAGE_KNOBS_N) {
-            const cell = viewNow().cells[enc];
-            const ctl = binding.controller;
-            if (!cell || !ctl) return;
-            /* A choice moves one option per SELECTOR_PULSES: the engine
-             * gates an option at ENUM_DELTA_DIV detents, so that many are
-             * handed over at once. */
-            const d = isChoice(cell.meta) ? choiceStep(enc, pulses) * ENUM_DELTA_DIV : detents(enc, pulses);
-            if (d && applyTurn(viewNow(), ctl, enc, d, t)) paramReading(enc, t);
-            return;
-        }
-        const sel = (enc <= CELL_MODULE) ? choiceStep(enc, pulses, enc === CELL_SLOT ? SLOT_PULSES : SELECTOR_PULSES) : 0;
-        const ticks = enc > CELL_MODULE ? detents(enc, pulses) : 0;
-        if (enc <= CELL_NEXT) { if (sel) stepPage(step(sel), t); return; }
-        if (enc === CELL_SLOT) {
-            if (focus.follow || !sel) return;
-            const s = Math.max(0, Math.min(3, focus.slot + step(sel)));
-            /* No overlay: the slot and module cells already show where you
-             * are, and a reading would cover them while you look. */
-            if (s !== focus.slot) focus.enterSlot(s);
-            return;
-        }
-        if (enc === CELL_MODULE) {
-            if (focus.follow || !sel) return;
-            const comps = componentsOf(focus.slot);
-            const i = comps.findIndex((c) => c.component === focus.component);
-            const next = comps[Math.max(0, Math.min(comps.length - 1, (i < 0 ? 0 : i) + step(sel)))];
-            if (next) focus.set(focus.slot, next.component);
-            return;
-        }
-        if (!mixer) return;
-        if (!ticks) return;
-        if (enc === CELL_VOL) {
-            if (feel.mixerTurn(mixer, focus.slot, ticks, false, t)) slotLevelReading("vol", t);
-            return;
-        }
-        if (enc === CELL_PAN) {
-            /* The Mixer's pan is its level knob's alternate: row 1, Shift. */
-            if (feel.mixerTurn(mixer, focus.slot, ticks, true, t)) slotLevelReading("pan", t);
-        }
-    }
-
-    function push(enc, t) {
-        if (shiftDownAt !== null) shiftActed = true;
-        const alt = shiftDownAt !== null;
-        if (mixerOn && mixer) {
-            if (mixer.push(enc, alt)) mixerReading(enc, t, false);
-            return;
-        }
-        if (enc < PAGE_KNOBS_N) {
-            const ctl = binding.controller;
-            if (!ctl) return;
-            const hit = applyClick(viewNow(), ctl, enc);
-            if (hit) paramReading(enc, t);
-            return;
-        }
-        if (enc === CELL_PREV) { stepPage(-1, t, true); return; }
-        if (enc === CELL_NEXT) { stepPage(1, t, true); return; }
-        if (!mixer) return;
-        if (enc === CELL_VOL) { if (mixer.push(focus.slot, false)) slotLevelReading("vol", t); return; }
-        if (enc === CELL_PAN) {
-            const tr = mixer.tracks[focus.slot];
-            if (mixerIo.setSlot(focus.slot, "slot:pan", "0.00") !== false) tr.pan = 0;
-            slotLevelReading("pan", t);
-        }
-    }
-
-    /* Is Shift a HOLD yet? Once it has been down SHIFT_TAP_MS, or anything
-     * was done under it -- before that it may still be a tap, so the names
-     * do not flash the alternate layer on every view switch. */
-    function shiftHeldNow() {
-        return shiftDownAt !== null && (shiftActed || now() - shiftDownAt >= SHIFT_TAP_MS);
-    }
-
-    function shift(down, t) {
-        if (down) { shiftDownAt = t; shiftActed = false; return; }
-        const tap = shiftDownAt !== null && !shiftActed && t - shiftDownAt < SHIFT_TAP_MS;
-        shiftDownAt = null;
-        if (!tap) return;
-        mixerOn = !mixerOn && !!mixer;
-        overlayUntil = -Infinity;
-        if (mixerOn && !mixerLoaded) { mixer.load(); mixerLoaded = true; }
+    /* The layout's reading as four overlay rows: "[context] >> name", the
+     * value, and a bar -- or, for a choice, the options in a row. */
+    function overlayNow(t) {
+        const r = layout.reading(t);
+        if (!r) return null;
+        const last = r.list ? listRow(r.list.items, r.list.index)
+                   : r.bar ? barRow(r.bar.frac, r.bar.bipolar) : "";
+        return [headline(r.context, r.name, r.abbr), "", valueRow(r.value), last]
+            .map((row) => pad(ascii(row), ec4.TOTAL_COLS));
     }
 
     /* ---- the wire ---- */
@@ -611,8 +375,12 @@ export function createEc4Surface(io) {
         for (const ev of events) {
             if (ev.type === "setup") reportedSetup = ev.setup;
             else if (ev.type === "key" && active()) {
-                if (ev.key === "shift") shift(ev.pressed, t);
-                else if (/^push\d+$/.test(ev.key)) { if (ev.pressed) push(Number(ev.key.slice(4)), t); }
+                /* Shift, and Shift + push, arrive as reports: handed to the
+                 * layout as the same events the E16 decodes from notes. */
+                if (ev.key === "shift") { syncLayout(); layout.handle({ type: "shift", down: !!ev.pressed }, t); }
+                else if (/^push\d+$/.test(ev.key)) {
+                    if (ev.pressed) { syncLayout(); layout.handle({ type: "push", enc: Number(ev.key.slice(4)) }, t); }
+                }
                 else log("ec4: " + ev.key + (ev.pressed ? " down" : " up"));
             }
         }
@@ -627,10 +395,6 @@ export function createEc4Surface(io) {
         },
     });
 
-    function syncFocus() {
-        focus.poll();
-        binding.sync();
-    }
 
     /* One tick's worth of messages: overlay visibility first when hiding (a
      * stale reading over the names is the worse screen), text next, showing
@@ -680,7 +444,11 @@ export function createEc4Surface(io) {
 
         /* Follow Move's screen: the focus comes from followFocusOf, and the
          * slot and module knobs stop moving it -- one-way, as on the E16. */
-        setFollow(on) { focus.setFollow(on); },
+        setFollow(on) {
+            /* The focus parks once (the map layout's nav owns the edge). */
+            layouts[NAV_MAP].setFollow(!!on, now());
+            layouts[NAV_KNOBS].setFollow(!!on, now());
+        },
 
         /* A write from elsewhere (Move's own grid): into the cache now, so
          * the next reading shows it (surface_core createBinding). */
@@ -694,9 +462,8 @@ export function createEc4Surface(io) {
             if (!active()) return null;
             const ev = decode(data);
             if (!ev) return null;
-            const t = now();
-            if (ev.type === "turn") turn(ev.enc, ev.ticks, t);
-            else if (ev.type === "push") push(ev.enc, t);
+            syncLayout();
+            layout.handle(ev, now());
             return ev;
         },
 
@@ -746,17 +513,14 @@ export function createEc4Surface(io) {
                 /* Whatever the device shows now, it is not what we last told
                  * it: another setup's names, or a power cycle. */
                 names.forget(); total.forget(); shownOverlay = null;
-                shiftDownAt = null;
+                /* A Shift that went down on another setup has no release here. */
+                layout.reset();
             }
             if (!isActive) return;
-            syncFocus();
+            syncLayout();
+            layout.tick(t);
+            binding.sync();
             binding.tick();
-            if (mixer) {
-                /* VOL and PAN read the Mixer's model, so it is loaded once
-                 * the surface is ours, then kept by a slow rotation. */
-                if (!mixerLoaded) { mixer.load(); mixerLoaded = true; }
-                else if (t - mixerRefreshAt >= MIXER_REFRESH_MS) { mixerRefreshAt = t; mixer.refreshNext(); }
-            }
             names.set(namesNow());
             const rows = overlayNow(t);
             wantOverlay = !!rows;
@@ -809,9 +573,10 @@ export function createEc4Surface(io) {
         get component() { return focus.component; },
         get pageIndex() { return focus.pageIndex; },
         get focus() { return focus; },
-        get mixerOn() { return mixerOn; },
+        get mixerOn() { return layout.mixerOn; },
+        get layout() { return layout; },
         get controller() { return binding.controller; },
-        view: viewNow,
+        view: () => layout.view(),
         /* What the device should be showing -- for tests and the log. */
         screen() { return { names: namesNow(), overlay: overlayNow(now()) }; },
     };

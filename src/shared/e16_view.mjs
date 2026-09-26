@@ -406,6 +406,40 @@ export function renderView(ctx, view, opts) {
     }
 }
 
+/*
+ * THE KNOBS LAYOUT on the E16 (layout_knobs.mjs): the page Move shows on the
+ * top half, exactly as renderView draws a top half, and the eight navigation
+ * knobs on the bottom half -- label over value, under their own encoders --
+ * beneath a bar naming the slot and module they move.
+ *
+ * `scr` is the layout's screen: { view, component, pageName, navCells[8],
+ * empty, slot }.
+ */
+export function renderKnobsView(ctx, scr) {
+    if (scr.empty || !scr.view) {
+        ctx.clear();
+        const a = "Slot " + ((scr.slot | 0) + 1) + " Empty";
+        ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 12, a, 1);
+    } else {
+        /* One page: buildView filled only the top half, so renderView draws
+         * only the top half. */
+        renderView(ctx, scr.view);
+    }
+    const y = HALF_H;
+    ctx.fillRect(0, y, WIDTH, HEADER_BAR_H - 1, 1);
+    ctx.print(1, y + 1, clip(ctx, "Slot " + ((scr.slot | 0) + 1), HEADER_TEXT_W - 2), 0);
+    const mod = clip(ctx, scr.component || "", HEADER_TEXT_W - 2);
+    ctx.print(WIDTH - 1 - ctx.textWidth(mod), y + 1, mod, 0);
+    const cells = scr.navCells || [];
+    for (let i = 0; i < KNOBS_PER_PAGE; i++) {
+        const cell = cells[i];
+        if (!cell) continue;
+        const r = cellRect(KNOBS_PER_PAGE + i);
+        ctx.print(r.x + 1, r.y + 1, clip(ctx, cell.label, r.w - 2), 1);
+        if (cell.value) ctx.print(r.x + 1, r.y + 7, clip(ctx, cell.value, r.w - 2), 1);
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * THE MAP VIEW -- what Shift shows.
  *

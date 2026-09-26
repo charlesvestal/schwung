@@ -142,6 +142,13 @@ export function createMixer(io) {
         /** Re-read ONE value, round robin (changes made elsewhere). */
         refreshNext() { READS[readAt](); readAt = (readAt + 1) % READS.length; },
 
+        /* A track's pan back to the centre (the knobs layout's PAN push). */
+        centrePan(s) {
+            if (setSlot(s, "slot:pan", "0.00") === false) return false;
+            tracks[s].pan = 0;
+            return true;
+        },
+
         /** A turn. `shift` is Shift held: pan, on the level row. Returns true
          *  when something changed. */
         turn(enc, ticks, shift) {
