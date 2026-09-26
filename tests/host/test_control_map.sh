@@ -91,8 +91,21 @@ eq("a bad knob loads empty", back.doc.surface.pages[1].knobs[6], null);
 eq("a page with bad knobs keeps its name; a non-page is dropped",
    back.doc.surface.pages.map((p) => p.name), ["Page 1", "Drums", "Bad"]);
 const again = JSON.parse(M.serializeControls(back.doc));
-eq("the cc section survives a save it did not understand", again.cc, written.cc);
+eq("the cc section round-trips", again.cc, written.cc);
 eq("...and so does any other key", again.future, { anything: 1 });
+
+/* ---- the CC map bindings ---- */
+let c = M.emptyControls();
+c = M.bindCC(c, { channel: 0, cc: 74, mode: "abs", target: cut });
+c = M.bindCC(c, { channel: 0, cc: 74, mode: "rel", target: Object.assign({}, cut, { key: "reso" }) });
+eq("one binding per (channel, cc): a new one replaces", [c.cc.length, c.cc[0].target.key, c.cc[0].mode], [1, "reso", "rel"]);
+eq("a binding with a bad CC is refused", M.bindCC(c, { channel: 0, cc: 200, target: cut }).cc.length, 1);
+eq("an unknown mode defaults to absolute", M.bindCC(M.emptyControls(), { channel: 1, cc: 1, mode: "x", target: cut }).cc[0].mode, "abs");
+eq("mode toggles", M.setCCMode(c, 0, "abs").cc[0].mode, "abs");
+eq("unbind", M.unbindCC(c, 0).cc.length, 0);
+const kept = M.addPage(c, null, "P");
+eq("a page edit keeps the bindings", kept.cc.length, 1);
+eq("junk bindings load as nothing", M.parseControls(JSON.stringify({ version: 1, cc: [{ channel: 99 }, 5] })).doc.cc, []);
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);

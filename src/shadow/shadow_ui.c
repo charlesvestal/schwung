@@ -35,6 +35,7 @@
 #include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
 #include "host/e16_mirror_shm.h"
+#include "host/cc_claim.h"          /* the CC map's claim table writer */
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
@@ -53,6 +54,7 @@ static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_midi_inject_t *shadow_midi_inject = NULL;
 static shadow_midi_inject_t *shadow_midi_inject_ui = NULL;
 static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
+static schwung_cc_claim_t *cc_claim = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
 
@@ -102,6 +104,7 @@ static int open_shadow_shm(void) {
     shadow_midi_inject_ui = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT_UI, sizeof(shadow_midi_inject_t), 0, 0);
 
     ext_midi_remap = (schwung_ext_midi_remap_t *)shadow_shm_map(SHM_SHADOW_EXT_MIDI_REMAP, sizeof(schwung_ext_midi_remap_t), 0, 0);
+    cc_claim = (schwung_cc_claim_t *)shadow_shm_map(SHM_SHADOW_CC_CLAIM, sizeof(schwung_cc_claim_t), 0, 0);
 
     shadow_screenreader = (shadow_screenreader_t *)shadow_shm_map(SHM_SHADOW_SCREENREADER, sizeof(shadow_screenreader_t), 0, 0);
     if (shadow_screenreader) {
@@ -1751,6 +1754,55 @@ static JSValue js_host_ext_midi_remap_set(JSContext *ctx, JSValueConst this_val,
                      (out_ch < 0 || out_ch > 15) ? EXT_MIDI_REMAP_PASSTHROUGH :
                      (uint8_t)out_ch;
     ext_midi_remap->remap[in_ch] = mapped;
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_cc_claim_set([[channel, cc], ...]) -> bool
+ * RESTATE the CC map's claim table: exactly these (channel 0-15, cc 0-127)
+ * pairs are bound, every other bit cleared. The count is written LAST, after
+ * the bits, so the shim never sees a count over a half-written table.
+ */
+static JSValue js_host_cc_claim_set(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!cc_claim || argc < 1 || !JS_IsArray(ctx, argv[0])) return JS_FALSE;
+    uint8_t bits[CC_CLAIM_BYTES];
+    memset(bits, 0, sizeof bits);
+    uint32_t n = 0, bound = 0;
+    JSValue len = JS_GetPropertyStr(ctx, argv[0], "length");
+    JS_ToUint32(ctx, &n, len);
+    JS_FreeValue(ctx, len);
+    for (uint32_t i = 0; i < n && i < 4096; i++) {
+        JSValue pair = JS_GetPropertyUint32(ctx, argv[0], i);
+        int32_t ch = -1, cc = -1;
+        JSValue a = JS_GetPropertyUint32(ctx, pair, 0), b = JS_GetPropertyUint32(ctx, pair, 1);
+        JS_ToInt32(ctx, &ch, a); JS_ToInt32(ctx, &cc, b);
+        JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, pair);
+        if (ch < 0 || ch > 15 || cc < 0 || cc > 127) continue;
+        cc_claim_set(bits, ch, cc, 1);
+        bound++;
+    }
+    cc_claim->count = 0;
+    __sync_synchronize();
+    memcpy((void *)cc_claim->bits, bits, sizeof bits);
+    __sync_synchronize();
+    cc_claim->count = (uint8_t)(bound > 255 ? 255 : bound);
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_cc_learn(on) -> bool
+ * While on, the shim publishes EVERY external CC to the UI (and swallows
+ * none that are not bound), so the CC map can learn which one was moved.
+ */
+static JSValue js_host_cc_learn(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!cc_claim || argc < 1) return JS_FALSE;
+    int on = JS_ToBool(ctx, argv[0]);
+    if (on < 0) return JS_FALSE;
+    cc_claim->learn = on ? 1 : 0;
     __sync_synchronize();
     return JS_TRUE;
 }
@@ -3462,6 +3514,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_inject_to_move", JS_NewCFunction(ctx, js_move_midi_inject_to_move, "move_midi_inject_to_move", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_set", JS_NewCFunction(ctx, js_host_ext_midi_remap_set, "host_ext_midi_remap_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_cc_claim_set", JS_NewCFunction(ctx, js_host_cc_claim_set, "host_cc_claim_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_cc_learn", JS_NewCFunction(ctx, js_host_cc_learn, "host_cc_learn", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_clear", JS_NewCFunction(ctx, js_host_ext_midi_remap_clear, "host_ext_midi_remap_clear", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_enable", JS_NewCFunction(ctx, js_host_ext_midi_remap_enable, "host_ext_midi_remap_enable", 1));
 

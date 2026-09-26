@@ -41,6 +41,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/e16_claim.h"
+#include "host/cc_claim.h"
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_test_stream.h"
@@ -3600,6 +3601,7 @@ static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
 static shadow_midi_inject_t *shadow_midi_inject_ui_shm = NULL;  /* shadow UI's own inject, never diverted to a module */
 static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel remap table */
+static schwung_cc_claim_t *cc_claim_shm = NULL;               /* CC map: bound external CCs */
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -4166,6 +4168,17 @@ static void init_shadow_shm(void)
         ext_midi_remap_shm->version = EXT_MIDI_REMAP_VERSION;
         ext_midi_remap_shm->enabled = 0;
         memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
+    }
+
+    /* The CC map's claim table: empty until the shadow UI loads a set with
+     * bindings (it restates the table on every load and edit). */
+    cc_claim_shm = (schwung_cc_claim_t *)shadow_shm_map(SHM_SHADOW_CC_CLAIM,
+                                                        sizeof(schwung_cc_claim_t), 1, 1);
+    if (cc_claim_shm) {
+        cc_claim_shm->version = CC_CLAIM_VERSION;
+        cc_claim_shm->learn = 0;
+        cc_claim_shm->count = 0;
+        memset((void *)cc_claim_shm->bits, 0, sizeof(cc_claim_shm->bits));
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
@@ -8202,6 +8215,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * leaves the event in the mailbox Move reads, which is how a
                  * claimed message gets consumed by us and played by Move at
                  * the same time. */
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
+        /*
+         * THE GENERIC CC MAP -- second in the ownership order, AFTER the
+         * surface claim above (a surface's own encoders never reach it). A
+         * bound CC goes to the shadow UI and is taken out of BOTH buffers, or
+         * Move and the slot synths would also act on a CC now bound to a
+         * parameter. While learning, every CC is published and passed on.
+         * cc_claim.h; tests/host/test_cc_claim.sh.
+         */
+        if (!overtake_mode && cable == 0x02 && cin == 0x0B && cc_claim_shm) {
+            const uint8_t st = hw_midi[j + 1];
+            const uint8_t cc_d1 = hw_midi[j + 2];
+            const int route = cc_claim_route(cc_claim_shm->count, cc_claim_shm->learn,
+                                             cc_claim_shm->bits, st, cc_d1);
+            if (route & CC_ROUTE_PUBLISH) shadow_ui_midi_publish(hw_midi[j], st, cc_d1, hw_midi[j + 3]);
+            if (route & CC_ROUTE_SWALLOW) {
                 midi_in_swallow(sh_midi, hw_midi, j);
                 continue;
             }

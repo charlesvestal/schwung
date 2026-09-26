@@ -700,7 +700,7 @@ function makeMaster(over) {
   const bare = () => JSON.parse(io.getParam("master_settings:ui_hierarchy"))
                        .levels.actions.menu.map((m) => m.action);
   /* Surface Layout (the Custom surface pages, per set) is always offered. */
-  if (bare().join(",") !== "save,save_as,surface_layout")
+  if (bare().join(",") !== "save,save_as,surface_layout,cc_map")
     fail("with no preset the master actions menu should be Save, Save As and Surface Layout, got " +
          bare().join(","));
   /* The invariant, asserted separately from the contents: a ONE entry menu page
@@ -710,7 +710,7 @@ function makeMaster(over) {
   if (bare().length < 2)
     fail("the master actions menu is " + bare().length + " entry: " + bare().join(","));
   state.preset = true;
-  if (bare().join(",") !== "save,save_as,delete,surface_layout")
+  if (bare().join(",") !== "save,save_as,delete,surface_layout,cc_map")
     fail("with a preset the master actions menu should be Save/Save As/Delete/Surface Layout, got " +
          bare().join(","));
   /* There is no Knob Mapping here: the master bus has no knob-mapping table.
