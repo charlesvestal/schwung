@@ -181,6 +181,18 @@ deliberate jog detent is 1:1 everywhere else, so flipping a two-way twice in
 under ~270 ms from the jog is swallowed. Deliberate, and the cheapest place to
 revisit if it ever reads wrong.
 
+
+**A module may declare the other rule, per param: `turn: "absolute"`.** The
+toggle is right for a two-way that is a CHOICE and wrong for one that is
+ORDERED where the caller knows it — a note mode, a pad layout, a host-owned
+page whose knob should land where the wrist pointed. A declaring two-option
+enum takes the switch's rule (clockwise to the second option,
+counter-clockwise to the first, idempotent, no latch) while still drawing as
+the enum square. Nothing in the fleet declares it; `test_turn_absolute.sh`
+asserts both paths and `test_fleet_render_baseline.sh` pins where a scripted
+gesture lands every fleet cell, which is what moves (118 cells) if the check
+is widened past the declaration.
+
 ### A knob page drawn as a LIST has three states, and said none of them
 
 `footerHints()` had no branch for `knobsAsList` at all and fell through to the
@@ -790,6 +802,15 @@ that is not a boolean: `Mix/Reverb`, `Saw/Square`, `Legato/Trig`, `Time/Rate`,
 word is exactly what a peek is for. 212 are switches and stop; 134 keep peeking.
 `tests/host/test_enum_peek.sh` pins both sides.
 
+**A host may decline the peek per key — `io.allowEnumPeek(fullKey, meta)`.**
+The list rule above is a fact about the layout; a grid cell whose box already
+fits the whole option is the same case, but only the host knows how it draws
+its cells. Absent, or `null` for a key, and the rules above decide. It is asked
+LAST, only of a turn that would otherwise peek, and `true` cannot force a peek
+past the list, `drawnWide` or `drawnAsSwitch` gates. Named apart from
+`ctl.enumPeek()`, the getter a frame owner draws from.
+`tests/host/test_enum_peek_hook.sh`.
+
 Known and not fixed: 933 of 958 enum cells peek, and the peek is instant while
 the enum square's resize and the waveform morph take ~100ms — so those two
 animations are covered by the list at the moment they play. A short delay before
@@ -1012,6 +1033,20 @@ and can never have one, so the frame advertised a door that does not open.
 The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
 params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
 which are sweeps where an arc is the honest picture.
+
+**A param may declare `display: "big"`** — the value is read, not aimed,
+whatever it looks like. `isCountedQuantity` concedes the principle for a closed
+list of names; the declaration lets anything in. It lifts the span cap and the
+enum refusal for the declaring param only, and `widgetKindFor` asks it before
+the enum square. The cell draws the reading the page already has — the host's
+`formatValue` text, else the option (`short_options` first), else
+`bigNumberText` — instead of recomputing it. The digit count gives way to a
+MEASURED width asked of the widest text the cell can ever show and of the
+glyphs the face has (`0-9 + - : % / .` and the note names `A-G #`), so a declaration that cannot fit keeps
+the widget it would otherwise have had rather than smearing into its
+neighbour, and a cell cannot change widget as it is turned. A host reading that
+fails the same test at draw time falls back to the option or the number.
+`tests/host/test_big_value_declared.sh`.
 
 ### A momentary fires from the KNOB too, and it LATCHES per gesture
 
@@ -1381,6 +1416,18 @@ the reusable part**: it ticked without DRAWING (the store only learns a value
 when the renderer observes one, so it never showed the widgets the placeholder
 and passed with the bug fully present), and its positive control turned a
 two-option enum already at its top, so nothing moved.
+
+
+**`activity(state, now)` answers what `settled()` cannot.** `settled()`
+measures every key against ONE duration, so a 100 ms wave morph reads as moving
+for 120 ms, and it cannot tell a stream from a transition, so one never-resting
+key (an LFO on an enum) holds a page redrawing at the tick rate forever.
+`observe()` already receives each key's `durationMs`; the store keeps it and
+the start of the key's current unbroken run, and `activity()` returns
+`{ moving, streaming }` against them. A stream is REPORTED, not aged out: ageing
+it out would also freeze the final tween of a fast knob turn that lasted longer
+than one duration. The host redraws on `moving` and throttles on `streaming`.
+`settled()` is unchanged. `tests/host/test_anim_activity.sh`.
 
 ### The neighbour lane warms page ±1, and it is NOT the same fix
 

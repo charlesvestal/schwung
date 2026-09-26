@@ -3534,6 +3534,34 @@ that *also* has a waveform editor behind it. The predicate is `alsoOpens()` in
 Module authors influence all of this only through `type`, `options`, and
 whether a `wav_position` declares `min`/`max`.
 
+### `display: "big"` — a value that is read, not aimed
+
+```json
+{ "key": "cond", "name": "Condition", "type": "enum",
+  "options": ["1:1", "1:2", "2:2", "3:4"], "display": "big" }
+```
+
+The cell draws the value in the big face instead of an arc or an enum square.
+Small counted ints already get it without asking; this is for everything else
+of the same shape — a trig condition, a swing percentage, a clip length.
+Optional and inert when absent.
+
+- It works on enums too, and draws the option (`short_options` first).
+- The text a host supplies through `formatValue` wins when it fits, so `54%`
+  can carry its unit.
+- **It must fit.** The face spells `0-9 + - : % / .` and the note names `A-G #`, and the widest thing the
+  cell can ever show must fit in 30px. If it does not, the cell keeps the
+  widget it would have had — an option list with a word in it stays an enum
+  square — so a declaration can never smear into the next cell.
+
+### `turn: "absolute"` — a two-option choice that has an order
+
+A two-option enum drawn as a box TOGGLES on a turn, either way, because the box
+shows a state and not a direction. If your two options are ordered — Chromatic
+then In Key, Off then Latch — declare `"turn": "absolute"` and clockwise lands
+on the second option and stays there, counter-clockwise on the first. It still
+draws as the box; only the knob changes. Optional and inert when absent.
+
 ### Knob Acceleration
 
 All chain / master-FX / slot / patch param knob edits share one acceleration

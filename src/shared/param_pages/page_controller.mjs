@@ -634,6 +634,24 @@ export function createController(io = {}) {
      */
     const formatValue = io.formatValue || null;
     /*
+     * Optional: may this key raise the enum peek on a turn?
+     *
+     *   allowEnumPeek(fullKey, meta) -> true | false | null
+     *
+     * The controller already declines on a list layout -- a row prints the
+     * option in full, so the panel covers a legible answer with the same one --
+     * and a grid cell can be in that same position when its box fits the whole
+     * option. Whether it does is a question about the HOST's cells, not about
+     * this metadata, so it is injected on the same terms as formatValue:
+     * absent, or null for a given key, and the existing rule decides.
+     *
+     * It can only DECLINE. `true` does not force a peek past the list, wide-
+     * graphic or switch gates, because those are facts about what is already
+     * on screen. Named apart from enumPeek(), which is the getter a frame owner
+     * draws from.
+     */
+    const allowEnumPeek = io.allowEnumPeek || null;
+    /*
      * Optional: load a module-supplied card drawer.
      *
      *   loadCard(scriptPath, overlayRef) -> function | null
@@ -3850,7 +3868,8 @@ export function createController(io = {}) {
         if (s.layout !== LAYOUT_LIST
             && meta.divable && meta.kind === KIND_ENUM
             && !drawnWide(key) && !drawnAsSwitch(key)
-            && Array.isArray(meta.options) && meta.options.length >= 2) {
+            && Array.isArray(meta.options) && meta.options.length >= 2
+            && !(allowEnumPeek && allowEnumPeek(fullKey(key), meta) === false)) {
             const pi = Math.round(Number(value));
             s.peek = {
                 key,
