@@ -11,7 +11,14 @@ Surface); the other is the Faderfox EC4 (`docs/EC4_SURFACE.md`). What they
 DRIVE is shared in `src/shared/surface_core.mjs` — the focus, the page
 controller, the knob feel and presence — and this file is about the E16's
 wire. The Mixer is a **tap** of Shift on both devices (it was a double tap
-while the E16 was alone); a hold is the slot map.
+while the E16 was alone).
+
+**Surface Nav** (Global Settings → System) picks the layout per device: **Map**,
+the E16's own (sixteen parameters, hold Shift for the slot map, Shift+turn
+pages), or **Knobs**, the EC4's (the page Move shows on the top eight, and
+labelled navigation knobs below: `<PG`, page, `n/m`, `PG>`, slot, module, VOL,
+PAN -- drawn by `renderKnobsView`, each ring saying where you are along its
+list). Layouts never draw; see `src/shared/layout_common.mjs` for the contract.
 
 ## Getting the spec
 

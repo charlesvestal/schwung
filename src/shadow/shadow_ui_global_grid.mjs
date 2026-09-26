@@ -240,6 +240,7 @@ export const GLOBAL_ROUTING = {
     /* persist: "own" for the same reason as the row above -- the pair lives in
      * shadow_config.json and is written by its own saver. */
     follow_focus:           { read: "js.externalSurfaceFollow", write: "js.setExternalSurfaceFollow", persist: "own", cache: "externalSurfaceFollow", modal: null },
+    surface_nav:            { read: "js.surfaceNavIndex",       write: "js.setSurfaceNav",           persist: "own", cache: "externalSurfaceNav",    modal: null },
 
     /*
      * TRIGGERS, whose "backend" is an ACTION.
@@ -644,6 +645,15 @@ export const SYSTEM_PARAMS = [
      * src/shared/e16_surface.mjs for why there is no mode where both navigate.
      */
     bool("follow_focus", "Follow Focus", 0),
+    /*
+     * HOW THE SURFACE'S KNOBS NAVIGATE (layout_common.mjs): MAP -- sixteen
+     * parameters, hold Shift for the slot map -- or KNOBS -- eight parameters
+     * and eight labelled navigation knobs. Every surface runs either; the
+     * row edits the device Ext Surface names, and each device keeps its own
+     * (the E16 starts on Map, the EC4 on Knobs, as each was designed).
+     */
+    { key: "surface_nav", name: "Surface Nav", type: "enum",
+      options: ["Map", "Knobs"], short_options: ["MAP", "KNB"], default: 0 },
     /*
      * INSTALLS SCHWUNG'S SETUP ONTO AN EC4 plugged into Move -- a door, like
      * Web Manager and Help, so a write-only two-option enum: a click opens the

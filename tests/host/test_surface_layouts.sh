@@ -162,3 +162,22 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
+
+# ---------------------------------------------------------------------------
+# THE SETTING REACHES THE SURFACES. A layout nobody selects is the gap one
+# layer up: each construction must read ITS device's entry, and the entry must
+# be persisted and restored. shadow_ui.js cannot be imported under node, so
+# this is a source pin.
+# ---------------------------------------------------------------------------
+UI=src/shadow/shadow_ui.js
+bad=0
+note() { echo "FAIL: $1"; bad=1; }
+perl -0ne 'exit(!/const e16Surface = createE16Surface\(\{\s*now: \(\) => Date\.now\(\),\s*navigationOf: \(\) => externalSurfaceNav\[1\],/)' "$UI" \
+  || note "the E16 is not handed its own Surface Nav"
+perl -0ne 'exit(!/const ec4Surface = createEc4Surface\(\{\s*now: \(\) => Date\.now\(\),\s*navigationOf: \(\) => externalSurfaceNav\[2\],/)' "$UI" \
+  || note "the EC4 is not handed its own Surface Nav"
+grep -q "config.external_surface_nav = " "$UI" || note "Surface Nav is not saved"
+grep -q "const nav = config.external_surface_nav;" "$UI" || note "Surface Nav is not restored"
+grep -q 'case "surface_nav":' "$UI" || note "the Surface Nav row is not read or written"
+[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav" || exit 1
+

@@ -198,7 +198,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 6 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 7 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -345,6 +345,8 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        85px an Off/On row leaves. The row beside it did not, which is why that
        one is abbreviated and this one is not -- measured, not guessed. */
     follow_focus: "Follow Focus",
+    /* Written out in full; the width pin below is what decides. */
+    surface_nav: "Surface Nav",
     ec4_setup: "EC4 Setup",
     /* Two DOORS, not settings — see the trigger assertions above. They are
        rows on the System page rather than a menu page of their own, which is
