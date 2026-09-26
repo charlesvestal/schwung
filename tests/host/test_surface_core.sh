@@ -17,7 +17,7 @@ if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 
 node --input-type=module -e '
 import { createFocus, createBinding, createKnobFeel, createPresence, TURN_IDLE_MS }
     from "./src/shared/surface_core.mjs";
-import { E16_PULSES_PER_DETENT, E16_SELECTOR, MOVE_DETENTS_PER_ROTATION, e16Curve }
+import { E16_PULSES_PER_DETENT, E16_SELECTOR, MOVE_DETENTS_PER_ROTATION, E16_SPEED, e16Curve }
     from "./src/shared/e16_surface.mjs";
 
 let fails = 0;
@@ -122,8 +122,8 @@ const chain = { slots: [
   const e16 = createKnobFeel({ pulsesPerDetentOf: () => E16_PULSES_PER_DETENT });
   let d = 0, tt = 0;
   for (let i = 0; i < 46; i++) { tt += 100; e16.begin(0, tt); d += e16.detents(0, 1); }
-  eq("one slow E16 rotation is about one Move rotation of detents (a full sweep)",
-     Math.abs(d - MOVE_DETENTS_PER_ROTATION) <= 6, true);
+  eq("one slow E16 rotation is E16_SPEED of a Move rotation of detents",
+     Math.abs(d - MOVE_DETENTS_PER_ROTATION * E16_SPEED) <= 6, true);
   eq("E16 choices step by angle, not per tick", E16_SELECTOR.choice > 1, true);
   /* The E16 own x8 at speed: compressed, or one quick turn slams to max. */
   const fast = createKnobFeel({ pulsesPerDetentOf: () => E16_PULSES_PER_DETENT, pulseCurve: (p) => e16Curve(p) });
