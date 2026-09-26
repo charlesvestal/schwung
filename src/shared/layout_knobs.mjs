@@ -284,6 +284,7 @@ export function createKnobsLayout(ctx) {
 
     return {
         name: NAV_KNOBS,
+        pagesShown: 1,
         get mixerOn() { return !!(mixer && mixerOn); },
 
         handle(ev, t) {

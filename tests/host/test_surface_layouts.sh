@@ -24,6 +24,7 @@ import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { screenLabels } from "./src/shared/layout_common.mjs";
 import { MAP_SHOW_DELAY_MS } from "./src/shared/layout_map.mjs";
 import { PAGE_KNOBS } from "./src/shared/param_pages/page_plan.mjs";
+import { createController } from "./src/shared/param_pages/page_controller.mjs";
 
 let fails = 0;
 const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
@@ -157,6 +158,44 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
 
   shift(true); t += 60; shift(false);
   eq("E16+knobs: a Shift TAP is the Mixer here too", s.layout.mixerOn, true);
+}
+
+/* ================= A PAGE REACHED BY PAGING HAS ITS VALUES ================= */
+{
+  /* The REAL page controller, whose read rotation walks only ITS current
+   * page: paging the surface must move it, or a page reached by paging
+   * shows no values until a knob is turned (Teng on hardware, 2026-09-26). */
+  const levels = {};
+  const keys = [];
+  for (let pg = 0; pg < 6; pg++) {
+    const ks = []; for (let i = 0; i < 8; i++) { ks.push("k" + pg + "_" + i); keys.push("k" + pg + "_" + i); }
+    levels["l" + pg] = { name: "P" + pg, knobs: ks, params: ks.map((k) => ({ key: k })) };
+  }
+  const HIER = { levels: Object.assign({ root: { name: "Root", children: Object.keys(levels).map((l) => ({ level: l })) } }, levels) };
+  const store = { ui_hierarchy: JSON.stringify(HIER),
+                  chain_params: JSON.stringify(keys.map((k) => ({ key: k, name: k, type: "float", min: 0, max: 1 }))) };
+  for (const k of keys) store[k] = "0.25";
+  const bare = (k) => String(k).replace(/^[a-z_0-9]+:/, "");
+  for (const nav of ["knobs", "map"]) {
+    let t = 1000;
+    const s = createSurface({ now: () => t, send: () => true, chainOf: () => chain,
+      makeController: () => createController({ getParam: (k) => (store[bare(k)] === undefined ? null : store[bare(k)]),
+                                               setParam: () => true, now: () => t }),
+      navigationOf: () => nav });
+    s.setEnabled(true);
+    const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+    const run = (n) => { for (let i = 0; i < n; i++) { t += 16; if (i % 60 === 0) s.feedMidi(ACK); s.tick(); } };
+    run(3);
+    const pages = s.controller.pages.length;
+    ok(nav + ": the fixture plans several knob pages", pages >= 4);
+    s.focus.setPage(nav === "map" ? 4 : 3);
+    run(1);
+    /* EVERY cell on the knobs -- on the map layout that is two pages, and
+     * the bottom one never filled by prefetch alone. */
+    const cells = s.layout.view().cells.filter(Boolean);
+    ok(nav + ": every page on the knobs has its values ONE tick after paging, no knob turned",
+       cells.length === (nav === "map" ? 16 : 8) && cells.every((c) => c.value !== undefined));
+  }
 }
 
 /* ================= NOTHING TO TURN IS SAID, NOT DRAWN BLANK ================= */

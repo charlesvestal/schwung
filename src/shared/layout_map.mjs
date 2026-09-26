@@ -572,6 +572,8 @@ export function createMapLayout(ctx) {
 
     return {
         name: NAV_MAP,
+        /* Two pages on the knobs at once (the binding warms both). */
+        pagesShown: 2,
         nav,
         get mixerOn() { return !!(mixer && nav.mixer); },
 

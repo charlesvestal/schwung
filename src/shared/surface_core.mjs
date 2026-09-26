@@ -345,6 +345,8 @@ export function createBinding(opts) {
 
     let ctl = null;
     let loaded = null;
+    /* The surface page the controller was last moved to (see sync). */
+    let syncedPage = null;
 
     const live = {
         get slot() { return focus.slot; },
@@ -378,13 +380,46 @@ export function createBinding(opts) {
             return ctl;
         },
         /** Point the controller at the focus. True if it (re)loaded. */
-        sync() {
+        /** `shown`: how many pages the live layout puts on the knobs (the
+         *  map layout two, the knobs layout one). */
+        sync(shown) {
             if (!this.ensure()) return false;
             const sig = focus.slot + ":" + focus.component;
-            if (sig === loaded) return false;
-            loaded = sig;
-            ctl.load({ slot: focus.slot, component: focus.component, prefix: focus.component });
-            return true;
+            if (sig !== loaded) {
+                loaded = sig;
+                syncedPage = null;
+                ctl.load({ slot: focus.slot, component: focus.component, prefix: focus.component });
+                return true;
+            }
+            /*
+             * THE CONTROLLER GOES WHERE THE SURFACE PAGES. Its read rotation
+             * walks ITS current page (plus a one-off warm of the adjacent
+             * pages' uncached keys), and nothing moved it when the surface
+             * paged -- only a turn did (applyTurn's goToPage). So a page
+             * reached by paging showed empty values and dark rings until a
+             * knob was turned (hardware, Teng, 2026-09-26). goToPage warms
+             * the page it lands on.
+             *
+             * On a CHANGE of the surface's page only: a bottom-half turn
+             * rightly moves the controller to page N+1, and restating N every
+             * tick would drag it back and forth.
+             */
+            /* EVERY page on the knobs is warmed, last first, so the
+             * controller ends on the top one: the adjacent-page prefetch never
+             * filled the map layout's bottom half by itself. */
+            const n = Math.max(1, shown | 0);
+            const key = focus.pageIndex + "x" + n;
+            if (key !== syncedPage && knobPages().length && typeof ctl.goToPage === "function") {
+                syncedPage = key;
+                const count = knobPages().length;
+                for (let i = n - 1; i >= 0; i--) {
+                    const j = focus.pageIndex + i;
+                    if (j >= count) continue;
+                    const want = controllerPageOf(j);
+                    if (ctl.pageIndex !== want) ctl.goToPage(want, { remember: false });
+                }
+            }
+            return false;
         },
         tick() { if (ctl) ctl.tick(); },
 

@@ -1355,7 +1355,7 @@ export function createSurface(io) {
      */
     function syncFocus() {
         /* A different component is a different screen. */
-        if (binding.sync()) display.invalidate();
+        if (binding.sync(layout.pagesShown)) display.invalidate();
     }
 
     /*
