@@ -134,11 +134,12 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
   eq("E16+knobs: the bottom row is navigation", labels().slice(8, 16),
      ["<PG", "MAIN", "1/3", "PG>", "SL 1", "OBXD", "VOL", "PAN"]);
 
-  turn(9, 1);
+  /* Selectors step by ANGLE on the E16: 4 ticks a page, 8 a slot. */
+  for (let i = 0; i < 4; i++) turn(9, 1);
   eq("E16+knobs: the page knob pages by one", s.focus.pageIndex, 1);
   eq("E16+knobs: ...and the header counts the module pages, not the one shown",
      [s.layout.screen(t).view.headers[0].index, s.layout.screen(t).view.headers[0].count], [1, 3]);
-  turn(12, 1);
+  for (let i = 0; i < 8; i++) turn(12, 1);
   run(50);
   eq("E16+knobs: the slot knob enters the next slot at its synth", [s.slot, s.component], [1, "synth"]);
   t += 1000;
@@ -236,9 +237,9 @@ process.exit(fails ? 1 : 0);
 UI=src/shadow/shadow_ui.js
 bad=0
 note() { echo "FAIL: $1"; bad=1; }
-perl -0ne 'exit(!/const e16Surface = createE16Surface\(\{\s*now: \(\) => Date\.now\(\),\s*navigationOf: \(\) => externalSurfaceNav\[1\],/)' "$UI" \
+perl -0ne 'exit(!/const e16Surface = createE16Surface\(\{[\s\S]{0,400}?navigationOf: \(\) => externalSurfaceNav\[1\],/)' "$UI" \
   || note "the E16 is not handed its own Surface Nav"
-perl -0ne 'exit(!/const ec4Surface = createEc4Surface\(\{\s*now: \(\) => Date\.now\(\),\s*navigationOf: \(\) => externalSurfaceNav\[2\],/)' "$UI" \
+perl -0ne 'exit(!/const ec4Surface = createEc4Surface\(\{[\s\S]{0,400}?navigationOf: \(\) => externalSurfaceNav\[2\],/)' "$UI" \
   || note "the EC4 is not handed its own Surface Nav"
 grep -q "config.external_surface_nav = " "$UI" || note "Surface Nav is not saved"
 grep -q "const nav = config.external_surface_nav;" "$UI" || note "Surface Nav is not restored"

@@ -17,6 +17,8 @@ if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 
 node --input-type=module -e '
 import { createFocus, createBinding, createKnobFeel, createPresence, TURN_IDLE_MS }
     from "./src/shared/surface_core.mjs";
+import { E16_PULSES_PER_DETENT, E16_SELECTOR, MOVE_DETENTS_PER_ROTATION }
+    from "./src/shared/e16_surface.mjs";
 
 let fails = 0;
 const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
@@ -113,6 +115,16 @@ const chain = { slots: [
   eq("the Mixer moves through the engine, not a fixed step a detent", moved > 0 && moved < 20, true);
   eq("...in the Mixer own ticks, on the level", turns.every((x) => x[0] === 0 && x[1] >= 1 && x[2] === false), true);
   eq("capture has no travel", one.mixerTurn(mixer, 14, 1, false, t), false);
+}
+
+/* ---- the E16, measured: one slow turn is ~46 ticks, and must be ~one Move turn ---- */
+{
+  const e16 = createKnobFeel({ pulsesPerDetentOf: () => E16_PULSES_PER_DETENT });
+  let d = 0, tt = 0;
+  for (let i = 0; i < 46; i++) { tt += 100; e16.begin(0, tt); d += e16.detents(0, 1); }
+  eq("one slow E16 rotation is about one Move rotation of detents (a full sweep)",
+     Math.abs(d - MOVE_DETENTS_PER_ROTATION) <= 6, true);
+  eq("E16 choices step by angle, not per tick", E16_SELECTOR.choice > 1, true);
 }
 
 /* ---- presence ---- */
