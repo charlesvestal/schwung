@@ -62,7 +62,26 @@ The EC4 is Schwung's only while it reports that setup. Any other setup is the
 user's own: nothing is written to it, and its encoders are ignored. Switching
 back rewrites the screen.
 
-## Layout
+## Surface Nav: two layouts on every surface
+
+Global Settings → System → **Surface Nav** picks how the knobs navigate, per
+device (the row edits whichever device Ext Surface names):
+
+- **Knobs** (the EC4's default, described below): eight parameters and eight
+  labelled navigation knobs. Nothing is hidden behind a gesture.
+- **Map** (the E16's default): all sixteen knobs are parameters, two pages at
+  once. Hold Shift for the slot map (drawn here as sixteen names, the current
+  slot marked `>`), press a module under it to jump; Shift + turn pages the
+  pair, one step per 30° on the EC4. A page change shows the page list on
+  the overlay, since the names cannot carry the two page titles.
+
+A Shift **tap** is the Mixer in both. The layouts live in
+`src/shared/layout_map.mjs` and `layout_knobs.mjs` and never draw: each
+describes a screen (`layout_common.mjs`), which the EC4 shows as names plus
+the overlay and the E16 draws in pixels. Each device's choice is saved in
+`shadow_config.json` (`external_surface_nav`).
+
+## Layout (Knobs)
 
 ```
  MODULE                                      MIXER

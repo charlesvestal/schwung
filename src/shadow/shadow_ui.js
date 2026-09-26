@@ -10513,6 +10513,25 @@ function e16ChainShape() {
 let externalSurfaceFollow = 0;
 
 /*
+ * SURFACE NAV (Global Settings -> System -> Surface Nav), PER DEVICE: how
+ * that device's knobs navigate -- "map" or "knobs" (layout_common.mjs).
+ * Keyed by Ext Surface value; each device starts on the layout it was
+ * designed around. The surfaces read it every tick through navigationOf,
+ * so a change needs no restart.
+ */
+const SURFACE_NAVS = ["map", "knobs"];
+const externalSurfaceNav = { 1: "map", 2: "knobs" };
+function surfaceNavIndex() {
+    const nav = externalSurfaceNav[externalSurfaceMode] || externalSurfaceNav[1];
+    return Math.max(0, SURFACE_NAVS.indexOf(nav));
+}
+function setSurfaceNav(v) {
+    const nav = SURFACE_NAVS[parseInt(v, 10) || 0] || "map";
+    /* With Ext Surface off there is no device to set it for. */
+    if (externalSurfaceNav[externalSurfaceMode] !== undefined) externalSurfaceNav[externalSurfaceMode] = nav;
+}
+
+/*
  * THE SURFACE. Lifecycle, navigator, view, display pacing and its own page
  * controller, assembled in src/shared/e16_surface.mjs so the whole path is
  * runnable in tests/host -- this file cannot be imported under node, and a
@@ -10772,6 +10791,7 @@ const surfaceMixerIo = {
 
 const e16Surface = createE16Surface({
     now: () => Date.now(),
+    navigationOf: () => externalSurfaceNav[1],
     /* The shim's current pace, so the surface's per-tick packet budget
      * follows it (0 = no file = the shim default). */
     paceOf: () => e16PaceValue,
@@ -10876,6 +10896,7 @@ const ec4KnobScale = armedFileNumber("ec4_knob_scale", parseFloat,
 
 const ec4Surface = createEc4Surface({
     now: () => Date.now(),
+    navigationOf: () => externalSurfaceNav[2],
     send: e16Send,
     chainOf: e16ChainShape,
     followFocusOf: e16FollowFocus,
@@ -11047,6 +11068,7 @@ function saveExternalSurfaceConfig() {
         } catch (e) {}
         config.external_surface = externalSurfaceMode;
         config.external_surface_follow = externalSurfaceFollow;
+        config.external_surface_nav = { e16: externalSurfaceNav[1], ec4: externalSurfaceNav[2] };
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {}
 }
@@ -11061,6 +11083,11 @@ function loadExternalSurfaceConfig() {
         }
         if (config.external_surface_follow !== undefined) {
             setExternalSurfaceFollow(config.external_surface_follow);
+        }
+        const nav = config.external_surface_nav;
+        if (nav && typeof nav === "object") {
+            if (SURFACE_NAVS.includes(nav.e16)) externalSurfaceNav[1] = nav.e16;
+            if (SURFACE_NAVS.includes(nav.ec4)) externalSurfaceNav[2] = nav.ec4;
         }
     } catch (e) {}
 }
@@ -14954,6 +14981,8 @@ function globalGridIoFor() {
                 return String(externalSurfaceMode);
             case "follow_focus":
                 return String(externalSurfaceFollow);
+            case "surface_nav":
+                return String(surfaceNavIndex());
 
             /* The two doors have no state to report. They are answered anyway,
              * with option 0: an UNSERVED key makes the row announce "not read
@@ -15105,6 +15134,11 @@ function globalGridIoFor() {
                  * block in shadow_config.json, so there is one writer for
                  * both and no way for them to be persisted apart. */
                 setExternalSurfaceFollow(value);
+                saveExternalSurfaceConfig();
+                return;
+            case "surface_nav":
+                /* The same block again, per device. */
+                setSurfaceNav(value);
                 saveExternalSurfaceConfig();
                 return;
 
