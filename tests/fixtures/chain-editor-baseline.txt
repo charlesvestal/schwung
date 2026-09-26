@@ -208,8 +208,8 @@ send/a/len2/sel-settings-unread ee75c4d1f16e694d90f4cad889b581456989b38b
 send/a/len5/sel-fx3 5bb21da650a93e46564fe106317e9575901bca58
 send/b/len2/sel-fx1 8671d317947e6f7f07510b24328b34fe3fca331d
 send/b/len2/sel-settings 23d13b687d448ce3bbfe4df594bc58126fd423ca
-settings/master/actions 05bb4a938ed639d6c6f04ad71129f335524a9d9e
-settings/master/actions-nopreset 045aa30be0bc9e14f8e9b3ba1bcd06578463bee6
+settings/master/actions 315809a3944e801c5efed76bef475453f9c138c4
+settings/master/actions-nopreset a573770b5d0287367a2867ce7e4ad9e431535378
 settings/master/lfo1-free 1ca97f188d7cb3d0bb2fc2007ea2bdfd258752b3
 settings/master/lfo2-sync a75c29f62e026915f937c4c52c4f87146c993f7c
 settings/master/main-all 6cc38ca3d20a1723c17f6b97baac6dbd35f6e108
