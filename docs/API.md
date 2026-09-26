@@ -239,6 +239,11 @@ host_sampler_resume()         // Resume paused recording
 host_sampler_is_paused()      // -> bool
 host_sampler_get_samples_written() // -> int
 host_pad_block(bool)          // Suppress pad notes (68-99) from reaching Move
+host_cc_claim_set([[ch, cc], ...]) // The CC map's bound CCs (cable 2): the shim hands
+                              //   each to the UI and swallows it from Move. Restated
+                              //   whenever the set's bindings change (cc_claim.h)
+host_cc_learn(bool)           // While on, the shim hands EVERY external CC to the UI
+                              //   (not swallowed) so CC learn can see it
 host_preview_play(path)       // Play a WAV preview through Move's speakers
 host_preview_stop()
 host_send_screenreader(text)  // Same as host_announce_screenreader
