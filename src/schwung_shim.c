@@ -889,6 +889,8 @@ static uint8_t track_longpress_fired[4];
  * Once set, that track's long-press is suppressed for the remainder of the press,
  * so adjusting a track's volume never opens the shadow UI. Cleared on press/release. */
 static uint8_t track_vol_touched_during_press[4];
+/* Shift+Vol+Sample took the press, so its release is ours too. */
+static uint8_t cc_learn_gesture_swallow;
 /* Set when a track long-press fires and a synthetic tap has been injected to
  * Move (see the fire site): the user's REAL release for that track is then
  * swallowed, so Move never sees an orphan release for a press it already had
@@ -8814,6 +8816,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /* Shift+Vol+Sample: CC learn mode on/off (the CC map, in the
+                 * shadow UI). Taken BEFORE the sampler, which owns Shift+Sample:
+                 * with the volume knob touched it is this, not the sampler. Both
+                 * edges are swallowed -- the release by the latch below. */
+                if (d1 == CC_RECORD && SHIFT_VOL_ACTIVE() && shadow_ui_enabled && shadow_control &&
+                    ((d2 > 0 && shadow_shift_held && shadow_volume_knob_touched) ||
+                     (d2 == 0 && cc_learn_gesture_swallow))) {
+                    if (d2 > 0) {
+                        shadow_control->ui_flags_ext |=
+                            (uint16_t)(SHADOW_UI_FLAG_CC_LEARN_TOGGLE >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        shadow_block_plain_volume_hide_until_release = 1;
+                    }
+                    cc_learn_gesture_swallow = d2 > 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    continue;
+                }
                 /* Sample/Record button (CC 118) - sampler intercept */
                 if (d1 == CC_RECORD && d2 > 0) {
                     if (shadow_shift_held) {

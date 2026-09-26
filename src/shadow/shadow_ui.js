@@ -372,6 +372,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_TAKE = 0x0100;
 const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
 const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
 const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
+const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -3670,6 +3671,9 @@ function drawSurfaceLayoutEditor() {
         getValue: (r) => r.value || "",
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
+        /* No fixed value column: "Cutoff S1" was cut to "Cu..." at x=92 with
+         * the row half empty. The label floor keeps the label legible. */
+        valueX: 0,
     });
     const r = rows[ed.cursor];
     const verb = !r ? "" : (r.kind === "page" || r.kind === "binding") ? "Click: open"
@@ -26035,6 +26039,13 @@ globalThis.tick = function() {
             }
         }
         snapshotServiceFlags(flags);
+        /* Shift+Vol+Sample: CC learn mode on/off, from anywhere. */
+        if (flags & SHADOW_UI_FLAG_CC_LEARN_TOGGLE) {
+            if (typeof shadow_clear_ui_flags === "function") shadow_clear_ui_flags(SHADOW_UI_FLAG_CC_LEARN_TOGGLE);
+            if (ccMap.learning) ccMap.cancelLearn(); else ccMap.beginLearn();
+            showOverlay("CC Learn", ccMap.learning ? "on" : "off", 60);
+            needsRedraw = true;
+        }
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
