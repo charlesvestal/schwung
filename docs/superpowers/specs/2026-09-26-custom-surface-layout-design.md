@@ -116,6 +116,30 @@ Consequences, all by construction:
   binding on one cutoff). That is allowed and coherent: both write one value,
   and the surface's display follows writes it did not make (`noteParamWrite`).
 
+## CC learn is a MODE, parameter first
+
+The first build armed ONE binding and took its two halves (a CC and a
+parameter) in either order, from a row in Master FX Settings. It could not be
+used on hardware: you had to leave the screen to find the parameter, the
+order was guesswork, and every binding meant going back to re-arm. It is now
+what a DAW does:
+
+- **CC Map → Learn** turns learn MODE on; it outlives the screen.
+- Move a parameter on Move: it becomes the one being learned. The broker is
+  one-shot, so the CC map re-arms it after every capture (quietly).
+- Move a controller CC: bound. The binding message moves nothing (an
+  absolute knob would jump); the next one drives, so you hear it while still
+  in learn.
+- **One CC per parameter**: a second CC brushed while learning MOVES the
+  binding, it never adds a duplicate.
+- The **footer of whatever screen is up** says where it is — `LEARN move a
+  param`, `LEARN Cutoff > CC?`, `LEARN Cutoff: CC18` — painted after the view
+  switch. The footer DROPS a hint that does not fit, so the host measures and
+  the NAME gives way, never the CC. A change is noticed in the TICK: a
+  controller CC is not input on the screen, and the draw path does not run
+  without a redraw.
+- It ends by **Stop Learn**, or after two minutes with nothing moved.
+
 ## Parts of THIS feature
 
 1. **`src/shared/control_map.mjs`** — the document: parse (tolerant: unknown

@@ -43,22 +43,21 @@ eq("Back drops the question, not the screen", [ed.back(), ed.level], [false, "pa
 ed.click(); ed.click();
 eq("the second click deletes, back to the list", [doc.surface.pages.map((p) => p.name), ed.level], [["Bass", "Page 3"], "pages"]);
 eq("Back at the top leaves", ed.back(), true);
-/* ---- the CC Map editor: Back must NOT cancel a learn -- you leave the
- * screen to find the parameter (hardware, 2026-09-26: learn never worked). */
+/* ---- the CC Map editor: learn is a MODE that outlives the screen -- you
+ * leave it to find the parameters (hardware, 2026-09-26). */
 {
-  let learning = null, cancelled = 0;
-  const ccMap = { get learning() { return learning; }, beginLearn() { learning = { cc: null, target: null }; },
-                  cancelLearn() { learning = null; cancelled++; }, reload() {} };
+  let learning = null, stopped = 0;
+  const ccMap = { get learning() { return learning; }, beginLearn() { learning = { target: null }; },
+                  cancelLearn() { learning = null; stopped++; }, reload() {} };
   const cdoc = { cc: [] };
   const ce = createCCEditor({ controls: () => cdoc, edit: () => cdoc, ccMap });
-  eq("the list ends with Learn New", ce.rows().map((r) => r.label), ["Learn New"]);
+  eq("the list ends with Learn", ce.rows().map((r) => r.label), ["Learn"]);
   ce.click();
-  eq("clicking starts learn, and the row says what it waits for, SHORT",
-     [ce.rows()[0].label, ce.rows()[0].value], ["Cancel Learn", "knob+param?"]);
+  eq("clicking turns learn mode on", [ce.rows()[0].label, ce.rows()[0].value], ["Stop Learn", "on"]);
   eq("Back leaves the screen...", ce.back(), true);
-  eq("...and learn keeps running", [!!learning, cancelled], [true, 0]);
+  eq("...and learn keeps running", [!!learning, stopped], [true, 0]);
   ce.click();
-  eq("Cancel Learn cancels", [learning, cancelled], [null, 1]);
+  eq("Stop Learn stops", [learning, stopped], [null, 1]);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");

@@ -26,6 +26,13 @@ grep -q 'host_cc_claim_set(ccMap.claimPairs())' "$ui" \
   || fail "the shim claim table is not restated from the bindings"
 perl -0ne 'exit(!/function externalSurfaceTick\(\) \{[\s\S]*?reconcileCcClaim_\(\);[\s\S]*?ccMap\.tick\(\);/)' "$ui" \
   || fail "the per-tick reconcile does not restate the claim table and flush the CC map"
+# Learn mode's footer: noticed in the TICK (the draw path does not run without
+# a redraw, and a controller CC is no input on the screen), painted after the
+# view switch so it reaches every view.
+perl -0ne 'exit(!/ccMap\.tick\(\);\s*const learnText = ccMap\.learnFooter\([\s\S]{0,200}?needsRedraw = true;/)' "$ui" \
+  || fail "a learn footer change does not ask for a redraw from the tick"
+perl -0ne 'exit(!/switch \(view\)[\s\S]*drawSnapshotPendingMark\(\);\s*drawCcLearnFooter\(\);/)' "$ui" \
+  || fail "the learn footer is not painted after the view switch"
 grep -q '"host_cc_claim_set", JS_NewCFunction' src/shadow/shadow_ui.c || fail "host_cc_claim_set is not bound"
 grep -q '"host_cc_learn", JS_NewCFunction' src/shadow/shadow_ui.c || fail "host_cc_learn is not bound"
 echo "PASS: cc claim table, the shim walk consults it after the surface claim, and the UI feeds and restates it"
