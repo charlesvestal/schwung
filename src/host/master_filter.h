@@ -23,6 +23,12 @@
 #include <math.h>
 #include <stdint.h>
 
+/* Strict C (CI's -std=c11 on glibc) does not define M_PI; macOS does, which
+ * is why this built locally and failed the branch's first CI run. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define MASTER_FILTER_DEADBAND  0.02f
 #define MASTER_FILTER_RAMP_MS   10.0f
 #define MASTER_FILTER_Q         0.9f
