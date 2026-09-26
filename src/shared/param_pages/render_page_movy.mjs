@@ -2262,6 +2262,22 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
     }
 }
 
+/*
+ * THE AUTOMATION MARK: a solid 2x2, schwung-movy's own (renderer/label.ts),
+ * ported. "A sequencer lane moves this", as against the tilde's "a modulation
+ * source moves this" -- both are motion, and the controller treats them alike
+ * for the pointer and the riding dot, but a player reads them as two different
+ * things to go and change, so they wear two different marks. Mirrors the tilde
+ * across the label: tilde left of the text, this at its top-right.
+ *
+ * Exported so a host can tell a library that draws it from one that does not
+ * (a missing export is `undefined` on the namespace object, not a link error),
+ * and decide whether to keep folding its lanes into `isModulated`.
+ */
+export function drawAutomatedMark(ctx, x, y, on) {
+    ctx.fillRect(x, y, 2, 2, on);
+}
+
 /* schwung-movy renderer/label.ts drawWaveMark (the modulation tilde), ported. */
 function drawWaveMark(ctx, x, y, on) {
     ctx.fillRect(x, y, 1, 1, on);
@@ -2318,7 +2334,7 @@ function drawWaveMark(ctx, x, y, on) {
  * shortening it as well would put two changes in one option, and `LBL_H` is odd
  * precisely so a 5-row face gets one clear row above and below.
  */
-export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated, automated = false) {
     const cellX = cellLeft(g, col);
     let text = String((showValue ? displayValue : label) ?? "");
     /* Trim MEASURED, never by character count — the face is proportional (I is
@@ -2365,6 +2381,17 @@ export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue,
         const onStrip = strip && wx >= tx - 1;
         drawWaveMark(ctx, wx, lblY + 1, onStrip ? 0 : 1);
     }
+    if (automated) {
+        /* One clear column past whatever it follows -- the text at rest, the
+         * strip's shoulder when inverted (touching the strip it reads as a
+         * notch in it, not a mark) -- clamped inside the cell. Polarity follows
+         * what it lands on, by the tilde's rule above: past the strip it is on
+         * ground, and only a run long enough to push the clamp back over the
+         * strip puts it on black. */
+        const ax = Math.min(tx + tw + (strip ? 2 : 1), cellX + g.cellW - 2);
+        const onStrip = strip && ax <= tx + tw;
+        drawAutomatedMark(ctx, ax, lblY, onStrip ? 0 : 1);
+    }
 }
 
 /* --------------------------------------------------------------- one row */
@@ -2403,7 +2430,7 @@ function resolveGeom(geom) {
  */
 export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     const g = resolveGeom(geom);
-    const { page, metaIndex, values, touched, modulated, viz, modValues, decorations } = o;
+    const { page, metaIndex, values, touched, modulated, automated, viz, modValues, decorations } = o;
     /*
      * EVERY held knob inverts, not just the one the header follows. A single
      * index could not express two fingers: touching a second knob overwrote it
@@ -2801,7 +2828,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          */
         const showAsLock = isTouched || locked;
         drawLabelCell(ctx, g, col, lblY, label, display, showAsLock, showAsLock,
-                      modulated ? !!modulated(key) : false);
+                      modulated ? !!modulated(key) : false,
+                      automated ? !!automated(key) : false);
     }
 }
 
@@ -2994,6 +3022,7 @@ export function drawFooter(ctx, hints, o = {}) {
  * @param {number} [o.touched]   physical knob 0-7 currently held, or -1
  * @param {Array}  [o.pageGroups] one bank id per page, for the bank bar
  * @param {Function} [o.modulated] (key) => boolean
+ * @param {Function} [o.automated] (key) => boolean — a sequencer lane drives it (2x2 mark)
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */
