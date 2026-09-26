@@ -336,11 +336,9 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        same tree at :7700/files. Analytics is the whole of the System grid
        page now. */
     analytics_enabled: "Analytics",
-    /* "Ext Surface", abbreviated because the honest "External Surface" needs
-       93px in a row with 85px beside its widest value -- the width pin below
-       is what caught it, the same 8px that made "Stay in Schwung" into "Keep
-       Schwung". A plain enum row, so the section still plans ONE page. */
-    external_surface: "Ext Surface",
+    /* "Surface": the row is on the Surfaces page, so "Ext" said nothing, and
+       its widest value "CC Only" needs the 2px the longer name took. */
+    external_surface: "Surface",
     /* "Follow Focus" written out in full, because it FITS: 67px against the
        85px an Off/On row leaves. The row beside it did not, which is why that
        one is abbreviated and this one is not -- measured, not guessed. */

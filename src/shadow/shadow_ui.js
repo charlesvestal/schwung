@@ -10387,7 +10387,7 @@ function loadSaveStems() {
  * Move->Schwung -- outside it Move's own enhancer is in the path.
  */
 /*
- * EXTERNAL CONTROL SURFACE (Global Settings -> Surfaces -> Ext Surface).
+ * EXTERNAL CONTROL SURFACE (Global Settings -> Surfaces -> Surface: CC Only / E16 / EC4).
  *
  * 0 = off, 1 = OXI E16. The lifecycle itself is pure and lives in
  * src/shared/e16_surface.mjs; what is here is the three seams it needs -- a
@@ -10530,7 +10530,8 @@ function surfaceNavIndex() {
 }
 function setSurfaceNav(v) {
     const nav = SURFACE_NAVS[parseInt(v, 10) || 0] || "map";
-    /* With Ext Surface off there is no device to set it for. */
+    /* Under CC Only there is no device to set it for -- and the row is
+     * hidden there (visible_if), so nothing can ask. */
     if (externalSurfaceNav[externalSurfaceMode] !== undefined) externalSurfaceNav[externalSurfaceMode] = nav;
 }
 
@@ -15247,6 +15248,8 @@ function globalGridIoFor() {
         runAction: (action) => runGlobalActionFromGrid(action),
     };
 
+    /* visible_if reads the grid's own value first (a debounced turn). */
+    io.cachedValue = (key) => paramPagesCachedValue(key);
     return createGlobalGridIo(io);
 }
 

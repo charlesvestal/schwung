@@ -10,7 +10,8 @@ the two from colliding; the CC map's own UI is a later document.
 ## What the user gets
 
 - **Global Settings → Surfaces → Surface Nav** gains **Custom** (per device,
-  like the other two).
+  like the other two). Surface Nav and Follow Focus are shown only when
+  Surface is E16 or EC4; under **CC Only** there is no screen to navigate.
 - A custom layout is **up to 16 pages of 16 knobs**. Each knob is assigned to
   one parameter anywhere in the set — a slot module, a Master FX module, a
   slot or master setting. Its page shows the knob's label and value; the ring
@@ -95,7 +96,8 @@ ONE owner, decided in this order:
 
 Consequences, all by construction:
 
-- **The E16 as a plain controller.** With Ext Surface off, nothing claims
+- **The E16 as a plain controller.** With Surface = **CC Only** (the setting's
+  first option, formerly "Off"), nothing claims
   CC 1–16, so an E16 in its own (non-remote) mode is just a controller and
   the CC map can bind its knobs. Switching the surface on takes them back,
   and the CC map's bindings for them are silent (not deleted) while it does.
