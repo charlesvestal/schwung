@@ -33,6 +33,14 @@ perl -0ne 'exit(!/ccMap\.tick\(\);\s*const learnText = ccMap\.learnFooter\([\s\S
   || fail "a learn footer change does not ask for a redraw from the tick"
 perl -0ne 'exit(!/switch \(view\)[\s\S]*drawSnapshotPendingMark\(\);\s*drawCcLearnFooter\(\);/)' "$ui" \
   || fail "the learn footer is not painted after the view switch"
+# Shift+Vol+Sample toggles learn from anywhere. It is taken BEFORE the
+# sampler (which owns Shift+Sample), swallows both edges, and JS acts on it.
+perl -0ne 'exit(!/SHADOW_UI_FLAG_CC_LEARN_TOGGLE >> SHADOW_UI_FLAG_EXT_SHIFT[\s\S]{0,300}?cc_learn_gesture_swallow = d2 > 0;\s*midi_in_swallow\(shadow \+ MIDI_IN_OFFSET, src, j\);[\s\S]{0,200}?sampler intercept/)' "$shim" \
+  || fail "Shift+Vol+Sample is not taken before the sampler, with both edges swallowed"
+grep -q 'define SHADOW_UI_FLAG_CC_LEARN_TOGGLE   0x1000' src/host/shadow_constants.h || fail "the learn toggle flag is not defined"
+perl -0ne 'exit(!/flags & SHADOW_UI_FLAG_CC_LEARN_TOGGLE[\s\S]{0,300}?ccMap\.beginLearn\(\)/)' "$ui" \
+  || fail "the shadow UI does not act on the learn toggle"
+grep -q 'const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;' "$ui" || fail "JS and C disagree on the learn toggle flag"
 grep -q '"host_cc_claim_set", JS_NewCFunction' src/shadow/shadow_ui.c || fail "host_cc_claim_set is not bound"
 grep -q '"host_cc_learn", JS_NewCFunction' src/shadow/shadow_ui.c || fail "host_cc_learn is not bound"
 echo "PASS: cc claim table, the shim walk consults it after the surface claim, and the UI feeds and restates it"

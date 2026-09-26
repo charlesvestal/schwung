@@ -139,6 +139,10 @@ what a DAW does:
   controller CC is not input on the screen, and the draw path does not run
   without a redraw.
 - It ends by **Stop Learn**, or after two minutes with nothing moved.
+- **Shift+Vol+Sample** toggles it from anywhere (`SHADOW_UI_FLAG_CC_LEARN_TOGGLE`).
+  Shift+Sample is the sampler's, and the sampler only arms with the Schwung
+  screen OFF, so the volume touch is what separates the two; the shim takes
+  it before the sampler and swallows both edges.
 
 ## Parts of THIS feature
 

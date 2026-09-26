@@ -227,6 +227,7 @@
 #define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot NOW */
 #define SHADOW_UI_FLAG_SNAPSHOT_QUEUED 0x0400  /* recall armed for the next boundary */
 #define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
+#define SHADOW_UI_FLAG_CC_LEARN_TOGGLE   0x1000 /* Shift+Vol+Sample: CC learn on/off */
 
 /* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
  * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */
