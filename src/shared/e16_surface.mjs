@@ -983,6 +983,23 @@ export const E16_PULSES_PER_ROTATION = 46;
 export const MOVE_DETENTS_PER_ROTATION = 210;
 export const E16_PULSES_PER_DETENT = E16_PULSES_PER_ROTATION / MOVE_DETENTS_PER_ROTATION;
 
+/*
+ * ...AND THE E16'S OWN ACCELERATION, COMPRESSED. A fast turn sends 8 ticks a
+ * message; at 4.6 detents a tick that was ~37 detents, ~18% of a range, per
+ * message -- "too easy to accidentally go to max with any reasonably fast
+ * turn" (hardware, 2026-09-26). Its x2 / x4 / x8 count as x1.5 / x2 / x2.5:
+ * a fast turn still covers more ground than a slow one, ~2.5 times, not 8.
+ * `accel` scales the compression (0 = ignore the E16's acceleration, 1 = the
+ * curve below; e16_knob_accel on the device).
+ */
+export const E16_ACCEL = 0.5;
+export function e16Curve(ticks, accel) {
+    const a = accel === undefined ? E16_ACCEL : accel;
+    const m = Math.abs(ticks);
+    if (m <= 1) return ticks;
+    return Math.sign(ticks) * (1 + Math.log2(m) * a);
+}
+
 /* Choices and selectors step by ANGLE: one per ~30 degrees (4 ticks), a
  * slot per ~60 -- not per tick, or the E16's x8 acceleration flies past the
  * option you wanted. */
@@ -1133,7 +1150,9 @@ export function createSurface(io) {
     const { metaOf } = binding;
     /* The E16's rotation is taken as Move's (one pulse, one detent); what the
      * feel adds here is the Mixer through the knob engine. */
-    const feel = createKnobFeel({ pulsesPerDetentOf: o.pulsesPerDetentOf || (() => E16_PULSES_PER_DETENT) });
+    const accelOf = o.accelOf || (() => E16_ACCEL);
+    const feel = createKnobFeel({ pulsesPerDetentOf: o.pulsesPerDetentOf || (() => E16_PULSES_PER_DETENT),
+                                  pulseCurve: (p) => e16Curve(p, accelOf()) });
 
     /* Rebuilt on demand rather than cached. buildView is pure and reads only
      * the two lookups above, so it costs no IPC -- and a cached view is a
