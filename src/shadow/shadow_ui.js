@@ -11043,6 +11043,15 @@ function e16FollowFocus() {
     if (!externalSurfaceFollow) return null;
     const f = currentEditFocus();
     if (typeof f.slot !== "number" || f.slot < 0 || !f.component) return null;
+    /*
+     * ONLY A MODULE IN A CHAIN IS SOMETHING TO FOLLOW. Global Settings, Slot
+     * Settings, Master FX Settings and the bus Send Mixer are knob grids too,
+     * pointed at slot 0 (or a slot) with a SYNTHESISED component -- followed,
+     * the surface loaded a "module" with no pages and went blank in either
+     * layout, which is exactly where you stand to change Surface Nav
+     * (hardware, 2026-09-26). Null keeps the focus where it was.
+     */
+    if (!/^(synth|fx\d+|midi_fx\d+)$/.test(String(f.component))) return null;
     return f;
 }
 
@@ -19871,6 +19880,18 @@ function reconcileExternalSurface() {
  */
 function currentEditFocus() {
     const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
+    /*
+     * A MODULE THAT DRAWS ITS OWN SCREEN (ui_chain.js -> COMPONENT_EDIT) is
+     * edited from selectedSlot / editingComponentKey, and neither of the two
+     * pairs below is set on the way in. Answering from them anyway left the
+     * surface's Follow Focus on the PREVIOUS module: it followed Hank (the
+     * grid) and then stayed there when Teng (its own UI) was opened
+     * (hardware, 2026-09-26). The key is a component KEY ("midiFx"), so it
+     * goes through chainComponentId to the chain id the others speak.
+     */
+    if (view === VIEWS.COMPONENT_EDIT && editingComponentKey) {
+        return { slot: selectedSlot, component: chainComponentId(editingComponentKey) };
+    }
     return {
         slot: onGrid ? paramPagesSlot() : hierEditorSlot,
         component: onGrid ? paramPagesComponent() : hierEditorComponent,
