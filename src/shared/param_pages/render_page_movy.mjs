@@ -29,7 +29,7 @@
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
 } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER, graphicValues } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
@@ -2436,9 +2436,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
      * copying that at 55fps is pure garbage for the overwhelmingly common case
      * of nothing modulated at all. `hasMod` makes the empty case free.
      */
-    let hasMod = false;
-    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
-    const liveValues = hasMod ? Object.assign({}, values, modValues) : values;
+    const liveValues = graphicValues(values, modValues, page, decorations);
+    const hasMod = liveValues !== values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
