@@ -513,6 +513,10 @@ const ENGINE_META = { type: KNOB_TYPE_FLOAT, min: 0, max: 1 };
 export function createKnobFeel(opts) {
     const o = opts || {};
     const pulsesPerDetentOf = o.pulsesPerDetentOf || (() => 1);
+    /* A device that accelerates by itself (the E16 sends 2 / 4 / 8 ticks a
+     * message when turned fast) can have that compressed before anything else
+     * sees it -- see e16Curve. Identity by default. */
+    const curve = o.pulseCurve || ((p) => p);
     const encoders = o.encoders || 16;
     const idleMs = o.idleMs === undefined ? TURN_IDLE_MS : o.idleMs;
 
@@ -554,12 +558,13 @@ export function createKnobFeel(opts) {
         },
         /** Device pulses -> Move detents. */
         detents(enc, pulses) {
+            const p = curve(pulses);
             const per = Number(pulsesPerDetentOf());
-            if (!(per > 0) || per === 1) return pulses;
-            return accumulate(pulseAcc, enc, pulses, per);
+            if (!(per > 0) || per === 1) return p === pulses ? pulses : accumulate(pulseAcc, enc, p, 1);
+            return accumulate(pulseAcc, enc, p, per);
         },
         /** Device pulses -> choices, one per `per` pulses of rotation. */
-        steps(enc, pulses, per) { return accumulate(stepAcc, enc, pulses, per); },
+        steps(enc, pulses, per) { return accumulate(stepAcc, enc, curve(pulses), per); },
         /**
          * Move detents on a Mixer control -> the Mixer's own turn. Returns
          * mixer.turn()'s answer, or false if nothing moved.
