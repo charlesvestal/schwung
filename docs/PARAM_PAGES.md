@@ -1042,7 +1042,7 @@ the enum square. The cell draws the reading the page already has — the host's
 `formatValue` text, else the option (`short_options` first), else
 `bigNumberText` — instead of recomputing it. The digit count gives way to a
 MEASURED width asked of the widest text the cell can ever show and of the
-glyphs the face has (`0-9 + - : % / .`), so a declaration that cannot fit keeps
+glyphs the face has (`0-9 + - : % / .` and the note names `A-G #`), so a declaration that cannot fit keeps
 the widget it would otherwise have had rather than smearing into its
 neighbour, and a cell cannot change widget as it is turned. A host reading that
 fails the same test at draw time falls back to the option or the number.

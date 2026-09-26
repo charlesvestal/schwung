@@ -3549,7 +3549,7 @@ Optional and inert when absent.
 - It works on enums too, and draws the option (`short_options` first).
 - The text a host supplies through `formatValue` wins when it fits, so `54%`
   can carry its unit.
-- **It must fit.** The face spells `0-9 + - : % / .`, and the widest thing the
+- **It must fit.** The face spells `0-9 + - : % / .` and the note names `A-G #`, and the widest thing the
   cell can ever show must fit in 30px. If it does not, the cell keeps the
   widget it would have had — an option list with a word in it stays an enum
   square — so a declaration can never smear into the next cell.

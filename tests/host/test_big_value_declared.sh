@@ -80,9 +80,36 @@ const wideNum = { ...swing, min: -1000, max: 1000 };
 if (widgetKindFor(wideNum) === WIDGET_BIGNUM) bad("a declared range too wide for the cell was still drawn big");
 
 /* Anything a declared value typically emits exists in the face. */
-for (const t of ["2:4", "54%", "1/4", "0.5"]) {
+for (const t of ["2:4", "54%", "1/4", "0.5", "C#", "G#", "B"]) {
     const miss = [...missingGlyphs(t)];
     if (miss.length) bad("the face cannot spell " + t + ", missing: " + miss.join(""));
+}
+
+/* THE CASE THIS WAS BUILT FOR: a host-owned sequencer page (movy) draws four
+ * cells big today in its own widget -- a trig condition, a clip length, a swing
+ * percentage and a root note. Every value of every one must reach WIDGET_BIGNUM
+ * and draw in full, or that host keeps its own widget and this bought nothing. */
+{
+    const conds = [];
+    for (let b = 1; b <= 8; b++) for (let a = 1; a <= b; a++) conds.push(a + ":" + b);
+    const notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const host = [
+        [{ type: "enum", kind: "enum", key: "cond", options: conds, display: "big" },
+         conds.map((c, i) => [String(i), null, c])],
+        [{ type: "int", kind: "number", key: "length", min: 1, max: 256, step: 1, display: "big" },
+         Array.from({ length: 256 }, (_, i) => [String(i + 1), null, String(i + 1)])],
+        [{ type: "int", kind: "number", key: "swing", min: 50, max: 80, step: 1, display: "big" },
+         Array.from({ length: 31 }, (_, i) => [String(50 + i), (50 + i) + "%", (50 + i) + "%"])],
+        [{ type: "enum", kind: "enum", key: "root", options: notes, display: "big" },
+         notes.map((n, i) => [String(i), null, n])],
+    ];
+    for (const [m, vals] of host) {
+        if (widgetKindFor(m) !== WIDGET_BIGNUM) bad(m.key + " did not reach the big cell");
+        for (const [raw, cellText, want] of vals) {
+            const got = bigValueText(m, raw, cellText);
+            if (got !== want) { bad(m.key + " drew " + got + " for " + want); break; }
+        }
+    }
 }
 
 /* AND IT IS DRAWN: the widget draws the option, not the index. */
