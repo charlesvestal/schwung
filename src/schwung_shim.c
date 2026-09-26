@@ -745,6 +745,23 @@ static volatile int shadow_selected_slot = 0;
 
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
+/* Set by the first Track press Schwung sees. Until then shadow_selected_slot
+ * is a default, not Move's selection, so a plain Mute tap names no slot. */
+static volatile int shadow_selection_known = 0;
+
+/* Buttons that turn Mute into a different gesture if pressed while it is held
+ * (tracks 40-43 are the gesture itself; encoders and jack-detect CCs are not
+ * presses). */
+static inline int mute_follow_is_other_button_cc(uint8_t cc) {
+    switch (cc) {
+    case 3: case 49: case 50: case 51: case 52: case 54: case 55: case 56:
+    case 58: case 60: case 62: case 63: case 85: case 86: case 87:
+    case 118: case 119:
+        return 1;
+    default:
+        return 0;
+    }
+}
 
 /* Set detection globals now in shadow_set_pages.c (extern via shadow_set_pages.h):
  * sampler_set_tempo, sampler_current_set_name, sampler_current_set_uuid,
@@ -8805,6 +8822,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
+            /* Anything else pressed while Mute is down makes it some other
+             * gesture — Mute+pad is a drum-CELL mute whose announcement looks
+             * exactly like a track's — so nothing Move says next belongs to a
+             * slot. Knob touches (notes 0-9) and encoder turns do not count. */
+            if (shadow_mute_held && d2 > 0 &&
+                ((cin == 0x09 && type == 0x90 && d1 >= 10) ||
+                 (cin == 0x0B && type == 0xB0 && mute_follow_is_other_button_cc(d1)))) {
+                mute_follow_on_other_press(&shadow_mute_follow);
+            }
+
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
                 /* Line-out / headphone jack detect: runs unconditionally, independent of
@@ -8880,8 +8907,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log(msg);
                         }
 
-                        /* Shift + Mute + Track = toggle solo; Mute + Track = toggle mute */
+                        shadow_selection_known = 1;
+
+                        /* Shift + Mute + Track = toggle solo; Mute + Track = mute.
+                         *
+                         * The toggle is only a GUESS at what Move just did to
+                         * its own track, and it is wrong whenever the two have
+                         * drifted apart (a plain Mute tap mutes only Move). So
+                         * the gesture also names this slot as the owner of
+                         * Move's "<name> muted/unmuted" reply, and the D-Bus
+                         * handler sets the slot to what Move reports. The
+                         * toggle stays as the fallback for a reply that never
+                         * comes. See src/host/mute_follow.h. */
                         if (shadow_mute_held) {
+                            mute_follow_on_track_press(&shadow_mute_follow, new_slot,
+                                                       SHADOW_CHAIN_INSTANCES);
                             if (shadow_shift_held) {
                                 shadow_toggle_solo(new_slot);
                             } else {
@@ -9018,9 +9058,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
-                /* Mute button (CC 88): track held state */
+                /* Mute button (CC 88): track held state, and open the window
+                 * in which Move's mute announcement is attributed to a slot. */
                 if (d1 == CC_MUTE) {
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
+                    if (d2 > 0) {
+                        mute_follow_on_mute_press(&shadow_mute_follow, shadow_selected_slot,
+                                                  shadow_selection_known,
+                                                  SHADOW_CHAIN_INSTANCES);
+                    } else {
+                        struct timespec mts;
+                        clock_gettime(CLOCK_MONOTONIC, &mts);
+                        mute_follow_on_mute_release(&shadow_mute_follow,
+                            (uint64_t)mts.tv_sec * 1000u + (uint64_t)(mts.tv_nsec / 1000000));
+                    }
                 }
 
 

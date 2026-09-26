@@ -57,6 +57,11 @@ extern volatile int in_set_overview;
  * persisted — Move does not persist it either, so 0 at boot is correct. */
 extern volatile int shadow_metronome_on;
 
+/* Mute-follow attribution (mute_follow.h): written by the shim's Mute/Track
+ * scan, read by the D-Bus handler to route Move's "<name> muted/unmuted". */
+#include "mute_follow.h"
+extern mute_follow_t shadow_mute_follow;
+
 
 /* Priority announcement blocking (shared with TTS subsystem) */
 extern bool tts_priority_announcement_active;

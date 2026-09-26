@@ -74,6 +74,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_forward_channel \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
+	$(BUILD_DIR)/test_mute_follow \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_resample_bridge_mode \
 	$(BUILD_DIR)/test_sampler_stem_path \
@@ -195,6 +196,9 @@ $(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metrono
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/metronome_announce.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_mute_follow: test_mute_follow.c ../../src/host/mute_follow.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_resample_bridge_mode: test_resample_bridge_mode.c ../../src/host/resample_bridge_mode.h | $(BUILD_DIR)

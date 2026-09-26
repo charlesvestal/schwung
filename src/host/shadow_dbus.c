@@ -33,6 +33,7 @@
 #include "shadow_dbus.h"
 #include "metronome_announce.h"
 #include "editor_bar_announce.h"
+#include "mute_follow.h"
 
 /* ============================================================================
  * Internal state
@@ -80,6 +81,10 @@ volatile int shadow_metronome_on = 0;
  */
 volatile int shadow_editor_bar = 0;
 volatile unsigned shadow_editor_bar_seq = 0;
+
+/* Which slot Move's next "<name> muted"/"unmuted" belongs to. Fed by the
+ * shim's Mute / Track scan on the SPI callback, read here. See mute_follow.h. */
+mute_follow_t shadow_mute_follow = { 0, -1, 0 };
 
 bool tts_priority_announcement_active = false;
 uint64_t tts_priority_announcement_time_ms = 0;
@@ -309,6 +314,34 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
+    /*
+     * Move's track mute, followed onto the slot the GESTURE named. The text
+     * gives only the state; the track comes from mute_follow_target(), which
+     * is -1 unless Mute was just pressed with a track (or alone) — never for
+     * Mute+pad, whose drum-cell announcement has the same shape. Before the
+     * priority-announcement block below, which would otherwise drop Move's
+     * answer whenever Schwung happened to be speaking.
+     */
+    {
+        mute_announce_t ma = mute_announce_classify(text);
+        if (ma != MUTE_ANNOUNCE_NONE && host.apply_mute) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+            int slot = mute_follow_target(&shadow_mute_follow, now_ms);
+            if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
+                int want = (ma == MUTE_ANNOUNCE_MUTED);
+                if (host.chain_slots[slot].muted != want) {
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "Mute follow: Move says %s -> slot %d",
+                             want ? "muted" : "unmuted", slot);
+                    host.log(msg);
+                }
+                host.apply_mute(slot, want);
+            }
+        }
+    }
+
     /* Set page: detect Set Overview screen for Shift+Vol+Left/Right interception */
     if (strcasecmp(text, "Set Overview") == 0 || strcasecmp(text, "Sets") == 0) {
         in_set_overview = 1;
@@ -404,7 +437,10 @@ static void shadow_dbus_handle_text(const char *text)
      * until manually un-muted. The pads_held guard was timing-fragile and only
      * caught a subset. Deliberate slot mute/solo is set directly by the
      * Mute+Track / Shift+Mute+Track combos in schwung_shim.c, so removing the
-     * text-based sync loses no intended behavior. */
+     * text-based sync loses no intended behavior.
+     *
+     * The mute half came back, above, in the one form that is safe: the TRACK
+     * is named by the gesture and only the STATE is read from the text. */
 
     /* After receiving any screen reader message from Move, inject our pending announcements */
     shadow_inject_pending_announcements();
