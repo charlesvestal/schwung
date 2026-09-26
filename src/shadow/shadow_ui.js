@@ -104,6 +104,7 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
  * wrapped them, so an over-wide one starts at a negative x. */
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
+import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -7570,6 +7571,8 @@ function setSlotParam(slot, key, value) {
         /* Tell the E16 surface at once -- see noteParamWrite. A const declared
          * later in this file is in its TDZ during early init: caught. */
         try { for (const sf of externalSurfaces()) sf.noteParamWrite(slot, key, value); } catch (e) {}
+        /* A parameter moved on Move while a control is waiting to LEARN one. */
+        try { controlHost.observeWrite(slot, key, value); } catch (e) {}
 
         /* Re-check MIDI FX warnings immediately after sync/module changes. */
         if (key === "midi_fx1:module") {
@@ -10519,7 +10522,7 @@ let externalSurfaceFollow = 0;
  * designed around. The surfaces read it every tick through navigationOf,
  * so a change needs no restart.
  */
-const SURFACE_NAVS = ["map", "knobs"];
+const SURFACE_NAVS = ["map", "knobs", "custom"];
 const externalSurfaceNav = { 1: "map", 2: "knobs" };
 function surfaceNavIndex() {
     const nav = externalSurfaceNav[externalSurfaceMode] || externalSurfaceNav[1];
@@ -10752,6 +10755,43 @@ function e16ReconcilePace() {
 }
 
 /*
+ * THE CONTROL FOUNDATION (src/shared/control_host.mjs; design in
+ * docs/superpowers/specs/2026-09-26-custom-surface-layout-design.md): the
+ * per-set control document (set_state/<uuid>/controls.json), the TARGET IO
+ * every control source writes through, and the LEARN broker. Assembled there
+ * so tests/host can run it; this is only the wiring. The Custom surface
+ * layout is its first user; the generic CC map is its next.
+ */
+const controlHost = createControlHost({
+    fs: {
+        exists: (path) => host_file_exists(path),
+        read: (path) => host_read_file(path),
+        write: (path, text) => host_write_file(path, text),
+        ensureDir: (dir) => host_ensure_dir(dir),
+    },
+    stateDir: () => activeSlotStateDir,
+    getParam: (slot, key) => getSlotParam(slot, key),
+    setParam: (slot, key, value) => setSlotParam(slot, key, value),
+    /* Module ids from the mirrors the UI already holds -- never a read per
+     * call (e16ChainShape re-reads a stale slot at most once a second). */
+    chainShape: () => e16ChainShape(),
+    masterFx: () => ensureMasterFxConfigFresh(),
+    log: (line) => debugLog(line),
+    announce: (text) => announce(text),
+    onReload: () => { try { for (const sf of externalSurfaces()) sf.reloadControls(); } catch (e) {} },
+    /* Sends and returns are saved levels, like their grid rows. */
+    onWrite: (slot, key) => {
+        if (key.startsWith("buses:") || key.endsWith(":return")) sendLevelsDirty = true;
+    },
+});
+
+/* A surface's OWN writes (its page controller, its Mixer) go through here so
+ * the learn broker never mistakes them for the user choosing a parameter. */
+function surfaceSetParam(slot, key, value) {
+    return controlHost.write(slot, key, value);
+}
+
+/*
  * A SURFACE'S PARAMETER READ, with one substitution: a module that draws its
  * own screen may REFUSE ui_hierarchy -- serving one would stop the host from
  * loading its ui_chain.js (Teng: "that is what takes the pads") -- and publish
@@ -10781,7 +10821,7 @@ function surfaceGetParam(slot, key) {
 const surfaceMixerIo = {
     getSlot: (slot, key) => getSlotParam(slot, key),
     setSlot: (slot, key, value) => {
-        const ok = setSlotParam(slot, key, value);
+        const ok = surfaceSetParam(slot, key, value);
         if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
         return ok;
     },
@@ -10811,6 +10851,11 @@ const surfaceMixerIo = {
 const e16Surface = createE16Surface({
     now: () => Date.now(),
     navigationOf: () => externalSurfaceNav[1],
+    /* The Custom layout's seams: the control document and the target io. */
+    controls: () => controlHost.controls(),
+    editControls: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
     /* The shim's current pace, so the surface's per-tick packet budget
      * follows it (0 = no file = the shim default). */
     paceOf: () => e16PaceValue,
@@ -10852,7 +10897,7 @@ const e16Surface = createE16Surface({
      */
     makeController: (focus) => createPageController({
         getParam: (key) => surfaceGetParam(focus.slot, key),
-        setParam: (key, value) => setSlotParam(focus.slot, key, value),
+        setParam: (key, value) => surfaceSetParam(focus.slot, key, value),
     }),
     /* THE MIXER (a tap of Shift; e16_mixer.mjs) -- see surfaceMixerIo. */
     /* The web mirror (display_server /stream-e16): what the E16 shows. */
@@ -10916,6 +10961,10 @@ const ec4KnobScale = armedFileNumber("ec4_knob_scale", parseFloat,
 const ec4Surface = createEc4Surface({
     now: () => Date.now(),
     navigationOf: () => externalSurfaceNav[2],
+    controls: () => controlHost.controls(),
+    editControls: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
     send: e16Send,
     chainOf: e16ChainShape,
     followFocusOf: e16FollowFocus,
@@ -10925,7 +10974,7 @@ const ec4Surface = createEc4Surface({
     log: (line) => console.log(line),
     makeController: (focus) => createPageController({
         getParam: (key) => surfaceGetParam(focus.slot, key),
-        setParam: (key, value) => setSlotParam(focus.slot, key, value),
+        setParam: (key, value) => surfaceSetParam(focus.slot, key, value),
     }),
     mixer: surfaceMixerIo,
 });
@@ -11123,6 +11172,9 @@ function loadExternalSurfaceConfig() {
 /* Called every frame. Cheap by construction: while the surface is off and
  * nothing is owed, this is two comparisons. */
 function externalSurfaceTick() {
+    /* The per-set control document: loaded on a set change, and re-read when
+     * another writer (the web editor) changed it. Only while a surface is on. */
+    if (externalSurfaceMode) controlHost.reconcile();
     for (const sf of externalSurfaces()) sf.tick();
 }
 
@@ -25875,6 +25927,13 @@ globalThis.tick = function() {
                     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
                         if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                    }
+                    /* The control document (Custom surface pages, CC map) is
+                     * part of the set: the copy list is by NAME, so a file not
+                     * named here is silently left behind by a duplicate. */
+                    {
+                        const ctl = host_read_file(copySourceDir + "/controls.json");
+                        if (ctl) host_write_file(newDir + "/controls.json", ctl);
                     }
                     /* Also copy chain config */
                     const chainCfg = host_read_file(copySourceDir + "/shadow_chain_config.json");

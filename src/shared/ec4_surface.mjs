@@ -42,6 +42,7 @@ import { SHIFT_TAP_MS, TURN_IDLE_MS, ATOMIC_MAX_PACKETS, createSysexAssembler, c
 import { NAV_MAP, NAV_KNOBS, NAV_HOLD_MS, screenLabels } from "./layout_common.mjs";
 import { createMapLayout } from "./layout_map.mjs";
 import { createKnobsLayout } from "./layout_knobs.mjs";
+import { createCustomLayout, customSeams, NAV_CUSTOM } from "./layout_custom.mjs";
 export { CELL_PREV, CELL_PAGE, CELL_COUNT, CELL_NEXT, CELL_SLOT, CELL_MODULE, CELL_VOL, CELL_PAN }
     from "./layout_knobs.mjs";
 export { NAV_HOLD_MS };
@@ -327,7 +328,8 @@ export function createEc4Surface(io) {
      */
     const navigationOf = o.navigationOf || (() => NAV_KNOBS);
     const layoutCtx = { focus, binding, mixer, feel, chainOf, now, selector: EC4_SELECTOR };
-    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx) };
+    const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx),
+                      [NAV_CUSTOM]: createCustomLayout(Object.assign({}, layoutCtx, customSeams(o))) };
     let layout = layouts[NAV_KNOBS];
     function syncLayout() {
         let want = NAV_KNOBS;
@@ -379,7 +381,11 @@ export function createEc4Surface(io) {
                  * layout as the same events the E16 decodes from notes. */
                 if (ev.key === "shift") { syncLayout(); layout.handle({ type: "shift", down: !!ev.pressed }, t); }
                 else if (/^push\d+$/.test(ev.key)) {
-                    if (ev.pressed) { syncLayout(); layout.handle({ type: "push", enc: Number(ev.key.slice(4)) }, t); }
+                    /* Both edges: the Custom layout tells a click from a
+                     * learn HOLD by how long the push lasted. */
+                    syncLayout();
+                    const enc = Number(ev.key.slice(4));
+                    layout.handle(ev.pressed ? { type: "push", enc } : { type: "release", enc }, t);
                 }
                 else log("ec4: " + ev.key + (ev.pressed ? " down" : " up"));
             }
@@ -454,6 +460,7 @@ export function createEc4Surface(io) {
          * the next reading shows it (surface_core createBinding). */
         noteParamWrite(s, key, value) {
             if (!presence.enabled) return;
+            layouts[NAV_CUSTOM].noteWrite(s, key, value);
             binding.noteWrite(s, key, value, viewNow());
         },
 
@@ -519,8 +526,10 @@ export function createEc4Surface(io) {
             if (!isActive) return;
             syncLayout();
             layout.tick(t);
-            binding.sync(layout.pagesShown);
-            binding.tick();
+            if (layout.usesBinding !== false) {
+                binding.sync(layout.pagesShown);
+                binding.tick();
+            }
             names.set(namesNow());
             const rows = overlayNow(t);
             wantOverlay = !!rows;
@@ -575,6 +584,8 @@ export function createEc4Surface(io) {
         get focus() { return focus; },
         get mixerOn() { return layout.mixerOn; },
         get layout() { return layout; },
+        /** The control document changed (a set load, the web editor). */
+        reloadControls() { layouts[NAV_CUSTOM].reload(); },
         get controller() { return binding.controller; },
         view: () => layout.view(),
         /* What the device should be showing -- for tests and the log. */

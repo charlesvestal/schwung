@@ -1,6 +1,7 @@
 # Custom surface layout — design (and the control foundation it shares with CC mapping)
 
-Status: agreed 2026-09-26, not yet built. A third navigation layout beside
+Status: agreed 2026-09-26. Steps 1–4 built (control_target, control_map,
+layout_custom, control_host + wiring); editor and web editor next. A third navigation layout beside
 Map and Knobs (`src/shared/layout_common.mjs`), for both the OXI E16 and the
 Faderfox EC4. **Generic CC assignment is built NEXT on the same foundation**,
 so this document defines that foundation and the ownership rules that keep
@@ -22,9 +23,12 @@ the two from colliding; the CC map's own UI is a later document.
 - **A push performs the parameter's own click**, as on Move's grid: a toggle
   flips, a trigger fires; a continuous parameter does nothing.
 - **Learn:** hold a knob's push (≥ 600 ms) → the cell says LEARN. Move a
-  parameter on Move (its knob grid, a list, Slot Settings, Master FX Settings,
-  Move's own track volume) → that becomes the knob's target. Push the knob
-  again, or wait 10 s, to cancel. **Shift + hold push clears** the knob.
+  parameter on Move (its knob grid, a list, Slot Settings, Master FX Settings)
+  → that becomes the knob's target. **While armed, a push on that knob clears
+  it**; Shift, or 10 s, cancels. (A Shift + push would collide with the page
+  map, which owns pushes while Shift is held.) Move's own track-volume knob is
+  NOT learnable: the shim writes `slot:volume` for it without the shadow UI
+  seeing a write; learn a slot's volume from Slot Settings instead.
 - **A knob whose module has gone goes DARK**: label kept, value "--", no
   writes, until that module is back in that position or the knob is
   reassigned. Never silently drives what now sits there.
