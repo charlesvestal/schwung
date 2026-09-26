@@ -209,7 +209,7 @@ function renderPages() {
     } else {
         host.replaceChildren(...pages.map((pg, p) => {
             let confirmDelete = false;
-            const del = el("button", { type: "button", class: "btn btn-small btn-danger" }, "Delete");
+            const del = el("button", { type: "button", class: "btn btn-danger" }, "Delete");
             del.addEventListener("click", () => {
                 if (!confirmDelete) { confirmDelete = true; del.textContent = "Click again to delete"; return; }
                 edit((d) => deletePage(d, p));
@@ -220,10 +220,10 @@ function renderPages() {
             name.addEventListener("change", () => edit((d) => renamePage(d, p, name.value)));
             return el("section", { class: "controls-page", "aria-label": "Page " + (p + 1) + ": " + pg.name },
                 el("div", { class: "controls-page-head" },
-                    el("strong", {}, String(p + 1)), name,
-                    el("button", { type: "button", class: "btn btn-small btn-secondary", disabled: p === 0,
+                    el("span", { class: "num" }, String(p + 1)), name,
+                    el("button", { type: "button", class: "btn btn-secondary", disabled: p === 0,
                                    "aria-label": "Move page earlier", onclick: () => edit((d) => movePage(d, p, p - 1)) }, "↑"),
-                    el("button", { type: "button", class: "btn btn-small btn-secondary", disabled: p === pages.length - 1,
+                    el("button", { type: "button", class: "btn btn-secondary", disabled: p === pages.length - 1,
                                    "aria-label": "Move page later", onclick: () => edit((d) => movePage(d, p, p + 1)) }, "↓"),
                     del),
                 el("div", { class: "controls-grid" },
@@ -250,25 +250,27 @@ function renderCC() {
             el("option", { value: "abs", selected: b.mode === "abs" }, "Absolute"),
             el("option", { value: "rel", selected: b.mode === "rel" }, "Relative"));
         mode.addEventListener("change", () => edit((d) => setCCMode(d, i, mode.value)));
-        const target = el("button", { type: "button", class: "btn-link" + (st === "dark" ? " controls-dark" : ""),
+        const target = el("button", { type: "button", class: "controls-target" + (st === "dark" ? " dark" : ""),
+            "aria-label": (b.target.label || b.target.key) + ", " + scopeText(b.target) + ". Change parameter.",
             onclick: async () => {
                 const r = await pick({ allowClear: false });
                 if (r && r !== "clear") edit((d) => bindCC(d, { channel: b.channel, cc: b.cc, mode: b.mode, target: r }));
-            } }, (b.target.label || b.target.key));
+            } },
+            el("span", { class: "l" }, b.target.label || b.target.key),
+            el("span", { class: "s" }, scopeText(b.target) + (st === "dark" ? " — not loaded" : "")));
         return el("tr", {},
-            el("td", {}, String(b.channel + 1)),
-            el("td", {}, String(b.cc)),
-            el("td", {}, mode),
-            el("td", {}, target, el("div", { class: "muted" }, scopeText(b.target) + (st === "dark" ? " — not loaded" : ""))),
-            el("td", {}, el("button", { type: "button", class: "btn btn-small btn-danger",
+            el("td", { class: "controls-num", "data-label": "Channel" }, String(b.channel + 1)),
+            el("td", { class: "controls-num", "data-label": "CC" }, String(b.cc)),
+            el("td", { "data-label": "Mode" }, mode),
+            el("td", { "data-label": "Parameter" }, target),
+            el("td", {}, el("button", { type: "button", class: "btn btn-danger",
                 "aria-label": "Remove channel " + (b.channel + 1) + " CC " + b.cc,
                 onclick: () => edit((d) => unbindCC(d, i)) }, "Remove")));
     }));
 }
 
 $("cc-add-ch").replaceChildren(...Array.from({ length: 16 }, (_, i) => el("option", { value: String(i) }, String(i + 1))));
-$("cc-add").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
+$("cc-add").addEventListener("click", async () => {
     const ch = Number($("cc-add-ch").value), cc = Number($("cc-add-cc").value), mode = $("cc-add-mode").value;
     if (!Number.isInteger(cc) || cc < 0 || cc > 127) return;
     const r = await pick({ allowClear: false });
