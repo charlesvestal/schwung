@@ -610,6 +610,9 @@ export const MASTER_GRID_ACTIONS = [
      */
     { label: "Save As", action: "save_as", always: true },
     { label: "Delete", action: "delete", always: false },
+    /* The Custom surface layout's pages (per set, so here). Opens its own
+     * list, control_editor.mjs; handleMasterFxSettingsAction routes it. */
+    { label: "Surface Layout", action: "surface_layout", always: true },
 ];
 
 /**

@@ -105,6 +105,7 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
+import { createLayoutEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -469,6 +470,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // One FX bus's 8-position editor (master or a send)
     FX_BUS_PICKER: "fxbuspicker", // Which FX bus to edit: Master FX, Send A, Send B
+    SURFACE_LAYOUT: "surfacelayout", // Master FX Settings -> Surface Layout (control_editor.mjs)
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
@@ -3614,6 +3616,83 @@ function fxBusReturnNow(index) {
     return isNaN(n) ? -1 : n;
 }
 
+/*
+ * MASTER FX SETTINGS -> SURFACE LAYOUT: the Custom layout's pages, on Move.
+ * The rows, the cursor and the two-click confirmations live in
+ * control_editor.mjs (tested); this is the drawing and the routing.
+ */
+let surfaceLayoutEditor = null;
+function surfaceLayoutEd() {
+    if (!surfaceLayoutEditor) {
+        surfaceLayoutEditor = createLayoutEditor({
+            controls: () => controlHost.controls(),
+            edit: (fn) => controlHost.edit(fn),
+        });
+    }
+    return surfaceLayoutEditor;
+}
+
+function enterSurfaceLayoutEditor() {
+    controlHost.reconcile();
+    const ed = surfaceLayoutEd();
+    ed.reset();
+    setView(VIEWS.SURFACE_LAYOUT);
+    needsRedraw = true;
+    const r = ed.rows()[0];
+    announce("Surface Layout" + (r ? ", " + r.label : ""));
+}
+
+function drawSurfaceLayoutEditor() {
+    /* The web editor may have changed the file: re-read by content, <= 1 Hz. */
+    controlHost.reconcile();
+    const ed = surfaceLayoutEd();
+    const rows = ed.rows();
+    clear_screen();
+    drawHeader(ed.title());
+    drawMenuList({
+        items: rows,
+        selectedIndex: ed.cursor,
+        getLabel: (r) => r.label,
+        getValue: (r) => r.value || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+    });
+    const r = rows[ed.cursor];
+    const verb = !r ? "" : r.kind === "page" ? "Click: open" : r.kind === "add" ? "Click: add"
+        : r.kind === "rename" ? "Click: rename" : r.kind === "knob" ? (r.value === "--" ? "" : "Click: clear")
+        : r.kind === "delete" ? "Click: delete" : "Click: move";
+    drawFooter(verb ? [verb, "Back"] : ["Back"]);
+}
+
+function surfaceLayoutJog(delta) {
+    const r = surfaceLayoutEd().jog(delta);
+    if (r) announceMenuItem(r.label, r.value || "");
+    needsRedraw = true;
+}
+
+function surfaceLayoutSelect() {
+    const ed = surfaceLayoutEd();
+    const out = ed.click();
+    if (out && out.rename) {
+        const i = out.rename.page;
+        openTextEntry({
+            title: "Page Name",
+            initialText: out.rename.name,
+            onAnnounce: announce,
+            onConfirm: (text) => { ed.rename(i, text); needsRedraw = true; },
+        });
+        return;
+    }
+    const r = ed.rows()[ed.cursor];
+    if (r) announceMenuItem(r.label, r.value || "");
+    needsRedraw = true;
+}
+
+function surfaceLayoutBack() {
+    if (surfaceLayoutEd().back()) { enterMasterFxSettings(); return; }
+    needsRedraw = true;
+}
+
 function enterFxBusPicker() {
     selectedFxBusRow = currentFxBusIndex;
     /* Read the three summaries ONCE, on entry. Three IPC round trips at ~2.8 ms
@@ -4505,6 +4584,9 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
       options: MFX_MIDI_CHANNEL_OPTIONS },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
+    /* The Custom surface layout's pages -- per set, so here, not in Global
+     * Settings. Opens its own list (control_editor.mjs). */
+    { key: "surface_layout", label: "Surface Layout", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -11624,6 +11706,13 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "surface_layout") {
+        /* From the grid this runs from the menu INTENT, after the controller
+         * has finished with its input, so leaving the grid here is safe. */
+        if (paramPagesActive()) exitParamPages();
+        enterSurfaceLayoutEditor();
+        return;
+    }
     if (key === "mfx_lfo1" || key === "mfx_lfo2") {
         const lfoIdx = (key === "mfx_lfo1") ? 0 : 1;
         lfoCtx = makeMfxLfoCtx(lfoIdx);
@@ -21185,6 +21274,9 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.SLOTS:
             handleSlotsJog(delta);
             break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutJog(delta);
+            break;
         case VIEWS.FX_BUS_PICKER: {
             selectedFxBusRow = Math.max(0, Math.min(FX_BUSES.length - 1,
                                                     selectedFxBusRow + delta));
@@ -21659,6 +21751,9 @@ function handleSelect() {
             break;
         case VIEWS.FX_BUS_PICKER:
             enterFxBus(selectedFxBusRow);
+            break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutSelect();
             break;
         case VIEWS.BUS_LIST: {
             const rows = busRowsNow();
@@ -22809,6 +22904,9 @@ function handleBack() {
                     shadow_request_exit();
                 }
             }
+            break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutBack();
             break;
         case VIEWS.FX_BUS_PICKER:
             /* The top of this branch of the tree — dismiss, as the chain editor
@@ -25420,6 +25518,7 @@ function dispatchCoRunDraw() {
         case VIEWS.SLOTS:                drawSlots(); break;
         case VIEWS.MASTER_FX:            drawMasterFx(); break;
         case VIEWS.FX_BUS_PICKER:        drawFxBusPicker(); break;
+        case VIEWS.SURFACE_LAYOUT:       drawSurfaceLayoutEditor(); break;
         case VIEWS.BUS_LIST:             BusViews.drawBusList(); break;
         case VIEWS.BUS_ACTIONS:          BusViews.drawBusActions(); break;
         case VIEWS.BUS_VOICES:           BusViews.drawBusVoices(); break;
@@ -26770,6 +26869,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.FX_BUS_PICKER:
             drawFxBusPicker();
+            break;
+        case VIEWS.SURFACE_LAYOUT:
+            drawSurfaceLayoutEditor();
             break;
         case VIEWS.BUS_LIST:
             BusViews.drawBusList();
