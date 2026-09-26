@@ -59,6 +59,7 @@ Promise.all([
     if (!meta) return "knob";
     if (meta.kind === M.KIND_OPAQUE) return "opaque";
     if (meta.writeOnly) return "button";
+    if (meta.display === "big" && RM.shouldDrawBigNumber(meta)) return "bignum";
     if (meta.kind === M.KIND_ENUM) return "enum";
     /* BIGNUM came from main while this branch was extracting the same rule
      * elsewhere. Restated here from the renderer'"'"'s own predicate, not
