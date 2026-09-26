@@ -982,9 +982,10 @@ import { NAV_MAP, NAV_KNOBS, screenLabels } from "./layout_common.mjs";
 export const E16_PULSES_PER_ROTATION = 46;
 export const MOVE_DETENTS_PER_ROTATION = 210;
 /* The measurement makes an E16 turn match a Move turn; by feel on hardware
- * that was too fast, and "about 50% slower" was asked for (2026-09-26). The
- * measured ratio is kept as measured and the preference applied on top. */
-export const E16_SPEED = 0.5;
+ * that was too fast -- "about 50% slower", then "20% faster" (2026-09-26).
+ * The measured ratio is kept as measured and the preference applied on top;
+ * the selectors below are derived from it, so one number sets the feel. */
+export const E16_SPEED = 0.6;
 export const E16_PULSES_PER_DETENT = E16_PULSES_PER_ROTATION / MOVE_DETENTS_PER_ROTATION / E16_SPEED;
 
 /*
@@ -1004,10 +1005,12 @@ export function e16Curve(ticks, accel) {
     return Math.sign(ticks) * (1 + Math.log2(m) * a);
 }
 
-/* Choices and selectors step by ANGLE: one per ~60 degrees (8 ticks, at
- * E16_SPEED), a slot per ~120 -- not per tick, or the E16's x8 acceleration flies past the
+/* Choices and selectors step by ANGLE: one per ~30 degrees at full speed (4
+ * ticks, scaled by E16_SPEED), a slot per twice that -- not per tick, or the E16's x8 acceleration flies past the
  * option you wanted. */
-export const E16_SELECTOR = { choice: 8, nav: 8, slot: 16 };
+export const E16_SELECTOR = {
+    choice: Math.round(4 / E16_SPEED), nav: Math.round(4 / E16_SPEED), slot: Math.round(8 / E16_SPEED),
+};
 
 /* Draw any layout's screen (layout_common.mjs) into an E16 canvas. */
 export function drawScreen(ctx, scr) {
