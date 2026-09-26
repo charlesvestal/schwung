@@ -24,7 +24,9 @@ const ctl = {
   onKnobTurn(slot, dir) { turns.push([this.pages[this.pageIndex].name, slot, dir]); },
 };
 let t = 0;
-const s = createSurface({ now: () => t, send: () => true,
+/* One tick per detent: this test is about WHICH page a knob drives, not the
+ * E16 feel (E16_PULSES_PER_DETENT), which would make each tick four turns. */
+const s = createSurface({ now: () => t, send: () => true, pulsesPerDetentOf: () => 1,
   chainOf: () => ({ slots: [{ synth: "hank" }, {}, {}, {}] }),
   makeController: () => ctl });
 s.setEnabled(true);

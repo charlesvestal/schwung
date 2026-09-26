@@ -967,7 +967,26 @@ import { NAV_MAP, NAV_KNOBS, screenLabels } from "./layout_common.mjs";
 /* The E16's step for choices: its relative encoders already carry their own
  * acceleration, so an enum goes through the knob engine as on Move, and a
  * page / slot / module selector moves once per message. */
-export const E16_SELECTOR = { choice: null, nav: 1, slot: 1 };
+/*
+ * THE E16'S ROTATION, MEASURED (2026-09-26, remote mode, on the Mac): one slow
+ * full turn of an encoder is ~46 TICKS (38 messages; the device adds its own
+ * acceleration even when slow, and sends 2 / 4 / 8 ticks a message when
+ * turned fast). A Move knob is ~210 detents a turn, and the knob engine is
+ * LINEAR -- ~0.5% of a range per Move detent, no speed-based acceleration --
+ * so at one tick = one detent a slow turn moved a value ~23% of its range and
+ * a 16-step parameter (Hank's Ratio) took four clicks a step: "a normal
+ * adjustment doesn't change the value". Scaled once here, as the EC4 is; the
+ * E16's own acceleration then carries a fast turn. Overridable by file
+ * (e16_knob_scale) since it is a count of one unit.
+ */
+export const E16_PULSES_PER_ROTATION = 46;
+export const MOVE_DETENTS_PER_ROTATION = 210;
+export const E16_PULSES_PER_DETENT = E16_PULSES_PER_ROTATION / MOVE_DETENTS_PER_ROTATION;
+
+/* Choices and selectors step by ANGLE: one per ~30 degrees (4 ticks), a
+ * slot per ~60 -- not per tick, or the E16's x8 acceleration flies past the
+ * option you wanted. */
+export const E16_SELECTOR = { choice: 4, nav: 4, slot: 8 };
 
 /* Draw any layout's screen (layout_common.mjs) into an E16 canvas. */
 export function drawScreen(ctx, scr) {
@@ -1114,7 +1133,7 @@ export function createSurface(io) {
     const { metaOf } = binding;
     /* The E16's rotation is taken as Move's (one pulse, one detent); what the
      * feel adds here is the Mixer through the knob engine. */
-    const feel = createKnobFeel({ pulsesPerDetentOf: o.pulsesPerDetentOf });
+    const feel = createKnobFeel({ pulsesPerDetentOf: o.pulsesPerDetentOf || (() => E16_PULSES_PER_DETENT) });
 
     /* Rebuilt on demand rather than cached. buildView is pure and reads only
      * the two lookups above, so it costs no IPC -- and a cached view is a

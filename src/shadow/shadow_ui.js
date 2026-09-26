@@ -137,7 +137,7 @@ import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mj
 import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
     from '/data/UserData/schwung/shared/snapshot.mjs';
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
-import { createSurface as createE16Surface }
+import { createSurface as createE16Surface, E16_PULSES_PER_DETENT }
     from '/data/UserData/schwung/shared/e16_surface.mjs';
 import { createEc4Surface, DEFAULT_SETUP as EC4_DEFAULT_SETUP,
          DEFAULT_PULSES_PER_DETENT as EC4_DEFAULT_PULSES }
@@ -10933,6 +10933,8 @@ const surfaceMixerIo = {
 
 const e16Surface = createE16Surface({
     now: () => Date.now(),
+    /* Called only from ticks, after e16KnobScale (below) exists. */
+    pulsesPerDetentOf: () => e16KnobScale(),
     navigationOf: () => externalSurfaceNav[1],
     /* The Custom layout's seams: the control document and the target io. */
     controls: () => controlHost.controls(),
@@ -11040,6 +11042,12 @@ const ec4Setup = () => ec4SetupFile() - 1;
  *   ssh ableton@move.local "echo 0.4 > /data/UserData/schwung/ec4_knob_scale" */
 const ec4KnobScale = armedFileNumber("ec4_knob_scale", parseFloat,
     (n) => n > 0 && n <= 32, EC4_DEFAULT_PULSES);
+
+/* E16 ticks per Move detent (e16_surface.mjs, E16_PULSES_PER_DETENT); bigger
+ * = slower:
+ *   ssh ableton@move.local "echo 0.3 > /data/UserData/schwung/e16_knob_scale" */
+const e16KnobScale = armedFileNumber("e16_knob_scale", parseFloat,
+    (n) => n > 0 && n <= 32, E16_PULSES_PER_DETENT);
 
 const ec4Surface = createEc4Surface({
     now: () => Date.now(),
