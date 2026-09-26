@@ -394,8 +394,13 @@ export function createBinding(opts) {
         },
         /** ONE page on cells 0-7 (the EC4). */
         pageView(pageIndex) {
-            const p = knobPages()[pageIndex | 0];
-            return buildView(p ? [p] : [], 0, { metaOf, valueOf, pageIndexOf: () => controllerPageOf(pageIndex | 0) });
+            const pages = knobPages();
+            const p = pages[pageIndex | 0];
+            const v = buildView(p ? [p] : [], 0, { metaOf, valueOf, pageIndexOf: () => controllerPageOf(pageIndex | 0) });
+            /* The header counts the module's pages, not the one-page list the
+             * view was built from ("2/5", never "1/1"). */
+            if (v.headers[0]) { v.headers[0].index = pageIndex | 0; v.headers[0].count = pages.length; }
+            return v;
         },
         pageName(pageIndex) {
             const p = knobPages()[pageIndex | 0];
