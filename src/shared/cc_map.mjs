@@ -58,7 +58,9 @@ export function createCCMap(io) {
     const targets = o.targets;
     const broker = o.learn || null;
     const setShimLearn = o.setShimLearn || (() => {});
-    const announce = o.announce || (() => {});
+    /* Learn reports each step ON SCREEN (the host's overlay), not only by
+     * speech: it is armed while you are elsewhere, finding the parameter. */
+    const notify = o.notify || ((title, text) => (o.announce || (() => {}))(title + ": " + text));
     const now = o.now || (() => Date.now());
 
     const bindings = () => (controls().cc || []);
@@ -76,12 +78,12 @@ export function createCCMap(io) {
     let learning = null;   /* { cc: {channel, cc} | null, target | null, at } */
     const owner = { id: "ccmap" };
 
-    function endLearn(msg) {
+    function endLearn(title, text) {
         if (!learning) return;
         learning = null;
         setShimLearn(false);
         if (broker) broker.cancel(owner);
-        if (msg) announce(msg);
+        if (title) notify(title, text || "");
     }
 
     function maybeBind() {
@@ -89,7 +91,7 @@ export function createCCMap(io) {
         const { cc, target } = learning;
         edit((doc) => bindCC(doc, { channel: cc.channel, cc: cc.cc, mode: "abs", target }));
         knobStates.delete(key(cc.channel, cc.cc));
-        endLearn("Bound CC " + cc.cc + " to " + (target.label || target.key));
+        endLearn("CC Bound", "CC" + cc.cc + " > " + (target.label || target.key));
     }
 
     function beginLearn() {
@@ -101,10 +103,11 @@ export function createCCMap(io) {
                 if (!learning) return;
                 if (!target) { endLearn(); return; }   /* another learn took over */
                 learning.target = target;
+                if (!learning.cc) notify("CC Learn", (target.label || target.key) + ": now a knob");
                 maybeBind();
             });
         }
-        announce("CC learn: move a controller knob and a parameter on Move");
+        notify("CC Learn", "move a knob + a param");
     }
 
     function writeBinding(b, engineValue, meta) {
@@ -125,7 +128,7 @@ export function createCCMap(io) {
             const ch = status & 0x0F;
             if (learning && !learning.cc) {
                 learning.cc = { channel: ch, cc };
-                announce("CC " + cc + (learning.target ? "" : ": now move a parameter on Move"));
+                if (!learning.target) notify("CC Learn", "CC" + cc + ": now a param");
                 maybeBind();
                 return true;
             }
@@ -171,7 +174,7 @@ export function createCCMap(io) {
         /** Flush the owed writes (one per binding) and expire a stale learn. */
         tick(t) {
             const at = t === undefined ? now() : t;
-            if (learning && at - learning.at >= CC_LEARN_TIMEOUT_MS) endLearn("CC learn cancelled");
+            if (learning && at - learning.at >= CC_LEARN_TIMEOUT_MS) endLearn("CC Learn", "timed out");
             if (!pending.size) return;
             for (const { b, wire } of pending.values()) targets.write(b.target, wire);
             pending.clear();
@@ -181,7 +184,7 @@ export function createCCMap(io) {
         claimPairs() { return bindings().map((b) => [b.channel, b.cc]); },
 
         beginLearn,
-        cancelLearn() { endLearn("CC learn cancelled"); },
+        cancelLearn() { endLearn("CC Learn", "cancelled"); },
         get learning() { return learning ? { cc: learning.cc, target: learning.target } : null; },
         /** The document changed: relative knob states may name old targets. */
         reload() { knobStates.clear(); pending.clear(); wireKnown.clear(); },

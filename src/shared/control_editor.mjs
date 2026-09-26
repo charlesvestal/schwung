@@ -157,12 +157,13 @@ export function createCCEditor(io) {
     const list = () => controls().cc || [];
     const describe = (b) => (b.target.label || b.target.key) + " " + scopeShort(b.target);
 
+    /* Short enough for the row: "mo..." was all that showed of "move a knob". */
     function learnValue() {
         const l = ccMap.learning;
         if (!l) return "";
-        if (!l.cc && !l.target) return "move both";
-        if (!l.cc) return "move a knob";
-        return "move a param";
+        if (!l.cc && !l.target) return "knob+param?";
+        if (!l.cc) return "knob?";
+        return "param?";
     }
 
     function rows() {
@@ -172,7 +173,7 @@ export function createCCEditor(io) {
                 label: "Ch" + (b.channel + 1) + " CC" + b.cc + (b.mode === "rel" ? " R" : ""),
                 value: describe(b),
             }));
-            out.push({ kind: "learn", label: ccMap.learning ? "Learning..." : "Learn New", value: learnValue() });
+            out.push({ kind: "learn", label: ccMap.learning ? "Cancel Learn" : "Learn New", value: learnValue() });
             return out;
         }
         const b = list()[index];
@@ -216,7 +217,8 @@ export function createCCEditor(io) {
         back() {
             if (confirm) { confirm = false; return false; }
             if (level === "binding") { level = "list"; cursor = index; clampCursor(); return false; }
-            if (ccMap.learning) ccMap.cancelLearn();
+            /* NOT a cancel: learn is meant to outlive this screen -- you leave
+             * it to find the parameter. It ends by itself, or by Cancel Learn. */
             return true;
         },
         reset() { level = "list"; index = 0; cursor = 0; confirm = false; },
