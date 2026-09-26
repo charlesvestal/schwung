@@ -11,9 +11,9 @@
  *   push         the parameter's own click (a toggle flips, a trigger fires),
  *                on RELEASE, so a hold can mean something else:
  *   push HOLD    LEARN: the next parameter moved on Move is this knob's. While
- *                armed, turning that knob CLOCKWISE clears it (anticlockwise
- *                cancels); a push on it, Shift, another learn, or
- *                LEARN_TIMEOUT_MS cancels.
+ *                armed, a PUSH on that knob or a CLOCKWISE turn clears it;
+ *                anticlockwise, Shift, another learn or LEARN_TIMEOUT_MS
+ *                cancels.
  *
  * The pages live in the per-set control document (control_map.mjs), which
  * the host owns: this layout reads `ctx.controls()` and changes it only
@@ -337,11 +337,10 @@ export function createCustomLayout(ctx) {
         }
         if (armed && armed.page === pageIndex && armed.knob === k) {
             /*
-             * THE ARMED KNOB ASKS "CLEAR?": clockwise confirms, anticlockwise
-             * cancels (the user's gesture, 2026-09-26). It was a second push,
-             * which cleared with no confirmation and was undiscoverable. Not a
-             * triple-click either: a quick push is the parameter's own click,
-             * so three of them flip an on/off parameter on the way.
+             * THE ARMED KNOB ASKS "CLEAR?": clockwise clears, anticlockwise
+             * cancels -- beside a second push, which also clears. Not a
+             * triple-click: a quick push is the parameter's own click, so
+             * three of them would flip an on/off parameter on the way.
              */
             const cleared = pulses > 0 && !!page() && !!page().knobs[k];
             armed = null;
@@ -381,11 +380,18 @@ export function createCustomLayout(ctx) {
             return { action: "pagemap", pageIndex };
         }
         if (armed && armed.page === pageIndex && armed.knob === k) {
-            /* A push on the armed knob CANCELS: clearing takes a turn to
-             * confirm (see onTurn), never a single press. */
-            cancelLearn();
+            /* A push on the armed knob CLEARS it -- the gesture in use on
+             * hardware (2026-09-26); a clockwise turn does too (see onTurn). */
+            armed = null;
+            if (learn) learn.cancel(learnOwner);
+            if (page() && page().knobs[k]) {
+                edit((doc) => clearKnob(doc, pageIndex, k));
+                values.delete(vkey(k));
+                knobStates.delete(vkey(k));
+            }
             pushLearned[k] = true;          /* its release is not a click */
-            return { action: "cancel", enc: k };
+            invalidate();
+            return { action: "clear", enc: k };
         }
         pushDownAt[k] = t;
         pushLearned[k] = false;
