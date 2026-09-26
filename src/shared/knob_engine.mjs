@@ -332,6 +332,27 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
         return state.value;
     }
 
+    /*
+     * ...UNLESS THE PARAM ASKS TO BE STEPPED.
+     *
+     * The toggle below is right for a boxed two-way whose options are a choice
+     * (Mix/Reverb), because the box shows a state and not a direction. It is
+     * wrong where the pair is ORDERED and the caller knows it -- a note mode, a
+     * pad layout, a host-owned page whose knob should land where the wrist
+     * pointed. Those declare `turn: "absolute"` and get the switch's rule:
+     * clockwise to the second option, counter-clockwise to the first. No latch,
+     * for the switch's reason: the write is idempotent, so a flick of a dozen
+     * detents all say the same thing.
+     *
+     * Per param and opt-in; tests/host/test_fleet_render_baseline.sh is what
+     * says nothing undeclared moved.
+     */
+    if (isTwoWayMeta(meta) && meta.turn === "absolute") {
+        state.detentAccum = 0;
+        state.value = delta > 0 ? 1 : 0;
+        return state.value;
+    }
+
     if (isTwoWayMeta(meta)) {
         const t = typeof nowMs === "number" ? nowMs : 0;
         const last = state.lastTwoWayMs;
