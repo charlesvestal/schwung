@@ -9,7 +9,32 @@
 
 <p class="muted" id="controls-status" role="status" aria-live="polite">Loading&hellip;</p>
 
-<section class="info-card" aria-labelledby="pages-heading">
+<section class="info-card controls" aria-labelledby="cc-heading">
+    <h2 id="cc-heading">CC map</h2>
+    <p class="muted">
+        Any MIDI controller's CCs (USB-A) drive parameters, with Surface set to
+        <strong>CC Only</strong> or beside a surface. A bound CC is taken from
+        Move. On the device: Shift+Vol+Sample for learn, or Master FX Settings
+        &rarr; CC Map.
+    </p>
+    <div class="table-scroll">
+        <table class="data-table controls-cc" id="cc-table">
+            <colgroup><col class="c-ch"><col class="c-cc"><col class="c-mode"><col><col class="c-act"></colgroup>
+            <thead><tr><th scope="col">Channel</th><th scope="col">CC</th><th scope="col">Mode</th><th scope="col">Parameter</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody></tbody>
+            <tfoot>
+                <tr class="controls-cc-add">
+                    <td data-label="Channel"><select id="cc-add-ch" aria-label="New binding channel"></select></td>
+                    <td data-label="CC"><input id="cc-add-cc" type="number" min="0" max="127" value="1" inputmode="numeric" aria-label="New binding CC number"></td>
+                    <td data-label="Mode"><select id="cc-add-mode" aria-label="New binding mode"><option value="abs">Absolute</option><option value="rel">Relative</option></select></td>
+                    <td colspan="2"><button type="button" class="btn btn-secondary" id="cc-add">Add binding&hellip;</button></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</section>
+
+<section class="info-card controls" aria-labelledby="pages-heading">
     <h2 id="pages-heading">Surface pages</h2>
     <p class="muted">
         The <strong>Custom</strong> layout on an E16 or EC4 (Global Settings &rarr;
@@ -19,34 +44,6 @@
     </p>
     <div id="pages"></div>
     <button type="button" class="btn btn-secondary" id="add-page">Add page</button>
-</section>
-
-<section class="info-card" aria-labelledby="cc-heading">
-    <h2 id="cc-heading">CC map</h2>
-    <p class="muted">
-        Any MIDI controller's CCs (USB-A) drive parameters, with Surface set to
-        <strong>CC Only</strong> or beside a surface. A bound CC is taken from
-        Move. On the device: Shift+Vol+Sample for learn, or Master FX Settings
-        &rarr; CC Map.
-    </p>
-    <div class="table-scroll">
-        <table class="data-table" id="cc-table">
-            <thead><tr><th scope="col">Channel</th><th scope="col">CC</th><th scope="col">Mode</th><th scope="col">Parameter</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-            <tbody></tbody>
-        </table>
-    </div>
-    <form id="cc-add" class="toolbar-row controls-add">
-        <label>Channel
-            <select id="cc-add-ch"></select>
-        </label>
-        <label>CC
-            <input id="cc-add-cc" type="number" min="0" max="127" value="1" required>
-        </label>
-        <label>Mode
-            <select id="cc-add-mode"><option value="abs">Absolute</option><option value="rel">Relative</option></select>
-        </label>
-        <button type="submit" class="btn btn-secondary">Add binding&hellip;</button>
-    </form>
 </section>
 
 <dialog id="picker" aria-labelledby="picker-title" class="controls-picker">
@@ -65,29 +62,81 @@
 </dialog>
 
 <style>
+#controls-status { margin: 0 0 var(--space-lg, 1.5rem); }
+.controls > .muted { margin-bottom: var(--space-md, 1rem); }
+/* One control height everywhere, Safari included: a native select ignores
+ * padding and height unless its appearance is reset. */
+.controls select, .controls input[type="number"], .controls input[type="text"],
+.controls-picker select, .controls-picker input {
+    height: 2.5rem; min-height: 2.5rem; box-sizing: border-box; font-size: 0.95rem;
+    padding: 0 0.75rem; margin: 0;
+}
+.controls select, .controls-picker select {
+    -webkit-appearance: none; appearance: none; padding-right: 2rem; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239d9ba3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 0.75rem center;
+}
+.controls .btn { height: 2.5rem; display: inline-flex; align-items: center; white-space: nowrap; }
+/* The CC table: fixed columns, and the add row is its last row, so it lines up. */
+.controls-cc { table-layout: fixed; width: 100%; }
+.controls-cc col.c-ch { width: 6.5rem; }
+.controls-cc col.c-cc { width: 6rem; }
+.controls-cc col.c-mode { width: 10rem; }
+.controls-cc col.c-act { width: 7rem; }
+.controls-cc td { vertical-align: middle; padding-top: 0.5rem; padding-bottom: 0.5rem; }
+.controls-cc tbody td:last-child { text-align: right; }
+.controls-cc tfoot td { border-top: 1px solid var(--border); padding-top: 0.75rem; }
+.controls-cc select, .controls-cc input { width: 100%; }
+.controls-num { font-family: var(--font-mono); }
+/* A target is a button that looks like what it is: a name, and where. */
+.controls-target { display: block; width: 100%; text-align: left; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 0.35rem 0.6rem; cursor: pointer; }
+.controls-target:hover, .controls-target:focus-visible { background: var(--bg-card-hover); border-color: var(--accent); }
+.controls-target .l { display: block; font-weight: 600; }
+.controls-target .s { display: block; font-size: 0.78rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.controls-target.dark .l { color: var(--text-muted); text-decoration: line-through; }
+/* Surface pages */
 .controls-page { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem; margin: 0 0 1rem; }
-.controls-page-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
-.controls-page-head input { font: inherit; flex: 1 1 10rem; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.3rem 0.5rem; }
+.controls-page-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+.controls-page-head .num { font-family: var(--font-mono); color: var(--text-muted); width: 1.5rem; text-align: right; }
+.controls-page-head input { flex: 1 1 auto; min-width: 0; width: auto; }
 .controls-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.4rem; }
-.controls-knob { text-align: left; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.45rem 0.5rem; min-height: 3.6rem; cursor: pointer; overflow: hidden; }
+.controls-knob { text-align: left; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 0.45rem 0.55rem; min-height: 3.6rem; cursor: pointer; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: flex-start; }
 .controls-knob:hover, .controls-knob:focus-visible { background: var(--bg-card-hover); border-color: var(--accent); }
 .controls-knob .n { display: block; font-size: 0.7rem; color: var(--text-muted); }
 .controls-knob .l { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .controls-knob .s { display: block; font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .controls-knob.empty .l { color: var(--text-muted); font-weight: 400; }
-.controls-knob.dark .l, .controls-dark { color: var(--text-muted); text-decoration: line-through; }
-.controls-add { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin-top: 0.75rem; }
-.controls-add label, .controls-picker label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--text-muted); gap: 0.2rem; }
-.controls-add input, .controls-add select, .controls-picker select, .controls-picker input, #cc-table select { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.3rem 0.4rem; }
-.controls-add input { width: 5rem; }
+.controls-knob.dark .l { color: var(--text-muted); text-decoration: line-through; }
+/* The picker */
 dialog.controls-picker { max-width: 560px; margin: auto; }
-.controls-picker-where { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.5rem; }
-.controls-picker-search input { width: 100%; }
-.controls-picker-list { list-style: none; margin: 0.5rem 0; padding: 0; max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-.controls-picker-list button { display: flex; justify-content: space-between; gap: 1rem; width: 100%; text-align: left; font: inherit; color: var(--text); background: none; border: 0; border-bottom: 1px solid var(--border); padding: 0.45rem 0.6rem; cursor: pointer; }
+.controls-picker label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--text-muted); gap: 0.25rem; }
+.controls-picker-where { display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; margin-bottom: 0.75rem; }
+.controls-picker select, .controls-picker input { width: 100%; }
+.controls-picker-list { list-style: none; margin: 0.5rem 0 1rem; padding: 0; max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.controls-picker-list:empty { display: none; }
+.controls-picker-list button { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; width: 100%; text-align: left; font: inherit; color: var(--text); background: none; border: 0; border-bottom: 1px solid var(--border); padding: 0.5rem 0.7rem; cursor: pointer; }
+.controls-picker-list li:last-child button { border-bottom: 0; }
 .controls-picker-list button:hover, .controls-picker-list button:focus-visible { background: var(--bg-card-hover); }
 .controls-picker-list .k { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.8rem; }
-@media (max-width: 480px) { .controls-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) {
+    .controls-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* The CC table becomes one card per binding: a table this wide cannot
+     * fit a phone, and scrolling it sideways hides the parameter. */
+    .controls-cc, .controls-cc tbody, .controls-cc tfoot { display: block; }
+    .controls-cc thead, .controls-cc colgroup { display: none; }
+    .controls-cc tr { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 0.5rem 0.75rem;
+        padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+    .controls-cc td { display: block; padding: 0; border: 0; text-align: left; }
+    .controls-cc tbody td:last-child { text-align: left; }
+    .controls-cc td[data-label]::before { content: attr(data-label); display: block; font-size: 0.72rem;
+        color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.2rem; }
+    .controls-cc td:nth-child(4), .controls-cc td:nth-child(5) { grid-column: 1 / -1; }
+    .controls-cc tfoot td { border-top: 0; padding-top: 0; }
+    .controls-cc .btn { width: 100%; justify-content: center; }
+}
 </style>
 
 <script type="module" src="/static/controls.js"></script>
