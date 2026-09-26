@@ -105,7 +105,8 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
-import { createLayoutEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
+import { createLayoutEditor, createCCEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
+import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -470,7 +471,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // One FX bus's 8-position editor (master or a send)
     FX_BUS_PICKER: "fxbuspicker", // Which FX bus to edit: Master FX, Send A, Send B
-    SURFACE_LAYOUT: "surfacelayout", // Master FX Settings -> Surface Layout (control_editor.mjs)
+    SURFACE_LAYOUT: "surfacelayout", // Master FX Settings -> Surface Layout / CC Map (control_editor.mjs)
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
@@ -3631,21 +3632,34 @@ function surfaceLayoutEd() {
     }
     return surfaceLayoutEditor;
 }
+let ccEditor = null;
+function ccEd() {
+    if (!ccEditor) {
+        ccEditor = createCCEditor({
+            controls: () => controlHost.controls(),
+            edit: (fn) => controlHost.edit(fn),
+            ccMap,
+        });
+    }
+    return ccEditor;
+}
+/* The editor on screen: Surface Layout or CC Map -- one view, two lists. */
+let activeControlEditor = null;
 
-function enterSurfaceLayoutEditor() {
+function enterControlEditor(ed, title) {
     controlHost.reconcile();
-    const ed = surfaceLayoutEd();
+    activeControlEditor = ed;
     ed.reset();
     setView(VIEWS.SURFACE_LAYOUT);
     needsRedraw = true;
     const r = ed.rows()[0];
-    announce("Surface Layout" + (r ? ", " + r.label : ""));
+    announce(title + (r ? ", " + r.label : ""));
 }
 
 function drawSurfaceLayoutEditor() {
     /* The web editor may have changed the file: re-read by content, <= 1 Hz. */
     controlHost.reconcile();
-    const ed = surfaceLayoutEd();
+    const ed = activeControlEditor || surfaceLayoutEd();
     const rows = ed.rows();
     clear_screen();
     drawHeader(ed.title());
@@ -3658,20 +3672,24 @@ function drawSurfaceLayoutEditor() {
         valueAlignRight: true,
     });
     const r = rows[ed.cursor];
-    const verb = !r ? "" : r.kind === "page" ? "Click: open" : r.kind === "add" ? "Click: add"
-        : r.kind === "rename" ? "Click: rename" : r.kind === "knob" ? (r.value === "--" ? "" : "Click: clear")
-        : r.kind === "delete" ? "Click: delete" : "Click: move";
+    const verb = !r ? "" : (r.kind === "page" || r.kind === "binding") ? "Click: open"
+        : r.kind === "add" ? "Click: add" : r.kind === "rename" ? "Click: rename"
+        : r.kind === "knob" ? (r.value === "--" ? "" : "Click: clear")
+        : r.kind === "delete" ? "Click: delete" : r.kind === "mode" ? "Click: toggle"
+        : r.kind === "learn" ? (ccMap.learning ? "Click: cancel" : "Click: learn") : "Click: move";
     drawFooter(verb ? [verb, "Back"] : ["Back"]);
+    /* Learn progresses without input on this screen. */
+    if (r && r.kind === "learn") needsRedraw = true;
 }
 
 function surfaceLayoutJog(delta) {
-    const r = surfaceLayoutEd().jog(delta);
+    const r = (activeControlEditor || surfaceLayoutEd()).jog(delta);
     if (r) announceMenuItem(r.label, r.value || "");
     needsRedraw = true;
 }
 
 function surfaceLayoutSelect() {
-    const ed = surfaceLayoutEd();
+    const ed = activeControlEditor || surfaceLayoutEd();
     const out = ed.click();
     if (out && out.rename) {
         const i = out.rename.page;
@@ -3689,7 +3707,7 @@ function surfaceLayoutSelect() {
 }
 
 function surfaceLayoutBack() {
-    if (surfaceLayoutEd().back()) { enterMasterFxSettings(); return; }
+    if ((activeControlEditor || surfaceLayoutEd()).back()) { activeControlEditor = null; enterMasterFxSettings(); return; }
     needsRedraw = true;
 }
 
@@ -4587,6 +4605,8 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     /* The Custom surface layout's pages -- per set, so here, not in Global
      * Settings. Opens its own list (control_editor.mjs). */
     { key: "surface_layout", label: "Surface Layout", type: "action" },
+    /* Any controller's CCs bound to parameters, per set (cc_map.mjs). */
+    { key: "cc_map", label: "CC Map", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -10868,6 +10888,29 @@ const controlHost = createControlHost({
     },
 });
 
+/*
+ * THE GENERIC CC MAP (cc_map.mjs): any controller's CC drives a parameter,
+ * per set. The shim hands over only bound CCs (and swallows them from Move),
+ * or every CC while learning -- via the claim table restated below.
+ */
+const ccMap = createCCMap({
+    controls: () => controlHost.controls(),
+    edit: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
+    setShimLearn: (on) => { if (typeof host_cc_learn === "function") host_cc_learn(!!on); },
+    announce: (text) => announce(text),
+});
+/* The claim table follows the document: restated whenever it changes. */
+let ccClaimRev = -1;
+function reconcileCcClaim_() {
+    const doc = controlHost.controls();
+    if (doc.rev === ccClaimRev) return;
+    ccClaimRev = doc.rev;
+    ccMap.reload();
+    if (typeof host_cc_claim_set === "function") host_cc_claim_set(ccMap.claimPairs());
+}
+
 /* A surface's OWN writes (its page controller, its Mixer) go through here so
  * the learn broker never mistakes them for the user choosing a parameter. */
 function surfaceSetParam(slot, key, value) {
@@ -11271,7 +11314,11 @@ function loadExternalSurfaceConfig() {
 function externalSurfaceTick() {
     /* The per-set control document: loaded on a set change, and re-read when
      * another writer (the web editor) changed it. Only while a surface is on. */
-    if (externalSurfaceMode) controlHost.reconcile();
+    /* The control document is loaded whatever the Surface setting: the CC
+     * map works under CC Only, and beside a surface. */
+    controlHost.reconcile();
+    reconcileCcClaim_();
+    ccMap.tick();
     for (const sf of externalSurfaces()) sf.tick();
 }
 
@@ -11720,11 +11767,11 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
-    if (key === "surface_layout") {
+    if (key === "surface_layout" || key === "cc_map") {
         /* From the grid this runs from the menu INTENT, after the controller
          * has finished with its input, so leaving the grid here is safe. */
         if (paramPagesActive()) exitParamPages();
-        enterSurfaceLayoutEditor();
+        enterControlEditor(key === "cc_map" ? ccEd() : surfaceLayoutEd(), key === "cc_map" ? "CC Map" : "Surface Layout");
         return;
     }
     if (key === "mfx_lfo1" || key === "mfx_lfo2") {
@@ -27888,6 +27935,12 @@ globalThis.onMidiMessageExternal = function(data) {
      * 1-3 byte fragments, so a branch that could skip one fragment would leave
      * the assembler holding half a message and splice the next one onto it. */
     externalSurfaceMidi(data);
+    /* The CC map, never for a message the active surface claims (its own
+     * encoders: CC 1-16 on channel 1 -- e16_claim.h, the EC4 uses the same). */
+    if (data && data.length >= 3 && (data[0] & 0xF0) === 0xB0) {
+        const claimed = externalSurfaceMode !== 0 && (data[0] & 0x0F) === 0 && data[1] >= 1 && data[1] <= 16;
+        try { ccMap.feed(data[0], data[1], data[2], claimed); } catch (e) {}
+    }
     if (dispatchCanvasMidi(data, "external")) {
         needsRedraw = true;
     }

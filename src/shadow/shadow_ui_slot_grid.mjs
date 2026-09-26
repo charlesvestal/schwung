@@ -613,6 +613,7 @@ export const MASTER_GRID_ACTIONS = [
     /* The Custom surface layout's pages (per set, so here). Opens its own
      * list, control_editor.mjs; handleMasterFxSettingsAction routes it. */
     { label: "Surface Layout", action: "surface_layout", always: true },
+    { label: "CC Map", action: "cc_map", always: true },
 ];
 
 /**

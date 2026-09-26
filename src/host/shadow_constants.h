@@ -30,6 +30,7 @@
 #define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN (test bus owns it during overtake) */
 #define SHM_SHADOW_MIDI_INJECT_UI "/schwung-midi-inject-ui" /* shadow UI's own inject — always bound for Move's firmware */
 #define SHM_SHADOW_EXT_MIDI_REMAP "/schwung-ext-midi-remap" /* Cable-2 channel remap table */
+#define SHM_SHADOW_CC_CLAIM       "/schwung-cc-claim"       /* CC map: which external CCs are bound */
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_TEST_STREAM_MIDI_OUT "/schwung-test-stream-midi-out" /* Shim → schwung-testd MIDI_OUT events (E2E test bus, dev-only) */
@@ -1198,5 +1199,21 @@ typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SH
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) <= SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_floor_check[(SHADOW_OVERLAY_BUFFER_SIZE >= 512) ? 1 : -1];
 typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
+
+/*
+ * THE GENERIC CC MAP'S CLAIM TABLE (cc_claim.h has the routing and the why).
+ * The shadow UI writes it; the shim reads it in the cable-2 walk, AFTER the
+ * surface's own claim. `count` is non-zero while any CC is bound (saturating
+ * -- it is a fast path, not a tally); `learn` publishes every CC to the UI
+ * without swallowing it, so a controller keeps working while one is picked.
+ */
+typedef struct schwung_cc_claim_t {
+    volatile uint8_t version;        /* CC_CLAIM_VERSION */
+    volatile uint8_t learn;          /* 1 = the UI is learning a CC */
+    volatile uint8_t count;          /* 0 = nothing bound: one comparison per CC */
+    uint8_t _reserved[5];
+    volatile uint8_t bits[256];      /* bit (channel * 128 + cc) = bound */
+} schwung_cc_claim_t;                /* 264 bytes */
+typedef char schwung_cc_claim_size_check[(sizeof(schwung_cc_claim_t) == 264) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

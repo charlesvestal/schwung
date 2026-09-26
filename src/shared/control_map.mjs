@@ -5,10 +5,11 @@
  *     "surface": { "pages": [ { "name": "Drums", "knobs": [ target|null x16 ] } ] },
  *     "cc": [ ... ] }
  *
- * `surface` is the Custom layout's pages (layout_custom.mjs). `cc` belongs to
- * the generic CC map, built next on the same targets -- this build does not
- * interpret it and carries it through VERBATIM, as it does any other key it
- * does not know, so an older build can never erase what a newer one wrote.
+ * `surface` is the Custom layout's pages (layout_custom.mjs); `cc` is the
+ * generic CC map's bindings (cc_map.mjs): { cable 2, channel 0-15, cc 0-127,
+ * mode "abs" | "rel", target }, one binding per (channel, cc). Any OTHER key
+ * is carried through a save VERBATIM, so an older build can never erase what
+ * a newer one wrote.
  *
  * TOLERANT, NEVER THROWING. A file edited by hand, by the web editor, or by a
  * later build loads with whatever it cannot use left empty: a bad target is an
@@ -32,7 +33,20 @@ const cleanName = (n, i) => {
 };
 
 export function emptyControls() {
-    return { version: CONTROLS_VERSION, surface: { pages: [] }, extra: {} };
+    return { version: CONTROLS_VERSION, surface: { pages: [] }, cc: [], extra: {} };
+}
+
+export const CC_MODES = ["abs", "rel"];
+
+/* A valid CC binding, or null. External input only (cable 2): Move's own
+ * knobs are cable 0 and belong to each slot's Knob Mapping. */
+export function normalizeBinding(b) {
+    if (!b || typeof b !== "object") return null;
+    const ch = b.channel, cc = b.cc;
+    if (!Number.isInteger(ch) || ch < 0 || ch > 15 || !Number.isInteger(cc) || cc < 0 || cc > 127) return null;
+    const target = normalizeTarget(b.target);
+    if (!target) return null;
+    return { cable: 2, channel: ch, cc, mode: CC_MODES.includes(b.mode) ? b.mode : "abs", target };
 }
 
 function normalizePage(p, i) {
@@ -62,8 +76,17 @@ export function parseControls(text) {
         const p = normalizePage(pages[i], doc.surface.pages.length);
         if (p) doc.surface.pages.push(p);
     }
+    /* One binding per (channel, cc): a later one replaces an earlier. */
+    if (Array.isArray(raw.cc)) {
+        for (const b of raw.cc) {
+            const n = normalizeBinding(b);
+            if (!n) continue;
+            doc.cc = doc.cc.filter((x) => !(x.channel === n.channel && x.cc === n.cc));
+            doc.cc.push(n);
+        }
+    }
     for (const k of Object.keys(raw)) {
-        if (k !== "version" && k !== "surface") doc.extra[k] = raw[k];
+        if (k !== "version" && k !== "surface" && k !== "cc") doc.extra[k] = raw[k];
     }
     return { doc, ok: true };
 }
@@ -71,6 +94,7 @@ export function parseControls(text) {
 export function serializeControls(doc) {
     const out = { version: CONTROLS_VERSION };
     out.surface = { pages: doc.surface.pages.map((p) => ({ name: p.name, knobs: p.knobs.slice() })) };
+    out.cc = (doc.cc || []).map((b) => ({ cable: 2, channel: b.channel, cc: b.cc, mode: b.mode, target: b.target }));
     for (const k of Object.keys(doc.extra || {})) out[k] = doc.extra[k];
     return JSON.stringify(out, null, 1);
 }
@@ -78,7 +102,32 @@ export function serializeControls(doc) {
 /* ---- edits: each returns a new document (or the same one when refused) ---- */
 
 function withPages(doc, pages) {
-    return { version: doc.version, surface: { pages }, extra: doc.extra };
+    return { version: doc.version, surface: { pages }, cc: doc.cc || [], extra: doc.extra };
+}
+
+function withCC(doc, cc) {
+    return { version: doc.version, surface: doc.surface, cc, extra: doc.extra };
+}
+
+/** Bind (channel, cc) to a target; replaces a binding on the same CC. */
+export function bindCC(doc, binding) {
+    const n = normalizeBinding(binding);
+    if (!n) return doc;
+    return withCC(doc, (doc.cc || []).filter((x) => !(x.channel === n.channel && x.cc === n.cc)).concat([n]));
+}
+
+export function unbindCC(doc, i) {
+    const cc = doc.cc || [];
+    if (!cc[i]) return doc;
+    return withCC(doc, cc.filter((_, j) => j !== i));
+}
+
+export function setCCMode(doc, i, mode) {
+    const cc = doc.cc || [];
+    if (!cc[i] || !CC_MODES.includes(mode)) return doc;
+    const next = cc.slice();
+    next[i] = Object.assign({}, cc[i], { mode });
+    return withCC(doc, next);
 }
 
 /** Insert a page at `at` (default: the end). Refused at MAX_PAGES. */
