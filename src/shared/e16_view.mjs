@@ -578,7 +578,7 @@ export function renderCustomPage(ctx, scr) {
         /* Armed: move a parameter on Move to assign, or turn THIS knob --
          * clockwise clears, anticlockwise cancels. An empty knob has nothing
          * to clear. */
-        if (e === scr.armed) return { label: "LEARN", value: c ? "R:clear" : "", meta: {}, enc: e };
+        if (e === scr.armed) return { label: "LEARN", value: c ? "clear?" : "", meta: {}, enc: e };
         if (!c || c.status === "live") return c;
         return Object.assign({}, c, { value: "--", meta: {} });
     });
