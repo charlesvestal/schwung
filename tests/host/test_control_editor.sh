@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 node --input-type=module -e '
-import { createLayoutEditor } from "./src/shared/control_editor.mjs";
+import { createLayoutEditor, createCCEditor } from "./src/shared/control_editor.mjs";
 import { emptyControls, addPage, assignKnob } from "./src/shared/control_map.mjs";
 let fails = 0;
 const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
@@ -43,6 +43,24 @@ eq("Back drops the question, not the screen", [ed.back(), ed.level], [false, "pa
 ed.click(); ed.click();
 eq("the second click deletes, back to the list", [doc.surface.pages.map((p) => p.name), ed.level], [["Bass", "Page 3"], "pages"]);
 eq("Back at the top leaves", ed.back(), true);
+/* ---- the CC Map editor: Back must NOT cancel a learn -- you leave the
+ * screen to find the parameter (hardware, 2026-09-26: learn never worked). */
+{
+  let learning = null, cancelled = 0;
+  const ccMap = { get learning() { return learning; }, beginLearn() { learning = { cc: null, target: null }; },
+                  cancelLearn() { learning = null; cancelled++; }, reload() {} };
+  const cdoc = { cc: [] };
+  const ce = createCCEditor({ controls: () => cdoc, edit: () => cdoc, ccMap });
+  eq("the list ends with Learn New", ce.rows().map((r) => r.label), ["Learn New"]);
+  ce.click();
+  eq("clicking starts learn, and the row says what it waits for, SHORT",
+     [ce.rows()[0].label, ce.rows()[0].value], ["Cancel Learn", "knob+param?"]);
+  eq("Back leaves the screen...", ce.back(), true);
+  eq("...and learn keeps running", [!!learning, cancelled], [true, 0]);
+  ce.click();
+  eq("Cancel Learn cancels", [learning, cancelled], [null, 1]);
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '

@@ -10899,7 +10899,8 @@ const ccMap = createCCMap({
     targets: controlHost.targets,
     learn: controlHost.learn,
     setShimLearn: (on) => { if (typeof host_cc_learn === "function") host_cc_learn(!!on); },
-    announce: (text) => announce(text),
+    /* On screen wherever the user is (the overlay also speaks). */
+    notify: (title, text) => { showOverlay(title, text, 90); needsRedraw = true; },
 });
 /* The claim table follows the document: restated whenever it changes. */
 let ccClaimRev = -1;
