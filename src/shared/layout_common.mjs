@@ -30,6 +30,8 @@
  *                     { kind: "empty",  slot }
  *                     { kind: "message", slot, component, text }  (no controls /
  *                                        loading: never a blank page)
+ *                     { kind: "custom", view, turnHint, armed }   (layout_custom)
+ *                     { kind: "pagemap", names[16], current, canAdd }
  *                     { kind: "knobs",  view, component, navCells, empty }
  *                   A device renders every kind; screenLabels() below turns
  *                   any of them into sixteen short names for a text device.
@@ -165,6 +167,13 @@ export function createReadings() {
     };
 }
 
+/* A page name in four characters that still tells pages apart: a default
+ * "Page 12" is "P12" (abbrev4 would make every default page "PAGE"). */
+export function pageShort(name) {
+    const m = /^page\s*(\d+)$/i.exec(String(name || "").trim());
+    return m ? ("P" + m[1]).slice(0, 4) : abbrev4(name);
+}
+
 /*
  * SIXTEEN SHORT NAMES AND A TITLE, for a text device (the EC4's names, the
  * E16's LABELS mode), from any screen. Names are not padded or case-folded:
@@ -204,6 +213,29 @@ export function screenLabels(screen, opts) {
             } else labels[e] = m.cell(e).label || "";
         }
         return { title: "MIXER", labels };
+    }
+    if (s.kind === "pagemap") {
+        /* The Custom layout's page map: page names, the current one marked,
+         * and a "+" where a push adds the next page. */
+        let added = false;
+        for (let i = 0; i < ENCODERS; i++) {
+            const n = (s.names || [])[i];
+            if (n) labels[i] = (i === s.current ? ">" : "") + pageShort(n);
+            else if (!added && s.canAdd !== false) { labels[i] = "+"; added = true; }
+        }
+        return { title: "PAGES", labels };
+    }
+    if (s.kind === "custom") {
+        const cells = (s.view && s.view.cells) || [];
+        for (let e = 0; e < ENCODERS; e++) {
+            const c = cells[e];
+            if (e === s.armed) labels[e] = "LRN";
+            else if (!c) labels[e] = "";
+            /* A dark knob keeps its name, marked: it says what it was for. */
+            else labels[e] = c.status === "live" ? abbrev4(c.label) : "-" + abbrev4(c.label).slice(0, 3);
+        }
+        const h = s.view && s.view.headers && s.view.headers[0];
+        return { title: String(h ? h.name : "").toUpperCase().slice(0, 16), labels };
     }
     if (s.kind === "message") {
         return { title: String(s.text || "").toUpperCase().slice(0, 16), labels };
