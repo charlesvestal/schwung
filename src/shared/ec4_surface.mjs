@@ -519,7 +519,7 @@ export function createEc4Surface(io) {
             if (!isActive) return;
             syncLayout();
             layout.tick(t);
-            binding.sync();
+            binding.sync(layout.pagesShown);
             binding.tick();
             names.set(namesNow());
             const rows = overlayNow(t);
