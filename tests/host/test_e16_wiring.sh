@@ -850,8 +850,11 @@ grep -q "e16Nav = null" "$UI" && note "e16Nav is still the null seam"
 
 # Driven from the tick and from the external MIDI path. A constructed surface
 # nobody calls is the same gap one layer up.
-grep -q "e16Surface.tick()" "$UI" || note "the surface is never ticked"
-grep -q "e16Surface.feedMidi(data)" "$UI" || note "external MIDI never reaches the surface"
+# Through the registry (every surface, one loop each), so the pin is that the
+# E16 AND the EC4 are IN it and that the loops call what they must.
+grep -qE "return \[e16Surface, ec4Surface\]" "$UI" || note "the surfaces are not in externalSurfaces()"
+grep -qE "for \(const sf of externalSurfaces\(\)\) sf\.tick\(\)" "$UI" || note "the surface is never ticked"
+grep -qE "for \(const sf of externalSurfaces\(\)\) sf\.feedMidi\(data\)" "$UI" || note "external MIDI never reaches the surface"
 
 # ITS OWN CONTROLLER. The io must CONSTRUCT one inside makeController; handing
 # over the grid's existing controller is the shared-page bug, and it cannot be

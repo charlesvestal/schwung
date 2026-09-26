@@ -4,6 +4,15 @@ What the E16 accepts when a host takes it over, and the fixed input map that
 comes with it. Everything here is confirmed on hardware (2026-09-09) unless
 marked otherwise.
 
+## The surface, and what it shares
+
+The E16 is one of two external surfaces (Global Settings → System → Ext
+Surface); the other is the Faderfox EC4 (`docs/EC4_SURFACE.md`). What they
+DRIVE is shared in `src/shared/surface_core.mjs` — the focus, the page
+controller, the knob feel and presence — and this file is about the E16's
+wire. The Mixer is a **tap** of Shift on both devices (it was a double tap
+while the E16 was alone); a hold is the slot map.
+
 ## Getting the spec
 
 OXI publishes it as a Google Sheet. The forum preview renders it as *"This

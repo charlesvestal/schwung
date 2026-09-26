@@ -30,6 +30,9 @@
  * call sites in shadow_ui.js.
  */
 import { enterMsg, exitMsg, isAck, packetize, parseOledUpdateReply } from "./e16_protocol.mjs";
+import { ATOMIC_MAX_PACKETS, SHIFT_TAP_MS, createPresence, createSysexAssembler,
+         createFocus, createBinding, createKnobFeel } from "./surface_core.mjs";
+export { createSysexAssembler, MAX_SYSEX, SHIFT_TAP_MS } from "./surface_core.mjs";
 
 /* Seeking cadence.  Slow enough to be free, fast enough that plugging a device
  * in feels immediate. */
@@ -127,7 +130,8 @@ export const STRIP_H = 1;
  * RING_CHUNKS_PER_MSG to a message (11 packets). STRIP_H was 2: a full-width
  * 2-row strip is ~17 packets -- two frames, and every one of them spliceable.
  */
-export const ATOMIC_MAX_PACKETS = 12;
+/* Defined once for every surface (surface_core.mjs); re-exported here. */
+export { ATOMIC_MAX_PACKETS };
 export const RING_CHUNKS_PER_MSG = 3;
 
 /*
@@ -319,148 +323,22 @@ export const RING_ECHO_MS = 400;
  */
 export function createLifecycle(opts) {
     const o = opts || {};
-    const probeMs = o.probeMs === undefined ? PROBE_MS : o.probeMs;
-    const keepaliveMs = o.keepaliveMs === undefined ? KEEPALIVE_MS : o.keepaliveMs;
-    const lossMs = o.lossMs === undefined ? LOSS_MS : o.lossMs;
-
-    let enabled = false;
-    let present = false;
-    let lastProbe = -Infinity;   /* when a probe was actually SENT */
-    let lastAck = -Infinity;
-    /*
-     * EXIT is owed, not sent-and-forgotten.  `send` returns false when the
-     * outbound buffer is full, which means retry (docs/SYSEX.md, "OUT"); a
-     * dropped EXIT leaves the device blank with the surface switched off, and
-     * nothing would ever send another one.  So the intent is latched here and
-     * drained by tick() -- which is why tick() does work even while disabled.
-     */
-    let exitOwed = false;
-
-    /* A send that reports false has NOT gone out.  Treating it as sent is the
-     * one mistake this wrapper exists to prevent: the probe clock would
-     * advance past a message the device never saw. */
-    const emit = (send, bytes) => {
-        try { return send(packetize(bytes)) !== false; }
-        catch (e) { return false; }
-    };
-
-    return {
-        /**
-         * Turn the surface on or off.  Idempotent -- a repeated `true` must not
-         * re-send EXIT, and a repeated `false` must not send a second one.
-         */
-        setEnabled(on, now, send) {
-            on = !!on;
-            if (on === enabled) return;
-            enabled = on;
-            if (on) {
-                /*
-                 * Probe on the very next tick rather than after a full period:
-                 * switching the setting on is the user asking for the device
-                 * now.  `lastAck` is armed to `now` so the loss timer measures
-                 * silence since we started looking, not since the epoch.
-                 */
-                lastProbe = -Infinity;
-                lastAck = now;
-                exitOwed = false;
-                return;
-            }
-            present = false;
-            exitOwed = true;
-            if (emit(send, exitMsg())) exitOwed = false;
-        },
-
-        /**
-         * One frame of the machine.  Sends at most one message.
-         */
-        tick(now, send) {
-            if (exitOwed) {
-                /* Owed from a disable whose send was refused.  Nothing else can
-                 * happen until the device has been given back. */
-                if (emit(send, exitMsg())) exitOwed = false;
-                return;
-            }
-            if (!enabled) return;
-
-            /* Presence expires on SILENCE, never on a probe going out: the
-             * device answers a probe with an ACK, so the ACK clock is the only
-             * evidence there is. */
-            if (present && now - lastAck >= lossMs) {
-                present = false;
-                /* Seek again immediately -- a replug should not wait out the
-                 * remainder of a keepalive period. */
-                lastProbe = -Infinity;
-            }
-
-            const period = present ? keepaliveMs : probeMs;
-            if (now - lastProbe < period) return;
-            if (emit(send, enterMsg())) lastProbe = now;
-        },
-
-        /**
-         * A reassembled inbound SysEx body (everything between F0 and F7).
-         *
-         * Anything that is not our ACK is ignored rather than rejected: the
-         * external port is shared, and another device's manufacturer ID is not
-         * an error.
-         */
-        onSysex(asm, now) {
-            if (!isAck(asm)) return false;
-            present = true;
-            lastAck = (now === undefined || now === null) ? lastAck : now;
-            return true;
-        },
-
-        get enabled() { return enabled; },
-        get present() { return present; },
-    };
+    return createPresence({
+        probeMs: o.probeMs === undefined ? PROBE_MS : o.probeMs,
+        keepaliveMs: o.keepaliveMs === undefined ? KEEPALIVE_MS : o.keepaliveMs,
+        lossMs: o.lossMs === undefined ? LOSS_MS : o.lossMs,
+        /* ENTER is the probe AND what puts a replugged E16 back in remote
+         * mode; its ACK is the only evidence the device is there; EXIT is
+         * the owed goodbye. */
+        probeMsg: enterMsg,
+        isReply: isAck,
+        exitMsg,
+        packetize,
+    });
 }
 
-/*
- * Inbound SysEx reassembly.
- *
- * `onMidiMessageExternal` hands over 1-3 bytes at a time with the USB-MIDI CIN
- * already stripped, and there is no length field to trust -- an end packet's
- * trailing bytes are padding.  docs/SYSEX.md spells out the four behaviours;
- * the last two are the ones that get skipped:
- *
- *   - start on F0, complete on F7
- *   - SKIP anything >= F8.  System realtime (clock, start, stop) legitimately
- *     interleaves inside a SysEx message and is not part of it.
- *   - ABORT on any other status byte >= 0x80.  The message was interrupted,
- *     and splicing what follows onto it yields a plausible third message that
- *     is pure fiction -- worse than a dropped one, because it parses.
- *   - CAP the buffer, or one lost F7 leaks until the process dies.
- */
-export const MAX_SYSEX = 1024;
-
-export function createSysexAssembler(opts) {
-    const o = opts || {};
-    const max = o.max === undefined ? MAX_SYSEX : o.max;
-    const onMessage = o.onMessage || (() => {});
-    let buf = null;
-
-    return {
-        /** @param {ArrayLike<number>} bytes 1-3 bytes as delivered. */
-        feed(bytes) {
-            for (let i = 0; i < bytes.length; i++) {
-                const b = bytes[i] & 0xFF;
-                if (b >= 0xF8) continue;
-                if (b === 0xF0) { buf = []; continue; }
-                if (b === 0xF7) {
-                    if (buf) { const done = buf; buf = null; onMessage(done); }
-                    continue;
-                }
-                if (b >= 0x80) { buf = null; continue; }   /* interrupted */
-                if (!buf) continue;                        /* stray data byte */
-                if (buf.length >= max) { buf = null; continue; }
-                buf.push(b);
-            }
-        },
-        /** Test seam: is a message part-assembled right now? */
-        get pending() { return buf ? buf.length : -1; },
-    };
-}
+/* Inbound SysEx reassembly lives in surface_core.mjs (createSysexAssembler),
+ * shared with every surface, and is re-exported above. */
 
 /*
  * ---------------------------------------------------------------------------
@@ -1188,13 +1066,14 @@ export const MAP_MAX_HOLD_MS = 10000;
 export const MAP_SHOW_DELAY_MS = 400;
 
 /*
- * DOUBLE-TAP SHIFT TOGGLES THE MIXER (e16_mixer.mjs). Two complete presses,
- * each released within this long of its press, the second within this long
- * of the first release. A double TAP, not a held state: nothing is left
- * latched on a lost note-off, which is the whole reason the map is a hold.
- * A press that did anything (a turn, a push, a map) is not a tap.
+ * A TAP OF SHIFT TOGGLES THE MIXER (e16_mixer.mjs) -- the same grammar as every
+ * other surface (surface_core.mjs, SHIFT_TAP_MS): released within that long,
+ * having done nothing. A tap, not a held state: nothing is left latched on a
+ * lost note-off, which is the whole reason the map is a hold. A press that did
+ * anything (a turn, a push, a map) is not a tap. It was a DOUBLE tap while the
+ * E16 was the only surface; the EC4, which has no map on its hold, made the
+ * single tap the natural gesture, and one grammar across devices won.
  */
-export const DOUBLE_TAP_MS = 350;
 
 /* The top row is the four slots; everything below is the selected slot's
  * content. Both halves of that split are already `e16_map.mjs`'s, and this is
@@ -1222,6 +1101,12 @@ export function createNav(opts) {
      * logged because both halves are behaving correctly.
      */
     const followFocusOf = o.followFocusOf || (() => null);
+    /* THE focus (surface_core createFocus): owned by the surface and handed
+     * in, so the nav, the controller binding and the host see one. A nav
+     * built alone (tests) makes its own. */
+    const focus = o.focus || createFocus({
+        chainOf, followFocusOf, slot: o.slot, component: o.component, follow: o.follow,
+    });
 
     /* THE ONLY MODIFIER STATE. Null means no hold; a number is when it began.
      * Never a boolean -- see the header. */
@@ -1229,33 +1114,13 @@ export function createNav(opts) {
     /* A page turn happened during this hold: the map stays hidden until the
      * next press (see MAP_SHOW_DELAY_MS). */
     let turnedThisHold = false;
-    /* The Mixer view is up (double-tap Shift; see DOUBLE_TAP_MS). */
+    /* The Mixer view is up (a tap of Shift; see SHIFT_TAP_MS). */
     const renderMixerView = o.renderMixer || null;
     let mixerOn = false;
-    /* When the last TAP (a press released quickly, having done nothing) ended,
-     * so the next press can recognise a double tap. */
-    let lastTapUpAt = null;
     let actedThisHold = false;
 
-    let slot = o.slot | 0;
-    let component = o.component || "synth";
-    let pageIndex = 0;
     let mapPage = 0;
     let showBuses = false;
-
-    /* Is Move's screen the source right now? */
-    let follow = !!o.follow;
-    /*
-     * The E16's OWN focus, set aside while follow owns the variables above.
-     *
-     * NOT a second owner: nothing reads this while follow is on, and nothing
-     * writes it except the OFF->ON edge. It exists because the user turns
-     * follow on TEMPORARILY -- to see what Move is doing -- and expects to come
-     * back to where they were. Resetting to slot 0 / synth instead is the
-     * plausible-looking wrong answer, and it is invisible on any rig whose own
-     * focus happened to be slot 0 / synth.
-     */
-    let parked = null;
 
     /* What the last framebuffer that actually went out was showing. Compared
      * against the derived visibility in tick(); it is a record of the PAST, so
@@ -1276,7 +1141,7 @@ export function createNav(opts) {
      */
     /* The modifier is HELD (gestures mean map things) ... */
     const held = (now) =>
-        !follow && shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
+        !focus.follow && shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
     /* ... and the map is SHOWN once it has been held MAP_SHOW_DELAY_MS with
      * no page turn (see MAP_SHOW_DELAY_MS). Both derived from the timestamp,
      * so the delay needs no timer: tick() notices the change and repaints. */
@@ -1300,19 +1165,11 @@ export function createNav(opts) {
      * E16 mirrored Move's screen.
      */
     const applyFollow = () => {
-        const f = followFocusOf();
-        if (!f || typeof f.slot !== "number" || !f.component) return;
-        if (f.slot === slot && f.component === component) return;
-        slot = f.slot | 0;
-        component = f.component;
-        /* A different component is a different page plan, so the page index
-         * from the last one means nothing on this one. */
-        pageIndex = 0;
-        invalidate();
+        if (focus.poll()) invalidate();
     };
 
     const currentMap = () =>
-        buildMap(chainOf(), { slot, page: mapPage, showBuses });
+        buildMap(chainOf(), { slot: focus.slot, page: mapPage, showBuses });
 
     return {
         /**
@@ -1333,22 +1190,11 @@ export function createNav(opts) {
                  * still arm `shiftDownAt` and repaint -- and the hold would
                  * then be live the instant follow was switched off, with the
                  * map appearing under a finger that is no longer on Shift. */
-                if (follow) return null;
+                if (focus.follow) return null;
                 if (ev.down) {
                     /* Deliberately not a re-arm: a repeat down while up leaves
                      * the original deadline standing (see the header). */
                     if (held(now)) return null;
-                    if (renderMixerView && lastTapUpAt !== null && now - lastTapUpAt <= DOUBLE_TAP_MS) {
-                        /* THE SECOND TAP: toggle the Mixer. This press is
-                         * spent -- no map, and its release is not a tap. */
-                        lastTapUpAt = null;
-                        mixerOn = !mixerOn;
-                        shiftDownAt = now;
-                        turnedThisHold = true;
-                        actedThisHold = true;
-                        invalidate();
-                        return { action: "mixer", on: mixerOn };
-                    }
                     shiftDownAt = now;
                     turnedThisHold = false;
                     actedThisHold = false;
@@ -1360,11 +1206,17 @@ export function createNav(opts) {
                     return { action: "hold" };
                 }
                 const wasShown = mapVisible(now);
-                /* A TAP: released quickly, having done nothing. */
-                lastTapUpAt = (!actedThisHold && !wasShown && shiftDownAt !== null &&
-                               now - shiftDownAt <= DOUBLE_TAP_MS) ? now : null;
+                /* A TAP: released quickly, having done nothing. It toggles
+                 * the Mixer. */
+                const tap = !!renderMixerView && !actedThisHold && !wasShown &&
+                            shiftDownAt !== null && now - shiftDownAt < SHIFT_TAP_MS;
                 shiftDownAt = null;
                 turnedThisHold = false;
+                if (tap) {
+                    mixerOn = !mixerOn;
+                    invalidate();
+                    return { action: "mixer", on: mixerOn };
+                }
                 /* Only a map that was actually up needs taking down. A tap, a
                  * hold spent paging, or a hold that already ended (a jump, an
                  * expiry) leaves a screen that is already correct. */
@@ -1400,40 +1252,41 @@ export function createNav(opts) {
                 }
                 const enc = ev.enc | 0;
                 if (enc < SLOT_CELLS) {
-                    if (enc === slot) {
+                    if (enc === focus.slot) {
                         /* The bus view of a slot with no buses is an empty
                          * list -- every lower knob went dark, which read as a
                          * broken page (hardware, 2026-09-24). Only a slot that
                          * HAS buses toggles; otherwise the tap is inert. */
-                        const hasBuses = buildMap(chainOf(), { slot, showBuses: true }).cells.slice(SLOT_CELLS).some(Boolean);
+                        const hasBuses = buildMap(chainOf(), { slot: focus.slot, showBuses: true }).cells.slice(SLOT_CELLS).some(Boolean);
                         if (!showBuses && !hasBuses) return null;
                         showBuses = !showBuses;
                         mapPage = 0;
                         invalidate();
                         return { action: "buses", showBuses };
                     }
-                    slot = enc;
+                    /* The slot is entered at the module last edited there
+                     * (createFocus) -- never at the old slot's position name,
+                     * which on this slot may be empty or another module. */
+                    focus.enterSlot(enc);
                     mapPage = 0;
                     /* Leaving bus view on a slot change is not tidiness: the
                      * new slot's components would otherwise be hidden behind a
                      * mode the user set while looking at a different slot. */
                     showBuses = false;
                     invalidate();
-                    return { action: "slot", slot };
+                    return { action: "slot", slot: focus.slot };
                 }
                 const cell = currentMap().cells[enc];
                 /* A hole is not a destination (e16_map.mjs). Nothing moves and
                  * nothing repaints -- in particular the hold is NOT consumed,
                  * or a mis-hit would drop the map the user is still reading. */
                 if (!cell) return null;
-                slot = cell.slot;
-                component = cell.component;
-                pageIndex = 0;
+                focus.set(cell.slot, cell.component);
                 shiftDownAt = null;   /* the jump ends the gesture */
                 mixerOn = false;      /* ...and lands on the module's knobs */
-                onFocus(slot, component);
+                onFocus(focus.slot, focus.component);
                 invalidate();
-                return { action: "focus", slot, component };
+                return { action: "focus", slot: focus.slot, component: focus.component };
             }
 
             if (ev.type === "turn") {
@@ -1463,11 +1316,10 @@ export function createNav(opts) {
                      * glyph shows it is held, and a tap of Shift clears it.
                      * (Map turns still do NOT re-arm -- see the header.) */
                     shiftDownAt = now;
-                    const next = pageStep(pageIndex, ev.ticks, pageCountOf());
-                    if (next === pageIndex) return { action: "page", pageIndex };
-                    pageIndex = next;
+                    const next = pageStep(focus.pageIndex, ev.ticks, pageCountOf());
+                    if (!focus.setPage(next)) return { action: "page", pageIndex: focus.pageIndex };
                     invalidate();
-                    return { action: "page", pageIndex };
+                    return { action: "page", pageIndex: focus.pageIndex };
                 }
                 if ((ev.enc | 0) < SLOT_CELLS) {
                     /* The slot row owns the map's own list, so turning it pages
@@ -1483,11 +1335,10 @@ export function createNav(opts) {
                     invalidate();
                     return { action: "mapPage", mapPage };
                 }
-                const next = pageStep(pageIndex, ev.ticks, pageCountOf());
-                if (next === pageIndex) return { action: "page", pageIndex };
-                pageIndex = next;
+                const next = pageStep(focus.pageIndex, ev.ticks, pageCountOf());
+                if (!focus.setPage(next)) return { action: "page", pageIndex: focus.pageIndex };
                 invalidate();
-                return { action: "page", pageIndex };
+                return { action: "page", pageIndex: focus.pageIndex };
             }
 
             return null;
@@ -1516,28 +1367,13 @@ export function createNav(opts) {
          * bring it back.
          */
         setFollow(on, now) {
-            on = !!on;
-            if (on === follow) return;
-            follow = on;
-            if (on) {
-                parked = { slot, component, pageIndex, mapPage, showBuses };
-                /* A hold in progress cannot survive: the map is gone, so its
-                 * modifier would be a note-off owed to a view that no longer
-                 * exists. The timestamp shape means dropping it is the whole
-                 * job -- there is no latch anywhere else to unwind. */
-                shiftDownAt = null;
-                applyFollow();
-                invalidate();
-                return;
-            }
-            if (parked) {
-                slot = parked.slot;
-                component = parked.component;
-                pageIndex = parked.pageIndex;
-                mapPage = parked.mapPage;
-                showBuses = parked.showBuses;
-                parked = null;
-            }
+            /* The park and the restore are the focus's (createFocus). */
+            if (!focus.setFollow(on)) return;
+            /* A hold in progress cannot survive: the map is gone, so its
+             * modifier would be a note-off owed to a view that no longer
+             * exists. The timestamp shape means dropping it is the whole job
+             * -- there is no latch anywhere else to unwind. */
+            if (focus.follow) shiftDownAt = null;
             invalidate();
         },
 
@@ -1550,7 +1386,7 @@ export function createNav(opts) {
              * cheap -- the shadow UI already holds it -- and applyFollow
              * repaints only on a CHANGE, so an unchanged source costs nothing
              * on the wire. */
-            if (follow) applyFollow();
+            applyFollow();
             if (mapVisible(now) !== shownMap) invalidate();
         },
 
@@ -1568,15 +1404,15 @@ export function createNav(opts) {
 
         mapVisible,
 
-        get slot() { return slot; },
-        get component() { return component; },
-        get pageIndex() { return pageIndex; },
+        get slot() { return focus.slot; },
+        get component() { return focus.component; },
+        get pageIndex() { return focus.pageIndex; },
         get mapPage() { return mapPage; },
-        get showBuses() { return showBuses; },
         /** The slot map as it stands (whether or not it is on screen). */
         map() { return currentMap(); },
         get showBuses() { return showBuses; },
-        get followEnabled() { return follow; },
+        get followEnabled() { return focus.follow; },
+        get focus() { return focus; },
         /* The DISPLAY MODE depends on this: a map is a picture and the
          * parameter view is sixteen labels, and the two modes override each
          * other on the device. Exposed rather than re-derived at the call site
@@ -1710,28 +1546,17 @@ export function createSurface(io) {
         },
     });
 
-    let ctl = null;
-    /* "<slot>:<component>" of the load the controller is currently holding.
-     * Null means it has never been loaded. */
-    let loaded = null;
     /* The presence the last tick saw, so the false->true edge can repaint. */
     let wasPresent = false;
 
-    /* The ONE focus, as a live view. Passed to the host's controller factory so
-     * its param accessors follow a jump; read nowhere else. */
-    const focus = {
-        get slot() { return nav ? nav.slot : 0; },
-        get component() { return nav ? nav.component : "synth"; },
-    };
-
-    const metaOf = (key) =>
-        (ctl && ctl.metaIndex ? ctl.metaIndex.getOrGuess(key) : null);
-    /* From the controller's own value cache, never a fresh read: this is called
-     * per cell per view build, and an IPC round trip is ~2.8 ms against a 1.68
-     * ms whole-page render (CLAUDE.md). The cache is what ctl.tick() refreshes
-     * on its staggered cursor, exactly as the knob grid does. */
-    const valueOf = (key) =>
-        (ctl && ctl.state && ctl.state.values ? ctl.state.values[key] : undefined);
+    /* THE focus and the controller bound to it -- surface_core.mjs, shared
+     * with every surface. `ctl` and `loaded` are read through the binding. */
+    const focus = createFocus({ chainOf, followFocusOf });
+    const binding = createBinding({ makeController, focus });
+    const { metaOf } = binding;
+    /* The E16's rotation is taken as Move's (one pulse, one detent); what the
+     * feel adds here is the Mixer through the knob engine. */
+    const feel = createKnobFeel({ pulsesPerDetentOf: o.pulsesPerDetentOf });
 
     /* Rebuilt on demand rather than cached. buildView is pure and reads only
      * the two lookups above, so it costs no IPC -- and a cached view is a
@@ -1742,21 +1567,9 @@ export function createSurface(io) {
      * can turn, not the controller's index. */
     /* The Mixer: only when the host gives it a way to the parameters. */
     const mixer = o.mixer ? createMixer(o.mixer) : null;
-    const knobPages = () => (ctl && ctl.pages ? ctl.pages.filter(pageHasKnobs) : []);
-    /* Filtered position -> the controller's own page index. A turn moves the
-     * controller to a cell's page BY INDEX, and the filtered list skips pages:
-     * on Hank the bottom row drove the page after a skipped one while the
-     * screen showed Main (hardware, 2026-09-24). */
-    const controllerPageOf = (j) => {
-        if (!ctl || !ctl.pages) return j;
-        let seen = -1;
-        for (let i = 0; i < ctl.pages.length; i++) {
-            if (pageHasKnobs(ctl.pages[i]) && ++seen === j) return i;
-        }
-        return j;
-    };
-    const viewNow = () =>
-        buildView(knobPages(), nav ? nav.pageIndex : 0, { metaOf, valueOf, pageIndexOf: controllerPageOf });
+    /* Knob pages only, mapped back to the controller's own index (binding). */
+    const knobPages = binding.knobPages;
+    const viewNow = () => binding.view(focus.pageIndex);
 
     /* Each module in the set has its own colour (moduleRgb / setOrdinal);
      * the knobs wear the colour of the module they edit -- the same colour
@@ -1954,10 +1767,11 @@ export function createSurface(io) {
 
     const nav = createNav({
         display,
+        focus,
         chainOf,
         followFocusOf,
         pageCountOf: () => Math.max(1, knobPages().length),
-        /* The Mixer view (double-tap Shift), when the host can reach the
+        /* The Mixer view (a tap of Shift), when the host can reach the
          * slot volumes and sends -- see e16_mixer.mjs. */
         renderMixer: mixer ? (ctx) => renderMixer(ctx, mixer) : null,
         renderParams: (ctx) => {
@@ -2041,11 +1855,7 @@ export function createSurface(io) {
         },
     });
 
-    function ensureController() {
-        if (ctl || !makeController) return ctl;
-        ctl = makeController(focus);
-        return ctl;
-    }
+    const ensureController = () => binding.ensure();
 
     /*
      * Point the controller at whatever the nav is focused on.
@@ -2056,13 +1866,8 @@ export function createSurface(io) {
      * most of a frame.
      */
     function syncFocus() {
-        if (!ensureController()) return;
-        const sig = nav.slot + ":" + nav.component;
-        if (sig === loaded) return;
-        loaded = sig;
-        ctl.load({ slot: nav.slot, component: nav.component, prefix: nav.component });
         /* A different component is a different screen. */
-        display.invalidate();
+        if (binding.sync()) display.invalidate();
     }
 
     /*
@@ -2124,14 +1929,8 @@ export function createSurface(io) {
          * without the component prefix; only a cell on screen is touched.
          */
         noteParamWrite(slot, key, value) {
-            if (!lifecycle.enabled || !ctl || !ctl.state || !ctl.state.values) return;
-            if (!nav || (slot | 0) !== nav.slot) return;
-            const k = String(key);
-            const view = viewNow();
-            for (const cell of view.cells) {
-                if (!cell) continue;
-                if (k !== cell.key && k !== nav.component + ":" + cell.key) continue;
-                ctl.state.values[cell.key] = String(value);
+            if (!lifecycle.enabled) return;
+            for (const cell of binding.noteWrite(slot, key, value, viewNow())) {
                 display.ringChanged(ringFor(viewNow(), cell.enc, knobRgb()));
                 turnedAt = now();
                 settlePainted = false;
@@ -2172,8 +1971,11 @@ export function createSurface(io) {
                     return act;
                 }
                 if (act.action === "mixerTurn" || act.action === "mixerPush") {
+                    /* A turn through the knob engine, as a module's knob
+                     * (surface_core createKnobFeel). */
                     const changed = act.action === "mixerTurn"
-                        ? mixer.turn(act.enc, act.ticks, act.shift)
+                        ? (feel.begin(act.enc, t),
+                           feel.mixerTurn(mixer, act.enc, feel.detents(act.enc, act.ticks), act.shift, t))
                         : mixer.push(act.enc, act.shift);
                     if (changed) {
                         /* The ring at once; the digits (and a MUTE/SOLO
@@ -2185,6 +1987,7 @@ export function createSurface(io) {
                     return act;
                 }
             }
+            const ctl = binding.controller;
             if (!act || !ctl) return act;
 
             if (act.action === "turn") {
@@ -2295,7 +2098,7 @@ export function createSurface(io) {
              * would wait a whole frame. */
             nav.tick(t);
             syncFocus();
-            if (ctl) ctl.tick();
+            binding.tick();
             /*
              * NOTHING IS DRAWN AT A DEVICE THAT HAS NOT ANSWERED.
              *
@@ -2352,7 +2155,7 @@ export function createSurface(io) {
              * are restated again once they have actually arrived). */
             if (probe < 0) {
                 const rctx = [nav.mapVisible(t), nav.mixer, nav.slot, nav.component, nav.pageIndex,
-                              nav.mapPage, nav.showBuses, loaded].join("|");
+                              nav.mapPage, nav.showBuses, binding.loaded].join("|");
                 const restate = () => {
                     for (const desc of desiredRings(t)) {
                         display.ringChanged(desc);
@@ -2506,8 +2309,9 @@ export function createSurface(io) {
         get present() { return lifecycle.present; },
         get slot() { return nav.slot; },
         get component() { return nav.component; },
-        get controller() { return ctl; },
+        get controller() { return binding.controller; },
         get nav() { return nav; },
+        get focus() { return focus; },
         get display() { return display; },
         view: viewNow,
     };

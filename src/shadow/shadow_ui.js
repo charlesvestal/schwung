@@ -7569,8 +7569,7 @@ function setSlotParam(slot, key, value) {
         if (!ok) return false;
         /* Tell the E16 surface at once -- see noteParamWrite. A const declared
          * later in this file is in its TDZ during early init: caught. */
-        try { e16Surface.noteParamWrite(slot, key, value); } catch (e) {}
-        try { ec4Surface.noteParamWrite(slot, key, value); } catch (e) {}
+        try { for (const sf of externalSurfaces()) sf.noteParamWrite(slot, key, value); } catch (e) {}
 
         /* Re-check MIDI FX warnings immediately after sync/module changes. */
         if (key === "midi_fx1:module") {
@@ -10467,15 +10466,29 @@ function e16Send(packets) {
  * round trip per position under a modifier is a screen that arrives after the
  * finger has left it.
  */
+const e16ChainReadAt = [-Infinity, -Infinity, -Infinity, -Infinity];
 function e16ChainShape() {
     const idOf = (entry) => (entry && entry.module ? String(entry.module) : null);
     const slotsOut = [];
+    const now = Date.now();
     for (let s = 0; s < 4; s++) {
         /* ensureChainConfigFresh, not chainConfigs[s]: the mirror is filled
          * LAZILY, when a slot is opened in this UI, so a slot never visited
          * since boot read as empty and its row on the map was blank. A fresh
-         * slot costs nothing; a stale one is read once and cached. */
-        const cfg = ensureChainConfigFresh(s) || createEmptyChainConfig();
+         * slot costs nothing; a stale one is read once and cached.
+         *
+         * A read that did not COMPLETE leaves the slot stale, and this is
+         * called several times a tick (map cells, ring colours, names) -- so
+         * an unanswered slot is retried at most once a second, never once per
+         * call: each retry is a run of ~2.8 ms blocking reads. */
+        let cfg;
+        if (chainConfigFresh[s] || now - e16ChainReadAt[s] >= 1000) {
+            if (!chainConfigFresh[s]) e16ChainReadAt[s] = now;
+            cfg = ensureChainConfigFresh(s);
+        } else {
+            cfg = chainConfigs[s];
+        }
+        cfg = cfg || createEmptyChainConfig();
         slotsOut.push({
             midiFx: (cfg.midiFx || []).map(idOf),
             synth: idOf(cfg.synth),
@@ -10719,6 +10732,44 @@ function e16ReconcilePace() {
     } catch (e) {}
 }
 
+/*
+ * THE MIXER'S WAY TO THE PARAMETERS, one object for every surface: the E16's
+ * and the EC4's Mixer drive the same slot volumes, sends and returns as Slot
+ * Settings writes -- slot:volume is also what Move's own track volume drives
+ * -- so a surface, the slot grid and Move move one value. Sends and returns
+ * mark sendLevelsDirty like their grid; volume / mute / solo ride the slot
+ * state like every other slot setting.
+ */
+const surfaceMixerIo = {
+    getSlot: (slot, key) => getSlotParam(slot, key),
+    setSlot: (slot, key, value) => {
+        const ok = setSlotParam(slot, key, value);
+        if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
+        return ok;
+    },
+    getGlobal: (key) => {
+        try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
+        catch (e) { return null; }
+    },
+    setGlobal: (key, value) => {
+        let ok = false;
+        try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
+        catch (e) { ok = false; }
+        /* Only the returns are saved levels; the filter is not saved. */
+        if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
+        return ok;
+    },
+    /* Same save as Shift+Capture on Move. */
+    skipback: () => {
+        try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
+        catch (e) { return false; }
+    },
+    nameOf: (slot) => {
+        const sl = (e16ChainShape().slots || [])[slot] || {};
+        return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
+    },
+};
+
 const e16Surface = createE16Surface({
     now: () => Date.now(),
     /* The shim's current pace, so the surface's per-tick packet budget
@@ -10764,46 +10815,12 @@ const e16Surface = createE16Surface({
         getParam: (key) => getSlotParam(focus.slot, key),
         setParam: (key, value) => setSlotParam(focus.slot, key, value),
     }),
-    /*
-     * THE MIXER (double-tap Shift; e16_mixer.mjs). The same keys Slot
-     * Settings writes -- slot:volume is also what Move's own track volume
-     * drives -- so the E16, the slot grid and Move move one value. Sends and
-     * returns mark sendLevelsDirty like their grid; volume / mute / solo ride
-     * the slot state like every other slot setting.
-     */
+    /* THE MIXER (a tap of Shift; e16_mixer.mjs) -- see surfaceMixerIo. */
     /* The web mirror (display_server /stream-e16): what the E16 shows. */
     mirror: (frame, rings, active) => {
         if (typeof host_e16_mirror === "function") host_e16_mirror(frame, rings, !!active);
     },
-    mixer: {
-        getSlot: (slot, key) => getSlotParam(slot, key),
-        setSlot: (slot, key, value) => {
-            const ok = setSlotParam(slot, key, value);
-            if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
-            return ok;
-        },
-        getGlobal: (key) => {
-            try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
-            catch (e) { return null; }
-        },
-        setGlobal: (key, value) => {
-            let ok = false;
-            try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
-            catch (e) { ok = false; }
-            /* Only the returns are saved levels; the filter is not saved. */
-            if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
-            return ok;
-        },
-        /* Same save as Shift+Capture on Move. */
-        skipback: () => {
-            try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
-            catch (e) { return false; }
-        },
-        nameOf: (slot) => {
-            const sl = (e16ChainShape().slots || [])[slot] || {};
-            return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
-        },
-    },
+    mixer: surfaceMixerIo,
 });
 
 /*
@@ -10817,47 +10834,45 @@ const e16Surface = createE16Surface({
  *   ssh ableton@move.local "echo 14 > /data/UserData/schwung/ec4_setup"
  * Read ~1 Hz, like the E16's other armed files.
  */
-let ec4SetupCheckedAt = 0;
-let ec4SetupValue = EC4_DEFAULT_SETUP;
-function ec4Setup() {
-    const now = Date.now();
-    if (now - ec4SetupCheckedAt < 1000) return ec4SetupValue;
-    ec4SetupCheckedAt = now;
-    ec4SetupValue = EC4_DEFAULT_SETUP;
-    try {
-        const path = "/data/UserData/schwung/ec4_setup";
-        if (typeof host_file_exists === "function" && host_file_exists(path)) {
-            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
-            if (n >= 1 && n <= 16) ec4SetupValue = n - 1;
-        }
-    } catch (e) {}
-    return ec4SetupValue;
+/*
+ * AN ARMED FILE, read at most once a second: a number in
+ * /data/UserData/schwung/<name>, or the default when the file is absent or
+ * does not parse to something `accept` takes. For settings that are tuned by
+ * hand on the device rather than from a menu.
+ */
+function armedFileNumber(name, parse, accept, dflt) {
+    const path = "/data/UserData/schwung/" + name;
+    let value = dflt, checkedAt = -Infinity;
+    const read = () => {
+        const now = Date.now();
+        if (now - checkedAt < 1000) return value;
+        checkedAt = now;
+        value = dflt;
+        try {
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                const n = parse(String(host_read_file(path) || "").trim());
+                if (accept(n)) value = n;
+            }
+        } catch (e) {}
+        return value;
+    };
+    /* A write from this process is seen on the next read, not a second later. */
+    read.invalidate = () => { checkedAt = -Infinity; };
+    return read;
 }
 
-/*
- * How many EC4 pulses make one of Move's detents -- the ratio behind every
- * continuous knob's feel on the EC4 (see ec4_surface.mjs). The default is
- * 72/210, measured on Move and taken from Faderfox for the EC4; override it
- * without a rebuild (a fraction, bigger = slower):
- *   ssh ableton@move.local "echo 0.4 > /data/UserData/schwung/ec4_knob_scale"
- * Read ~1 Hz.
- */
-let ec4ScaleCheckedAt = 0;
-let ec4ScaleValue = EC4_DEFAULT_PULSES;
-function ec4KnobScale() {
-    const now = Date.now();
-    if (now - ec4ScaleCheckedAt < 1000) return ec4ScaleValue;
-    ec4ScaleCheckedAt = now;
-    ec4ScaleValue = EC4_DEFAULT_PULSES;
-    try {
-        const path = "/data/UserData/schwung/ec4_knob_scale";
-        if (typeof host_file_exists === "function" && host_file_exists(path)) {
-            const n = parseFloat(String(host_read_file(path) || "").trim());
-            if (n > 0 && n <= 32) ec4ScaleValue = n;
-        }
-    } catch (e) {}
-    return ec4ScaleValue;
-}
+/* Which EC4 setup holds Schwung's map, 1-16 in the file (EC4 Setup writes it),
+ * 0-based here; by hand:
+ *   ssh ableton@move.local "echo 14 > /data/UserData/schwung/ec4_setup" */
+const ec4SetupFile = armedFileNumber("ec4_setup", (t) => parseInt(t, 10),
+    (n) => n >= 1 && n <= 16, EC4_DEFAULT_SETUP + 1);
+const ec4Setup = () => ec4SetupFile() - 1;
+
+/* EC4 pulses per Move detent -- the feel of every continuous knob on the EC4
+ * (ec4_surface.mjs); bigger = slower:
+ *   ssh ableton@move.local "echo 0.4 > /data/UserData/schwung/ec4_knob_scale" */
+const ec4KnobScale = armedFileNumber("ec4_knob_scale", parseFloat,
+    (n) => n > 0 && n <= 32, EC4_DEFAULT_PULSES);
 
 const ec4Surface = createEc4Surface({
     now: () => Date.now(),
@@ -10872,33 +10887,7 @@ const ec4Surface = createEc4Surface({
         getParam: (key) => getSlotParam(focus.slot, key),
         setParam: (key, value) => setSlotParam(focus.slot, key, value),
     }),
-    mixer: {
-        getSlot: (slot, key) => getSlotParam(slot, key),
-        setSlot: (slot, key, value) => {
-            const ok = setSlotParam(slot, key, value);
-            if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
-            return ok;
-        },
-        getGlobal: (key) => {
-            try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
-            catch (e) { return null; }
-        },
-        setGlobal: (key, value) => {
-            let ok = false;
-            try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
-            catch (e) { ok = false; }
-            if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
-            return ok;
-        },
-        skipback: () => {
-            try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
-            catch (e) { return false; }
-        },
-        nameOf: (slot) => {
-            const sl = (e16ChainShape().slots || [])[slot] || {};
-            return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
-        },
-    },
+    mixer: surfaceMixerIo,
 });
 
 /*
@@ -10961,7 +10950,7 @@ function ec4SetupClick() {
 /* The surface calls this when the whole message has gone out. */
 function ec4Installed(setup) {
     try { host_write_file("/data/UserData/schwung/ec4_setup", String(setup + 1)); } catch (e) {}
-    ec4SetupCheckedAt = 0;
+    ec4SetupFile.invalidate();
     announce("Done. EC4 setup " + (setup + 1) + " is Schwung's. Its name is unchanged; rename it on the EC4 to label it.");
     needsRedraw = true;
 }
@@ -10998,14 +10987,25 @@ function drawEc4Setup() {
 }
 
 
+/*
+ * EVERY SURFACE, indexed by Ext Surface - 1 (1 = OXI E16, 2 = Faderfox EC4).
+ * One device at a time -- both read the same claimed CCs (e16_claim.h) -- but
+ * every surface is fed and ticked: a disabled one gates itself, and still owes
+ * its goodbye (the E16's EXIT, the EC4's names) after being switched off.
+ * A function, not a const, because the surfaces are consts declared above and
+ * early callers (setSlotParam during init) must not trip their TDZ.
+ */
+function externalSurfaces() {
+    return [e16Surface, ec4Surface];
+}
+
 function setExternalSurfaceFollow(v) {
     const mode = (parseInt(v, 10) || 0) ? 1 : 0;
     if (mode === externalSurfaceFollow) return;
     externalSurfaceFollow = mode;
     /* The surface parks its own focus on the OFF->ON edge and restores it on
      * the way back, so it must see the EDGE, not poll the setting. */
-    e16Surface.setFollow(mode === 1);
-    ec4Surface.setFollow(mode === 1);
+    for (const sf of externalSurfaces()) sf.setFollow(mode === 1);
 }
 
 /*
@@ -11034,8 +11034,7 @@ function setExternalSurfaceMode(v) {
     /* EXIT is sent from here, once, or the device is left blank with the
      * feature switched off. An EXIT the buffer refuses is owed and drained by
      * externalSurfaceTick(). */
-    e16Surface.setEnabled(mode === 1);
-    ec4Surface.setEnabled(mode === 2);
+    externalSurfaces().forEach((sf, i) => sf.setEnabled(mode === i + 1));
 }
 
 function saveExternalSurfaceConfig() {
@@ -11069,8 +11068,7 @@ function loadExternalSurfaceConfig() {
 /* Called every frame. Cheap by construction: while the surface is off and
  * nothing is owed, this is two comparisons. */
 function externalSurfaceTick() {
-    e16Surface.tick();
-    ec4Surface.tick();
+    for (const sf of externalSurfaces()) sf.tick();
 }
 
 /* Cable-2 bytes, three at a time with the CIN already stripped. Fed
@@ -11079,8 +11077,7 @@ function externalSurfaceTick() {
  * switched on is spliced onto one that began after. Everything downstream of
  * the assembler is gated on the setting inside the surface. */
 function externalSurfaceMidi(data) {
-    e16Surface.feedMidi(data);
-    ec4Surface.feedMidi(data);
+    for (const sf of externalSurfaces()) sf.feedMidi(data);
 }
 
 let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */
@@ -25350,7 +25347,7 @@ let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
     /* FIRST: MIDI was read just before this tick, so every E16 reply that has
      * arrived is delivered. Anything slow below must not age its ACK timers. */
-    try { e16Surface.markInputRead(); } catch (e) {}
+    try { for (const sf of externalSurfaces()) if (sf.markInputRead) sf.markInputRead(); } catch (e) {}
     /* Button claims, re-derived from whatever is on screen. Kept at the top of
      * the tick as the SINGLE re-check point for that entry condition -- see the
      * table above reconcileCcClaim(). */

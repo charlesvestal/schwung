@@ -6,6 +6,23 @@ for a device whose screen is text: sixteen 4-character names and a 4×20
 overlay. Code: `src/shared/ec4_surface.mjs` (the surface),
 `src/shared/ec4_protocol.mjs` (the wire, and the setup Schwung installs).
 
+## What it shares with the E16
+
+`src/shared/surface_core.mjs` is every surface's: the ONE focus (slot, module,
+page — each module remembers its page and each slot its module; Follow Focus
+parks and restores it), the surface's own page controller bound to that focus
+(including `noteParamWrite`), the knob feel (device pulses → Move detents,
+choices by angle, and the Mixer through the knob engine), presence (seek /
+keepalive / loss with the device's probe injected), SysEx reassembly and the
+12-packet wire limit. The E16 and the EC4 files hold only what the device can
+show and how it is found. The host (`shadow_ui.js`) keeps one registry,
+`externalSurfaces()`, and one Mixer io object, `surfaceMixerIo`.
+
+**One Shift grammar on both devices:** a TAP (released within 250 ms, nothing
+done under it) switches Module ↔ Mixer; a HOLD is the device's own modifier
+layer (the slot map on the E16, the alternate names here) and, in the Mixer,
+pan / solo / 100%.
+
 ## What the EC4 needs
 
 **One setup holding Schwung's map.** The EC4 has no remote mode: what an

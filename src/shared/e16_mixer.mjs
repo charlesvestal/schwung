@@ -42,6 +42,25 @@ export const FILTER_STEP = 0.02;          /* per detent, of -1..1 */
 export const PAN_STEP = 0.02;             /* per detent, of -1..1 */
 export const FILTER_DEADBAND = 0.02;      /* must match master_filter.h */
 
+/*
+ * THE TRAVEL OF EACH CONTROL, for the knob engine that drives the Mixer
+ * (surface_core createKnobFeel): the whole range in the Mixer's own units, and
+ * the size of one of its ticks. Row 1 is the level (alt: pan), rows 2-3 the
+ * sends, row 4 the returns, capture (no travel) and the filter.
+ */
+const LEVEL_RANGE = { span: 20 * Math.log10(VOLUME_MAX) - LEVEL_DB_FLOOR, tick: LEVEL_DB_STEP };
+const SEND_RANGE = { span: SEND_MAX, tick: SEND_STEP };
+const PAN_RANGE = { span: 2, tick: PAN_STEP };
+const FILTER_RANGE = { span: 2, tick: FILTER_STEP };
+
+export function mixerRange(enc, alt) {
+    const row = Math.floor(enc / 4), col = enc % 4;
+    if (row === 0) return alt ? PAN_RANGE : LEVEL_RANGE;
+    if (row === 1 || row === 2) return SEND_RANGE;
+    if (col < 2) return SEND_RANGE;
+    return col === 3 ? FILTER_RANGE : null;
+}
+
 /* One colour per ROW, so the four functions read apart at a glance. Green is
  * the slots' elsewhere; none of these are green. */
 export const MIXER_ROW_RGB = [
