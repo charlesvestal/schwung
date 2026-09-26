@@ -728,6 +728,14 @@ globalThis.chain_ui = {
 ```
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
+
+**Your knobs on an external surface (`ui_pages`).** A module that draws its
+own screen often refuses `ui_hierarchy` on purpose, because serving one stops
+the host from loading `ui_chain.js`. External control surfaces (the E16 and
+EC4) have no other way to find its parameters. So such a module can serve the
+same document under `ui_pages`: when a surface's `ui_hierarchy` read fails, it
+reads `ui_pages` instead and lays out those knobs. A module serving neither shows
+"No controls" on the surface. Teng is the reference.
 Make sure to ship `ui_chain.js` in your build/install step if you use it.
 The host itself ignores `ui_chain`; it is consumed by the Signal Chain UI when
 loading a MIDI source module.

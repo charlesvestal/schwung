@@ -388,6 +388,26 @@ export function createBinding(opts) {
         },
         tick() { if (ctl) ctl.tick(); },
 
+        /*
+         * WHETHER THERE IS ANYTHING TO TURN, three ways, because a blank
+         * screen answers none of them (hardware, 2026-09-26):
+         *   "loading"  no plan yet -- the contract read has not completed.
+         *              The planner appends My Presets and Module to every
+         *              component, so an EMPTY plan is never a real module.
+         *   "none"     planned, and not one page puts a key under a knob
+         *   "ok"
+         */
+        controls() {
+            if (!ctl) return "loading";
+            /* A module whose contract read NEVER answers (Teng errors its
+             * ui_hierarchy read, 2026-09-26) is given up on after
+             * CONTRACT_RETRY_LIMIT: that is "none", or the surface would say
+             * Loading forever. */
+            if (ctl.state && ctl.state.contractGaveUp) return "none";
+            if (ctl.contractUnresolved || !ctl.pages || !ctl.pages.length) return "loading";
+            return knobPages().length ? "ok" : "none";
+        },
+
         /** Every knob page, current one first-class (the E16's 16 cells). */
         view(pageIndex) {
             return buildView(knobPages(), pageIndex | 0, { metaOf, valueOf, pageIndexOf: controllerPageOf });

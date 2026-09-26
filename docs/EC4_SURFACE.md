@@ -1,6 +1,6 @@
 # Faderfox EC4 as an external surface
 
-Global Settings → System → **Ext Surface = EC4**. The EC4 runs the same
+Global Settings → Surfaces → **Ext Surface = EC4**. The EC4 runs the same
 navigation, knob pages and Mixer as the E16 (`docs/E16_REMOTE.md`), laid out
 for a device whose screen is text: sixteen 4-character names and a 4×20
 overlay. Code: `src/shared/ec4_surface.mjs` (the surface),
@@ -32,7 +32,7 @@ channel 1 — so the E16 input decoder and the shim's claim
 (`src/host/e16_claim.h`) serve it with no host change. Encoder names are
 `----`, the EC4's marker for a cell the host may write.
 
-**Installing it — Global Settings → System → EC4 Setup**, with the EC4 on
+**Installing it — Global Settings → Surfaces → EC4 Setup**, with the EC4 on
 Move's USB-A. Nothing else on the EC4 changes:
 
 1. On the EC4, select the setup to replace. The screen shows its number;
@@ -64,7 +64,7 @@ back rewrites the screen.
 
 ## Surface Nav: two layouts on every surface
 
-Global Settings → System → **Surface Nav** picks how the knobs navigate, per
+Global Settings → Surfaces → **Surface Nav** picks how the knobs navigate, per
 device (the row edits whichever device Ext Surface names):
 
 - **Knobs** (the EC4's default, described below): eight parameters and eight

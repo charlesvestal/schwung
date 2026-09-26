@@ -23,7 +23,7 @@ import { MIXER_ROW_RGB } from "./e16_mixer.mjs";
 import { ENUM_DELTA_DIV } from "./knob_engine.mjs";
 import { SHIFT_TAP_MS } from "./surface_core.mjs";
 import { NAV_KNOBS, NAV_HOLD_MS, isChoice, panLabel, moduleNameFor, paramReading, pageReading,
-         mixerReading, createReadings } from "./layout_common.mjs";
+         mixerReading, createReadings, controlsText } from "./layout_common.mjs";
 
 /* The cells that are not page knobs. */
 export const CELL_PREV = 8, CELL_PAGE = 9, CELL_COUNT = 10, CELL_NEXT = 11;
@@ -308,8 +308,13 @@ export function createKnobsLayout(ctx) {
 
         screen(t) {
             if (mixer && mixerOn) return { kind: "mixer", mixer, alt: shiftHeld(t) };
+            /* The navigation row stays whatever the top half says: it is how
+             * you leave a module with nothing to turn. */
+            const empty = slotEmpty();
+            const controls = empty ? "ok" : binding.controls();
             return { kind: "knobs", view: viewNow(), component: moduleName(), pageName: pageName(),
-                     navCells: navCells(), empty: slotEmpty(), slot: focus.slot };
+                     navCells: navCells(), empty, slot: focus.slot,
+                     message: controls === "ok" ? "" : controlsText(controls) };
         },
 
         rings(t) {
@@ -325,7 +330,7 @@ export function createKnobsLayout(ctx) {
 
         context(t) {
             return [NAV_KNOBS, mixerOn, mixerOn && shiftHeld(t), focus.slot, focus.component,
-                    focus.pageIndex, pageCount()].join("|");
+                    focus.pageIndex, pageCount(), binding.controls()].join("|");
         },
         reading(t) { return readings.at(t); },
         turnHint() { return false; },

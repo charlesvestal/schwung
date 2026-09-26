@@ -84,24 +84,46 @@ ok(s2.display.repaintPending, "...and the frame stays owed, not dropped");
   accept = true;
   let armed = 6;
   let tt = 0;
+  /*
+   * THE FAKE DEVICE ACKS every region, as the E16 does (test_e16_wiring.sh
+   * has the long form). It used not to need to: this controller has no pages,
+   * and an empty module DREW NOTHING, so nothing was ever owed. It now says
+   * "Loading..." instead of a blank page (hardware, 2026-09-26), and a device
+   * that never answers is -- correctly -- sent those regions again forever.
+   */
+  const { pack7, unpack7 } = await import(R + "/src/shared/e16_protocol.mjs");
+  const outbox = [];
+  const unpackMsg = (packets) => { const out = [];
+    for (let i = 0; i < packets.length; i += 4) { const cin = packets[i] & 0x0F;
+      const n = cin === 0x05 ? 1 : cin === 0x06 ? 2 : 3;
+      for (let b = 0; b < n; b++) out.push(packets[i + 1 + b]); }
+    return out; };
+  const tick = () => { surface.tick();
+    for (const p of outbox.splice(0)) { const u = unpackMsg(p), id = u[6];
+      let addr = null;
+      if (id === 0x08) addr = unpack7(u.slice(7, u.length - 1), 4);
+      else if (id === 0x05) addr = [unpack7(u.slice(7, u.length - 1), 1)[0], 0xFF, 0xFF, 0xFF];
+      else if (id === 0x07) addr = [0xFF, 0xFF, 0xFF, 0xFF];
+      if (!addr) continue;
+      surface.feedMidi([0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53].concat(pack7([id, 0].concat(addr)), [0xF7])); } };
   const surface = createSurface({
     now: () => tt,
-    send: () => accept,
+    send: (p) => { if (accept) outbox.push(p); return accept; },
     chainOf: () => ({ slots: [{ synth: "9w9" }, {}, {}, {}] }),
     followFocusOf: () => null,
     testPatternOf: () => armed,
     makeController: () => ({ pages: [], pageIndex: 0, load() {}, tick() {},
                              state: { values: {} } }),
   });
-  surface.setEnabled(true); tt += 30; surface.tick();
+  surface.setEnabled(true); tt += 30; tick();
   surface.feedMidi(ACK);
-  for (let i = 0; i < 20; i++) { tt += 30; surface.tick(); }
+  for (let i = 0; i < 20; i++) { tt += 30; tick(); }
 
   /* Settle: with the meter armed a frame is always owed, so disarm first and
    * let it quiesce, then assert that the DISARM itself owed one. */
   armed = -1;
-  tt += 30; surface.tick();
-  for (let i = 0; i < 10; i++) { tt += 30; surface.tick(); }
+  tt += 30; tick();
+  for (let i = 0; i < 10; i++) { tt += 30; tick(); }
   eq("after disarming, the screen is not left owing a frame forever",
      surface.display.repaintPending, false);
 
@@ -109,7 +131,7 @@ ok(s2.display.repaintPending, "...and the frame stays owed, not dropped");
   armed = 3;
   const owedBefore = surface.display.repaintPending;
   eq("nothing owed before the probe changes", owedBefore, false);
-  tt += 30; surface.tick();
+  tt += 30; tick();
   ok(surface.display.shownKind !== null,
      "re-arming the probe repaints with no other gesture");
 }

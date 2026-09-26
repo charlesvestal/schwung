@@ -324,10 +324,16 @@ export function mapRings(map, rgbOf) {
 /** The knob view of a slot with nothing in it: say so, rather than a blank
  * screen that reads as a dead device. */
 export function renderEmptySlot(ctx, slotIndex) {
+    renderMessage(ctx, "Slot " + ((slotIndex | 0) + 1), "Empty");
+}
+
+/* Two centred lines -- what a page says when it has nothing to turn
+ * ("No controls", "Loading...") instead of drawing nothing. */
+export function renderMessage(ctx, a, b) {
     ctx.clear();
-    const a = "Slot " + ((slotIndex | 0) + 1), b = "Empty";
+    a = clip(ctx, a || "", WIDTH - 4);
     ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 22, a, 1);
-    ctx.print(Math.floor((WIDTH - ctx.textWidth(b)) / 2), 34, b, 1);
+    if (b) ctx.print(Math.floor((WIDTH - ctx.textWidth(b)) / 2), 34, b, 1);
 }
 
 function clip(ctx, text, w) {
@@ -416,9 +422,9 @@ export function renderView(ctx, view, opts) {
  * empty, slot }.
  */
 export function renderKnobsView(ctx, scr) {
-    if (scr.empty || !scr.view) {
+    if (scr.empty || scr.message || !scr.view) {
         ctx.clear();
-        const a = "Slot " + ((scr.slot | 0) + 1) + " Empty";
+        const a = scr.empty ? "Slot " + ((scr.slot | 0) + 1) + " Empty" : (scr.message || "");
         ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 12, a, 1);
     } else {
         /* One page: buildView filled only the top half, so renderView draws
