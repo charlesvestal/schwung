@@ -8,7 +8,8 @@
 #     grid would write (an enum by the wire form the module uses)
 #   - a quick push is the parameter own click (a two-option flips); a HOLD
 #     arms learn, and the next write on Move lands on that knob
-#   - while armed, a push on the same knob CLEARS it
+#   - while armed, turning that knob CLOCKWISE clears it; anticlockwise or a
+#     push cancels -- never a clear on a single press
 #   - a DARK knob (module gone) draws, never writes, never reads
 #   - values are read ONE per tick, not a page per frame
 #   - Shift + turn pages; a Shift tap is the Mixer
@@ -111,9 +112,18 @@ eq("...and learn is disarmed", L.armed, null);
 ev({ type: "push", enc: 3 });
 tick(Math.ceil(LEARN_HOLD_MS / 16) + 1);
 ev({ type: "release", enc: 3 });
+ev({ type: "push", enc: 3 }); ev({ type: "release", enc: 3 });
+ok("while armed, a push on the same knob CANCELS (never clears)", !L.armed && doc.surface.pages[0].knobs[3]);
 ev({ type: "push", enc: 3 });
-eq("while armed, a push on the same knob CLEARS it", doc.surface.pages[0].knobs[3], null);
+tick(Math.ceil(LEARN_HOLD_MS / 16) + 1);
 ev({ type: "release", enc: 3 });
+ev({ type: "turn", enc: 3, ticks: -1 });
+ok("...an ANTICLOCKWISE turn cancels", !L.armed && doc.surface.pages[0].knobs[3]);
+ev({ type: "push", enc: 3 });
+tick(Math.ceil(LEARN_HOLD_MS / 16) + 1);
+ev({ type: "release", enc: 3 });
+ev({ type: "turn", enc: 3, ticks: 1 });
+eq("...and a CLOCKWISE turn clears it", [L.armed, doc.surface.pages[0].knobs[3]], [null, null]);
 ev({ type: "push", enc: 4 });
 tick(Math.ceil(LEARN_HOLD_MS / 16) + 1);
 ev({ type: "release", enc: 4 });

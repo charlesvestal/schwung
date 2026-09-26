@@ -575,7 +575,10 @@ export function renderPageMap(ctx, scr) {
 export function renderCustomPage(ctx, scr) {
     const view = scr.view || { cells: [], headers: [null, null] };
     const cells = view.cells.map((c, e) => {
-        if (e === scr.armed) return { label: "LEARN", value: "move", meta: {}, enc: e };
+        /* Armed: move a parameter on Move to assign, or turn THIS knob --
+         * clockwise clears, anticlockwise cancels. An empty knob has nothing
+         * to clear. */
+        if (e === scr.armed) return { label: "LEARN", value: c ? "R:clear" : "", meta: {}, enc: e };
         if (!c || c.status === "live") return c;
         return Object.assign({}, c, { value: "--", meta: {} });
     });
