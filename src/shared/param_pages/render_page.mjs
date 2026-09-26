@@ -605,6 +605,37 @@ function drawEmptyCell(ctx, cellX, y, cellW, h) {
  *                 what it is given. Omit for the plain knob grid; a group's
  *                 member slots are replaced by one picture spanning them.
  */
+/*
+ * WHAT A GRAPHIC DRAWS: the live value over the base, and a held step's lock
+ * over both.
+ *
+ * `modValues` wins over `values` so a modulated picture animates. But `values`
+ * already carries a p-lock (the controller folds decorations in), and a
+ * sequencer lane is itself reported as modulated -- so the plain merge put the
+ * value the lane is driving NOW back over the step's lock, and a knob turned on
+ * a held step moved its mark while the envelope beside it stood still. A lock
+ * is what the step will play, which is the same precedence the knob widget
+ * already gives it (`A P-LOCK OUTRANKS THE LIVE VALUE` in render_page_movy).
+ *
+ * Shared by both renderers so the two layouts cannot disagree about it.
+ * Returns `values` itself when nothing is modulated, so the common case
+ * allocates nothing.
+ */
+export function graphicValues(values, modValues, page, decorations) {
+    let hasMod = false;
+    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
+    if (!hasMod) return values;
+    const out = Object.assign({}, values, modValues);
+    const keys = (page && page.keys) || [];
+    if (decorations) {
+        for (let i = 0; i < keys.length; i++) {
+            const d = decorations[i];
+            if (keys[i] && d && d.value !== undefined && d.value !== null) out[keys[i]] = d.value;
+        }
+    }
+    return out;
+}
+
 export function renderPage(ctx, o) {
     const rect = o.rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
     const layout = o.layout || LAYOUT_DIAL;
@@ -655,10 +686,7 @@ export function renderPage(ctx, o) {
      * once today (a custom page drew under the dial renderer and not under the
      * one the device uses), which is reason enough to keep them in step.
      */
-    let vizValues = o.values;
-    if (o.modValues) {
-        for (const _k in o.modValues) { vizValues = Object.assign({}, o.values, o.modValues); break; }
-    }
+    const vizValues = graphicValues(o.values, o.modValues, page, o.decorations);
 
     const geo = geometry(rect, layout);
     if (page.canvas && typeof o.drawCanvasPage === "function") {
