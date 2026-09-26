@@ -123,7 +123,7 @@ plain USB-A in **both** directions: ENTER acks, the 101-byte labels message
 renders, and the encoders send. Two bytes, `bNumEmbMIDIJack` 3 to 1 in both
 CS_ENDPOINT descriptors, no code touched.
 
-So remote mode over USB-A needs OXI to make the port count configurable. This is
+**Shipped:** current E16 firmware makes it a setting — Shift → Conf → MIDI → USB Multi Port → **Off** presents one port, and remote mode works over USB-A with no patch. Earlier: remote mode over USB-A needed OXI to make the port count configurable. This is
 not Move-specific — any host with a limited USB-MIDI stack will hit it.
 
 ## Which mode to use, and what each costs
