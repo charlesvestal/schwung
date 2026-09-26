@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# THE E16 MIXER (src/shared/e16_mixer.mjs): double-tap Shift for four tracks
+# THE E16 MIXER (src/shared/e16_mixer.mjs): a tap of Shift for four tracks
 # by four rows -- level (push mute, Shift+push solo), Send A, Send B (push to
 # 0 and back, Shift+push 100%), and returns / capture / filter.
 #
@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 
 node --input-type=module -e '
 import { createMixer, renderMixer, SEND_MAX, VOLUME_MAX, MIXER_ROW_RGB, MIXER_OFF_RGB } from "./src/shared/e16_mixer.mjs";
-import { createNav, createDisplay, createSurface, DOUBLE_TAP_MS, MAP_SHOW_DELAY_MS } from "./src/shared/e16_surface.mjs";
+import { createNav, createDisplay, createSurface, SHIFT_TAP_MS, MAP_SHOW_DELAY_MS } from "./src/shared/e16_surface.mjs";
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 
 let fails = 0;
@@ -116,19 +116,16 @@ function fakeIo() {
   eq("the mixer draws", Array.from(cv.toBuffer()).some((b) => b), true);
 }
 
-/* ---- the gesture: double-tap Shift ---- */
+/* ---- the gesture: a tap of Shift (surface_core SHIFT_TAP_MS, as on the EC4) ---- */
 {
   const display = createDisplay();
   const mk = () => createNav({ display, chainOf: () => ({ slots: [{ synth: "A" }, {}, {}, {}] }),
     pageCountOf: () => 4, renderParams: () => {}, renderMixer: () => {}, onFocus: () => {} });
   let nav = mk();
-  const tap = (t) => { nav.handle({ type: "shift", down: true }, t); nav.handle({ type: "shift", down: false }, t + 60); };
-  tap(1000);
-  eq("one tap is not the mixer", nav.mixer, false);
-  const r = nav.handle({ type: "shift", down: true }, 1000 + 60 + DOUBLE_TAP_MS - 10);
-  eq("a second tap within DOUBLE_TAP_MS toggles it on", [r, nav.mixer], [{ action: "mixer", on: true }, true]);
-  nav.handle({ type: "shift", down: false }, 1500);
-  eq("...and it stays on after the release (a view, not a hold)", nav.mixer, true);
+  nav.handle({ type: "shift", down: true }, 1000);
+  eq("the press alone is not the mixer", nav.mixer, false);
+  const r = nav.handle({ type: "shift", down: false }, 1000 + SHIFT_TAP_MS - 10);
+  eq("a release within SHIFT_TAP_MS toggles it on", [r, nav.mixer], [{ action: "mixer", on: true }, true]);
   eq("a turn in the mixer is a mixer turn", nav.handle({ type: "turn", enc: 5, ticks: 1 }, 3000),
      { action: "mixerTurn", enc: 5, ticks: 1, shift: false });
   nav.handle({ type: "shift", down: true }, 4000);
@@ -136,29 +133,31 @@ function fakeIo() {
      nav.handle({ type: "turn", enc: 0, ticks: 1 }, 4100), { action: "mixerTurn", enc: 0, ticks: 1, shift: true });
   eq("...and the map stays hidden", nav.mapVisible(4100 + MAP_SHOW_DELAY_MS * 3), false);
   nav.handle({ type: "shift", down: false }, 4200);
+  eq("...and that release was not a tap", nav.mixer, true);
   eq("Shift+push in the mixer is a mixer push with shift",
      (nav.handle({ type: "shift", down: true }, 5000), nav.handle({ type: "push", enc: 3 }, 5050)),
      { action: "mixerPush", enc: 3, shift: true });
   nav.handle({ type: "shift", down: false }, 5100);
+  eq("...nor that one", nav.mixer, true);
   nav.handle({ type: "shift", down: true }, 6000);
   eq("holding Shift in the mixer never opens the slot map", nav.mapVisible(6000 + MAP_SHOW_DELAY_MS * 5), false);
-  eq("...and the mixer stays up", nav.mixer, true);
   nav.handle({ type: "shift", down: false }, 6000 + MAP_SHOW_DELAY_MS * 5);
-  tap(7000); nav.handle({ type: "shift", down: true }, 7200);
-  eq("double-tap again leaves the mixer", nav.mixer, false);
-  nav.handle({ type: "shift", down: false }, 7260);
+  eq("...and a long hold is not a tap: the mixer stays up", nav.mixer, true);
+  nav.handle({ type: "shift", down: true }, 7000); nav.handle({ type: "shift", down: false }, 7060);
+  eq("a tap again leaves the mixer", nav.mixer, false);
 
   nav = mk();
-  nav.handle({ type: "shift", down: true }, 1000); nav.handle({ type: "shift", down: false }, 1000 + DOUBLE_TAP_MS + 50);
-  nav.handle({ type: "shift", down: true }, 1000 + DOUBLE_TAP_MS + 100);
+  nav.handle({ type: "shift", down: true }, 1000); nav.handle({ type: "shift", down: false }, 1000 + SHIFT_TAP_MS + 50);
   eq("a slow press is not a tap", nav.mixer, false);
   nav = mk();
   nav.handle({ type: "shift", down: true }, 1000); nav.handle({ type: "turn", enc: 5, ticks: 1 }, 1020);
-  nav.handle({ type: "shift", down: false }, 1060); nav.handle({ type: "shift", down: true }, 1100);
+  nav.handle({ type: "shift", down: false }, 1060);
   eq("a press that paged is not a tap", nav.mixer, false);
   nav = mk();
-  tap(1000); nav.handle({ type: "shift", down: true }, 1000 + 60 + DOUBLE_TAP_MS + 20);
-  eq("a second tap too late is not a double tap", nav.mixer, false);
+  nav.handle({ type: "shift", down: true }, 1000);
+  eq("a hold shows the map, as before", nav.mapVisible(1000 + MAP_SHOW_DELAY_MS), true);
+  nav.handle({ type: "shift", down: false }, 1000 + MAP_SHOW_DELAY_MS + 10);
+  eq("...and releasing the map is not a tap", nav.mixer, false);
 }
 
 /* ---- through the surface: MIDI in, parameter writes out ---- */
@@ -168,12 +167,16 @@ function fakeIo() {
   const s = createSurface({ now: () => t, send: () => true, chainOf: () => ({ slots: [{ synth: "A" }, {}, {}, {}] }), mixer: io });
   s.setEnabled(true);
   const shift = (down) => s.feedMidi(down ? [0x90, 0x10, 0x7F] : [0x80, 0x10, 0x00]);
-  t = 1000; shift(true); t = 1060; shift(false); t = 1120; shift(true); t = 1180; shift(false);
-  eq("double-tap Shift over the wire opens the mixer", s.nav ? s.nav.mixer : "no nav getter", true);
+  t = 1000; shift(true); t = 1060; shift(false);
+  eq("a tap of Shift over the wire opens the mixer", s.nav ? s.nav.mixer : "no nav getter", true);
   const before = io.writes.length;
-  s.feedMidi([0xB0, 0x01, 0x41]);          /* encoder 0 turned one detent up */
-  eq("turning encoder 1 writes the track 1 slot volume",
-     io.writes.slice(before).map((w) => w[1]), ["slot:volume"]);
+  /* Two detents: the Mixer turns through the knob engine (surface_core
+   * createKnobFeel), so one slow detent carries a fraction of a 0.5 dB step. */
+  t = 2000; s.feedMidi([0xB0, 0x01, 0x41]);
+  t = 2010; s.feedMidi([0xB0, 0x01, 0x41]);
+  const keys = io.writes.slice(before).map((w) => w[1]);
+  eq("turning encoder 1 writes the track 1 slot volume, and nothing else",
+     [keys.length > 0, keys.every((k) => k === "slot:volume")], [true, true]);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");

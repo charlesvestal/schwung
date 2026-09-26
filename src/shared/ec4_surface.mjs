@@ -34,16 +34,20 @@
  *
  * Pure: every host call is injected, so tests/host drives the whole path.
  */
-import { createSysexAssembler } from "./e16_surface.mjs";
 import { decode } from "./e16_input.mjs";
-import { buildView, labelsFor, applyTurn, applyClick, pageHasKnobs, abbrev4, ENCODERS,
-         ringAmount, RING_MAX } from "./e16_view.mjs";
-import { buildMap } from "./e16_map.mjs";
-import { createMixer, SEND_MAX, SEND_STEP, VOLUME_MAX, LEVEL_DB_STEP, LEVEL_DB_FLOOR,
-         FILTER_STEP, PAN_STEP } from "./e16_mixer.mjs";
+import { labelsFor, applyTurn, applyClick, abbrev4, ENCODERS, ringAmount, RING_MAX } from "./e16_view.mjs";
+import { createMixer } from "./e16_mixer.mjs";
 import { displayValue } from "./param_pages/render_page_movy.mjs";
-import { ENUM_DELTA_DIV, knobInit, knobStep, KNOB_TYPE_FLOAT, detentsPerStep } from "./knob_engine.mjs";
+import { ENUM_DELTA_DIV, detentsPerStep } from "./knob_engine.mjs";
+import { SHIFT_TAP_MS, TURN_IDLE_MS, ATOMIC_MAX_PACKETS, createSysexAssembler, createPresence,
+         createFocus, createBinding, createKnobFeel } from "./surface_core.mjs";
 import * as ec4 from "./ec4_protocol.mjs";
+
+/* The focus, the controller binding, the knob feel, presence and the Shift
+ * grammar are every surface's (surface_core.mjs); what is left in this file is
+ * what the EC4 can show and how it is found. */
+export { SHIFT_TAP_MS, TURN_IDLE_MS };
+export { mixerRange } from "./e16_mixer.mjs";
 
 /* Setup 13, 0-based as the device reports it, until EC4 Setup records the one
  * the user installed into (slots 15 and 16 hold the factory Ableton setups). */
@@ -59,8 +63,13 @@ export const KEEPALIVE_MS = 2000;
 export const LOSS_MS = 5000;
 
 /* Characters per text message: 7 header + 3 page + 3 offset + 3 per character
- * + F7 is 35 bytes, 12 packets -- the most one SPI frame places whole. */
+ * + F7 is 35 bytes, 12 packets -- ATOMIC_MAX_PACKETS, the most one SPI frame
+ * places whole. */
 export const TEXT_CHUNK = 7;
+/* Checked, not assumed: a message one packet longer is spliceable. */
+if (Math.ceil((7 + 3 + 3 + 3 * TEXT_CHUNK + 1) / 3) > ATOMIC_MAX_PACKETS) {
+    throw new Error("ec4: TEXT_CHUNK no longer fits one SPI frame");
+}
 /* Messages per tick. The carry drains ~3 packets a frame, so two 12-packet
  * messages a tick keep the queue moving without building one up. */
 export const MSGS_PER_TICK = 2;
@@ -233,9 +242,6 @@ export const SELECTOR_PULSES = 6;
 /* A slot is a bigger move than an option -- the whole surface changes under
  * the hand -- so it takes twice the turn: six a rotation. */
 export const SLOT_PULSES = 12;
-/* Shift released this soon, with nothing touched, is a TAP (switch view).
- * Any longer is a hold, even if nothing was touched under it. */
-export const SHIFT_TAP_MS = 250;
 /*
  * INSTALLING THE SCHWUNG SETUP FROM MOVE.
  *
@@ -260,37 +266,6 @@ export const SHIFT_TAP_MS = 250;
  */
 export const INSTALL_CHUNK = 12;   /* packets a tick: the same frame budget as everything else */
 
-/* A pause this long drops a leftover fraction, so the next turn starts clean. */
-export const TURN_IDLE_MS = 400;
-
-/*
- * THE MIXER TURNS THROUGH THE KNOB ENGINE TOO.
- *
- * The Mixer model steps in fixed units -- 0.5 dB, 2/127, 0.02 of pan -- with
- * no acceleration, so its knobs felt nothing like a module's. It is not
- * changed (its mute, off-and-back memory and solo are its own); the engine
- * goes in FRONT of it. Each control is treated as a Schwung float knob over
- * its whole range, knobStep says how far that knob would have moved for this
- * detent, and the distance is paid out as the Mixer's own
- * ticks, with the remainder carried to the next detent.
- *
- * Ranges in the Mixer's units, and the size of one of its ticks.
- */
-const LEVEL_RANGE = { span: 20 * Math.log10(VOLUME_MAX) - LEVEL_DB_FLOOR, tick: LEVEL_DB_STEP };
-const SEND_RANGE = { span: SEND_MAX, tick: SEND_STEP };
-const PAN_RANGE = { span: 2, tick: PAN_STEP };
-const FILTER_RANGE = { span: 2, tick: FILTER_STEP };
-const ENGINE_META = { type: KNOB_TYPE_FLOAT, min: 0, max: 1 };
-
-/* Which range a Mixer encoder moves: row 1 level (alt: pan), rows 2-3 sends,
- * row 4 returns, capture (no travel) and the filter. */
-export function mixerRange(enc, alt) {
-    const row = Math.floor(enc / 4), col = enc % 4;
-    if (row === 0) return alt ? PAN_RANGE : LEVEL_RANGE;
-    if (row === 1 || row === 2) return SEND_RANGE;
-    if (col < 2) return SEND_RANGE;
-    return col === 3 ? FILTER_RANGE : null;
-}
 
 export function createEc4Surface(io) {
     const o = io || {};
@@ -304,12 +279,23 @@ export function createEc4Surface(io) {
     const onInstalled = o.onInstalled || (() => {});
     const log = o.log || (() => {});
 
-    let enabled = false;
+    /* Seek / keepalive / loss (surface_core createPresence). The probe is the
+     * setup request, and any well-formed EC4 message is the device answering:
+     * every write is acknowledged, so a surface in use hears from it
+     * constantly. No single-message goodbye -- the names are restored by
+     * drain() instead (see `goodbye`). */
+    const wrap = (body) => [0xF0].concat(body, [0xF7]);
+    const presence = createPresence({
+        probeMs: QUERY_MS, keepaliveMs: KEEPALIVE_MS, lossMs: LOSS_MS,
+        probeMsg: ec4.queryMsg,
+        isReply: (body) => ec4.parse(wrap(body)) !== null,
+        packetize: ec4.packetize,
+    });
     /* null, or the install in progress (see INSTALLING THE SCHWUNG SETUP). */
     let install = null;
     /* The device's own report; null until it has answered. */
     let reportedSetup = null;
-    let heardAt = -Infinity;
+    /* Only for asking while the surface is OFF (installing; see tick). */
     let queriedAt = -Infinity;
     let wasActive = false;
     /* The names put back to "----" and the overlay hidden, owed after the
@@ -328,15 +314,17 @@ export function createEc4Surface(io) {
     let overlayRows = null;
     let overlayUntil = -Infinity;
 
-    /* ---- the focus: ONE of each, whoever is writing it ---- */
-    let slot = 0;
-    let component = "synth";
-    let pageIndex = 0;
+    /* ---- the focus and its controller: every surface's (surface_core) ---- */
+    const focus = createFocus({ chainOf, followFocusOf });
+    const binding = createBinding({ makeController, focus });
+    const feel = createKnobFeel({ pulsesPerDetentOf });
+    const { metaOf } = binding;
+    const knobPages = binding.knobPages;
+    /* ONE page: cells 0-7 are the current page, the rest navigation. */
+    const viewNow = () => binding.pageView(focus.pageIndex);
+    const pageName = () => binding.pageName(focus.pageIndex);
+    const componentsOf = (s) => focus.components(s);
     let mixerOn = false;
-    let follow = false;
-    /* Where each slot and each module was left, so going back is going back. */
-    const lastComponent = [null, null, null, null];
-    const lastPage = new Map();
 
     /* Shift: when it went down (null = up), and whether anything was done
      * under it -- a press that did nothing is a TAP, and a tap switches view. */
@@ -348,73 +336,18 @@ export function createEc4Surface(io) {
     let mixerLoaded = false;
     let mixerRefreshAt = -Infinity;
 
-    let ctl = null;
-    let loaded = null;
-    const focus = { get slot() { return slot; }, get component() { return component; } };
-    const metaOf = (key) => (ctl && ctl.metaIndex ? ctl.metaIndex.getOrGuess(key) : null);
-    const valueOf = (key) => (ctl && ctl.state && ctl.state.values ? ctl.state.values[key] : undefined);
-    /* Only pages with a knob on them, as on the E16 -- and a cell's page is
-     * mapped back to the controller's own index, or a skipped page shifts
-     * which page a knob drives (test_e16_skipped_pages.sh). */
-    const knobPages = () => (ctl && ctl.pages ? ctl.pages.filter(pageHasKnobs) : []);
-    const controllerPageOf = (j) => {
-        if (!ctl || !ctl.pages) return j;
-        let seen = -1;
-        for (let i = 0; i < ctl.pages.length; i++) {
-            if (pageHasKnobs(ctl.pages[i]) && ++seen === j) return i;
-        }
-        return j;
-    };
-    /* ONE page: buildView fills the top half (cells 0-7) from the list it is
-     * given, so it is given only the current page. */
-    const viewNow = () => {
-        const kp = knobPages();
-        const p = kp[pageIndex];
-        return buildView(p ? [p] : [], 0, { metaOf, valueOf, pageIndexOf: () => controllerPageOf(pageIndex) });
-    };
-    const pageName = () => { const p = knobPages()[pageIndex]; return p ? String(p.name || "") : ""; };
-
-    /* The slot's modules in chain order (MIDI FX, synth, audio FX), from the
-     * same map the E16 uses -- holes are already dropped there. */
-    function componentsOf(s) {
-        const out = [];
-        for (let pg = 0; ; pg++) {
-            const m = buildMap(chainOf(), { slot: s, page: pg });
-            for (const c of m.cells.slice(4)) if (c) out.push(c);
-            if (pg + 1 >= m.pageCount) break;
-        }
-        return out;
-    }
     const moduleNameFor = (s, comp) => {
         const c = componentsOf(s).find((x) => x.component === comp);
         return c ? String(c.label || "") : "";
     };
-
-    function setFocus(s, comp) {
-        if (s === slot && comp === component) return;
-        lastPage.set(slot + ":" + component, pageIndex);
-        slot = s;
-        component = comp;
-        lastComponent[s] = comp;
-        pageIndex = lastPage.get(s + ":" + comp) || 0;
-    }
-
-    /* A slot is entered at the module it was left on, else its synth, else
-     * its first module. */
-    function enterSlot(s) {
-        const comps = componentsOf(s);
-        const pick = comps.find((c) => c.component === lastComponent[s]) ||
-                     comps.find((c) => c.component === "synth") || comps[0];
-        setFocus(s, pick ? pick.component : "synth");
-    }
 
     /* ---- the screen ---- */
 
     const PAGE_COUNT_MAX = 4;
     function moduleNames() {
         const cells = new Array(ENCODERS).fill("");
-        const comps = componentsOf(slot);
-        const here = comps.find((c) => c.component === component);
+        const comps = componentsOf(focus.slot);
+        const here = comps.find((c) => c.component === focus.component);
         if (here) {
             const l = labelsFor(viewNow(), { metaOf });
             for (let e = 0; e < PAGE_KNOBS_N; e++) cells[e] = l.labels[e];
@@ -423,11 +356,11 @@ export function createEc4Surface(io) {
         cells[CELL_PREV] = "<PG";
         cells[CELL_NEXT] = "PG>";
         cells[CELL_PAGE] = n ? abbrev4(pageName()) : "----";
-        const count = (pageIndex + 1) + "/" + n;
-        cells[CELL_COUNT] = !n ? "" : (count.length <= PAGE_COUNT_MAX ? count : "P" + (pageIndex + 1));
-        cells[CELL_SLOT] = "SL " + (slot + 1);
+        const count = (focus.pageIndex + 1) + "/" + n;
+        cells[CELL_COUNT] = !n ? "" : (count.length <= PAGE_COUNT_MAX ? count : "P" + (focus.pageIndex + 1));
+        cells[CELL_SLOT] = "SL " + (focus.slot + 1);
         cells[CELL_MODULE] = here ? abbrev4(here.label) : "EMPT";
-        const t = mixer ? mixer.tracks[slot] : null;
+        const t = mixer ? mixer.tracks[focus.slot] : null;
         /* Names of what the knob DOES; a state that changes what it does
          * (mute) is the only exception. A pan position is a value, and a
          * value is for the overlay. */
@@ -492,18 +425,18 @@ export function createEc4Surface(io) {
      * current one centred. */
     function pageReading(t) {
         const names = knobPages().map((p) => String(p.name || ""));
-        showReading([headline(moduleNameFor(slot, component) || "Module", "Page"), "",
-                     valueRow(pageName()), listRow(names, pageIndex)], t, NAV_HOLD_MS);
+        showReading([headline(moduleNameFor(focus.slot, focus.component) || "Module", "Page"), "",
+                     valueRow(pageName()), listRow(names, focus.pageIndex)], t, NAV_HOLD_MS);
     }
     function slotLevelReading(which, t) {
-        const tr = mixer.tracks[slot];
+        const tr = mixer.tracks[focus.slot];
         if (which === "vol") {
-            const c = mixer.cell(slot), r = mixer.ringFor(slot);
-            showReading([headline("Slot " + (slot + 1), tr.muted ? "Volume (muted)" : "Volume"), "",
+            const c = mixer.cell(focus.slot), r = mixer.ringFor(focus.slot);
+            showReading([headline("Slot " + (focus.slot + 1), tr.muted ? "Volume (muted)" : "Volume"), "",
                          valueRow(c.value ? c.value + " dB" : ""), barRow(r.amount / RING_MAX, false)], t);
         } else {
             const p = tr.pan === null ? 0 : tr.pan;
-            showReading([headline("Slot " + (slot + 1), "Pan"), "",
+            showReading([headline("Slot " + (focus.slot + 1), "Pan"), "",
                          valueRow(Math.abs(p) < 0.01 ? "C" : panLabel(p)), barRow((p + 1) / 2, true)], t);
         }
     }
@@ -527,29 +460,10 @@ export function createEc4Surface(io) {
 
     /* ---- input ---- */
 
-    /* Leftover fractions per encoder: pulses toward a detent, and detents
-     * toward a selector step. A reversal or a pause starts either over --
-     * half a detent the other way is not a reason to move. */
-    const pulseAcc = new Array(ENCODERS).fill(0);
-    const stepAcc = new Array(ENCODERS).fill(0);
-    const turnedAt = new Array(ENCODERS).fill(-Infinity);
-
-    function accumulate(acc, enc, amount, per) {
-        if (Math.sign(acc[enc]) !== Math.sign(amount)) acc[enc] = 0;
-        acc[enc] += amount;
-        const out = Math.trunc(acc[enc] / per);
-        acc[enc] -= out * per;
-        return out;
-    }
-
-    /* EC4 pulses -> Move detents, for a continuous control. */
-    function detents(enc, pulses) {
-        const per = Number(pulsesPerDetentOf());
-        return accumulate(pulseAcc, enc, pulses, per > 0 ? per : DEFAULT_PULSES_PER_DETENT);
-    }
-
-    /* EC4 pulses -> choices, one per SELECTOR_PULSES of rotation. */
-    const choiceStep = (enc, pulses, per) => accumulate(stepAcc, enc, pulses, per || SELECTOR_PULSES);
+    /* EC4 pulses -> Move detents, for a continuous control; choices step by
+     * angle (SELECTOR_PULSES). Both surface_core createKnobFeel. */
+    const detents = (enc, pulses) => feel.detents(enc, pulses);
+    const choiceStep = (enc, pulses, per) => feel.steps(enc, pulses, per || SELECTOR_PULSES);
 
     /* A parameter that is a CHOICE: an enum, or an int the engine already
      * steps like one. Those get the selector's physical step. */
@@ -574,55 +488,28 @@ export function createEc4Surface(io) {
         return { items, index: Math.round(Number(v)) - lo };
     }
 
-    /* Move detents -> the Mixer's own ticks, through the knob engine (see
-     * THE MIXER TURNS THROUGH THE KNOB ENGINE TOO). One engine state and one
-     * carry per control, keyed so a range change (alt) starts clean. */
-    const engine = new Map();
-    function engineTicks(key, range, d, t) {
-        let e = engine.get(key);
-        if (!e) { e = { st: knobInit(0.5), carry: 0 }; engine.set(key, e); }
-        if (Math.sign(e.carry) !== Math.sign(d)) e.carry = 0;
-        const dir = d > 0 ? 1 : -1;
-        for (let i = 0; i < Math.abs(d); i++) {
-            /* Re-centred each detent: the engine only measures the move, and
-             * the real value lives in the Mixer, which does its own clamping. */
-            e.st.value = 0.5;
-            const moved = knobStep(e.st, ENGINE_META, dir, t) - 0.5;
-            e.carry += moved * range.span / range.tick;
-        }
-        const out = Math.trunc(e.carry);
-        e.carry -= out;
-        return out;
-    }
-    function mixerTurn(enc, d, alt, t) {
-        const range = mixerRange(enc, alt);
-        if (!range) return false;
-        const ticks = engineTicks(enc + (alt ? ":alt" : ""), range, d, t);
-        return ticks ? mixer.turn(enc, ticks, alt) : false;
-    }
-
     const step = (ticks) => (ticks > 0 ? 1 : -1);
 
     /* The <PG / PG> buttons step quietly; the page KNOB shows the list. */
     function stepPage(d, t, quiet) {
         const n = knobPages().length;
-        const next = Math.max(0, Math.min(n - 1, pageIndex + d));
-        if (n && next !== pageIndex) { pageIndex = next; }
+        const next = Math.max(0, Math.min(n - 1, focus.pageIndex + d));
+        if (n) focus.setPage(next);
         if (!quiet) pageReading(t);
     }
 
     function turn(enc, pulses, t) {
         if (shiftDownAt !== null) shiftActed = true;
         const alt = shiftDownAt !== null;
-        if (t - turnedAt[enc] >= TURN_IDLE_MS) { pulseAcc[enc] = 0; stepAcc[enc] = 0; }
-        turnedAt[enc] = t;
+        feel.begin(enc, t);
         if (mixerOn && mixer) {
             const d = detents(enc, pulses);
-            if (d && mixerTurn(enc, d, alt, t)) mixerReading(enc, t, alt);
+            if (d && feel.mixerTurn(mixer, enc, d, alt, t)) mixerReading(enc, t, alt);
             return;
         }
         if (enc < PAGE_KNOBS_N) {
             const cell = viewNow().cells[enc];
+            const ctl = binding.controller;
             if (!cell || !ctl) return;
             /* A choice moves one option per SELECTOR_PULSES: the engine
              * gates an option at ENUM_DELTA_DIV detents, so that many are
@@ -635,30 +522,30 @@ export function createEc4Surface(io) {
         const ticks = enc > CELL_MODULE ? detents(enc, pulses) : 0;
         if (enc <= CELL_NEXT) { if (sel) stepPage(step(sel), t); return; }
         if (enc === CELL_SLOT) {
-            if (follow || !sel) return;
-            const s = Math.max(0, Math.min(3, slot + step(sel)));
+            if (focus.follow || !sel) return;
+            const s = Math.max(0, Math.min(3, focus.slot + step(sel)));
             /* No overlay: the slot and module cells already show where you
              * are, and a reading would cover them while you look. */
-            if (s !== slot) enterSlot(s);
+            if (s !== focus.slot) focus.enterSlot(s);
             return;
         }
         if (enc === CELL_MODULE) {
-            if (follow || !sel) return;
-            const comps = componentsOf(slot);
-            const i = comps.findIndex((c) => c.component === component);
+            if (focus.follow || !sel) return;
+            const comps = componentsOf(focus.slot);
+            const i = comps.findIndex((c) => c.component === focus.component);
             const next = comps[Math.max(0, Math.min(comps.length - 1, (i < 0 ? 0 : i) + step(sel)))];
-            if (next) setFocus(slot, next.component);
+            if (next) focus.set(focus.slot, next.component);
             return;
         }
         if (!mixer) return;
         if (!ticks) return;
         if (enc === CELL_VOL) {
-            if (mixerTurn(slot, ticks, false, t)) slotLevelReading("vol", t);
+            if (feel.mixerTurn(mixer, focus.slot, ticks, false, t)) slotLevelReading("vol", t);
             return;
         }
         if (enc === CELL_PAN) {
             /* The Mixer's pan is its level knob's alternate: row 1, Shift. */
-            if (mixerTurn(slot, ticks, true, t)) slotLevelReading("pan", t);
+            if (feel.mixerTurn(mixer, focus.slot, ticks, true, t)) slotLevelReading("pan", t);
         }
     }
 
@@ -670,6 +557,7 @@ export function createEc4Surface(io) {
             return;
         }
         if (enc < PAGE_KNOBS_N) {
+            const ctl = binding.controller;
             if (!ctl) return;
             const hit = applyClick(viewNow(), ctl, enc);
             if (hit) paramReading(enc, t);
@@ -678,10 +566,10 @@ export function createEc4Surface(io) {
         if (enc === CELL_PREV) { stepPage(-1, t, true); return; }
         if (enc === CELL_NEXT) { stepPage(1, t, true); return; }
         if (!mixer) return;
-        if (enc === CELL_VOL) { if (mixer.push(slot, false)) slotLevelReading("vol", t); return; }
+        if (enc === CELL_VOL) { if (mixer.push(focus.slot, false)) slotLevelReading("vol", t); return; }
         if (enc === CELL_PAN) {
-            const tr = mixer.tracks[slot];
-            if (mixerIo.setSlot(slot, "slot:pan", "0.00") !== false) tr.pan = 0;
+            const tr = mixer.tracks[focus.slot];
+            if (mixerIo.setSlot(focus.slot, "slot:pan", "0.00") !== false) tr.pan = 0;
             slotLevelReading("pan", t);
         }
     }
@@ -712,10 +600,12 @@ export function createEc4Surface(io) {
         return ok;
     };
 
-    const active = () => enabled && reportedSetup === setupOf() && now() - heardAt < LOSS_MS;
+    /* Present (answering) AND reporting the setup that holds Schwung's map:
+     * any other setup is the user's own. */
+    const heard = (t) => t - presence.lastReply < LOSS_MS;
+    const active = () => presence.enabled && presence.present && reportedSetup === setupOf();
 
     function onDevice(events, t) {
-        heardAt = t;
         /* The bare header is the acknowledgement every write gets. */
         if (events.length === 0) { acks++; return; }
         for (const ev of events) {
@@ -730,23 +620,16 @@ export function createEc4Surface(io) {
 
     const asm = createSysexAssembler({
         onMessage: (body) => {
-            const events = ec4.parse([0xF0].concat(body, [0xF7]));
-            if (events) onDevice(events, now());
+            const events = ec4.parse(wrap(body));
+            if (!events) return;
+            presence.onSysex(body, now());
+            onDevice(events, now());
         },
     });
 
     function syncFocus() {
-        if (follow) {
-            const f = followFocusOf();
-            /* A null is not a plan (the tri-state rule): keep where we are. */
-            if (f && typeof f.slot === "number" && f.component) setFocus(f.slot | 0, f.component);
-        }
-        if (!ctl && makeController) ctl = makeController(focus);
-        if (!ctl) return;
-        const sig = slot + ":" + component;
-        if (sig === loaded) return;
-        loaded = sig;
-        ctl.load({ slot, component, prefix: component });
+        focus.poll();
+        binding.sync();
     }
 
     /* One tick's worth of messages: overlay visibility first when hiding (a
@@ -785,10 +668,10 @@ export function createEc4Surface(io) {
     return {
         setEnabled(on) {
             on = !!on;
-            if (on === enabled) return;
+            if (on === presence.enabled) return;
             const wasOurs = active();
-            enabled = on;
-            if (on) { goodbye = false; queriedAt = -Infinity; return; }
+            presence.setEnabled(on, now(), send);
+            if (on) { goodbye = false; return; }
             /* Only a device showing OUR text is owed its names back: another
              * setup was never written to. */
             goodbye = wasOurs;
@@ -797,17 +680,13 @@ export function createEc4Surface(io) {
 
         /* Follow Move's screen: the focus comes from followFocusOf, and the
          * slot and module knobs stop moving it -- one-way, as on the E16. */
-        setFollow(on) { follow = !!on; },
+        setFollow(on) { focus.setFollow(on); },
 
+        /* A write from elsewhere (Move's own grid): into the cache now, so
+         * the next reading shows it (surface_core createBinding). */
         noteParamWrite(s, key, value) {
-            if (!enabled || !ctl || !ctl.state || !ctl.state.values) return;
-            if ((s | 0) !== slot) return;
-            const k = String(key);
-            for (const cell of viewNow().cells) {
-                if (cell && (k === cell.key || k === component + ":" + cell.key)) {
-                    ctl.state.values[cell.key] = String(value);
-                }
-            }
+            if (!presence.enabled) return;
+            binding.noteWrite(s, key, value, viewNow());
         },
 
         feedMidi(data) {
@@ -840,13 +719,13 @@ export function createEc4Surface(io) {
                      * told it. */
                     install.phase = "done";
                     names.forget(); total.forget(); shownOverlay = null;
-                    queriedAt = -Infinity;
+                    presence.reprobe();
                     log("ec4: Schwung setup installed into setup " + (install.setup + 1));
                     onInstalled(install.setup);
                 }
                 return;
             }
-            if (install && install.phase === "pick" && !enabled) {
+            if (install && install.phase === "pick" && !presence.enabled) {
                 /* pick, with the surface off: still ask which setup is current. */
                 if (t - queriedAt >= QUERY_MS && emit(ec4.queryMsg())) queriedAt = t;
                 return;
@@ -856,12 +735,9 @@ export function createEc4Surface(io) {
                 if (names.synced && shownOverlay === false) goodbye = false;
                 return;
             }
-            if (!enabled) return;
-            /* Seeking (never answered, or silent a while) asks faster. */
-            const seeking = reportedSetup === null || t - heardAt >= KEEPALIVE_MS * 2;
-            if (t - queriedAt >= (seeking ? QUERY_MS : KEEPALIVE_MS)) {
-                if (emit(ec4.queryMsg())) queriedAt = t;
-            }
+            if (!presence.enabled) return;
+            /* The setup request: fast while seeking, slow while present. */
+            presence.tick(t, (packets) => { const ok = send(packets) !== false; if (ok) sentMsgs++; return ok; });
             const isActive = active();
             if (isActive !== wasActive) {
                 wasActive = isActive;
@@ -874,7 +750,7 @@ export function createEc4Surface(io) {
             }
             if (!isActive) return;
             syncFocus();
-            if (ctl) ctl.tick();
+            binding.tick();
             if (mixer) {
                 /* VOL and PAN read the Mixer's model, so it is loaded once
                  * the surface is ours, then kept by a slow rotation. */
@@ -889,12 +765,12 @@ export function createEc4Surface(io) {
         },
 
         /* ---- installing the Schwung setup (see INSTALLING THE SCHWUNG SETUP) ---- */
-        installBegin() { install = { phase: "pick", setup: null, packets: null, at: 0 }; queriedAt = -Infinity; },
+        installBegin() { install = { phase: "pick", setup: null, packets: null, at: 0 }; queriedAt = -Infinity; presence.reprobe(); },
         /* Take the EC4's current setup as the target and go silent. False if
          * the EC4 has not answered recently -- there is no setup to name. */
         installArm() {
             if (!install || install.phase !== "pick") return false;
-            if (reportedSetup === null || now() - heardAt >= LOSS_MS) return false;
+            if (reportedSetup === null || !heard(now())) return false;
             install.setup = reportedSetup;
             install.phase = "ready";
             return true;
@@ -911,7 +787,7 @@ export function createEc4Surface(io) {
             /* The EC4 has been in its own menus: whatever it shows now is not
              * what we last told it. */
             names.forget(); total.forget(); shownOverlay = null;
-            queriedAt = -Infinity;
+            presence.reprobe();
         },
         get installState() {
             if (!install) return null;
@@ -920,20 +796,21 @@ export function createEc4Surface(io) {
                 phase: install.phase,
                 setup: install.setup,
                 progress: install.packets ? install.at / install.packets.length : 0,
-                current: (reportedSetup !== null && t - heardAt < LOSS_MS) ? reportedSetup : null,
+                current: (reportedSetup !== null && heard(t)) ? reportedSetup : null,
             };
         },
 
-        get enabled() { return enabled; },
+        get enabled() { return presence.enabled; },
         get present() { return active(); },
         get reportedSetup() { return reportedSetup; },
         get acks() { return acks; },
         get sent() { return sentMsgs; },
-        get slot() { return slot; },
-        get component() { return component; },
-        get pageIndex() { return pageIndex; },
+        get slot() { return focus.slot; },
+        get component() { return focus.component; },
+        get pageIndex() { return focus.pageIndex; },
+        get focus() { return focus; },
         get mixerOn() { return mixerOn; },
-        get controller() { return ctl; },
+        get controller() { return binding.controller; },
         view: viewNow,
         /* What the device should be showing -- for tests and the log. */
         screen() { return { names: namesNow(), overlay: overlayNow(now()) }; },
