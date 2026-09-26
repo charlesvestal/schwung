@@ -35,6 +35,20 @@ export const SLOT_SETTING_KEYS = ["slot:volume", "slot:pan", "slot:muted", "slot
                                   "buses:main_send1", "buses:main_send2"];
 export const MASTER_SETTING_KEYS = ["master_fx:filter", "send1:return", "send2:return"];
 
+/* The settings a control may drive, declared as chain_params so they get the
+ * same meta, stepping and formatting as any module parameter. */
+export const SETTINGS_CHAIN_PARAMS = [
+    { key: "slot:volume", name: "Volume", type: "float", min: 0, max: 2, step: 0.01 },
+    { key: "slot:pan", name: "Pan", type: "float", min: -1, max: 1, step: 0.02 },
+    { key: "slot:muted", name: "Mute", type: "int", min: 0, max: 1 },
+    { key: "slot:soloed", name: "Solo", type: "int", min: 0, max: 1 },
+    { key: "buses:main_send1", name: "Send A", type: "int", min: 0, max: 127 },
+    { key: "buses:main_send2", name: "Send B", type: "int", min: 0, max: 127 },
+    { key: "master_fx:filter", name: "Filter", type: "float", min: -1, max: 1, step: 0.02 },
+    { key: "send1:return", name: "Return A", type: "int", min: 0, max: 127 },
+    { key: "send2:return", name: "Return B", type: "int", min: 0, max: 127 },
+];
+
 /*
  * Keys that are not parameters, however they are spelled: module identity,
  * whole-state blobs, presets, bypass, and anything a module serves as a
