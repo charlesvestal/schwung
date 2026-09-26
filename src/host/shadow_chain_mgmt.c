@@ -814,7 +814,8 @@ void shadow_apply_mute(int slot, int is_muted) {
 }
 
 /* Set a slot's solo to a known state, as Move reported it. Exclusive, like
- * shadow_toggle_solo: soloing one slot unsolos the rest. */
+ * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
+ * and Move announces only the track it soloed. */
 void shadow_apply_solo(int slot, int is_soloed) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
     is_soloed = is_soloed ? 1 : 0;
@@ -840,7 +841,7 @@ void shadow_apply_solo(int slot, int is_soloed) {
 }
 
 /* Set every slot's mute and solo at once, as Move's Song.abl states them.
- * NOT exclusive: whatever the file says is soloed stays soloed. */
+ * Copies the file as-is; Move's solo is exclusive, so it names at most one. */
 void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
     int n = 0;
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
