@@ -558,6 +558,9 @@ void shadow_ui_state_refresh(void);
 /* --- Mute/solo --- */
 void shadow_apply_mute(int slot, int is_muted);
 void shadow_toggle_solo(int slot);
+void shadow_apply_solo(int slot, int is_soloed);
+void shadow_apply_mix_state(const int muted[4], const int soloed[4]);
+int shadow_sync_mix_from_song(const char *uuid, const char *set_name);
 
 /* --- Master FX --- */
 

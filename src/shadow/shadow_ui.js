@@ -46,6 +46,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
+import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
@@ -9658,6 +9659,30 @@ function loadRnboGraphFromDir(dir) {
         /* Same graph, just load preset immediately */
         rnboSendOsc("/rnbo/inst/control/sets/presets/load", presetName);
         debugLog("SET_CHANGED: loading RNBO preset: " + presetName);
+    }
+}
+
+/* Slot mute/solo follows Move's track mute/solo (src/host/mute_follow.h for
+ * the live half). At a set change Move has just loaded this set's Song.abl, so
+ * the file IS Move's state: push all four slots in one write. Anything short
+ * of a whole answer -- no file yet (a brand-new set), unparseable, fewer than
+ * four tracks -- leaves the per-set saved state as it is. */
+function syncSlotMixFromSong(uuid, setName) {
+    if (!uuid || !setName) return;
+    const path = "/data/UserData/UserLibrary/Sets/" + uuid + "/" + setName + "/Song.abl";
+    try {
+        const raw = host_read_file(path);
+        if (!raw) return;
+        const state = songMixState(JSON.parse(raw));
+        if (!state) {
+            debugLog("SET_CHANGED: Song.abl gave no whole mute/solo answer; keeping saved state");
+            return;
+        }
+        const value = songMixParamValue(state);
+        setSlotParamWithTimeout(0, "slot:move_mix", value, 500);
+        debugLog("SET_CHANGED: slot mute/solo from Move: " + value);
+    } catch (e) {
+        debugLog("syncSlotMixFromSong error: " + e);
     }
 }
 
@@ -25949,6 +25974,9 @@ globalThis.tick = function() {
              * selection on the synth, which is what a slot is about. */
             for (let i = 0; i < lastChainComponent.length; i++) lastChainComponent[i] = null;
             loadChainConfigFromDir(newDir);
+            /* Slot mute/solo FOLLOWS Move's tracks, so the set's own saved
+             * values just loaded are overridden by what Move has just read. */
+            syncSlotMixFromSong(uuid, setName);
 
             /* 6. Two-pass reload: clear ALL old slots first (freeing memory),
              *    then load new slots. This reduces peak memory when switching

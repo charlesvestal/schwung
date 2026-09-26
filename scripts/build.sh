@@ -245,7 +245,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/schwung_trace.h \
     src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
-    src/host/link_audio.h src/host/shadow_shm_util.h; then
+    src/host/link_audio.h src/host/shadow_shm_util.h src/host/mute_follow.h src/host/song_abl_mix.h; then
     echo "Building shim..."
     # -Wl,--no-undefined: A SHARED LIBRARY LINKS CLEAN WITH UNDEFINED SYMBOLS,
     # and for an LD_PRELOAD shim the failure then lands at LOAD -- MoveOriginal

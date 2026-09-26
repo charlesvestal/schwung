@@ -27,6 +27,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
+#include "song_abl_mix.h"
 #include "shadow_state.h"
 #include "shadow_midi.h"
 #include "unified_log.h"
@@ -810,6 +811,85 @@ void shadow_apply_mute(int slot, int is_muted) {
     snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
     shadow_log(msg);
     shadow_save_state();
+}
+
+/* Set a slot's solo to a known state, as Move reported it. Exclusive, like
+ * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
+ * and Move announces only the track it soloed. */
+void shadow_apply_solo(int slot, int is_soloed) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    is_soloed = is_soloed ? 1 : 0;
+    if (is_soloed == shadow_chain_slots[slot].soloed &&
+        (!is_soloed || shadow_solo_count == 1)) return;
+    if (is_soloed) {
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            shadow_chain_slots[i].soloed = 0;
+        shadow_chain_slots[slot].soloed = 1;
+    } else {
+        shadow_chain_slots[slot].soloed = 0;
+    }
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        if (shadow_chain_slots[i].soloed) n++;
+    shadow_solo_count = n;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Solo: slot %d %s", slot, is_soloed ? "soloed" : "unsoloed");
+    shadow_log(msg);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    shadow_save_state();
+}
+
+/* Set every slot's mute and solo at once, as Move's Song.abl states them.
+ * Copies the file as-is; Move's solo is exclusive, so it names at most one. */
+void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
+        shadow_chain_slots[i].muted = muted[i] ? 1 : 0;
+        shadow_chain_slots[i].soloed = soloed[i] ? 1 : 0;
+        if (shadow_chain_slots[i].soloed) n++;
+    }
+    shadow_solo_count = n;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Move mix state: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+             muted[0], muted[1], muted[2], muted[3], soloed[0], soloed[1], soloed[2], soloed[3]);
+    shadow_log(msg);
+    shadow_save_state();
+}
+
+/* Boot: read the set Move is loading and take its track mute/solo. File I/O —
+ * init path only, never the SPI callback. Returns 1 if applied. */
+int shadow_sync_mix_from_song(const char *uuid, const char *set_name) {
+    if (!uuid || !uuid[0] || !set_name || !set_name[0]) return 0;
+    char path[768];
+    snprintf(path, sizeof(path), "%s/%s/%s/Song.abl", SAMPLER_SETS_DIR, uuid, set_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 16 * 1024 * 1024) { fclose(f); return 0; }
+    char *buf = malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[got] = '\0';
+    int muted[4], soloed[4];
+    int n = song_abl_mix_parse(buf, muted, soloed);
+    free(buf);
+    if (n < SONG_ABL_MIX_TRACKS) return 0;   /* not a whole answer: keep what we have */
+    shadow_apply_mix_state(muted, soloed);
+    return 1;
+}
+
+/* "m0 m1 m2 m3 s0 s1 s2 s3" -- the JS set-change path's copy of the above. */
+static int shadow_parse_mix_state(const char *value, int muted[4], int soloed[4]) {
+    if (!value) return 0;
+    return sscanf(value, "%d %d %d %d %d %d %d %d",
+                  &muted[0], &muted[1], &muted[2], &muted[3],
+                  &soloed[0], &soloed[1], &soloed[2], &soloed[3]) == 8;
 }
 
 void shadow_toggle_solo(int slot) {
@@ -2913,6 +2993,17 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     }
     if (strcmp(key, "slot:muted") == 0) {
         shadow_apply_mute(slot, atoi(value));
+        return 1;
+    }
+    if (strcmp(key, "slot:move_mix") == 0) {
+        /* All four slots at once, from Move's Song.abl on a set change (the
+         * slot index is ignored). Pure assignment -- the UI did the file read. */
+        int muted[4], soloed[4];
+        if (!shadow_parse_mix_state(value, muted, soloed)) {
+            shadow_log("slot:move_mix: malformed value, ignored");
+            return 1;   /* consumed: never forward a slot key to the plugin */
+        }
+        shadow_apply_mix_state(muted, soloed);
         return 1;
     }
     if (strcmp(key, "slot:feedback_hold") == 0) {

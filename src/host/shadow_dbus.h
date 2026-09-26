@@ -27,6 +27,7 @@ typedef struct {
     void (*log)(const char *msg);
     void (*save_state)(void);
     void (*apply_mute)(int slot, int is_muted);
+    void (*apply_solo)(int slot, int is_soloed);
     void (*ui_state_update_slot)(int slot);
     /* Shared state pointers */
     shadow_chain_slot_t *chain_slots;
@@ -56,6 +57,11 @@ extern volatile int in_set_overview;
  * shadow_dbus_handle_text; read by the shim on the SPI callback. NEVER
  * persisted — Move does not persist it either, so 0 at boot is correct. */
 extern volatile int shadow_metronome_on;
+
+/* Mute-follow attribution (mute_follow.h): written by the shim's Mute/Track
+ * scan, read by the D-Bus handler to route Move's "<name> muted/unmuted". */
+#include "mute_follow.h"
+extern mute_follow_t shadow_mute_follow;
 
 
 /* Priority announcement blocking (shared with TTS subsystem) */
