@@ -315,29 +315,36 @@ static void shadow_dbus_handle_text(const char *text)
     }
 
     /*
-     * Move's track mute, followed onto the slot the GESTURE named. The text
-     * gives only the state; the track comes from mute_follow_target(), which
-     * is -1 unless Mute was just pressed with a track (or alone) — never for
-     * Mute+pad, whose drum-cell announcement has the same shape. Before the
-     * priority-announcement block below, which would otherwise drop Move's
+     * Move's track mute / solo, followed onto the slot the GESTURE named. The
+     * text gives only the state; the track comes from mute_follow_target(),
+     * which is -1 unless Mute was just pressed with a track (or alone) — never
+     * for Mute+pad, whose drum-cell announcement has the same shape. Before
+     * the priority-announcement block below, which would otherwise drop Move's
      * answer whenever Schwung happened to be speaking.
      */
     {
         mute_announce_t ma = mute_announce_classify(text);
-        if (ma != MUTE_ANNOUNCE_NONE && host.apply_mute) {
+        if (ma != MUTE_ANNOUNCE_NONE) {
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC, &ts);
             uint64_t now_ms = (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
             int slot = mute_follow_target(&shadow_mute_follow, now_ms);
             if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
-                int want = (ma == MUTE_ANNOUNCE_MUTED);
-                if (host.chain_slots[slot].muted != want) {
+                int is_solo = (ma == MUTE_ANNOUNCE_SOLOED || ma == MUTE_ANNOUNCE_UNSOLOED);
+                int want = (ma == MUTE_ANNOUNCE_MUTED || ma == MUTE_ANNOUNCE_SOLOED);
+                int have = is_solo ? host.chain_slots[slot].soloed : host.chain_slots[slot].muted;
+                if (have != want) {
                     char msg[96];
                     snprintf(msg, sizeof(msg), "Mute follow: Move says %s -> slot %d",
-                             want ? "muted" : "unmuted", slot);
+                             is_solo ? (want ? "soloed" : "unsoloed")
+                                     : (want ? "muted" : "unmuted"), slot);
                     host.log(msg);
                 }
-                host.apply_mute(slot, want);
+                if (is_solo) {
+                    if (host.apply_solo) host.apply_solo(slot, want);
+                } else if (host.apply_mute) {
+                    host.apply_mute(slot, want);
+                }
             }
         }
     }
@@ -439,8 +446,8 @@ static void shadow_dbus_handle_text(const char *text)
      * Mute+Track / Shift+Mute+Track combos in schwung_shim.c, so removing the
      * text-based sync loses no intended behavior.
      *
-     * The mute half came back, above, in the one form that is safe: the TRACK
-     * is named by the gesture and only the STATE is read from the text. */
+     * Both came back, above, in the one form that is safe: the TRACK is named
+     * by the gesture and only the STATE is read from the text. */
 
     /* After receiving any screen reader message from Move, inject our pending announcements */
     shadow_inject_pending_announcements();

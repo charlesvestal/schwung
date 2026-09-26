@@ -19,10 +19,12 @@ int main(void)
     EXPECT(mute_announce_classify("Grand Piano MUTED\n") == MUTE_ANNOUNCE_MUTED, "case + trailing newline");
     EXPECT(mute_announce_classify("muted") == MUTE_ANNOUNCE_NONE, "bare word names nothing");
     EXPECT(mute_announce_classify(" unmuted") == MUTE_ANNOUNCE_NONE, "bare suffix names nothing");
-    EXPECT(mute_announce_classify("Kit soloed") == MUTE_ANNOUNCE_NONE, "solo is not mute");
     EXPECT(mute_announce_classify("Transmuted") == MUTE_ANNOUNCE_NONE, "suffix needs a word break");
     EXPECT(mute_announce_classify("Muted Trumpet") == MUTE_ANNOUNCE_NONE, "prefix is not a state");
     EXPECT(mute_announce_classify(NULL) == MUTE_ANNOUNCE_NONE, "null");
+    EXPECT(mute_announce_classify("Drums soloed") == MUTE_ANNOUNCE_SOLOED, "soloed");
+    EXPECT(mute_announce_classify("Drums unsoloed") == MUTE_ANNOUNCE_UNSOLOED, "unsoloed is not soloed");
+    EXPECT(mute_announce_classify("soloed") == MUTE_ANNOUNCE_NONE, "bare soloed names nothing");
 
     mute_follow_t f;
 
@@ -64,6 +66,12 @@ int main(void)
     mute_follow_on_other_press(&f);
     mute_follow_on_track_press(&f, 3, 4);
     EXPECT(mute_follow_target(&f, 10) == 3, "track after pad re-targets");
+
+    /* ---- Shift+Mute+Track: Shift held BEFORE Mute, so the target stands ---- */
+    mute_follow_reset(&f);
+    mute_follow_on_mute_press(&f, 0, 1, 4);
+    mute_follow_on_track_press(&f, 1, 4);
+    EXPECT(mute_follow_target(&f, 5) == 1, "shift+mute+track names the track");
 
     /* ---- presses without Mute held change nothing ---- */
     mute_follow_reset(&f);

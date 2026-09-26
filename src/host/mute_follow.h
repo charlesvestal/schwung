@@ -1,5 +1,5 @@
 /*
- * mute_follow.h — keep a shadow slot's mute equal to Move's track mute.
+ * mute_follow.h — keep a shadow slot's mute AND solo equal to Move's track.
  *
  * Mute (CC 88) passes through to Move, so Mute+Track mutes BOTH the Move track
  * and the shadow slot. The slot used to TOGGLE its own bit, which is only in
@@ -21,6 +21,10 @@
  *   Track N while held    -> target = N (Mute+Track)
  *   anything else held    -> target = none (Mute+pad is a drum-CELL mute)
  *   Mute released         -> the target stays open MUTE_FOLLOW_WINDOW_MS
+ *
+ * Solo is the same gesture with Shift ("<name> soloed" / "unsoloed"), so it
+ * rides the same window. Shift pressed DURING the hold clears the target like
+ * any other button; the Track press that follows names it again.
  *
  * An announcement outside that window, or with no target, changes nothing.
  * Schwung never utters " muted" itself, and a pad announcement cannot arrive
@@ -49,6 +53,8 @@ typedef enum {
     MUTE_ANNOUNCE_NONE    = 0,
     MUTE_ANNOUNCE_MUTED   = 1,
     MUTE_ANNOUNCE_UNMUTED = 2,
+    MUTE_ANNOUNCE_SOLOED  = 3,
+    MUTE_ANNOUNCE_UNSOLOED = 4,
 } mute_announce_t;
 
 typedef struct {
@@ -118,7 +124,8 @@ static inline int mute_follow_ends_with(const char *s, size_t n, const char *suf
 }
 
 /*
- * " unmuted" is tested first: it also ends in "muted". Requires a name before
+ * " unmuted" / " unsoloed" are tested first: they also end in "muted" /
+ * "soloed". Requires a name before
  * the suffix — a bare "muted" names nothing. Trailing whitespace is ignored.
  */
 static inline mute_announce_t mute_announce_classify(const char *text)
@@ -130,6 +137,8 @@ static inline mute_announce_t mute_announce_classify(const char *text)
                      text[n - 1] == '\r' || text[n - 1] == '\t')) n--;
     if (mute_follow_ends_with(text, n, " unmuted") && n > 8) return MUTE_ANNOUNCE_UNMUTED;
     if (mute_follow_ends_with(text, n, " muted") && n > 6) return MUTE_ANNOUNCE_MUTED;
+    if (mute_follow_ends_with(text, n, " unsoloed") && n > 9) return MUTE_ANNOUNCE_UNSOLOED;
+    if (mute_follow_ends_with(text, n, " soloed") && n > 7) return MUTE_ANNOUNCE_SOLOED;
     return MUTE_ANNOUNCE_NONE;
 }
 

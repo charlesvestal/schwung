@@ -27,6 +27,7 @@ typedef struct {
     void (*log)(const char *msg);
     void (*save_state)(void);
     void (*apply_mute)(int slot, int is_muted);
+    void (*apply_solo)(int slot, int is_soloed);
     void (*ui_state_update_slot)(int slot);
     /* Shared state pointers */
     shadow_chain_slot_t *chain_slots;

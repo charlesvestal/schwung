@@ -5687,6 +5687,7 @@ static void shim_init_subsystems(void)
             .log = shadow_log,
             .save_state = shadow_save_state,
             .apply_mute = shadow_apply_mute,
+            .apply_solo = shadow_apply_solo,
             .ui_state_update_slot = shadow_ui_state_update_slot,
             .chain_slots = shadow_chain_slots,
             .shadow_control_ptr = &shadow_control,
@@ -5708,9 +5709,15 @@ static void shim_init_subsystems(void)
      * so they would read 0 until something else happened to touch a slot. */
     shadow_ui_state_refresh();
 
-    /* Mute/solo state is now fully managed by shadow_load_state() above.
-     * Previously we synced from Song.abl here, but Move's native track
-     * mute (speakerOn) is independent of shadow slot mute state. */
+    /* Slot mute/solo FOLLOWS Move's track mute/solo (src/host/mute_follow.h),
+     * so at boot it is taken from the set Move is loading, over whatever the
+     * saved state says. Song.abl is only the last save, but Move has just
+     * read it, so here it IS Move's state. Removed in fa6b97509 on the view
+     * that the two were independent; reinstated on the view that they are
+     * one mute (Mute passes through, Mute+Track mutes both) — and with a
+     * reader that handles `speakerOn`'s object form, which the old one read
+     * as unmuted. Anything short of four tracks keeps the saved state. */
+    shadow_sync_mix_from_song(sampler_current_set_uuid, sampler_current_set_name);
 
     /* Initialize TTS and sync loaded state to shared memory */
     tts_init(44100);
