@@ -179,5 +179,11 @@ perl -0ne 'exit(!/const ec4Surface = createEc4Surface\(\{\s*now: \(\) => Date\.n
 grep -q "config.external_surface_nav = " "$UI" || note "Surface Nav is not saved"
 grep -q "const nav = config.external_surface_nav;" "$UI" || note "Surface Nav is not restored"
 grep -q 'case "surface_nav":' "$UI" || note "the Surface Nav row is not read or written"
-[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav" || exit 1
+# FOLLOW FOCUS follows a module that draws its own screen (COMPONENT_EDIT --
+# Teng), and never a synthesised settings grid (Global Settings went blank).
+perl -0ne 'exit(!/function currentEditFocus\(\) \{.*?if \(view === VIEWS\.COMPONENT_EDIT && editingComponentKey\) \{\s*return \{ slot: selectedSlot, component: chainComponentId\(editingComponentKey\) \};/s)' "$UI" \
+  || note "Follow Focus cannot see a module that draws its own screen"
+perl -0ne 'exit(!/function e16FollowFocus\(\) \{.*?\^\(synth\|fx\\d\+\|midi_fx\\d\+\)\$.*?\n\}/s)' "$UI" \
+  || note "Follow Focus follows synthesised settings components"
+[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav, and Follow follows modules" || exit 1
 
