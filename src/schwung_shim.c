@@ -61,6 +61,7 @@
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
+#include "host/shadow_scene_bus.h"
 #include "host/shadow_link_audio.h"
 #include "host/align_capture.h"
 
@@ -941,6 +942,10 @@ static uint8_t menu_longpress_fired;
 static struct timespec step2_press_time;
 static uint8_t step2_longpress_pending;
 static uint8_t step2_longpress_fired;
+
+static struct timespec step3_press_time;
+static uint8_t step3_longpress_pending;
+static uint8_t step3_longpress_fired;
 
 static struct timespec step13_press_time;
 static uint8_t step13_longpress_pending;
@@ -2080,6 +2085,49 @@ static uint64_t spi_overtake_gen_sum, spi_overtake_gen_max;
 static uint64_t spi_overtake_fx_sum,  spi_overtake_fx_max;
 static uint32_t spi_slot_probe_burst_max;
 
+/* === SCENES: the crossfader ===
+ *
+ * shadow_control holds what the UI (or any param client) asked for; the shim
+ * is the only reader. The fader is SLEWED here -- a one-pole of ~15 ms -- so
+ * a 1/64 jog detent and a 7-bit CC both sweep a filter without zipper, and
+ * the slewed value is what every slot and bus receives. Each slot reports its
+ * scene revision and a one-shot refusal back; the sum of the revisions is
+ * published as scene_rev, which only needs to CHANGE when a bank does.
+ */
+#define SCENE_SLEW_ALPHA 0.176f   /* 1 - exp(-2.9 ms / 15 ms) per block */
+static float shadow_scene_x_slewed = 0.0f;
+static uint16_t shadow_scene_slot_rev[SHADOW_CHAIN_INSTANCES];
+static uint8_t shadow_scene_a_now = SCENE_NONE, shadow_scene_b_now = SCENE_NONE,
+               shadow_scene_edit_now = SCENE_NONE, shadow_scene_flags_now = 0;
+
+static void shadow_scene_frame_begin(void) {
+    if (!shadow_control) return;
+    shadow_scene_a_now = shadow_control->scene_a;
+    shadow_scene_b_now = shadow_control->scene_b;
+    shadow_scene_edit_now = shadow_control->scene_edit;
+    const float target = scene_xfade_from_q(shadow_control->scene_xfade_q);
+    const float d = target - shadow_scene_x_slewed;
+    shadow_scene_x_slewed = (fabsf(d) < 1e-4f) ? target : shadow_scene_x_slewed + d * SCENE_SLEW_ALPHA;
+    shadow_scene_flags_now = shadow_control->scene_unlock ? SCENE_EDIT_UNLOCK : 0;
+    shadow_scene_bus_tick(shadow_scene_a_now, shadow_scene_b_now,
+                          shadow_scene_x_slewed, shadow_scene_edit_now, shadow_scene_flags_now);
+    uint16_t rev = shadow_scene_bus_rev();
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) rev = (uint16_t)(rev + shadow_scene_slot_rev[s]);
+    if (shadow_control->scene_rev != rev) shadow_control->scene_rev = rev;
+    uint8_t flash = shadow_scene_bus_take_flash();
+    if (flash) shadow_control->scene_flash = flash;
+}
+
+static void shadow_scene_push_slot(int s, void *instance) {
+    if (!shadow_chain_set_scene_morph || !shadow_control) return;
+    uint32_t st = shadow_chain_set_scene_morph(instance, shadow_scene_a_now, shadow_scene_b_now,
+                                               shadow_scene_x_slewed, shadow_scene_edit_now,
+                                               shadow_scene_flags_now);
+    shadow_scene_slot_rev[s] = (uint16_t)(st & 0xFFFFu);
+    uint8_t flash = (uint8_t)((st >> 16) & 0xFFu);
+    if (flash) shadow_control->scene_flash = flash;
+}
+
 /* === DEFERRED DSP RENDERING ===
  * Render DSP into buffer (slow, ~300µs) - called POST-ioctl
  * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
@@ -2122,9 +2170,13 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
+        shadow_scene_frame_begin();
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+            /* Scenes: the crossfader, BEFORE the idle gate so a parked slot
+             * still morphs (the work runs in lfo_tick, which mod:tick runs). */
+            shadow_scene_push_slot(s, shadow_chain_slots[s].instance);
 
             /* Per-slot timing for the render+fx work below */
             struct timespec slot_t0, slot_t1;
@@ -4252,6 +4304,16 @@ static void init_shadow_shm(void)
         shadow_control->overlay_rect_y = 0;
         shadow_control->overlay_rect_w = 0;
         shadow_control->overlay_rect_h = 0;
+        /* Scenes: nothing is A, B or armed until shadow_ui restores the set
+         * -- a zeroed (or stale) segment would say scene 1. The fader starts
+         * at A, as the Octatrack's does. */
+        shadow_control->scene_a = SCENE_NONE;
+        shadow_control->scene_b = SCENE_NONE;
+        shadow_control->scene_edit = SCENE_NONE;
+        shadow_control->scene_flash = SCENE_FLASH_NONE;
+        shadow_control->scene_xfade_q = 0;
+        shadow_control->step_claim = 0;
+        shadow_control->scene_unlock = 0;
     }
 
     /* Create/open UI shared memory (slot labels/state) */
@@ -7467,6 +7529,7 @@ pre_done:
      * held — regardless of whether the volume knob is also touched. */
     {
         static int step2_lit = 0;
+        static int step3_lit = 0;
         static int step13_lit = 0;
 
         int want_shiftvol = SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched;
@@ -7480,6 +7543,15 @@ pre_done:
         } else if (!want_step2 && step2_lit) {
             shadow_queue_led(0x0B, 0xB0, 17, 0);
             step2_lit = 0;
+        }
+
+        /* Step 3 icon = Scenes, reachable the same two ways as Settings. */
+        if (want_step2 && !step3_lit) {
+            shadow_queue_led(0x0B, 0xB0, 18, 118);
+            step3_lit = 1;
+        } else if (!want_step2 && step3_lit) {
+            shadow_queue_led(0x0B, 0xB0, 18, 0);
+            step3_lit = 0;
         }
 
         if (want_step13 && !step13_lit) {
@@ -7602,6 +7674,20 @@ pre_done:
             launch_shadow_ui_reset_backoff();
             launch_shadow_ui();
             shadow_log("Shift+Step2 long-press: opening global settings");
+        }
+        /* Shift + Step 3: the Scenes screen */
+        if (step3_longpress_pending && !step3_longpress_fired &&
+            shadow_shift_held && !shadow_volume_knob_touched &&
+            long_press_elapsed(&step3_press_time)) {
+            step3_longpress_fired = 1;
+            step3_longpress_pending = 0;
+            shadow_control->ui_flags_ext |=
+                (uint16_t)(SHADOW_UI_FLAG_JUMP_TO_SCENES >> SHADOW_UI_FLAG_EXT_SHIFT);
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            launch_shadow_ui_reset_backoff();
+            launch_shadow_ui();
+            shadow_log("Shift+Step3 long-press: opening scenes");
         }
         /* Shift + Step 13 long-press: resume most-recently-suspended tool */
         if (step13_longpress_pending && !step13_longpress_fired &&
@@ -7949,7 +8035,10 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
-        step_used[i] = 0;
+        /* Claimed outright (the Scenes screen picks scenes with the steps): a
+         * press is USED the moment it lands, so no tap is replayed to Move
+         * and nothing toggles a note in the clip. */
+        step_used[i] = (shadow_control && shadow_control->step_claim) ? 1 : 0;
         shim_step_press_seen++;
         return;
     }
@@ -9629,6 +9718,32 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /* Step 3 (note 18): Shift+hold -> Scenes, as Step 2 is for Settings. */
+                if (d1 == 18 && type == 0x90 && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
+                    if (d2 > 0 && shadow_shift_held && !shadow_volume_knob_touched) {
+                        clock_gettime(CLOCK_MONOTONIC, &step3_press_time);
+                        step3_longpress_pending = 1;
+                        step3_longpress_fired = 0;
+                    }
+                }
+                if (d1 == 18 && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    step3_longpress_pending = 0;
+                }
+
+                /* Shift + Volume + Step 3 (note 18) = the Scenes screen */
+                if (d1 == 18 && type == 0x90 && d2 > 0) {
+                    if (SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags_ext |=
+                            (uint16_t)(SHADOW_UI_FLAG_JUMP_TO_SCENES >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui_reset_backoff();
+                        launch_shadow_ui();
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    }
+                }
+
                 /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
                 if (d1 == 28 && type == 0x90 && d2 > 0) {
                     if (SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
@@ -9671,7 +9786,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     type == 0x90 && d2 > 0 &&
                     d1 >= CC_STEP_UI_FIRST && d1 <= CC_STEP_UI_LAST &&
                     shadow_control && shadow_control->overtake_mode == 0) {
-                    int skip_dismiss = LONG_PRESS_ACTIVE() && (d1 == 17 || d1 == 28);
+                    int skip_dismiss = LONG_PRESS_ACTIVE() && (d1 == 17 || d1 == 18 || d1 == 28);
                     if (!skip_dismiss) {
                         shadow_display_mode = 0;
                         shadow_control->display_mode = 0;
