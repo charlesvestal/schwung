@@ -43,6 +43,9 @@ var controlsSharedJS = map[string]bool{
 	"control_map.mjs":    true,
 	"control_target.mjs": true,
 	"control_picker.mjs": true,
+	// control_target.mjs imports it: a child level's keys (pad3_wide) are
+	// named from the hierarchy by the same code on the device and here.
+	"param_pages/child_key.mjs": true,
 }
 
 // controlsParamGetter is the param channel as this file uses it, so tests can
@@ -343,6 +346,8 @@ func writeControlsAtomic(dir string, text []byte) error {
 
 // handleControlsParams answers a module's chain_params, for the picker.
 // ?slot=0..3&comp=synth|fxN|midi_fxN, or ?fx=1..8 for Master FX.
+// &doc=ui_hierarchy answers the hierarchy instead, which is what names the
+// child-level keys (pad3_wide); a module with none answers JSON null.
 func (app *App) handleControlsParams(w http.ResponseWriter, r *http.Request) {
 	p := app.controlsParams()
 	if p == nil {
@@ -354,6 +359,10 @@ func (app *App) handleControlsParams(w http.ResponseWriter, r *http.Request) {
 		controlsError(w, http.StatusBadRequest, "bad position")
 		return
 	}
+	hierarchy := r.URL.Query().Get("doc") == "ui_hierarchy"
+	if hierarchy {
+		key = strings.TrimSuffix(key, ":chain_params") + ":ui_hierarchy"
+	}
 	raw := ""
 	for i := 0; i < 3; i++ {
 		v, err := p.GetParam(slot, key)
@@ -364,7 +373,9 @@ func (app *App) handleControlsParams(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	var js json.RawMessage
-	if raw == "" || json.Unmarshal([]byte(raw), &js) != nil {
+	if hierarchy && raw == "" {
+		js = json.RawMessage("null")
+	} else if raw == "" || json.Unmarshal([]byte(raw), &js) != nil {
 		controlsError(w, http.StatusBadGateway, "the module did not describe its parameters")
 		return
 	}
@@ -412,10 +423,10 @@ func controlsComponentOK(c string) bool {
 	return false
 }
 
-// handleControlsJS serves the two shared modules the page imports, from the
+// handleControlsJS serves the few shared modules the page imports, from the
 // installed shared/ directory -- the same files the device runs.
 func (app *App) handleControlsJS(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := r.PathValue("path")
 	if !controlsSharedJS[name] {
 		http.NotFound(w, r)
 		return

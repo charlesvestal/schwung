@@ -126,11 +126,19 @@ async function pickerLoadList(c) {
     $("picker-note").textContent = "Asking " + c.module + " for its parameters…";
     const q = typeof c.fx === "number" ? "fx=" + c.fx : "slot=" + c.slot + "&comp=" + encodeURIComponent(c.component);
     try {
-        const r = await fetch("/api/controls/params?" + q, { cache: "no-store" });
+        const [r, hr] = await Promise.all([
+            fetch("/api/controls/params?" + q, { cache: "no-store" }),
+            fetch("/api/controls/params?" + q + "&doc=ui_hierarchy", { cache: "no-store" }).catch(() => null),
+        ]);
         const j = await r.json();
         if (!r.ok) { $("picker-note").textContent = j.error || "No answer."; return; }
+        /* The hierarchy names per-pad keys (pad3_wide); without it the
+         * declared parameters are still listed. */
+        let hier = null;
+        try { if (hr && hr.ok) hier = await hr.json(); } catch (e) { hier = null; }
         pickerItems = paramTargets(j, typeof c.fx === "number" ? { fx: c.fx, module: c.module }
-                                                              : { slot: c.slot, component: c.component, module: c.module });
+                                                              : { slot: c.slot, component: c.component, module: c.module },
+                                   hier);
         $("picker-note").textContent = pickerItems.length ? "" : c.module + " publishes no parameters.";
         pickerRender();
     } catch (e) {

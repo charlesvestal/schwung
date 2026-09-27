@@ -98,7 +98,7 @@ func TestControlsChainLiveOrSaved(t *testing.T) {
 	app, dir := controlsTestApp(t)
 	live := fakeControlsParams{
 		"0|synth_module": "obxd", "0|fx_count": "2", "0|fx1_module": "freeverb", "0|fx2_module": "",
-		"0|midi_fx_count": "0",
+		"0|midi_fx_count":     "0",
 		"0|master_fx:modules": `[{"id":"cloudseed","path":"/x/cloudseed/cloudseed.so"},{"id":"","path":""}]`,
 	}
 	for _, s := range []string{"1", "2", "3"} {
@@ -160,8 +160,14 @@ func TestControlsJSWhitelist(t *testing.T) {
 	os.WriteFile(filepath.Join(app.basePath, "shared", "control_map.mjs"), []byte("export const X = 1;"), 0o644)
 	os.WriteFile(filepath.Join(app.basePath, "shared", "secret.mjs"), []byte("no"), 0o644)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /controls/js/{name}", app.handleControlsJS)
-	for name, want := range map[string]int{"control_map.mjs": 200, "secret.mjs": 404, "..%2Factive_set.txt": 404} {
+	os.MkdirAll(filepath.Join(app.basePath, "shared", "param_pages"), 0o755)
+	os.WriteFile(filepath.Join(app.basePath, "shared", "param_pages", "child_key.mjs"), []byte("export const Y = 1;"), 0o644)
+	os.WriteFile(filepath.Join(app.basePath, "shared", "param_pages", "page_controller.mjs"), []byte("no"), 0o644)
+	mux.HandleFunc("GET /controls/js/{path...}", app.handleControlsJS)
+	for name, want := range map[string]int{"control_map.mjs": 200, "secret.mjs": 404, "..%2Factive_set.txt": 404,
+		"param_pages/child_key.mjs": 200, "param_pages/page_controller.mjs": 404,
+		// ServeMux cleans a dot-segment path with a redirect; never a 200.
+		"param_pages/../secret.mjs": http.StatusTemporaryRedirect} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/controls/js/"+name, nil))
 		if rec.Code != want {

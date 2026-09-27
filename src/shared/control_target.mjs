@@ -20,6 +20,8 @@
  * Pure: no host calls. The host's target io does the reading and writing.
  */
 
+import { hasChildren, childCount, childLabel, resolveChildKey } from "./param_pages/child_key.mjs";
+
 export const KIND_PARAM = "param";
 export const KIND_MASTER = "master";
 export const KIND_SETTING = "setting";
@@ -142,4 +144,67 @@ export function targetScopeLabel(t) {
     if (t.kind === KIND_PARAM) return "S" + (t.slot + 1) + " " + t.module;
     if (t.kind === KIND_MASTER) return "MFX" + t.fx + " " + t.module;
     return t.slot === null ? "Master" : "S" + (t.slot + 1);
+}
+
+/*
+ * CHILD-LEVEL KEYS: what `pad3_wide` is.
+ *
+ * A drum module declares one generic key per pad parameter (`wide`) on a
+ * child level and writes the CONCRETE key (`pad3_wide`) -- child_key.mjs's
+ * resolveChildKey is the forward half of that. Learn matched writes against
+ * chain_params exactly, so every per-pad write was refused in silence and the
+ * picker never listed one (EC4 hardware, #539; DR32). This is the inverse,
+ * from the hierarchy alone:
+ *
+ *   keys     concrete key -> { key: generic, child: "Pad 3" }
+ *   plumbing the keys a level names for its own UI (child_index_param and
+ *            friends) -- written when a pad is hit or picked, never a target
+ *
+ * Some modules (mrdrums) ALSO declare every concrete key in chain_params with
+ * its own name ("P03 Vol"); resolveTargetMeta prefers that exact declaration.
+ */
+export function childKeyIndex(hierarchy) {
+    const keys = new Map();
+    const plumbing = new Set();
+    const levels = hierarchy && typeof hierarchy === "object" ? hierarchy.levels : null;
+    if (!levels || typeof levels !== "object") return { keys, plumbing };
+    for (const name of Object.keys(levels)) {
+        const lv = levels[name];
+        if (!lv || typeof lv !== "object") continue;
+        for (const [k, v] of Object.entries(lv)) {
+            if (/^child_.*param$/.test(k) && typeof v === "string" && v) plumbing.add(v);
+        }
+        if (!hasChildren(lv)) continue;
+        const generics = [];
+        for (const k of (lv.knobs || [])) generics.push(typeof k === "string" ? k : (k && k.key));
+        for (const p of (lv.params || [])) {
+            if (p && typeof p === "object" && p.level) continue;
+            generics.push(typeof p === "string" ? p : (p && p.key));
+        }
+        for (let i = 0; i < childCount(lv); i++) {
+            const child = childLabel(lv, i);
+            for (const g of generics) {
+                if (!g) continue;
+                const c = resolveChildKey(lv, i, g);
+                if (c && c !== g && !keys.has(c)) keys.set(c, { key: g, child });
+            }
+        }
+    }
+    return { keys, plumbing };
+}
+
+const metaLabel = (m, key) => String((m && (m.short_name || m.label || m.name)) || key);
+
+/*
+ * The declaration a key answers to, and the label learn and the picker give
+ * it: `{ meta, label }`, or null for a key the module does not declare.
+ * `index` is anything with get(key) (a param_meta index, or a Map).
+ */
+export function resolveTargetMeta(index, children, key) {
+    const exact = index && index.get(key);
+    if (exact) return { meta: exact, label: metaLabel(exact, key).slice(0, 32) };
+    const ch = children && children.keys ? children.keys.get(key) : null;
+    const generic = ch && index ? index.get(ch.key) : null;
+    if (!generic) return null;
+    return { meta: generic, label: (ch.child + " " + metaLabel(generic, ch.key)).slice(0, 32) };
 }

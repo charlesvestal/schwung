@@ -9,7 +9,7 @@
  * (control_host.mjs observeWrite): short_name, else label, else name; a slot
  * setting is prefixed "S<n> ".
  */
-import { normalizeTarget, sameTarget, KIND_PARAM, KIND_MASTER, KIND_SETTING,
+import { normalizeTarget, sameTarget, childKeyIndex, KIND_PARAM, KIND_MASTER, KIND_SETTING,
          SLOT_SETTING_KEYS, MASTER_SETTING_KEYS, SETTINGS_CHAIN_PARAMS } from "./control_target.mjs";
 
 const labelOf = (m, key) => String((m && (m.short_name || m.label || m.name)) || key).slice(0, 32);
@@ -32,20 +32,37 @@ export function componentsOfSlot(slot) {
  * { slot, component, module } or { fx, module }. Entries that are not a
  * drivable parameter (no key, a readout, a key the target rules refuse) are
  * dropped -- the same rules learn applies.
+ *
+ * `hierarchy` (optional, the module's ui_hierarchy) adds its CHILD-LEVEL keys
+ * after the declared ones: `pad3_wide` for a `wide` declared on a 32-pad
+ * level, named "Pad 3 Width" exactly as learn names it. A module that already
+ * declares its concrete keys (mrdrums) is listed once, by its own names.
  */
-export function paramTargets(chainParams, where) {
+export function paramTargets(chainParams, where, hierarchy) {
     const out = [];
     const seen = new Set();
-    for (const m of Array.isArray(chainParams) ? chainParams : []) {
-        if (!m || typeof m.key !== "string" || seen.has(m.key)) continue;
-        if (m.access === "read" || m.readonly === true || m.read_only === true) continue;
+    const decl = new Map();
+    const add = (key, m, name, label) => {
+        if (seen.has(key)) return;
+        if (m.access === "read" || m.readonly === true || m.read_only === true) return;
         const t = where && typeof where.fx === "number"
-            ? normalizeTarget({ kind: KIND_MASTER, fx: where.fx, key: m.key, module: where.module, label: labelOf(m, m.key) })
-            : normalizeTarget({ kind: KIND_PARAM, slot: where.slot, component: where.component, key: m.key,
-                                module: where.module, label: labelOf(m, m.key) });
-        if (!t) continue;
-        seen.add(m.key);
-        out.push({ target: t, name: String(m.name || m.label || m.key) });
+            ? normalizeTarget({ kind: KIND_MASTER, fx: where.fx, key, module: where.module, label })
+            : normalizeTarget({ kind: KIND_PARAM, slot: where.slot, component: where.component, key,
+                                module: where.module, label });
+        if (!t) return;
+        seen.add(key);
+        out.push({ target: t, name });
+    };
+    for (const m of Array.isArray(chainParams) ? chainParams : []) {
+        if (!m || typeof m.key !== "string" || decl.has(m.key)) continue;
+        decl.set(m.key, m);
+        add(m.key, m, String(m.name || m.label || m.key), labelOf(m, m.key));
+    }
+    for (const [key, ch] of childKeyIndex(hierarchy).keys) {
+        const m = decl.get(ch.key);
+        if (!m || decl.has(key)) continue;
+        add(key, m, ch.child + " " + String(m.name || m.label || ch.key),
+            (ch.child + " " + labelOf(m, ch.key)).slice(0, 32));
     }
     return out;
 }

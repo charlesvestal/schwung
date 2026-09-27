@@ -4255,7 +4255,7 @@ func main() {
 	mux.HandleFunc("GET /api/controls", app.handleControlsGet)
 	mux.HandleFunc("PUT /api/controls", app.handleControlsPut)
 	mux.HandleFunc("GET /api/controls/params", app.handleControlsParams)
-	mux.HandleFunc("GET /controls/js/{name}", app.handleControlsJS)
+	mux.HandleFunc("GET /controls/js/{path...}", app.handleControlsJS)
 
 	// Remote UI.
 	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)

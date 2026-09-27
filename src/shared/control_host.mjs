@@ -19,7 +19,8 @@
  *   now(), log(line), announce(text), onReload()
  */
 import { parseControls, serializeControls, emptyControls } from "./control_map.mjs";
-import { targetAddress, targetFromWrite, KIND_MASTER, KIND_SETTING, SETTINGS_CHAIN_PARAMS } from "./control_target.mjs";
+import { targetAddress, targetFromWrite, childKeyIndex, resolveTargetMeta,
+         KIND_MASTER, KIND_SETTING, SETTINGS_CHAIN_PARAMS } from "./control_target.mjs";
 import { buildMetaIndex } from "./param_pages/param_meta.mjs";
 
 export const CONTROLS_FILE = "controls.json";
@@ -133,26 +134,42 @@ export function createControlHost(io) {
         return null;
     }
 
-    /* chain_params per MODULE ID, cached: one blocking read the first time a
-     * module is met. A read that did not answer is not cached, and is not
-     * retried more than once per RECONCILE_MS. */
+    /* chain_params AND ui_hierarchy per MODULE ID, cached: blocking reads
+     * the first time a module is met. A read that did not answer is not
+     * cached, and is not retried more than once per RECONCILE_MS.
+     *
+     * The hierarchy is what names a child-level write (`pad3_wide`, declared
+     * as `wide`), so it is read beside chain_params. `""` is a module with no
+     * hierarchy, which is an answer; `null` is a read that did not complete,
+     * and caching that as "no children" would refuse every per-pad key until
+     * the module was swapped. */
     const metaCache = new Map();
     const metaTriedAt = new Map();
-    function metaIndexOf(t) {
+    /* An entry whose hierarchy read did not complete: served between retries. */
+    const metaPartial = new Map();
+    function metaOfModule(t) {
         const id = t.module;
         if (metaCache.has(id)) return metaCache.get(id);
         const t0 = now();
-        if (t0 - (metaTriedAt.has(id) ? metaTriedAt.get(id) : -Infinity) < RECONCILE_MS) return null;
+        if (t0 - (metaTriedAt.has(id) ? metaTriedAt.get(id) : -Infinity) < RECONCILE_MS) return metaPartial.get(id) || null;
         metaTriedAt.set(id, t0);
-        const key = t.kind === KIND_MASTER ? "master_fx:fx" + t.fx + ":chain_params" : t.component + ":chain_params";
-        const raw = getParam(t.kind === KIND_MASTER ? 0 : t.slot, key);
+        const slot = t.kind === KIND_MASTER ? 0 : t.slot;
+        const prefix = t.kind === KIND_MASTER ? "master_fx:fx" + t.fx : t.component;
+        const raw = getParam(slot, prefix + ":chain_params");
         if (raw === null || raw === undefined || raw === "") return null;
         let cp = null;
         try { cp = JSON.parse(raw); } catch (e) { return null; }
         if (!Array.isArray(cp)) return null;
-        const index = buildMetaIndex({ chainParams: cp });
-        metaCache.set(id, index);
-        return index;
+        const hraw = getParam(slot, prefix + ":ui_hierarchy");
+        let hier = null;
+        if (typeof hraw === "string" && hraw !== "") { try { hier = JSON.parse(hraw); } catch (e) { hier = null; } }
+        const entry = { index: buildMetaIndex({ chainParams: cp }), children: childKeyIndex(hier) };
+        /* A hierarchy read that did not complete still serves what chain_params
+         * declares -- losing learn for a whole module to one timeout would be
+         * worse -- but is not CACHED, so the children arrive on a later try. */
+        if (hraw !== null && hraw !== undefined) { metaCache.set(id, entry); metaPartial.delete(id); }
+        else metaPartial.set(id, entry);
+        return entry;
     }
 
     const settingsMeta = buildMetaIndex({ chainParams: SETTINGS_CHAIN_PARAMS });
@@ -167,8 +184,10 @@ export function createControlHost(io) {
         },
         metaOf(t) {
             if (t.kind === KIND_SETTING) return settingsMeta.get(t.key) || null;
-            const index = metaIndexOf(t);
-            return index ? (index.get(t.key) || index.getOrGuess(t.key)) : null;
+            const e = metaOfModule(t);
+            if (!e) return null;
+            const r = resolveTargetMeta(e.index, e.children, t.key);
+            return r ? r.meta : e.index.getOrGuess(t.key);
         },
         read(t) {
             const a = targetAddress(t);
@@ -185,12 +204,15 @@ export function createControlHost(io) {
     /* ---------------- the learn broker ---------------- */
 
     let armed = null;   /* { owner, cb } */
+    /* The last key learn refused, so a turn announces it once. */
+    let refusedKey = null;
     const learn = {
         /* quiet: a re-arm inside a learn MODE (the CC map), which announced
          * itself once rather than on every capture. */
         arm(owner, cb, quiet) {
             if (armed && armed.owner !== owner) { const prev = armed; armed = null; prev.cb(null); }
             armed = { owner, cb };
+            refusedKey = null;
             if (!quiet) announce("Learn: move a parameter");
         },
         cancel(owner) { if (armed && armed.owner === owner) armed = null; },
@@ -212,10 +234,22 @@ export function createControlHost(io) {
             label = m ? (m.label || m.name || "") : "";
             if (t.slot !== null) label = "S" + (t.slot + 1) + " " + label;
         } else {
-            const index = metaIndexOf(t);
-            const m = index ? index.get(t.key) : null;
-            if (!m) return false;
-            label = m.short_name || m.label || m.name || t.key;
+            const e = metaOfModule(t);
+            const r = e ? resolveTargetMeta(e.index, e.children, t.key) : null;
+            if (!r) {
+                /* SAY SO. A refused write used to vanish, so a knob that
+                 * could not be learned read as learn not working at all
+                 * (#539). Not for the module's own UI plumbing (a pad hit
+                 * writes `ui_current_pad`), and once per key per learn, since
+                 * a knob turn is a stream of writes. Learn stays armed. */
+                if (e && !e.children.plumbing.has(t.key) && refusedKey !== t.key) {
+                    refusedKey = t.key;
+                    log("controls: learn refused " + t.component + ":" + t.key + " (not declared)");
+                    announce("Can't learn " + t.key);
+                }
+                return false;
+            }
+            label = r.label;
         }
         t.label = String(label).slice(0, 32);
         const a = armed;
