@@ -24,6 +24,6 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   src/modules/chain/dsp/chain_mod.c \
   src/modules/chain/dsp/chain_params.c \
   src/modules/chain/dsp/chain_json.c \
-  -o "$bin"
+  -lm -o "$bin"
 
 "$bin"
