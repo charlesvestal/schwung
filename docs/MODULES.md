@@ -1801,7 +1801,7 @@ Kinds and their roles:
 
 | `kind` | Roles | Notes |
 |--------|-------|-------|
-| `envelope` | `attack`, `decay`, `sustain`, `release` | Any 2–4 of them: AD, AR, ASR and ADSR all draw. |
+| `envelope` | `attack`, `hold`, `decay`, `sustain`, `release`, optional `mode` | Any 2–4 stages: AD, AR, AHR, ASR and ADSR all draw. `mode` is an enum switching the shape (see below). |
 | `filter` | `cutoff`, `resonance`, optional `mode`, `slope` | `mode` should be an enum naming LP/HP/BP/notch. |
 | `eq` | `low`, `mid`, `high` | Band **gains**, not crossover frequencies. |
 | `lfo` | `shape`, `rate`, `depth`, optional `phase` | `shape` should be an enum of waveform names. |
@@ -1809,6 +1809,23 @@ Kinds and their roles:
 | `fader` | *(single param)* | A level/volume, drawn as a fader rather than a dial. |
 | `switch` | *(single param)* | A `toggle` or **boolean-flavoured** two-option enum, drawn as an on/off switch. See the note below — not every two-option enum qualifies, and it changes the behaviour as well as the picture. |
 | `sample` | *(single param)* + optional `position` | A `filepath`; a companion `wav_position` param marks playback position on the waveform. |
+
+**An envelope that switches shape declares `mode`.** Some envelopes run the same
+knobs as two shapes — DR32's pads switch between **A-H-D** (a timed hold at the
+peak, then decay to silence) and **A-S-R** (full level while the pad is held,
+then the Decay knob is the release, and Hold does nothing). Put the switch in
+the group as `role: "mode"` with `span: false`, so it keeps its own cell and
+only lends the picture its value:
+
+```json
+{ "key": "env_mode", "type": "enum", "options": ["A-H-D", "A-S-R"],
+  "viz": { "group": "amp", "role": "mode", "span": false } }
+```
+
+An option naming A-H-D (or `AHD`, `One Shot`, `Trigger`) draws attack, hold and
+decay; one naming A-S-R (or `ASR`, `Gate`, `Sustain`) draws attack, a full-level
+sustain, and your `decay` (or `release`) as the fall. Any other option draws the
+declared roles unchanged, and so does an older host.
 
 **A `switch` is not just a picture — it suppresses the option list.** Turning an
 enum knob normally flashes its options up over the grid for ~700ms. A switch
