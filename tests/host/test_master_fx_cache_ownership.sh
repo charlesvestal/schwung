@@ -151,7 +151,7 @@ bin="$work/test_master_fx_cache_ownership"
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
   -Isrc/host \
   -DFIXTURE_DSP_PATH="\"$work/fixture/dsp.so\"" \
-  tests/host/test_master_fx_cache_ownership.c "$work/stubs.c" \
+  tests/host/test_master_fx_cache_ownership.c "$work/stubs.c" src/host/shadow_scene_bus.c \
   -lm -o "$bin"
 
 "$bin"
