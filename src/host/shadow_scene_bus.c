@@ -300,10 +300,17 @@ static void tick_bus(int scope, int a, int b, float x) {
         if (!slot) continue;
         int ha, hb; float va, vb;
         if (!scene_resolve(p, a, b, &ha, &va, &hb, &vb)) continue;
-        scene_bus_meta_t meta;
-        if (!scene_bus_param_meta(s_io->chain_params(slot), p->param, &meta)) continue;
-        scene_drive_t *d = engage_drive(bus, slot, p, &meta);
-        if (!d) continue;
+        /* The JSON is read only to ENGAGE a drive: an engaged one already
+         * carries kind and range, and a fader sweep dirties every frame --
+         * scanning chain_params per pair per frame on the callback would be
+         * the expensive part of the whole feature. */
+        scene_drive_t *d = find_drive(bus, p->target, p->param);
+        if (!d) {
+            scene_bus_meta_t meta;
+            if (!scene_bus_param_meta(s_io->chain_params(slot), p->param, &meta)) continue;
+            d = engage_drive(bus, slot, p, &meta);
+            if (!d) continue;
+        }
         float v = scene_morph_value(ha, va, hb, vb, d->base, x, d->kind);
         if (v < d->min) v = d->min;
         if (v > d->max) v = d->max;
