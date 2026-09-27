@@ -1445,6 +1445,29 @@ Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
   with no padding, so a uint16 moves every field behind it and `sizeof` is a
   contract between two binaries. Flags 0x0100+ live in `ui_flags_ext` (was
   `reserved16`); the JS binding presents one flat word.
+### Scenes (Octatrack-style morphing) — `docs/SHADOW_UI.md`, `docs/CHAIN.md`
+
+16 scenes of locks across the four slots, Master FX and both sends; A and B on
+one crossfader (Shift+Vol+Step3 opens the Scenes screen).
+
+- **The DSP morphs; the UI moves ONE byte.** Slots through a MORPH contribution
+  in `chain_mod` that stores the two ENDS and resolves them against the LIVE
+  base; buses in `shadow_scene_bus.c`. The formula exists once, in
+  `src/host/scene_morph.h`. A JS morph would cost ~2.8 ms per locked param per
+  detent.
+- **The edit ARM is decided below the UI** (chain host + shim), for the p-lock
+  reason: a module-drawn screen's writes never pass the host wrapper. Delete
+  held while armed UNLOCKS (also below the UI) and is CLAIMED, or it deletes a
+  clip on Move.
+- **A `<comp>:state` read saves the KNOB, not the morph.** Every save path reads
+  the state blob, and a module serialises what it holds now. Measured on
+  hardware before the fix: a reboot restored the fader's value as the knob.
+- **`scenes.json` is never written for a set before its bank is CONFIRMED
+  loaded** (read back per scope), a save needs every scope's answer, and a
+  shadow_ui restart ADOPTS the live bank rather than reloading the file.
+- **Shift+step belongs to Move**, so the Scenes screen picks B with knob 2, and
+  its steps are claimed via `step_claim` so a tap never toggles a clip note.
+
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
