@@ -213,6 +213,12 @@ extern int (*shadow_chain_synth_requires_continuous)(void *instance);
  * tick answers about the previous frame. NULL when the loaded chain DSP is
  * older than v1.2.1 — caller must null-check. */
 extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
+/* Optional: the scene crossfader, pushed once per frame per slot before the
+ * idle gate (chain_scene.c). Returns the slot's scene revision (low 16) and a
+ * one-shot refusal code (bits 16-23). NULL on a chain DSP built before scenes;
+ * the caller null-checks and scenes simply do nothing on slots. */
+extern uint32_t (*shadow_chain_set_scene_morph)(void *instance, uint8_t a, uint8_t b,
+                                                float x, uint8_t edit, uint8_t edit_flags);
 /* Optional: pushed once per block per slot, BEFORE the idle gate, so a silent
  * slot's lane keeps playing. NULL on any chain DSP built before automation
  * lanes -- the caller must null-check, and a NULL degrades to "phase unknown"
