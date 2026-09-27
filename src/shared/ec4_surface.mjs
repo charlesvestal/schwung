@@ -81,6 +81,10 @@ export const MSGS_PER_TICK = 2;
 /* With nothing owed, one chunk of the screen is resent this often, so the
  * whole names page is restated every ~2.5 s. */
 export const RESTATE_MS = 250;
+/* How long Shift is held before the map appears on the EC4 (the E16 takes
+ * layout_map's MAP_SHOW_DELAY_MS, 400). legsmechanical's hardware run
+ * suggested 600-700 ms. */
+export const EC4_MAP_SHOW_DELAY_MS = 650;
 /* The overlay's hold is the layout's reading hold (layout_common). */
 export { READING_HOLD_MS as OVERLAY_HOLD_MS } from "./layout_common.mjs";
 
@@ -327,7 +331,11 @@ export function createEc4Surface(io) {
      * sends only what differs.
      */
     const navigationOf = o.navigationOf || (() => NAV_KNOBS);
-    const layoutCtx = { focus, binding, mixer, feel, chainOf, now, selector: EC4_SELECTOR };
+    /* The EC4's map waits longer than the E16's 400 ms: its encoders sit
+     * further from Shift, so a hand reaching for a knob crossed the delay and
+     * got the map instead of a page turn (hardware, #539). */
+    const layoutCtx = { focus, binding, mixer, feel, chainOf, now, selector: EC4_SELECTOR,
+                        showDelayMs: EC4_MAP_SHOW_DELAY_MS };
     const layouts = { [NAV_MAP]: createMapLayout(layoutCtx), [NAV_KNOBS]: createKnobsLayout(layoutCtx),
                       [NAV_CUSTOM]: createCustomLayout(Object.assign({}, layoutCtx, customSeams(o))) };
     let layout = layouts[NAV_KNOBS];

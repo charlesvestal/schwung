@@ -18,7 +18,7 @@ cd "$(dirname "$0")/../.."
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
 node --input-type=module -e '
-import { createEc4Surface, DEFAULT_SETUP, SELECTOR_PULSES } from "./src/shared/ec4_surface.mjs";
+import { createEc4Surface, DEFAULT_SETUP, SELECTOR_PULSES, EC4_MAP_SHOW_DELAY_MS } from "./src/shared/ec4_surface.mjs";
 import { createSurface, drawScreen, E16_SELECTOR } from "./src/shared/e16_surface.mjs";
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { screenLabels } from "./src/shared/layout_common.mjs";
@@ -82,7 +82,10 @@ const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {
 
   run(2000);
   s.feedMidi(key(1, true));
+  /* The EC4 waits longer than the E16 (#539): at the E16 delay it is not up. */
   run(MAP_SHOW_DELAY_MS + 50);
+  ok("EC4+map: no map yet at the E16 delay", names()[0].replace(/ /g, "") !== ">1234");
+  run(EC4_MAP_SHOW_DELAY_MS - MAP_SHOW_DELAY_MS);
   eq("EC4+map: a Shift HOLD shows the slot map as names",
      names()[0].replace(/ /g, ""), ">1234");
   ok("EC4+map: ...with the slot modules below", names()[1].toLowerCase().includes("obxd"));

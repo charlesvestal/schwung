@@ -393,12 +393,19 @@ export function createNav(opts) {
                     return { action: "page", pageIndex: focus.pageIndex };
                 }
                 if (!ev.ticks) return null;
-                if ((ev.enc | 0) < SLOT_CELLS) {
-                    /* The slot row owns the map's own list, so turning it pages
-                     * that list. Splitting the two paging axes by WHICH encoder
-                     * moved keeps both available at once; deciding by whether
-                     * the map happens to overflow would make one gesture mean
-                     * two things depending on the rig. */
+                if ((ev.enc | 0) === focus.slot) {
+                    /* The SELECTED slot's own cell is the map list's handle, so
+                     * turning it pages that list. Splitting the two paging axes
+                     * by WHICH encoder moved keeps both available at once;
+                     * deciding by whether the map happens to overflow would
+                     * make one gesture mean two things depending on the rig.
+                     *
+                     * Only that one cell, not the whole slot row. A slot rarely
+                     * overflows twelve cells, so the list almost always has one
+                     * page, and giving it all four slot encoders made 1-4 dead
+                     * while the map was up (EC4 hardware, #539) -- a quarter of
+                     * the surface doing nothing on the gesture the other twelve
+                     * encoders answer. */
                     const count = currentMap().pageCount;
                     const next = Math.max(0, Math.min(count - 1,
                         mapPage + (ev.ticks > 0 ? 1 : -1)));
@@ -554,6 +561,8 @@ export function createMapLayout(ctx) {
 
     const nav = createNav({
         display: { invalidate },
+        /* Per device: undefined takes MAP_SHOW_DELAY_MS. */
+        showDelayMs: c.showDelayMs,
         focus,
         chainOf,
         pageCountOf: () => Math.max(1, binding.knobPages().length),
@@ -584,7 +593,7 @@ export function createMapLayout(ctx) {
                 /* Held Shift outside the Mixer: the turn is a page or map-page
                  * step, so a coarse device steps it by angle. */
                 if (nav.held(t) && !nav.mixer) {
-                    const perStep = nav.mapVisible(t) && (ev.enc | 0) < 4 ? sel.slot : sel.nav;
+                    const perStep = nav.mapVisible(t) && (ev.enc | 0) === focus.slot ? sel.slot : sel.nav;
                     ev = { type: "turn", enc: ev.enc, ticks: feel.steps(ev.enc, ev.ticks, perStep) };
                 }
             }

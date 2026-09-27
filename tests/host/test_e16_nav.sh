@@ -243,10 +243,16 @@ function rig(opts) {
   r.ev({ type: "push", enc: 1 });              /* slot 1: thirteen components */
   eq("slot 1 overflows twelve cells",
      buildMap(CHAIN, { slot: 1, page: 0 }).pageCount, 2);
-  eq("a turn on the SLOT ROW pages the map",
-     r.ev({ type: "turn", enc: 0, ticks: 1 }), { action: "mapPage", mapPage: 1 });
+  eq("a turn on the SELECTED slot`s own cell pages the map",
+     r.ev({ type: "turn", enc: 1, ticks: 1 }), { action: "mapPage", mapPage: 1 });
   eq("...clamped at the last map page",
-     r.ev({ type: "turn", enc: 0, ticks: 1 }), { action: "mapPage", mapPage: 1 });
+     r.ev({ type: "turn", enc: 1, ticks: 1 }), { action: "mapPage", mapPage: 1 });
+  /* Another slot cell pages the PARAMETERS, as encoders 5-16 do: giving the
+   * whole slot row to a list that is almost always one page long left 1-4
+   * dead while the map was up (EC4 hardware, #539). */
+  eq("a turn on ANOTHER slot cell pages the parameters, not the map",
+     r.ev({ type: "turn", enc: 0, ticks: 1 }).action, "page");
+  eq("...and leaves the map page where it was", r.nav.mapPage, 1);
   eq("the tail is reachable",
      buildMap(CHAIN, { slot: 1, page: 1 }).cells[4].label, "fx10");
   eq("a slot with one page cannot be paged off it",
@@ -256,7 +262,7 @@ function rigMapPage(slot) {
   const r = rig();
   r.ev({ type: "shift", down: true });
   r.ev({ type: "push", enc: slot });
-  r.ev({ type: "turn", enc: 0, ticks: 3 });
+  r.ev({ type: "turn", enc: slot, ticks: 3 });
   return r.nav.mapPage;
 }
 
