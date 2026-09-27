@@ -33,10 +33,15 @@ for f in "${!expect_fn[@]}"; do
   fi
 done
 
-# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2900 lines).
+# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2910 lines).
+#    Was 2900, with ONE line of headroom left. Scenes added one-line call
+#    sites that must sit IN the entry points (a set route ahead of the
+#    component routes, a get route, an armed read in each of the three
+#    component get routes, the init, the tick); everything else lives in
+#    chain_scene.c. Raise this only for call sites of that kind.
 lines=$(wc -l < "$dsp/chain_host.c")
-if [ "$lines" -ge 2900 ]; then
-  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2900)" >&2
+if [ "$lines" -ge 2910 ]; then
+  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2910)" >&2
   exit 1
 fi
 
@@ -65,7 +70,9 @@ done
 #    is the other half of that seam: a clip's deletion is discovered on the
 #    worker thread, and a worker must not call a module entry point (which IS
 #    the SPI callback), so it publishes a mask + generation and the callback
-#    pushes it through here.
+#    pushes it through here. chain_set_scene_morph is the scene crossfader:
+#    the shim pushes A, B, the fader and the armed scene to every slot each
+#    frame (chain_scene.c).
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -74,7 +81,7 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_fx_requires_continuous chain_synth_requires_continuous \
     chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
-    chain_take_midi_tick_wake \
+    chain_take_midi_tick_wake chain_set_scene_morph \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then

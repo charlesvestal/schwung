@@ -167,7 +167,13 @@ static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
         const mod_source_contribution_t *s = &entry->sources[i];
         if (!s->active) continue;
-        if (s->is_override) base = s->contribution;
+        if (s->is_morph) {
+            int kind = entry->type == KNOB_TYPE_ENUM ? SCENE_KIND_ENUM
+                     : entry->type == KNOB_TYPE_INT  ? SCENE_KIND_INT : SCENE_KIND_FLOAT;
+            base = scene_morph_value(s->morph_has_a, s->morph_a, s->morph_has_b, s->morph_b,
+                                     entry->base_value, s->morph_x, kind);
+        }
+        else if (s->is_override) base = s->contribution;
         else sum += s->contribution;
     }
 
@@ -597,6 +603,84 @@ int chain_mod_emit_override(void *ctx,
     entry->enabled = chain_mod_has_active_sources(entry);
     chain_mod_apply_effective_value(inst, entry, 0);
     return 0;
+}
+
+/*
+ * A SCENE MORPH: the two ends, resolved against the live base at recompute.
+ *
+ * Same guards, param lookup, base capture and throttle as
+ * chain_mod_emit_override. What differs is that the value is NOT computed
+ * here -- the ends are stored and chain_mod_recompute_effective interpolates
+ * from entry->base_value, so a knob write (which updates base) moves the
+ * unlocked end with no re-emit. Returns -1 when the component does not declare
+ * the param (yet): the caller retries on its revalidation pass.
+ */
+int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
+                         const char *target, const char *param,
+                         int has_a, float a, int has_b, float b, float x) {
+    if (!inst || !source_id || !target || !param) return -1;
+    if (!has_a && !has_b) {
+        chain_mod_clear_source_at(inst, source_id, target, param);
+        return 0;
+    }
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) {
+        chain_mod_clear_source_at(inst, source_id, target, param);
+        return -1;
+    }
+    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
+    if (!entry) return -1;
+    mod_source_contribution_t *source_entry =
+        chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return -1;
+
+    if (!entry->enabled) {
+        float base = pinfo->default_val;
+        char val_buf[64];
+        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
+            base = dsp_value_to_float(val_buf, pinfo, base);
+        }
+        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
+    }
+    entry->type = pinfo->type;
+    entry->min_val = pinfo->min_val;
+    entry->max_val = pinfo->max_val;
+
+    source_entry->is_morph = 1;
+    source_entry->morph_has_a = has_a;
+    source_entry->morph_has_b = has_b;
+    source_entry->morph_a = chain_mod_clampf(a, pinfo->min_val, pinfo->max_val);
+    source_entry->morph_b = chain_mod_clampf(b, pinfo->min_val, pinfo->max_val);
+    source_entry->morph_x = x;
+    entry->enabled = chain_mod_has_active_sources(entry);
+    chain_mod_apply_effective_value(inst, entry, 0);
+    return 0;
+}
+
+int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id) {
+    if (!entry || !entry->active || !source_id) return 0;
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (entry->sources[i].active && strcmp(entry->sources[i].source_id, source_id) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Remove ONE source from ONE target -- chain_mod_clear_source takes it off
+ * every target. The parameter returns to the knob with a forced write when
+ * nothing else drives it, exactly as the whole-source clear does. */
+void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id,
+                               const char *target, const char *param) {
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (!entry || !entry->active) return;
+    if (!chain_mod_find_source_contribution(entry, source_id)) return;
+    chain_mod_remove_source_contribution(entry, source_id);
+    if (!chain_mod_has_active_sources(entry)) {
+        chain_mod_clear_target_entry(inst, entry, 1);
+        return;
+    }
+    entry->enabled = 1;
+    chain_mod_apply_effective_value(inst, entry, 0);
 }
 
 void chain_mod_clear_source(void *ctx, const char *source_id) {
