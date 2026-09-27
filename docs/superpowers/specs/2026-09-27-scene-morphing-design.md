@@ -302,3 +302,41 @@ scope; non-linear morph curves; per-scene fade times.
 Branch `feat/scene-morphing` (worktree `../schwung-scene-morphing`), one PR.
 Order: pure header + tests → chain side → shim (MFX/sends, control fields, CC)
 → JS screen, arm badge, persistence → docs → hardware pass.
+
+## Implementation notes (2026-09-27, as built)
+
+Changes from the brainstormed design, each forced by something found in the
+code or on hardware:
+
+- **Scene B is picked with knob 2, not Shift+Step.** The shim hands Shift+step
+  to Move (Move's own shortcut vocabulary; it also dismisses the shadow UI), so
+  a Shift+Step gesture could never reach the Scenes screen. A step TAP puts the
+  scene on the end the fader is NOT at; knobs 1 and 2 pick A and B explicitly.
+- **The fader CC is a CC Map target (`scenes:xfade`) and so PER SET**, not a
+  global features.json binding. A generic per-set CC Map with learn, shim-side
+  claim and swallow already existed; building a second CC path beside it would
+  have duplicated all of that. Shift+Click on the Scenes screen starts CC learn
+  with the fader chosen. Revisit if a global binding is wanted.
+- **Delete-to-unlock is decided below the UI** (`scene_unlock`), for the same
+  reason as the arm; it takes a knob TURN (a touch writes nothing).
+- **A `state` read saves the knob, not the morph** -- not in the design; found
+  on hardware (a reboot restored the morphed value as the knob).
+- **Steps are claimed on the Scenes screen** through a new `step_claim` byte
+  riding the existing p-lock step withhold, so no tap is replayed to Move.
+- **Undo on the Scenes screen** (one level, swaps: again = redo).
+- **A shadow_ui restart ADOPTS the live bank** instead of reloading the file.
+
+Hardware-verified (2026-09-27, device on this branch): slot morph at the
+destination (the module's own state blob) at x = 0 / 0.5 / 1; one-ended morph
+following a live knob; neither-end release; arm + audition + lock read; Delete
+unlock; state read saves the knob; Master FX verbs, base read, arm, unlock,
+state read; send verbs; save debounce; Move restart restores bank, A/B, fader
+at 0; shadow_ui kill adopts an unsaved edit; the Scenes screen, shortcut,
+jog, step tap, knob 2, hold-to-arm, Copy, the SCN badge over another screen.
+
+Not verified on hardware: a set SWITCH (save-old / load-new); the CC Map learn
+of the fader with a real controller; audible smoothness of a sweep; that a
+Delete while armed cannot reach Move (the positive control -- an unarmed Delete
+on the same screen -- did not delete a clip either, so the test could not
+tell); Master FX morph at the plugin (covered by the unit test only, since
+every param-channel read of a driven bus param deliberately answers the base).
