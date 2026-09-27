@@ -1597,7 +1597,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
  * looks up the index in the param's options list.
  * Returns the float value, or fallback if conversion fails.
  */
-static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
+static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
 
@@ -2652,6 +2652,10 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     }
 }
 
+/* A `<comp>:state` read saves the knob, not the scene morph (chain_scene.c). */
+static int v2_get_param(void *i, const char *k, char *b, int n) {
+    return chain_scene_get_around_state((chain_instance_t *)i, k, b, n, v2_get_param_impl);
+}
 /* V2 Plugin API structure */
 static plugin_api_v2_t g_plugin_api_v2 = {
     .api_version = MOVE_PLUGIN_API_VERSION_2,

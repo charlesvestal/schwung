@@ -140,6 +140,15 @@ int main(void) {
     shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
     CHECK(shadow_scene_bus_edit_write(0, 1, "mix", "1") == 0, "disarmed: a write is not consumed");
 
+    /* A state read sees the base; the morph is back after it. */
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    float morphed = mix(0, 1);
+    shadow_scene_bus_state_begin(0, 1);
+    float during = mix(0, 1);
+    shadow_scene_bus_state_end(0, 1);
+    CHECK(fabsf(during - morphed) > 0.01f && NEAR(mix(0, 1), morphed),
+          "state read: plugin held the base (%f) and the morph (%f) returned", during, mix(0, 1));
+
     shadow_scene_bus_get_verb(0, "locks", buf, sizeof(buf));
     CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
     CHECK(shadow_scene_bus_get_verb(3, "dump", buf, sizeof(buf)) == -1, "an out-of-range scope is refused");

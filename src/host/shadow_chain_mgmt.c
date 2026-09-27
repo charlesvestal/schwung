@@ -4465,12 +4465,15 @@ void shadow_inprocess_handle_param_request(void) {
                     } else {
                         int n = shadow_scene_bus_read(send_idx + 1, send_fx, send_param,
                                                       shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                        const int is_state = strcmp(send_param, "state") == 0;
+                        if (is_state) shadow_scene_bus_state_begin(send_idx + 1, send_fx);
                         if (n < 0)
                             n = sfx->api->get_param
                               ? sfx->api->get_param(sfx->instance, send_param,
                                                     shadow_param->value,
                                                     SHADOW_PARAM_VALUE_LEN)
                               : -1;
+                        if (is_state) shadow_scene_bus_state_end(send_idx + 1, send_fx);
                         if (n >= 0) {
                             shadow_param->error = 0;
                             shadow_param->result_len = (int)strlen(shadow_param->value);
@@ -5048,9 +5051,12 @@ void shadow_inprocess_handle_param_request(void) {
                 /* A scene-driven param answers its base (or, armed, its lock). */
                 int len = shadow_scene_bus_read(0, mfx_slot, param_key,
                                                 shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                const int is_state = strcmp(param_key, "state") == 0;
+                if (is_state) shadow_scene_bus_state_begin(0, mfx_slot);  /* save the knob, not the morph */
                 if (len < 0)
                     len = mfx->api->get_param(mfx->instance, param_key,
                                               shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                if (is_state) shadow_scene_bus_state_end(0, mfx_slot);
                 if (len >= 0) {
                     shadow_param->error = 0;
                     shadow_param->result_len = len;
