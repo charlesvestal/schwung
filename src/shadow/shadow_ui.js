@@ -4775,6 +4775,8 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "surface_layout", label: "Surface Layout", type: "action" },
     /* Any controller's CCs bound to parameters, per set (cc_map.mjs). */
     { key: "cc_map", label: "CC Map", type: "action" },
+    /* The Scenes screen (Shift+Vol+Step3 is the shortcut). */
+    { key: "scenes", label: "Scenes", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -12405,6 +12407,11 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "scenes") {
+        if (paramPagesActive()) exitParamPages();
+        enterScenes(VIEWS.MASTER_FX);
+        return;
+    }
     if (key === "surface_layout" || key === "cc_map") {
         /* From the grid this runs from the menu INTENT, after the controller
          * has finished with its input, so leaving the grid here is safe. */
