@@ -624,6 +624,25 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
         return 0;
     }
 
+    /* FAST PATH: already engaged. A fader sweep re-emits every locked pair on
+     * every block, and the param lookup below is a scan of the component's
+     * chain_params -- the one cost in this that grows with the module. The
+     * range was captured when the entry engaged. */
+    {
+        mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+        mod_source_contribution_t *se = entry && entry->enabled
+            ? chain_mod_find_source_contribution(entry, source_id) : NULL;
+        if (se && se->is_morph) {
+            se->morph_has_a = has_a;
+            se->morph_has_b = has_b;
+            se->morph_a = chain_mod_clampf(a, entry->min_val, entry->max_val);
+            se->morph_b = chain_mod_clampf(b, entry->min_val, entry->max_val);
+            se->morph_x = x;
+            chain_mod_apply_effective_value(inst, entry, 0);
+            return 0;
+        }
+    }
+
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
         chain_mod_clear_source_at(inst, source_id, target, param);
