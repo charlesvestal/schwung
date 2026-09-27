@@ -11511,6 +11511,13 @@ function scenesLoadFrom(dir, adoptLive) {
 }
 
 function scenesTick() {
+    /* An overtake module owns the surface: an armed scene would turn its knob
+     * writes into locks nobody can see. Disarmed by INVARIANT, not from the
+     * four places that enter overtake -- an exit list is how a flag strands. */
+    if (view === VIEWS.OVERTAKE_MODULE) {
+        const st = sceneState();
+        if (st && st.edit >= 0) sceneSetEdit(-1);
+    }
     if (view === VIEWS.SCENES && scenesScreen.tick()) needsRedraw = true;
     if (view === VIEWS.SCENES && scenesScreen.learnPending && !ccMap.learning) {
         scenesScreen.clearLearnPending();
