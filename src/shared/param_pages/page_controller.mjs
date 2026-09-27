@@ -9,6 +9,7 @@
  *   setParam(fullKey, value) -> void
  *   announce(text)           -> void          (optional)
  *   isModulated(fullKey)     -> boolean       (optional)
+ *   isAutomated(fullKey)     -> boolean       (optional)
  *   now()                    -> ms            (optional, injectable clock)
  *
  * What is left for the real binding is genuinely thin: route MIDI to the
@@ -579,6 +580,23 @@ export function createController(io = {}) {
      */
     const isModulated = io.isModulated || null;
     /*
+     * Optional: is this param driven by a SEQUENCER'S AUTOMATION LANE?
+     *
+     * A lane moves a parameter the way an LFO does, so it gets the same
+     * motion -- pointer on `:base`, the dot riding `:effective` -- and a host
+     * used to buy that by answering yes to `isModulated`. That cost the
+     * grammar: the cell then wore the modulation tilde, so a lane and an LFO
+     * drew the same mark and a parameter under both said it once.
+     *
+     * Asking separately keeps the motion and gives the lane its own mark (a
+     * 2x2 beside the label, `drawAutomatedMark`). Absent, nothing changes: no
+     * key is automated and every mark draws as before. No default probe --
+     * unlike modulation there is no chain key that answers this; the lane is
+     * the host's. Asked on the same rotation stop as `isModulated`, never per
+     * draw.
+     */
+    const isAutomated = io.isAutomated || null;
+    /*
      * WHICH STEP BUTTON IS HELD, 0..15, or -1.
      *
      * Asked of the device by default, because the alternative is another
@@ -691,6 +709,10 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* key -> last-read automation flag, same cadence as modCache. Kept
+         * apart because the two draw different marks; `moving()` is where
+         * they are one question again. */
+        autoCache: Object.create(null),
         /* Selected child per child-level, by level key. See childResolve(). */
         childIndex: Object.create(null),
         /*
@@ -2673,6 +2695,7 @@ export function createController(io = {}) {
          * whatever it last found rather than clearing it here. */
         if (isModulated) s.modCache[key] = !!isModulated(fullKey(key));
         if (_lm && _lm.live === true) s.modCache[key] = true;
+        if (isAutomated) s.autoCache[key] = !!isAutomated(fullKey(key));
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
@@ -2684,7 +2707,7 @@ export function createController(io = {}) {
          * while a target is active, so fall back rather than blank the knob if
          * the flag and the target ever disagree. */
         let raw = null;
-        if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
+        if (moving(key)) raw = getParam(fullKey(key) + ":base");
         /*
          * "" counts as a MISS, not as a value.
          *
@@ -4751,7 +4774,7 @@ export function createController(io = {}) {
     function refreshModulatedValues(p) {
         const modKeys = [];
         for (const k of p.keys) {
-            if (k && s.modCache[k]) modKeys.push(k);
+            if (k && moving(k)) modKeys.push(k);
         }
         if (!modKeys.length) {
             /* Nothing modulated: drop stale dots rather than leave them frozen
@@ -4781,9 +4804,14 @@ export function createController(io = {}) {
         s.modCursor = (s.modCursor + n) % modKeys.length;
         /* A key that stopped being modulated keeps no dot. */
         for (const k in s.modValues) {
-            if (!s.modCache[k]) delete s.modValues[k];
+            if (!moving(k)) delete s.modValues[k];
         }
     }
+
+    /* Does something other than the knob move this value -- a modulation
+     * source or an automation lane? The MOTION question (base vs effective),
+     * as opposed to which mark the cell wears. */
+    function moving(k) { return !!(s.modCache[k] || s.autoCache[k]); }
 
     function setLayout(layout) { s.layout = layout; }
     function setReveal(on) { s.revealValues = !!on; }
@@ -4906,6 +4934,7 @@ export function createController(io = {}) {
                  * the header is following. */
                 touchedSlots: s.hintLines ? [] : s.touchOrder,
                 modulated: (key) => !!s.modCache[key],
+                automated: (key) => !!s.autoCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
@@ -5097,7 +5126,9 @@ export function createController(io = {}) {
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
-            modulated: (key) => !!s.modCache[key],
+            /* The dial layout has no automation mark of its own, so a lane
+             * keeps wearing the modulation one there rather than none. */
+            modulated: moving,
             /* The live values, so a module-supplied widget can draw what the
              * param is ACTUALLY doing rather than where its knob was left. */
             modValues: s.modValues,
@@ -5681,6 +5712,7 @@ export function createController(io = {}) {
                  * most divable cells wear nothing here. */
                 divable: !!(meta && meta.divable),
                 modulated: !!s.modCache[key],
+                automated: !!s.autoCache[key],
                 touched: s.touchOrder ? s.touchOrder.indexOf(slot) >= 0 : s.touched === slot,
                 /* A sequencer's parameter lock for this SLOT. */
                 decoration: dec || null,
@@ -5748,6 +5780,8 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** Same, for the injected isAutomated. */
+        isAutomatedCached: (key) => !!s.autoCache[key],
         /** The decorations in force -- a caller's own, or the step-held locks
          *  this builds while a step is down. Read-only view, for the host's
          *  screen reader and for tests: what the cells are showing is the only

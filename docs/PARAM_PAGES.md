@@ -1865,6 +1865,23 @@ and the UI got the knob back. And **the shim skips `render_block` on a silent
 slot** (one probe frame in 172), so a module computing its effective value
 inside `render_block` appears frozen until something plays.
 
+### A sequencer lane is motion with its OWN mark (`io.isAutomated`)
+
+A host that plays automation lanes wants the same motion a modulated key gets —
+pointer on `:base`, the dot riding `:effective` — and used to buy it by
+answering yes to `isModulated`. That also bought the modulation tilde, so a lane
+and an LFO drew the same mark and a parameter under both said it once.
+
+`isAutomated(fullKey) -> boolean` is asked on the same rotation stop as
+`isModulated` and cached beside it (`isAutomatedCached`). Either flag drives the
+motion; only `isModulated` (or `live`) draws the tilde, and `isAutomated` draws a
+solid 2x2 at the top-right of the label, the mirror of the tilde across the
+text. On an inverted strip the mark sits on ground beside it. The dial layout
+has no mark of its own for a lane, so there an automated key keeps the tilde.
+Absent, nothing changes. `drawAutomatedMark` is exported so a host can tell a
+library that draws it from one that does not, and keep folding lanes into
+`isModulated` against the older one.
+
 ### A module's OTHER draw surface is a CARD, and it floats
 
 `drawCell` gives a module one cell. `card_script` gives it the page: a bordered
