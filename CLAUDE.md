@@ -854,6 +854,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   direction, so it TOGGLES either way, latched to one flick. The turn partition
   must EQUAL the draw partition or a shape promises what the knob won't do.
   `flipsOnClick` defines "is a two-way", not "flip".
+- **Four opt-ins for a host that owns its pages, all inert when absent** —
+  `turn: "absolute"` (a two-way steps by direction), `display: "big"` (read,
+  not aimed; must FIT, else the old widget), `io.allowEnumPeek` (can only
+  DECLINE) and `activity()` beside `settled()` (per-key durations; a stream is
+  REPORTED, never aged out). `tests/host/test_fleet_render_baseline.sh` pins
+  what every fleet cell draws and where a gesture lands it — the proof that
+  "opt-in" moved nothing.
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,

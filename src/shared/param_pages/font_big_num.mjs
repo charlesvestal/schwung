@@ -19,10 +19,16 @@
  * 15-row box it still read as thin. This is 11 rows with 2px stems and a plain
  * bowl, which is what a value meant to be read across a room wants.
  *
- * ONLY 12 GLYPHS, matching what `bigNumberText` can emit — the digits, the
- * sign, and the "--" an unread value draws. `missingGlyphs` reports anything
- * else rather than drawing it wrong, and tests/host/test_big_number_font.sh
- * sweeps the fleet against that.
+ * TWENTY-FOUR GLYPHS: what `bigNumberText` can emit — the digits, the sign,
+ * and the "--" an unread value draws — plus `:` `%` `/` `.` and the note names
+ * `A`-`G` `#`, because a param may declare `display: "big"` and bring its own
+ * reading with it (a 2:4 trig condition, a 54% swing, a 1/16 division, a C#
+ * root). Letters stop at the note names on purpose: an arbitrary word does not
+ * fit a 30px cell at this size anyway, so the fit gate would refuse it. Same
+ * source, same +1 advance. `missingGlyphs` reports anything else rather than drawing it wrong,
+ * tests/host/test_big_number_font.sh sweeps the fleet against that, and a
+ * declared value asking for a missing glyph falls back rather than drawing a
+ * hole (see bigValueText in render_page_movy.mjs).
  *
  * The advance carries movy's 1px inter-glyph gap folded in: its blitter adds
  * BIG_GAP separately, ours does not, so every advance here is theirs plus one.
@@ -30,7 +36,7 @@
  * [advance, yOff, w, h, ...rowBits], bit0 = leftmost pixel.
  */
 
-const CHARS = '0123456789+-';
+const CHARS = '0123456789+-:%/.#ABCDEFG';
 const G = [
     [10, 0, 9, 11, 62, 127, 99, 99, 99, 99, 99, 99, 99, 127, 62],  /* 0 */
     [9, 0, 8, 11, 48, 56, 60, 60, 48, 48, 48, 48, 48, 48, 48],  /* 1 */
@@ -44,6 +50,18 @@ const G = [
     [10, 0, 9, 11, 62, 127, 99, 99, 99, 127, 126, 96, 99, 127, 62],  /* 9 */
     [9, 3, 8, 6, 12, 12, 63, 63, 12, 12],  /* + */
     [8, 5, 7, 2, 31, 31],  /* - */
+    [5, 5, 4, 6, 3, 3, 0, 0, 3, 3],  /* : */
+    [11, 0, 10, 11, 102, 101, 117, 51, 56, 24, 28, 204, 174, 166, 102],  /* % */
+    [7, 0, 6, 11, 12, 12, 12, 14, 6, 6, 6, 7, 3, 3, 3],  /* / */
+    [5, 9, 4, 2, 3, 3],  /* . */
+    [10, 1, 9, 10, 54, 54, 127, 127, 54, 54, 127, 127, 54, 54],  /* # */
+    [10, 0, 9, 11, 62, 127, 99, 99, 99, 99, 99, 127, 127, 99, 99],  /* A */
+    [10, 0, 9, 11, 63, 127, 99, 99, 63, 127, 99, 99, 99, 127, 63],  /* B */
+    [10, 0, 9, 11, 62, 127, 3, 3, 3, 3, 3, 3, 3, 127, 62],  /* C */
+    [10, 0, 9, 11, 63, 127, 99, 99, 99, 99, 99, 99, 99, 127, 63],  /* D */
+    [10, 0, 9, 11, 127, 127, 3, 3, 31, 31, 3, 3, 3, 127, 127],  /* E */
+    [10, 0, 9, 11, 127, 127, 3, 3, 31, 31, 3, 3, 3, 3, 3],  /* F */
+    [10, 0, 9, 11, 62, 127, 3, 3, 115, 115, 99, 99, 99, 127, 126],  /* G */
 ];
 
 export const HEIGHT = 11;

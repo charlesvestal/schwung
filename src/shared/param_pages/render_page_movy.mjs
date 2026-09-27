@@ -38,7 +38,7 @@ import { vizDiveTarget, VIZ_SAMPLE } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
-    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H,
+    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H, missingGlyphs,
 } from "./font_big_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
@@ -1805,7 +1805,20 @@ export function isCountedQuantity(meta) {
 
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
-    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.kind === KIND_OPAQUE) return false;
+    /*
+     * A PARAM MAY SAY IT IS READ RATHER THAN AIMED.
+     *
+     * isCountedQuantity concedes this for a closed list of NAMES, but a module
+     * cannot join that list, and the range alone cannot tell a swing
+     * percentage from a filter cutoff. A declaration can. It lifts the span
+     * cap and the enum refusal (a 2:4 trig condition is a value to read, and
+     * the enum square's two lines of 5x3 are not how you read it) for the
+     * declaring param only -- and only if the cell can hold it: see
+     * bigCellFits. Everything undeclared takes the rules below, unchanged.
+     */
+    if (meta.display === "big") return bigCellFits(meta);
+    if (meta.kind === KIND_ENUM) return false;
     if (!isWholeNumbered(meta)) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
@@ -1831,6 +1844,63 @@ export function bigNumberText(meta, raw) {
     if (!isFinite(n)) return "--";
     const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
     return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * DOES IT FIT, asked of the widest thing the cell can ever show.
+ *
+ * BIG_NUM_MAX_DIGITS is a proxy for this and a good one while every big value
+ * is an integer: an overflow does not clip, it runs over the next cell and
+ * clipped() reports nothing. Once a declaration can bring an option list here
+ * the proxy fails both ways ("1/4" is three characters and narrow, "88:88" is
+ * five and hopeless), so the width is measured -- and measured over every
+ * value, never the current one, so a cell cannot change widget as it is
+ * turned. A glyph the face lacks fails the fit too: a hole is not a reading.
+ */
+const BIG_CELL_BUDGET = CELL_W - 2;
+
+function bigTextFits(text) {
+    const t = String(text);
+    return missingGlyphs(t).size === 0 && numWidth(t) <= BIG_CELL_BUDGET;
+}
+
+function enumTexts(meta) {
+    const opts = Array.isArray(meta.options) ? meta.options : [];
+    const short = Array.isArray(meta.short_options) ? meta.short_options : null;
+    return opts.map((o, i) => String(short && short[i] !== undefined ? short[i] : o));
+}
+
+function bigCellFits(meta) {
+    if (meta.kind === KIND_ENUM) {
+        const texts = enumTexts(meta);
+        return texts.length > 0 && texts.every(bigTextFits);
+    }
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    return bigTextFits(bigNumberText(meta, meta.min)) && bigTextFits(bigNumberText(meta, meta.max));
+}
+
+/**
+ * The text a big cell draws.
+ *
+ * bigNumberText recomputes from the raw value, which is right for a counted
+ * quantity and wrong for what a declaration can bring: an enum's option, or a
+ * host reading with a unit ("54%"). The host's reading (formatValue, handed in
+ * as cellText) wins when the face can draw it inside the cell; then the
+ * option, short_options first, as the enum square resolves it; then the
+ * number. A reading that cannot be drawn falls back rather than smearing --
+ * the fit gate above only knew the static texts.
+ */
+export function bigValueText(meta, raw, cellText) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    if (cellText !== null && cellText !== undefined && cellText !== ""
+        && bigTextFits(cellText)) return String(cellText);
+    if (meta && meta.kind === KIND_ENUM) {
+        const idx = enumIndexOf(meta, raw);
+        const texts = enumTexts(meta);
+        return (idx >= 0 && idx < texts.length) ? texts[idx] : "--";
+    }
+    return bigNumberText(meta, raw);
 }
 
 /*
@@ -2147,6 +2217,9 @@ export function widgetKindFor(meta) {
     if (!meta) return WIDGET_KNOB;
     if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
     if (meta.writeOnly) return WIDGET_BUTTON;
+    /* A declared enum asks before the enum square takes it; see
+     * shouldDrawBigNumber. Undeclared, this line is inert. */
+    if (meta.display === "big" && shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
     if (shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     return WIDGET_KNOB;
@@ -2228,7 +2301,8 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      */
     if (widget === WIDGET_BIGNUM) {
         drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
-                      bigNumberText(meta, raw));
+                      meta.display === "big" ? bigValueText(meta, raw, cellText)
+                                             : bigNumberText(meta, raw));
         return;
     }
     /* `?? 0` because the ARC has to point somewhere: an unread value draws its

@@ -39,7 +39,7 @@ import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, 
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
-         movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
+         movyHeaderFor, labelForCell, normalizedOf, widgetKindFor, WIDGET_BIGNUM,
          W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
@@ -651,6 +651,24 @@ export function createController(io = {}) {
      * invitation to handle one of them wrong.
      */
     const formatValue = io.formatValue || null;
+    /*
+     * Optional: may this key raise the enum peek on a turn?
+     *
+     *   allowEnumPeek(fullKey, meta) -> true | false | null
+     *
+     * The controller already declines on a list layout -- a row prints the
+     * option in full, so the panel covers a legible answer with the same one --
+     * and a grid cell can be in that same position when its box fits the whole
+     * option. Whether it does is a question about the HOST's cells, not about
+     * this metadata, so it is injected on the same terms as formatValue:
+     * absent, or null for a given key, and the existing rule decides.
+     *
+     * It can only DECLINE. `true` does not force a peek past the list, wide-
+     * graphic or switch gates, because those are facts about what is already
+     * on screen. Named apart from enumPeek(), which is the getter a frame owner
+     * draws from.
+     */
+    const allowEnumPeek = io.allowEnumPeek || null;
     /*
      * Optional: load a module-supplied card drawer.
      *
@@ -3872,8 +3890,9 @@ export function createController(io = {}) {
          */
         if (s.layout !== LAYOUT_LIST
             && meta.divable && meta.kind === KIND_ENUM
-            && !drawnWide(key) && !drawnAsSwitch(key)
-            && Array.isArray(meta.options) && meta.options.length >= 2) {
+            && !drawnWide(key) && !drawnAsSwitch(key) && !drawnBig(meta)
+            && Array.isArray(meta.options) && meta.options.length >= 2
+            && !(allowEnumPeek && allowEnumPeek(fullKey(key), meta) === false)) {
             const pi = Math.round(Number(value));
             s.peek = {
                 key,
@@ -5545,6 +5564,24 @@ export function createController(io = {}) {
             if (g.kind === VIZ_SWITCH && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
         }
         return false;
+    }
+
+    /*
+     * A BIG CELL ALREADY SHOWS THE OPTION, so it must not peek either.
+     *
+     * `display: "big"` draws an enum's option in the big face, and only when
+     * every option FITS (bigCellFits) -- so the cell is legible by
+     * construction, which is the list-layout case again. Movy could decline
+     * through io.allowEnumPeek, but that hook is the HOST's; a module that
+     * declares `display: "big"` has no hook, and got the panel over its own
+     * readout on every turn.
+     *
+     * Asks the renderer's own widget choice, not the declaration: one that
+     * does not fit falls back to the enum square, which still wants the peek.
+     * Movy only -- the dial renderer does not draw declared big cells.
+     */
+    function drawnBig(meta) {
+        return s.layout === LAYOUT_MOVY && widgetKindFor(meta) === WIDGET_BIGNUM;
     }
 
     /**
