@@ -614,6 +614,9 @@ export const MASTER_GRID_ACTIONS = [
      * list, control_editor.mjs; handleMasterFxSettingsAction routes it. */
     { label: "Surface Layout", action: "surface_layout", always: true },
     { label: "CC Map", action: "cc_map", always: true },
+    /* The scene crossfader spans the whole rig, Master FX included; this is
+     * the one door to it that does not need the Shift+Vol+Step3 shortcut. */
+    { label: "Scenes", action: "scenes", always: true },
 ];
 
 /**
