@@ -340,3 +340,19 @@ Delete while armed cannot reach Move (the positive control -- an unarmed Delete
 on the same screen -- did not delete a clip either, so the test could not
 tell); Master FX morph at the plugin (covered by the unit test only, since
 every param-channel read of a driven bus param deliberately answers the base).
+
+### Real-time cost (measured on the device, /system/cpu/values)
+
+Sweeping the fader continuously with **10 locked params on an idle dr32 slot**
+raised Schwung's total per-frame time from ~139 us to 166-194 us (**+30-55 us,
+1-2% of the 2.67 ms frame**), back to 138 us the moment the fader parked. One
+locked param costs nothing measurable parked or engaged.
+
+A misleading first reading is worth recording: the same sweep on hank showed
+~225 us on hank's row, and it stayed ~180 us with the fader parked. That was
+**hank rendering**, not scenes -- plain knob writes of the same values with no
+scene at all put hank at 92 us. A parameter change can wake a parked slot, and
+a module that renders at the morphed values pays its own render. An
+every-second-block decimation of fader-only updates was tried against the
+misreading and reverted: it changed nothing, because the writes were never the
+cost.
