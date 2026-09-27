@@ -2410,15 +2410,13 @@ static void shadow_inprocess_render_to_buffer(void) {
      * mix in place through process_block, the jack through audio_in_offset --
      * as one module with an input-source setting, rather than shipping as two.
      *
-     * ...unless the native resample bridge is the one that wrote it. It runs
-     * earlier in this same post-ioctl pass, so an unguarded restore silently
-     * beats it and Move's Resample captures the jack instead of Schwung's mix
-     * for as long as any overtake module is loaded. The bridge is the opt-in
-     * setting, so it wins; see src/host/audio_in_restore.h. */
+     * The native resample bridge no longer competes for the region: it writes
+     * AUDIO_IN at the very END of shim_post_transfer, after this render, so
+     * the restore cannot undo it and needs no stand-down. See
+     * src/host/audio_in_restore.h. */
     if (shadow_audio_in_restore_allowed(
             (overtake_dsp_gen_inst || overtake_dsp_fx_inst) ? 1 : 0,
-            hardware_mmap_addr ? 1 : 0,
-            native_resample_bridge_mode != NATIVE_RESAMPLE_BRIDGE_OFF)) {
+            hardware_mmap_addr ? 1 : 0)) {
         int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
         int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
         /* Log once to verify hardware audio levels */
@@ -8111,8 +8109,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              shadow_control ? &shadow_control->overtake_mode : NULL,
                              shadow_control ? &shadow_control->shift_held : NULL);
 
-    /* Bridge Schwung's total mix into native resampling path when selected. */
-    native_resample_bridge_apply();
+    /* The resample bridge is NOT here any more -- it is the LAST writer of
+     * AUDIO_IN, after the slot render below. See the call site. */
 
     /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
     if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
@@ -10578,6 +10576,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         }
     }
     TIME_SECTION_END(spi_post_render_sum, spi_post_render_max);
+
+    /*
+     * THE RESAMPLE BRIDGE WRITES AUDIO_IN LAST -- after every reader in the
+     * frame, never before one.
+     *
+     * It overwrites the shadow mailbox's AUDIO_IN with Schwung's total mix so
+     * Move's own Resample records what Schwung is playing. It used to run up
+     * by the JACK post, BEFORE the slot render above -- and the render is
+     * where a Line In slot reads AUDIO_IN (host->mapped_memory is this very
+     * buffer). So with Resample on Mix, Line In read Schwung's previous mix,
+     * which contains Line In's own output: jack -> Line In -> mix -> bridge ->
+     * Line In, a closed digital loop 1-2 blocks long that rang whenever its
+     * gain reached 1. It was never guarded for chain slots; #515 made it
+     * audible by stopping the idle park that used to starve it.
+     *
+     * Move reads the mailbox only after this callback returns (post_fn runs
+     * inside the hooked ioctl), so writing it here loses Move nothing: its
+     * Resample still gets the mix, and every Schwung reader in the render got
+     * the jack. That also retires the overtake restore's stand-down (#457) --
+     * the restore can no longer overwrite the bridge, because the bridge now
+     * comes after it. Pinned by tests/host/test_resample_bridge_after_render.sh.
+     */
+    native_resample_bridge_apply();
 
     /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
     /* Shadow UI can request a Move restart (e.g. after core update) */

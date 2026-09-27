@@ -3,36 +3,24 @@
 
 /*
  * Should the post-ioctl restore re-copy hardware AUDIO_IN over the shadow
- * mailbox's copy?
+ * mailbox's copy, so an overtake plugin reading host->audio_in_offset gets
+ * the jack?
  *
- * Two writers want the same 512 bytes at offset 2304, in this order inside
- * one shim_post_transfer:
+ * There used to be a third argument, "is the resample bridge on", and the
+ * restore stood down while it was (#457): the bridge wrote Schwung's mix into
+ * the region EARLIER in the same pass, and a restore after it silently undid
+ * it. The bridge now runs LAST in shim_post_transfer, after the render, so
+ * nothing can undo it and every reader in the render -- a chain Line In slot
+ * as much as an overtake plugin -- sees the jack. Keeping the argument would
+ * have kept a stand-down whose only remaining effect is to hand an overtake
+ * plugin the previous frame's mix instead of its input.
  *
- *   1. native_resample_bridge_apply()  writes Schwung's mix there, so Move's
- *      own Resample records what Schwung is playing.
- *   2. the restore in shadow_inprocess_render_to_buffer() writes the jack
- *      there, so an overtake plugin reading host->audio_in_offset gets the
- *      actual input rather than the bridge's leftovers.
- *
- * The restore runs second, so unguarded it wins every frame and the bridge
- * silently does nothing for as long as an overtake module is loaded — a
- * resample that captures the jack instead of the mix, with nothing logged.
- * The bridge is the deliberate, opt-in, user-visible setting (default OFF),
- * so it takes precedence; the restore stands down while it is applying.
- *
- * Pure so tests/host can drive the four-way table.
+ * Pure so tests/host can drive the table.
  */
-/* `bridge_source_allows` USED TO BE A FOURTH ARGUMENT and is gone with the
- * sampler-source gate it read. That gate was fed by a substring match on
- * screen-reader text and only consulted in a bridge mode no shipped UI could
- * select, so the argument was 1 at every reachable call — a parameter that
- * looked live and was not. */
 static inline int shadow_audio_in_restore_allowed(int overtake_inst_present,
-                                                  int hardware_mmap_present,
-                                                  int bridge_mode_on)
+                                                  int hardware_mmap_present)
 {
     if (!overtake_inst_present || !hardware_mmap_present) return 0;
-    if (bridge_mode_on) return 0;
     return 1;
 }
 
