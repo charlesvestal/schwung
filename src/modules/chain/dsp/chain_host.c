@@ -97,6 +97,7 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     inst->synth_split_voice_count = 0;
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
+    chain_scene_init(inst);  /* zeroed would mean "scene 1" is A, B and armed */
     /* Set up host API for sub-plugins */
     if (g_host) {
         inst->host = g_host;
@@ -954,6 +955,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /* SCENES verbs + edit arm, ahead of the component routes (chain_scene.c). */
+    if (chain_scene_route_set(inst, key, val)) return;
+
 
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
@@ -1608,6 +1612,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
     }
 
+    if (strncmp(key, "scenes:", 7) == 0) return chain_scene_get_param(inst, key + 7, buf, buf_len);
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we return our cached flag instead of forwarding to the sub-plugin. */
@@ -1941,6 +1946,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         /* A plain read of an actively modulated key answers with the BASE —
          * the plugin holds the effective value the overlay keeps writing into
          * it, which is not what the user set (#276). */
+        { int r = chain_scene_edit_read(inst, "synth", subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, "synth", subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
 
@@ -2052,6 +2058,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (mod_result >= 0) return mod_result;
         int eff_result = chain_mod_get_effective_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (eff_result >= 0) return eff_result;
+        { int r = chain_scene_edit_read(inst, fx_id, subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, fx_id, subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
 
@@ -2132,6 +2139,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (mod_result >= 0) return mod_result;
         int eff_result = chain_mod_get_effective_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (eff_result >= 0) return eff_result;
+        { int r = chain_scene_edit_read(inst, mfx_id, subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, mfx_id, subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
@@ -2223,6 +2231,7 @@ static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
 
 static void lfo_tick(chain_instance_t *inst, int frames) {
     if (!inst) return;
+    chain_scene_tick(inst);  /* a morph replaces the base; LFOs sum on top */
     float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
 
     /*
