@@ -244,6 +244,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_sampler.c src/host/shadow_transport.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_metronome.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
+    src/host/shadow_scene_bus.c src/host/shadow_scene_bus.h src/host/scene_morph.h \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/step_strip.c src/host/step_strip.h \
     src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
@@ -287,6 +288,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_dbus.c \
         src/host/shadow_metronome.c \
         src/host/shadow_chain_mgmt.c \
+        src/host/shadow_scene_bus.c \
         src/host/shadow_link_audio.c \
         src/host/shadow_process.c \
         src/host/shadow_resample.c \

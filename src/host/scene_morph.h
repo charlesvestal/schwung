@@ -60,6 +60,14 @@
 #define SCENE_KIND_INT     1
 #define SCENE_KIND_ENUM    2
 
+/* Edit-arm flags, pushed with the crossfader. */
+#define SCENE_EDIT_UNLOCK  0x01   /* Delete is held: an armed write UNLOCKS */
+
+/* A refusal the UI flashes on the arm badge (shadow_control_t.scene_flash). */
+#define SCENE_FLASH_NONE   0
+#define SCENE_FLASH_FULL   1   /* the scope's 64-pair budget is used up */
+#define SCENE_FLASH_NA     2   /* not a parameter the component declares */
+
 /* scene_lock results. */
 #define SCENE_OK           0
 #define SCENE_ERR_ARGS    -1

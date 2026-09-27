@@ -80,7 +80,7 @@ static void knob_write(chain_instance_t *inst, const char *param, const char *va
 }
 
 static void frame(chain_instance_t *inst, int a, int b, float x, int edit) {
-    chain_scene_set_morph(inst, (uint8_t)a, (uint8_t)b, x, (uint8_t)edit);
+    chain_scene_set_morph(inst, (uint8_t)a, (uint8_t)b, x, (uint8_t)edit, 0);
     chain_scene_tick(inst);
 }
 
@@ -163,12 +163,22 @@ int main(void) {
     CHECK(chain_scene_edit_write(inst, "synth:cutoff:effective", "1") == 0, "a suffixed key is never a lock");
     CHECK(chain_scene_edit_write(inst, "load_file", "/x") == 0, "a non-component key is never a lock");
     CHECK(chain_scene_edit_write(inst, "synth:undeclared", "1") == 0, "an undeclared param goes to the base");
-    CHECK(chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, 4) >> 16 == 2,
+    CHECK(chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, 4, 0) >> 16 == 2,
           "...and flashes N/A once");
-    CHECK(chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, 4) >> 16 == 0, "(one-shot)");
+    CHECK(chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, 4, 0) >> 16 == 0, "(one-shot)");
     CHECK(chain_scene_edit_write(inst, "synth:wave", "sine") == 1, "an enum by option name locks");
     chain_scene_get_param(inst, "dump", buf, sizeof(buf));
     CHECK(strstr(buf, "4 synth wave 3 obxd") != NULL, "stored as its index: %s", buf);
+
+    /* Delete held: the same turn UNLOCKS, and reaches neither lock nor base. */
+    chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0.0f, 4, SCENE_EDIT_UNLOCK);
+    CHECK(chain_scene_edit_write(inst, "synth:cutoff", "12") == 1, "Delete+turn is consumed");
+    chain_scene_get_param(inst, "dump", buf, sizeof(buf));
+    CHECK(strstr(buf, "synth cutoff") == NULL && strstr(buf, "4 synth wave 3") != NULL,
+          "...and removes only that param from the armed scene: %s", buf);
+    CHECK(NEAR(cutoff(), 10), "...and the param returns to its knob, untouched by the turn: %f", cutoff());
+    chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0.0f, 4, 0);
+    chain_scene_edit_write(inst, "synth:cutoff", "77");
 
     frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
     CHECK(NEAR(cutoff(), 10) && wave() == 0, "disarming returns to the knob (%f, %d)", cutoff(), wave());
@@ -193,7 +203,7 @@ int main(void) {
     }
     chain_scene_set_param(inst, "lock", "0 synth overflow 1 obxd");
     CHECK(inst->scenes.count == SCENE_MAX_PAIRS &&
-          (chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, SCENE_NONE) >> 16) == 1,
+          (chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0, SCENE_NONE, 0) >> 16) == 1,
           "a lock past the cap is refused and flashes FULL");
 
     /* A bad load leaves the bank alone. */

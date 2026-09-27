@@ -827,6 +827,7 @@ typedef struct chain_instance {
     uint8_t scene_a;
     uint8_t scene_b;
     uint8_t scene_edit;        /* armed scene: writes lock into it */
+    uint8_t scene_edit_flags;  /* SCENE_EDIT_UNLOCK: Delete is held */
     uint8_t scene_flash;       /* last refusal, consumed by the shim */
     float scene_x;
     int scene_dirty;
@@ -1263,10 +1264,11 @@ CHAIN_INTERNAL void chain_scene_init(chain_instance_t *inst);
 CHAIN_INTERNAL void chain_scene_tick(chain_instance_t *inst);
 CHAIN_INTERNAL int chain_scene_set_param(chain_instance_t *inst, const char *verb, const char *val);
 CHAIN_INTERNAL int chain_scene_get_param(chain_instance_t *inst, const char *verb, char *buf, int buf_len);
+CHAIN_INTERNAL int chain_scene_route_set(chain_instance_t *inst, const char *key, const char *val);
 CHAIN_INTERNAL int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *val);
 CHAIN_INTERNAL int chain_scene_edit_read(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
-CHAIN_INTERNAL uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit);
-uint32_t chain_set_scene_morph(void *instance, uint8_t a, uint8_t b, float x, uint8_t edit);
+CHAIN_INTERNAL uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);
+uint32_t chain_set_scene_morph(void *instance, uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);
 
 /* chain_midi.c */
 CHAIN_INTERNAL int chain_get_clock_status(void);

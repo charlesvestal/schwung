@@ -21,11 +21,6 @@
 /* Blocks between forced revalidations (~93 ms at 128 frames / 44.1 kHz). */
 #define SCENE_REVALIDATE_BLOCKS 32
 
-/* scene_flash codes -- mirrored as SCENE_FLASH_* in shadow_constants.h. */
-#define CHAIN_SCENE_FLASH_NONE 0
-#define CHAIN_SCENE_FLASH_FULL 1
-#define CHAIN_SCENE_FLASH_NA   2
-
 static scene_table_t s_load_scratch;
 
 void chain_scene_init(chain_instance_t *inst) {
@@ -34,7 +29,8 @@ void chain_scene_init(chain_instance_t *inst) {
     inst->scene_a = SCENE_NONE;
     inst->scene_b = SCENE_NONE;
     inst->scene_edit = SCENE_NONE;
-    inst->scene_flash = CHAIN_SCENE_FLASH_NONE;
+    inst->scene_edit_flags = 0;
+    inst->scene_flash = SCENE_FLASH_NONE;
     inst->scene_x = 0.0f;
     inst->scene_dirty = 1;
     inst->scene_revalidate = 0;
@@ -153,12 +149,15 @@ void chain_scene_tick(chain_instance_t *inst) {
  * which the shim folds into shadow_control_t for the UI.
  */
 __attribute__((visibility("default")))
-uint32_t chain_set_scene_morph(void *instance, uint8_t a, uint8_t b, float x, uint8_t edit) {
-    return chain_scene_set_morph((chain_instance_t *)instance, a, b, x, edit);
+uint32_t chain_set_scene_morph(void *instance, uint8_t a, uint8_t b, float x, uint8_t edit,
+                               uint8_t edit_flags) {
+    return chain_scene_set_morph((chain_instance_t *)instance, a, b, x, edit, edit_flags);
 }
 
-uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit) {
+uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit,
+                               uint8_t edit_flags) {
     if (!inst) return 0;
+    inst->scene_edit_flags = edit_flags;
     if (a != SCENE_NONE && a >= SCENE_COUNT) a = SCENE_NONE;
     if (b != SCENE_NONE && b >= SCENE_COUNT) b = SCENE_NONE;
     if (edit != SCENE_NONE && edit >= SCENE_COUNT) edit = SCENE_NONE;
@@ -172,7 +171,7 @@ uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, flo
         inst->scene_dirty = 1;
     }
     uint32_t status = (uint32_t)inst->scene_rev | ((uint32_t)inst->scene_flash << 16);
-    inst->scene_flash = CHAIN_SCENE_FLASH_NONE;
+    inst->scene_flash = SCENE_FLASH_NONE;
     return status;
 }
 
@@ -182,7 +181,7 @@ int chain_scene_set_param(chain_instance_t *inst, const char *verb, const char *
     int rc;
     if (strcmp(verb, "lock") == 0) {
         rc = scene_apply_lock_verb(&inst->scenes, val);
-        if (rc == SCENE_ERR_FULL) inst->scene_flash = CHAIN_SCENE_FLASH_FULL;
+        if (rc == SCENE_ERR_FULL) inst->scene_flash = SCENE_FLASH_FULL;
     } else if (strcmp(verb, "unlock") == 0) {
         rc = scene_apply_unlock_verb(&inst->scenes, val);
     } else if (strcmp(verb, "clear") == 0) {
@@ -276,7 +275,7 @@ int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *
     if (!module) return 0;
     chain_param_info_t *pinfo = find_param_by_key(inst, target, subkey);
     if (!pinfo) {
-        inst->scene_flash = CHAIN_SCENE_FLASH_NA;
+        inst->scene_flash = SCENE_FLASH_NA;
         return 0;
     }
     float v = dsp_value_to_float(val, pinfo, pinfo->default_val);
@@ -284,9 +283,19 @@ int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *
     if (v > pinfo->max_val) v = pinfo->max_val;
     if (chain_scene_kind(pinfo) != SCENE_KIND_FLOAT) v = roundf(v);
 
+    /* Delete held: the same gesture REMOVES this parameter from the armed
+     * scene, and the write does not reach the base either -- the knob was
+     * turned to pick the parameter, not to set it. */
+    if (inst->scene_edit_flags & SCENE_EDIT_UNLOCK) {
+        if (scene_unlock(&inst->scenes, inst->scene_edit, target, subkey) == SCENE_OK) {
+            chain_scene_changed(inst);
+            chain_scene_tick(inst);
+        }
+        return 1;
+    }
     int rc = scene_lock(&inst->scenes, inst->scene_edit, target, subkey, v, module);
     if (rc == SCENE_ERR_FULL) {
-        inst->scene_flash = CHAIN_SCENE_FLASH_FULL;
+        inst->scene_flash = SCENE_FLASH_FULL;
         return 0;
     }
     if (rc != SCENE_OK) return 0;

@@ -12,6 +12,7 @@
 #define SHADOW_CONSTANTS_H
 
 #include <stdint.h>
+#include "scene_morph.h"   /* SCENE_NONE, SCENE_FLASH_* for the scene fields */
 
 /* ============================================================================
  * Shared Memory Segment Names
@@ -234,6 +235,7 @@
 #define SHADOW_UI_FLAG_SNAPSHOT_QUEUED 0x0400  /* recall armed for the next boundary */
 #define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
 #define SHADOW_UI_FLAG_CC_LEARN_TOGGLE   0x1000 /* Shift+Vol+Sample: CC learn on/off */
+#define SHADOW_UI_FLAG_JUMP_TO_SCENES    0x2000 /* Shift+Vol+Step3: Scenes screen */
 
 /* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
  * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */
@@ -725,7 +727,53 @@ typedef struct shadow_control_t {
      * word, and a stale one costs one tick.
      */
     volatile uint32_t ui_midi_foreign;
+
+    /*
+     * SCENES -- the crossfader (docs/superpowers/specs/2026-09-27-scene-
+     * morphing-design.md). A and B are 0..15 or SCENE_NONE (0xFF); so is
+     * `scene_edit`, the ARMED scene (knob writes lock into it). The fader is
+     * uint16 so a jog detent and a 7-bit CC both land without rounding.
+     *
+     * WRITERS: shadow_ui (a, b, edit, xfade -- the Scenes screen and the CC
+     * Map's scenes:xfade target) and the shim's param handler for the same
+     * keys from any other client. READER: the shim alone, which slews the
+     * fader and pushes all four to every chain slot each frame
+     * (chain_set_scene_morph) and to its own bus tables.
+     *
+     * shim -> UI: `scene_rev` changes whenever any scope's bank changes (the
+     * autosave's cue, so a pass with no edits costs no IPC), and `scene_flash`
+     * holds the latest refusal (SCENE_FLASH_*) until the UI clears it.
+     *
+     * Initialised to NONE by the shim, because this segment outlives
+     * restart-move.sh and a zeroed one would read "scene 1 is A, B and armed".
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t scene_a;
+    volatile uint8_t scene_b;
+    volatile uint8_t scene_edit;
+    volatile uint8_t scene_flash;
+    volatile uint16_t scene_xfade_q;
+    volatile uint16_t scene_rev;
+    /*
+     * STEPS CLAIMED OUTRIGHT, 0 or 1: while set (with step_observe), every
+     * withheld step press is marked USED, so no tap is ever replayed to Move.
+     * The Scenes screen picks scenes with the steps; a replayed tap would ALSO
+     * toggle a note in the clip. Rides the existing latched both-edge swallow
+     * rather than a second one. Restated every tick by the UI (the shim drops
+     * step_observe on its own).
+     */
+    volatile uint8_t step_claim;
+    /*
+     * DELETE IS HELD WITH A SCENE ARMED, 0 or 1: the next armed write REMOVES
+     * that parameter from the scene instead of locking it (SCENE_EDIT_UNLOCK).
+     * Decided below the UI for the reason the arm is: a module-drawn screen's
+     * knob writes never pass through the host grid. Written by shadow_ui from
+     * the claimed Delete's two edges.
+     */
+    volatile uint8_t scene_unlock;
 } shadow_control_t;
+
 
 /* Values for shadow_control_t.speaker_eq_mode. */
 #define SPEAKER_EQ_MODE_AUTO 0
