@@ -30,7 +30,7 @@ eq("a Master FX position makes master targets",
    { kind: "master", fx: 3, key: "mix", module: "cloudseed", label: "Mix" });
 
 eq("slot settings carry the slot in the label", P.settingTargets(1).map((x) => x.target.label).slice(0, 2), ["S2 Volume", "S2 Pan"]);
-eq("master settings do not", P.settingTargets(null).map((x) => x.target.label), ["Filter", "Return A", "Return B"]);
+eq("master settings do not", P.settingTargets(null).map((x) => x.target.label), ["Filter", "Return A", "Return B", "Scene Fader"]);
 
 const chain = { slots: [{ synth: "obxd", fx: ["freeverb"], midiFx: [] }, {}, {}, {}], masterFx: ["cloudseed"] };
 eq("live when the position holds the module", P.targetStatus(ts[0].target, { slots: [{}, { synth: "obxd" }] }), "live");
