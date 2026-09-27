@@ -307,6 +307,62 @@ int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *
 }
 
 /*
+ * A STATE READ SAVES THE KNOB, NOT THE MORPH.
+ *
+ * Every save path -- the slot autosave, User Presets, the snapshot -- reads a
+ * component's opaque `<comp>:state`, and a module writes into it whatever it
+ * holds right now. Under a scene that is the MORPHED value, so saving with the
+ * fader anywhere but "nothing locked" replaced the knob with the scene: after
+ * a reboot the unlocked end of every morph was wherever the fader had been.
+ *
+ * So around that one read, the base goes back into the module and the morph is
+ * re-applied straight after. Same call, same thread (the SPI callback), no
+ * audio block in between -- nothing is heard. Scene-driven params only: an
+ * LFO's save behaviour is not this feature's to change.
+ */
+int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *buf, int buf_len,
+                                 chain_get_param_fn impl) {
+    size_t n = key ? strlen(key) : 0;
+    if (!inst || n <= 6 || strcmp(key + n - 6, ":state") != 0 || inst->scenes.count == 0)
+        return impl(inst, key, buf, buf_len);
+    char target[SCENE_TARGET_LEN];
+    const char *subkey = NULL;
+    if (!chain_scene_split_key(key, target, sizeof(target), &subkey) || strcmp(subkey, "state") != 0)
+        return impl(inst, key, buf, buf_len);
+    int swapped = 0;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || strcmp(e->target, target) != 0 || !chain_mod_has_source(e, SCENE_SOURCE_ID)) continue;
+        chain_mod_write_base(inst, e);
+        swapped++;
+    }
+    int r = impl(inst, key, buf, buf_len);
+    if (swapped) {
+        for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+            mod_target_state_t *e = &inst->mod_targets[i];
+            if (!e->active || strcmp(e->target, target) != 0 || !chain_mod_has_source(e, SCENE_SOURCE_ID)) continue;
+            chain_mod_apply_effective_value(inst, e, 1);
+        }
+    }
+    return r;
+}
+
+/* The set_param route, so chain_host.c carries one line of it: the table
+ * verbs, then the edit arm. Returns 1 when the write was consumed. */
+int chain_scene_route_set(chain_instance_t *inst, const char *key, const char *val) {
+    if (!inst || !key) return 0;
+    if (strncmp(key, "scenes:", 7) == 0) {
+        chain_scene_set_param(inst, key + 7, val);
+        return 1;
+    }
+    if (inst->scene_edit != SCENE_NONE && chain_scene_edit_write(inst, key, val)) {
+        inst->dirty = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/*
  * A plain read while armed answers WHAT A WRITE WOULD CHANGE: the lock, for a
  * parameter the armed scene locks. Returns bytes written, or -1 to fall
  * through (not armed, not locked, dormant).

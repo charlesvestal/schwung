@@ -48,6 +48,14 @@ static int fake_get_param(void *inst, const char *key, char *buf, int len) {
 static plugin_api_v2_t fake_api = { .api_version = 2, .set_param = fake_set_param, .get_param = fake_get_param };
 
 static float cutoff(void) { return (float)atof(v_cutoff); }
+
+/* A module's state serialiser: records what it held at the moment of the read. */
+static char seen[64];
+static int state_impl(void *i, const char *k, char *b, int n) {
+    (void)i; (void)k;
+    snprintf(seen, sizeof(seen), "%s", v_cutoff);
+    return snprintf(b, n, "cutoff=%s", v_cutoff);
+}
 static int wave(void) { return atoi(v_wave); }
 
 static void setup(chain_instance_t *inst) {
@@ -186,6 +194,35 @@ int main(void) {
 
     chain_scene_get_param(inst, "locks", buf, sizeof(buf));
     CHECK(strcmp(buf, "0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
+
+    /* The set_param ROUTE chain_host.c calls: verbs first, then the arm, and
+     * a plain write while disarmed is NOT consumed. */
+    CHECK(chain_scene_route_set(inst, "scenes:lock", "9 synth cutoff 30 obxd") == 1 &&
+          scene_lock_count(&inst->scenes, 9) == 1, "route: a verb is consumed");
+    CHECK(chain_scene_route_set(inst, "synth:cutoff", "40") == 0, "route: disarmed, a param write falls through");
+    chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0.0f, 9, 0);
+    CHECK(chain_scene_route_set(inst, "synth:cutoff", "40") == 1 && inst->dirty,
+          "route: armed, a param write is consumed and marks the chain dirty");
+    CHECK(chain_scene_route_set(inst, "synth:module", "x") == 0, "route: armed, a module write falls through");
+    chain_scene_set_param(inst, "clear", "9");
+    chain_scene_set_morph(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+
+    /* A :state read saves the KNOB, not the morph: the base goes into the
+     * module for the read and the morph comes straight back after it. */
+    {
+        chain_scene_set_param(inst, "lock", "6 synth cutoff 99 obxd");
+        knob_write(inst, "cutoff", "33");
+        frame(inst, 6, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(NEAR(cutoff(), 99), "morph applied before the state read: %f", cutoff());
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 33), "the module held the BASE while its state was read: %s", seen);
+        CHECK(NEAR(cutoff(), 99), "...and the morph is back straight after: %f", cutoff());
+        chain_scene_get_around_state(inst, "synth:cutoff", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 99), "any other key is passed straight through: %s", seen);
+        chain_scene_set_param(inst, "clear", "6");
+        frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+    }
 
     /* rev moves on every table change and on nothing else. */
     uint16_t r0 = inst->scene_rev;

@@ -54,6 +54,12 @@ int  shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int
 /* A write that reached the plugin: if the param is driven, it is the new base. */
 void shadow_scene_bus_note_write(int scope, int pos, const char *param, const char *val);
 
+/* Around a `state` read of one position: the knob's base goes into the
+ * plugin for the read and the morph is put back after, so a save records what
+ * the user set rather than where the fader was. */
+void shadow_scene_bus_state_begin(int scope, int pos);
+void shadow_scene_bus_state_end(int scope, int pos);
+
 /* Once per frame, with the fader already slewed. */
 void shadow_scene_bus_tick(uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);
 uint16_t shadow_scene_bus_rev(void);
