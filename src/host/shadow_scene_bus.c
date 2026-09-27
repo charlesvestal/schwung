@@ -447,6 +447,32 @@ int shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int 
                                        : snprintf(buf, len, "%d", (int)lroundf(d->base));
 }
 
+void shadow_scene_bus_state_begin(int scope, int pos) {
+    if (!valid_scope(scope)) return;
+    char target[SCENE_TARGET_LEN];
+    snprintf(target, sizeof(target), "fx%d", pos + 1);
+    void *slot = slot_for(scope, target);
+    if (!slot) return;
+    for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+        scene_drive_t *d = &s_bus[scope].drives[i];
+        if (d->active && d->has_last && strcmp(d->target, target) == 0)
+            write_value(slot, d->param, d->base, d->kind);
+    }
+}
+
+void shadow_scene_bus_state_end(int scope, int pos) {
+    if (!valid_scope(scope)) return;
+    char target[SCENE_TARGET_LEN];
+    snprintf(target, sizeof(target), "fx%d", pos + 1);
+    void *slot = slot_for(scope, target);
+    if (!slot) return;
+    for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+        scene_drive_t *d = &s_bus[scope].drives[i];
+        if (d->active && d->has_last && strcmp(d->target, target) == 0)
+            write_value(slot, d->param, d->last, d->kind);
+    }
+}
+
 void shadow_scene_bus_note_write(int scope, int pos, const char *param, const char *val) {
     if (!valid_scope(scope) || !param || !val) return;
     char target[SCENE_TARGET_LEN];

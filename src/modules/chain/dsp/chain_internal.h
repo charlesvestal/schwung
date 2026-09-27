@@ -1250,6 +1250,7 @@ CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, con
 CHAIN_INTERNAL int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id, const char *target, const char *param, int has_a, float a, int has_b, float b, float x);
 CHAIN_INTERNAL void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id);
+CHAIN_INTERNAL void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
@@ -1265,6 +1266,8 @@ CHAIN_INTERNAL void chain_scene_tick(chain_instance_t *inst);
 CHAIN_INTERNAL int chain_scene_set_param(chain_instance_t *inst, const char *verb, const char *val);
 CHAIN_INTERNAL int chain_scene_get_param(chain_instance_t *inst, const char *verb, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_scene_route_set(chain_instance_t *inst, const char *key, const char *val);
+typedef int (*chain_get_param_fn)(void *instance, const char *key, char *buf, int buf_len);
+CHAIN_INTERNAL int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *buf, int buf_len, chain_get_param_fn impl);
 CHAIN_INTERNAL int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *val);
 CHAIN_INTERNAL int chain_scene_edit_read(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);

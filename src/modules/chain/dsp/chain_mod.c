@@ -658,6 +658,20 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
     return 0;
 }
 
+/* Put the KNOB's value (the base) into the module without touching the entry:
+ * a state blob read right after this records what the user set rather than
+ * where a modulation happens to be. The caller re-applies the effective value
+ * with chain_mod_apply_effective_value(..., 1) once it has read. */
+void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry) {
+    if (!inst || !entry || !entry->active) return;
+    char val_str[32];
+    if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM)
+        snprintf(val_str, sizeof(val_str), "%d", (int)entry->base_value);
+    else
+        snprintf(val_str, sizeof(val_str), "%.6f", entry->base_value);
+    chain_mod_set_param_string(inst, entry->target, entry->param, val_str);
+}
+
 int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id) {
     if (!entry || !entry->active || !source_id) return 0;
     for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
