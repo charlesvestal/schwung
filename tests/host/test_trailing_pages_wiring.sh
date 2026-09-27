@@ -396,6 +396,7 @@ if (moduleActions.join(",") !== "module_lists,swap_module,remove_module")
     fail("Module page for a module with no help content must offer exactly Add to List, " +
          "Swap Module, Remove Module, got " + moduleActions.join(","));
 
+
 // The Add to List value is the number of lists holding the module, and BLANK
 // at zero -- a "0" is a count nobody asked for on a row that is offering to
 // make one.
@@ -420,7 +421,7 @@ const withHelp = harness.run(1, "synth", "synth");
 const withHelpActions = actions(withHelp[1]);
 if (withHelpActions.join(",") !== "module_help,module_lists,swap_module,remove_module")
     fail("Module page for a module WITH help content must offer Module Help, Add to List, " +
-         "Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
+         "Clear Automation, Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
 if (withHelp[1].entries[0].label !== "Module Help")
     fail("the help row must be labelled \"Module Help\", got " + JSON.stringify(withHelp[1].entries[0]));
 // An EMPTY children array is no help content -- getModuleHelpChildren already
@@ -485,6 +486,9 @@ const body = [
     "let componentGridReturnSlot = -1;",
     "let componentGridReturnKey = \"\";",
     "let componentGridReturnEnter = true;",
+    "VIEWS.COMPONENT_EDIT = 5;",
+    "let componentGridReturnModuleUi = false;",
+    "let moduleListsReturnModuleUi = false;",
     // Save acts IN PLACE, so it closes the menu behind itself rather than
     // carrying a disposition through a return path. Stubbed as a spy: the
     // dispatch assertions below only care that Save reaches it.
@@ -621,13 +625,18 @@ console.log("  ok  module_help: exits the grid, seeds one help frame of the modu
             "topics on VIEWS.GLOBAL_SETTINGS, and records its own return pair rather than " +
             "componentModalFromGrid");
 
-// remove_module must clear the record BEFORE the removal write, not after —
-// only remove_module calls setUserPresetRecord in this harness (the other
-// five reach it only through onUserPresetSaved/Loaded/Deleted, which are
-// stubbed to markers above, not to the real setter), so ONE call across all
-// six iterations, with a null record, is exactly what a correct clear looks
-// like. Evidence gathered above and asserted here, not left to sit unread.
-const wantSetRecordCalls = [[1, "synth", null]];
+// remove_module no longer clears the record ITSELF: it delegates to
+// applyChainComponentPick(slot, key, ""), and the clear now lives on that
+// path, in applyComponentSelectionConfirmed, beside the sibling LFO-routing
+// clear. One clear site rather than two, and the same line covers every way a
+// position changes hands rather than only the None row.
+//
+// This harness STUBS applyChainComponentPick (see the stub above, which just
+// records "remove"), so the subsumed clear is not observable here — the calls
+// list proving the delegation is what this file can honestly assert. The
+// behaviour itself is covered on the real path by B4 in
+// test_chain_edit_read_budget.sh, which asserts a None pick drops the record.
+const wantSetRecordCalls = [];
 if (JSON.stringify(r.setRecordCalls) !== JSON.stringify(wantSetRecordCalls)) {
     fail("remove_module must clear the grid record with setUserPresetRecord(slot, prefix, null) " +
          "before the removal write -- expected " + JSON.stringify(wantSetRecordCalls) +
@@ -673,6 +682,10 @@ const run = (setup) => {
         "function isTextEntryActive() { return textEntry; }",
         "let componentHelpReturnSlot = -1;",
         "let componentHelpReturnKey = \"\";",
+        "let componentHelpReturnModuleUi = false;",
+        "function unloadModuleUi() {}",
+        "function enterComponentEditFallback() {}",
+        "function restoreModuleUiPage() {}",
         setup,
         grab("maybeReturnToComponentHelp"),
         "const fired = maybeReturnToComponentHelp();",
@@ -771,6 +784,10 @@ const run = (setup) => {
         "let moduleListsTarget = \"Live\";",
         "let moduleListsConfirmDelete = true;",
         "let moduleListsPendingName = { existing: null, text: \"Live\" };",
+        "let moduleListsReturnModuleUi = false;",
+        "function unloadModuleUi() {}",
+        "function enterComponentEditFallback() {}",
+        "function restoreModuleUiPage() {}",
         setup,
         grab("exitModuleLists"),
         "exitModuleLists();",

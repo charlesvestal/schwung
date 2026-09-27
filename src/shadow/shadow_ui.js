@@ -45,6 +45,8 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
+import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
@@ -217,6 +219,10 @@ import {
  * node; this file only draws it and wires the gestures. */
 import * as ModuleLists from '/data/UserData/schwung/shared/module_lists.mjs';
 
+/* Sort: Type in the swap picker — categories come from the manager's cached
+ * catalog; the grouping rule lives there so node can test it. */
+import * as ModuleCategories from '/data/UserData/schwung/shared/module_categories.mjs';
+
 import {
     announce,
     announceMenuItem,
@@ -298,6 +304,7 @@ import {
 } from './shadow_ui_presets.mjs';
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
+    paramPagesEntering,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
     paramPagesCachedValue, clearParamPagesTouch,
@@ -362,6 +369,13 @@ const SHADOW_UI_FLAG_JUMP_TO_OVERTAKE = 0x04;
 const SHADOW_UI_FLAG_SAVE_STATE = 0x08;
 const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
+/* How many ticks a SET_CHANGED may go unidentified before it is consumed
+ * anyway. The param channel is shared with the shim's own readers, so an empty
+ * answer is routinely a STARVED one rather than "no set" — but a flag that can
+ * never be consumed is its own hang, and each retry re-saves the outgoing set.
+ * See the handler for what a failed identification used to cost. */
+const SET_CHANGE_ID_TRIES = 20;
+let setChangeIdTries = 0;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
 const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
 /* 0x0100 and up live in the shim's `ui_flags_ext`, not `ui_flags` — the 8-bit
@@ -822,6 +836,8 @@ let autosaveJob = null;
  * thing the UI thread did). Cleared whenever the file set changes underneath
  * us, so the next pass rewrites unconditionally. */
 let lastWrittenSlotJson = [null, null, null, null];
+
+
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
 }
@@ -2341,6 +2357,26 @@ function componentParamPagesIo(slotIndex, componentKey) {
             markComponentParamWrite(slotIndex, componentKey);
             return ok;
         },
+        /* THE P-LOCK GESTURE'S OTHER HALF: hold a step, turn a knob.
+         *
+         * Called by the controller AFTER a value is committed, with what was
+         * actually written -- which is the only moment that knows it, since a
+         * turn walks from a cached value through the parameter's own step and
+         * range. If a step button is held, that value is locked to the step.
+         *
+         * `<target> <param>` is split off the full key rather than rebuilt:
+         * the chain's lane store is keyed by exactly those two fields, and a
+         * second way of deriving them is a second thing to get wrong. The BAR
+         * is not passed at all -- the shim reads it off Move's own strip (see
+         * `lanes:plock_step`), so the UI never models the editor's paging. */
+        /* The shim's own verdict on whether the held press has become a
+         * HOLD -- see shadow_control_t.held_step_is_hold. The controller uses
+         * it to keep a TAP from asking the lock map anything. */
+        heldStepIsHold: () => shadow_get_held_step_is_hold() === 1,
+        /* Move's Delete button, for "Delete + a knob clears this knob's whole
+         * automation for this clip". A byte from the shim rather than the CC,
+         * which never reaches the grid unless a step is held. */
+        deleteHeld: () => shadow_get_delete_held() === 1,
     };
 }
 
@@ -2421,6 +2457,7 @@ let moduleListsCorrupt = false;     /* true = never write */
 let moduleListsSlot = -1;           /* the component this session is filing */
 let moduleListsKey = "";
 let moduleListsModuleId = "";
+let moduleListsReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 let moduleListsMemberIndex = 0;     /* cursor on the membership screen */
 let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
 let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
@@ -2582,6 +2619,15 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const moduleId = loaded && loaded.module;
     const record = getUserPresetRecord(slotIndex, prefix);
     let result;
+    /* The view this action was asked FROM. Two grids can ask: the shadow UI's
+     * own param pages (VIEWS.PARAM_PAGES) and a module-owned chain UI
+     * (VIEWS.COMPONENT_EDIT). "Did the action open a screen?" is answered by
+     * comparing against THIS, not against PARAM_PAGES — testing against
+     * PARAM_PAGES was only right when the caller was PARAM_PAGES, and from a
+     * module grid it made every action, Save As included, look like a
+     * hand-off. That armed a return to a grid the module cannot host, which
+     * the device showed as an editor spinning on synth:ui_hierarchy reads. */
+    const viewBefore = view;
 
     switch (action) {
         case "up_load":
@@ -2641,6 +2687,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             exitParamPages();
             componentHelpReturnSlot = slotIndex;
             componentHelpReturnKey = componentKey;
+            componentHelpReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             helpDetailScrollState = null;
             helpNavStack = [{ items: children, selectedIndex: 0,
                               title: getModuleDisplayName(moduleId) }];
@@ -2665,6 +2712,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             moduleListsSlot = slotIndex;
             moduleListsKey = componentKey;
             moduleListsModuleId = moduleId;
+            moduleListsReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             moduleListsMemberIndex = 0;
             /* The same reset exitModuleLists() does, done again HERE because
              * this site is unconditional and that one is not. Back is the only
@@ -2701,6 +2749,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             return true;
         }
 
+
         case "swap_module": {
             const at = slotChainComponentIndex(slotIndex, componentKey);
             if (at >= 0) enterComponentSelect(slotIndex, at);
@@ -2714,7 +2763,6 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
              * same reasoning that keeps a `+` box's own "None" pick from
              * raising a second confirmation. IS applyChainComponentPick's
              * None path, not a copy of it. */
-            setUserPresetRecord(slotIndex, prefix, null);
             applyChainComponentPick(slotIndex, componentKey, "", null);
             result = true;
             break;
@@ -2723,16 +2771,19 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             result = false;
     }
 
-    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
-     * four remaining cases above that hand off to a real screen (Load, Delete, Swap,
-     * Remove — the last via applyChainComponentPick, which always ends in
-     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
-     * which never move `view` at all. Asking the screen rather than the key
-     * is what keeps a future action from being silently wrong here too. */
-    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+    /* view !== viewBefore is the ONE test that is true for exactly the cases
+     * above that hand off to a real screen (Load, Delete, Swap, Remove — the
+     * last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save / Save As / an unhandled
+     * key, which never move `view` at all — from EITHER grid. Asking the
+     * screen rather than the key is what keeps a future action from being
+     * silently wrong here too. */
+    if (gridActionOpenedSomething(view !== viewBefore)) {
         componentModalFromGrid = true;
         componentGridReturnSlot = slotIndex;
         componentGridReturnKey = componentKey;
+        componentGridReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
+        componentGridReturnModule = moduleId || "";
     }
     return result;
 }
@@ -2798,13 +2849,55 @@ function maybeReturnToComponentGrid() {
      */
     const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
     componentModalFromGrid = false;
+    const fromModuleUi = componentGridReturnModuleUi;
+    componentGridReturnModuleUi = false;
+    const moduleBefore = componentGridReturnModule;
+    componentGridReturnModule = "";
     const slotIndex = componentGridReturnSlot;
     const componentKey = componentGridReturnKey;
     componentGridReturnSlot = -1;
     componentGridReturnKey = "";
     if (!matchesReturnSlot) return false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        /* A module UI left loaded for a position that no longer holds a
+         * module would be drawn for nobody the next time COMPONENT_EDIT came
+         * round. Its own Back would have unloaded it; the hand-off went
+         * round Back, so unload it here. */
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    /* A SWAP left a different module in the position. Nothing about the old
+     * grid applies to it: not the page to restore, not which editor drew it,
+     * not whether its contract is even in yet. Go through the one door the
+     * host opens every editor with: it waits for the new module's contract,
+     * then picks its hierarchy editor or its own UI, on page 1. Reported from
+     * hardware both ways: module-UI -> stock re-entered the module door for a
+     * module that has a hierarchy and was still loading (nothing to draw);
+     * stock -> module-UI called enterParamPages for a module with no host
+     * hierarchy (a contract read nobody answers, drawn as Loading...). */
+    if (moduleBefore && stillLoaded.module !== moduleBefore) {
+        componentGridReturnEnter = true;
+        if (fromModuleUi) unloadModuleUi();
+        openComponentEditor(slotIndex, componentKey, -1);
+        needsRedraw = true;
+        return true;
+    }
+    if (fromModuleUi) {
+        /* Back to the MODULE's grid, through the same door the host opens it
+         * with. The module publishes no ui_hierarchy (that is why it draws
+         * its own pages), so enterParamPages below would be a contract read
+         * with nobody to answer it. Reload rather than resume: the module's
+         * init() rebuilds its controller and re-asks for the trailing menus,
+         * so a preset saved or loaded on the way round is what it shows. */
+        const moduleEnter = componentGridReturnEnter;
+        componentGridReturnEnter = true;    /* back to the nothing-happened default */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("My Presets", moduleEnter);
+        needsRedraw = true;
+        return true;
+    }
     /* "My Presets", not the first page: every hand-off this reconciler serves
      * (a committed Load, a completed Delete, backing out of Swap) is either
      * about that page or leaves it just as good a landing spot as any other.
@@ -2853,8 +2946,22 @@ function maybeReturnToComponentHelp() {
     const componentKey = componentHelpReturnKey;
     componentHelpReturnSlot = -1;
     componentHelpReturnKey = "";
+    const fromModuleUi = componentHelpReturnModuleUi;
+    componentHelpReturnModuleUi = false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
+        needsRedraw = true;
+        return true;
+    }
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
                     { enter: true });
@@ -3009,6 +3116,7 @@ function moduleListsTickPendingName() {
 function exitModuleLists() {
     const slotIndex = moduleListsSlot;
     const componentKey = moduleListsKey;
+    const fromModuleUi = moduleListsReturnModuleUi;
     moduleListsSlot = -1;
     moduleListsKey = "";
     moduleListsModuleId = "";
@@ -3016,7 +3124,15 @@ function exitModuleLists() {
      * that matters is moduleListsConfirmDelete: it is a LATCH, so a session
      * left on an armed "yes, delete" would arm the next one, and the next
      * click after entering would delete a list nobody asked about. The three
-     * cursors are cheap correctness beside it. */
+     * cursors are cheap correctness beside it.
+     *
+     * moduleListsReturnModuleUi is read ABOVE and cleared HERE for the same
+     * reason, and it has to be inside this block rather than below the
+     * `slotIndex < 0` early return: a stale `true` does not merely leak, it
+     * sends the NEXT session's return -- a stock grid's -- through
+     * enterComponentEditFallback, which opens a hierarchy module on the bare
+     * preset browser instead of its knob grid. Same class as the latch. */
+    moduleListsReturnModuleUi = false;
     moduleListsEditIndex = 0;
     moduleListsActionIndex = 0;
     moduleListsTarget = "";
@@ -3025,10 +3141,20 @@ function exitModuleLists() {
     if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
     if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
         /* Same guard maybeReturnToComponentGrid needs: a component editor
          * entered for an empty position is a contract read with nobody to
          * answer it, which the device draws as a permanent "Loading...". */
         setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
         needsRedraw = true;
         return;
     }
@@ -3299,11 +3425,41 @@ function moduleListsActionsBack() {
  */
 let componentGridReturnEnter = true;
 
+/*
+ * Land a reloaded module UI on the page the hand-off left from. The host's
+ * own grid restores by NAME on the way back (enterParamPages's
+ * restorePageName); a module-owned grid is reloaded from scratch and knows
+ * nothing, so it landed on page 1 — reported from hardware as "Swap, Back,
+ * and I am on Main instead of the Module page". Optional hook; the module
+ * hands the name to its own controller.restorePage, which stays armed until
+ * its pages arrive, exactly as the host's does.
+ */
+function restoreModuleUiPage(name, enter) {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.restorePage === "function") {
+        loadedModuleUi.restorePage(name, { enter: !!enter });
+    }
+}
+
+/*
+ * A module-owned chain UI has its own controller, so paramPagesRefreshTrailing
+ * (the host's) is a no-op for it and its "My Presets" row would go on reading
+ * "(none)" after a Save. Tell the module instead; it refreshes its own
+ * trailing pages. Optional — a chain UI that does not declare it is left alone.
+ */
+function notifyModuleUiPresetsChanged() {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.onPresetsChanged === "function") {
+        loadedModuleUi.onPresetsChanged();
+    }
+}
+
 function recordUserPresetFromDevice(slot, prefix, name) {
     const live = getSlotStateWithRetry(slot, prefix + ":state");
     userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
     setUserPresetRecord(slot, prefix, makeRecord(name, live));
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 function onUserPresetSaved(slot, prefix, name, stateJson) {
@@ -3321,6 +3477,7 @@ function onUserPresetDeleted(slot, prefix, name) {
     const rec = getUserPresetRecord(slot, prefix);
     if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 
@@ -5079,6 +5236,15 @@ let globalModalFromGrid = false;
 let componentModalFromGrid = false;
 let componentGridReturnSlot = -1;
 let componentGridReturnKey = "";
+/* Whether the grid that raised the hand-off was a MODULE-OWNED chain UI
+ * (VIEWS.COMPONENT_EDIT) rather than the shadow UI's own param pages. The
+ * return path has to go back to the same kind of grid: a module that draws
+ * its own pages publishes no ui_hierarchy, so re-entering it through
+ * enterParamPages is a contract read with nobody to answer it. */
+let componentGridReturnModuleUi = false;
+/* ...and WHICH module held the position when it was raised. A swap leaves a
+ * different one there, and nothing about the old grid applies to it. */
+let componentGridReturnModule = "";
 
 /* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
  * "Module Help". The help viewer has no view of its own -- it is drawn by
@@ -5089,6 +5255,7 @@ let componentGridReturnKey = "";
  * must never be spent by another. See maybeReturnToComponentHelp. */
 let componentHelpReturnSlot = -1;
 let componentHelpReturnKey = "";
+let componentHelpReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 
 function saveParamViewConfig() {
     try {
@@ -6298,7 +6465,13 @@ function evaluateVisibilityCondition(condition, levelDef) {
      * them, three pages deep. Reported from the device. On the grid, the
      * grid's identity is the context.
      */
-    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+    /* `paramPagesEntering()` covers the first plan, which happens inside
+     * enterParamPages BEFORE the view flips -- without it the grid's very
+     * first page set resolves every condition against the list editor's slot
+     * and fails open. The view test still carries every later re-plan, and
+     * still keeps the list editor out: a controller can outlive a hand-off to
+     * the hierarchy editor, and that screen must keep its own context. */
+    if ((view === VIEWS.PARAM_PAGES || paramPagesEntering()) && paramPagesActive()) {
         const comp = paramPagesComponent();
         const slot = paramPagesSlot();
         const gridPrefix = getComponentParamPrefix(comp);
@@ -6636,6 +6809,37 @@ function setupModuleParamShims(slot, componentKey) {
         }
     };
 
+    /*
+     * The two trailing pages, for a module that draws its own param pages.
+     *
+     * Every component the SHADOW UI paginates gets "My Presets" and "Module"
+     * appended, because enterParamPages hands componentParamPagesIo to the
+     * controller and the controller appends whatever io.trailingMenus returns.
+     * A module shipping ui_chain.js builds its own controller, so it got
+     * neither — a drum machine with a pad-select editor could not save a
+     * preset, while a synth using the stock editor could. The pages are not a
+     * property of who drew the grid.
+     *
+     * Both halves have to cross: the MENUS (what to draw) and the ACTIONS
+     * (what a row does). Reimplementing either module-side is not an option —
+     * the actions reach the user preset store, the preset browser, the
+     * component picker and the help screen, none of which a module can address
+     * — so they are bound here with the slot and component already applied,
+     * exactly as host_swap_module above is.
+     *
+     * `runAction` returns whether the action opened a screen, which is the
+     * caller's cue to stop drawing; ui_chain.js should return from its input
+     * handler when it sees true.
+     */
+    globalThis.shadow_component_trailing_menus = function() {
+        return componentTrailingMenus(slot, componentKey, prefix) || [];
+    };
+
+    globalThis.shadow_component_run_action = function(action) {
+        if (!action) return false;
+        return !!runComponentActionFromGrid(slot, componentKey, action);
+    };
+
     globalThis.host_open_file_in_tool = function(filePath, toolId) {
         if (!filePath || !toolId) return false;
         if (!toolModules || !toolModules.length) {
@@ -6669,6 +6873,8 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_suspend_overtake;
+    delete globalThis.shadow_component_trailing_menus;
+    delete globalThis.shadow_component_run_action;
     delete globalThis.host_swap_module;
     delete globalThis.host_open_file_in_tool;
 }
@@ -9580,6 +9786,30 @@ function loadRnboGraphFromDir(dir) {
     }
 }
 
+/* Slot mute/solo follows Move's track mute/solo (src/host/mute_follow.h for
+ * the live half). At a set change Move has just loaded this set's Song.abl, so
+ * the file IS Move's state: push all four slots in one write. Anything short
+ * of a whole answer -- no file yet (a brand-new set), unparseable, fewer than
+ * four tracks -- leaves the per-set saved state as it is. */
+function syncSlotMixFromSong(uuid, setName) {
+    if (!uuid || !setName) return;
+    const path = "/data/UserData/UserLibrary/Sets/" + uuid + "/" + setName + "/Song.abl";
+    try {
+        const raw = host_read_file(path);
+        if (!raw) return;
+        const state = songMixState(JSON.parse(raw));
+        if (!state) {
+            debugLog("SET_CHANGED: Song.abl gave no whole mute/solo answer; keeping saved state");
+            return;
+        }
+        const value = songMixParamValue(state);
+        setSlotParamWithTimeout(0, "slot:move_mix", value, 500);
+        debugLog("SET_CHANGED: slot mute/solo from Move: " + value);
+    } catch (e) {
+        debugLog("syncSlotMixFromSong error: " + e);
+    }
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -9995,6 +10225,59 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
  * single frame every five seconds. Body is unchanged apart from the
  * loop's `continue`s becoming `return`s.
  */
+
+
+
+
+/*
+ * Throw this slot's automation away, and say HOW MUCH went.
+ *
+ * One implementation for all three forms of slot settings -- the knob grid's
+ * Actions menu, the slot list's settings screen, and the chain settings list.
+ * Three copies of the read-and-announce would be three chances for one of them
+ * to announce a count it never read.
+ *
+ * THREE ANSWERS, NOT TWO. `null` is a read that did not complete and says
+ * nothing at all about the slot; `""` is served-but-empty. Announcing "0
+ * cleared" for either is the confidently-wrong answer -- the user pressed a
+ * button and was told, with a number, that there was nothing to clear.
+ *
+ * No file is written here. The autosave pass already removes lanes_<i>.json
+ * when the slot serves an empty document, and an eMMC write (~120 ms measured)
+ * inside a click handler is the cost that cache exists to avoid.
+ */
+/* CLEAR ONLY THE CLIP IN FRONT OF YOU.
+ *
+ * `Clear Lanes` empties the whole SLOT -- every clip, every parameter -- which
+ * was the only grain there was, and is far blunter than the thing people
+ * actually want after one bad take. The chain resolves "this clip" from the
+ * clip the slot is bound to; with nothing playing and nothing selected there
+ * is no clip to name, and a count of 0 is what says so. */
+
+
+
+
+/*
+ * A knob turn while armed with the clip phase UNKNOWN records nothing. Say so.
+ *
+ * Silence here is indistinguishable from a broken feature: Record is lit, the
+ * knob moves, and no lane appears. The refusal is the only thing that
+ * distinguishes "we could not tell where in the clip you are" from "automation
+ * does not work".
+ *
+ * ONCE PER GESTURE, AND THE READ OBEYS THE SAME RULE. A parameter round trip is
+ * ~2.8 ms against a 1.68 ms whole-page render, so a read per detent would be
+ * slower than redrawing the screen on every one of them -- the grid would feel
+ * laggy exactly while the user is turning something. So the gesture gate is
+ * decided FIRST, from a timestamp we already have, and only the first write of
+ * a spin pays for a read: 0 per frame, 0 per detent, one per gesture (a second
+ * only while actually armed, which is Record held down).
+ *
+ * A gesture ends when the writes stop. Any continuing detent extends it, which
+ * is why `at` is stamped before the early return.
+ */
+const LANE_REFUSAL_GESTURE_MS = 700;
+
 function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
@@ -10003,6 +10286,10 @@ function autosaveOneSlot(i) {
      * mid-audition). previewActive clears on Load (commit) or Back (revert),
      * after which autosave resumes normally. */
     if (isPresetPreviewActive()) return;
+    /* Ahead of the slot-state work below, which has several early returns
+     * (empty slot, shim-reports-empty, no patch JSON) — a lane survives its
+     * module being swapped out, so it must not be persisted only on the paths
+     * where the slot still has one. */
     /* Sync chainConfigs from DSP before checking - prevents clobbering
      * valid autosave files for slots we haven't navigated to yet.
      * Read ONCE and reused as `currentSig` below — it used to be read
@@ -10161,7 +10448,15 @@ const SNAPSHOT_SUBDIR = "/snapshot";
 
 function snapshotDir() { return activeSlotStateDir + SNAPSHOT_SUBDIR; }
 
-/* The twelve files a snapshot is: four slots and eight Master FX positions. */
+/* The files a snapshot is: four slots, eight Master FX positions, and each
+ * slot's AUTOMATION LANES.
+ *
+ * The lanes were missing, and their absence was not a decision anyone made:
+ * Shift+Copy restored a slot's sound while leaving whatever automation
+ * happened to be live, so half the state came back and half did not. A lane is
+ * slot state -- it is written by the same autosave pass, into the same
+ * directory -- and a snapshot that takes one and not the other is a snapshot
+ * of something the user cannot name. */
 function snapshotFileNames() {
     const names = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/slot_" + i + ".json");
@@ -10294,6 +10589,7 @@ function snapshotRecall() {
         debugLog("snapshot: skipped " + r.prefix + " (" + r.reason +
                  (r.was ? ", was " + r.was : "") + (r.now ? ", now " + r.now : "") + ")");
     }
+
     debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
 
     /*
@@ -10374,6 +10670,36 @@ function shadowDisplayHidden() {
  * module name. It is the smallest thing that can be seen from playing
  * position, and it is gone the moment the recall lands.
  */
+/*
+ * A P-LOCK LANDED: the mod-dot plus, top right, for PLOCK_MARK_MS.
+ *
+ * WHY A MARK AT ALL. The gesture is silent by nature -- a p-lock changes
+ * nothing you can hear until the loop comes round to that step -- so there was
+ * no answer to "did that work?" on any screen. Eight p-locks landed correctly
+ * on hardware and were reported as the feature being broken, which is a worse
+ * outcome than a refusal: a refusal at least names itself in
+ * `lanes:plock_reason`.
+ *
+ * WHY HERE, beside the snapshot mark, rather than in the knob grid. A module
+ * that draws its own screen from `ui_chain.js` (9W9 does) is exactly the case
+ * that could not p-lock at all until the decision moved below the UI, and
+ * anything drawn from the param-pages layer would be invisible to it for the
+ * same reason. This runs after the view switch, over whatever drew -- the
+ * module's own frame included.
+ *
+ * THE SAME PLUS THE KNOB GRID USES for a driven value (drawModDot): five
+ * fill_rects, and an even-sized mark cannot centre on a pixel. It is drawn on
+ * a cleared square because the surface underneath belongs to a module and
+ * cannot be assumed dark -- a white plus on a white cell is no mark at all.
+ *
+ * The seq is read straight from SHM (~free) rather than asking the chain
+ * `lanes:plocked` per frame (~2.8 ms, more than a whole page render).
+ */
+const PLOCK_MARK_MS = 600;
+const PLOCK_MARK_SIZE = 7;   /* the cleared square; the plus is 5 inside it */
+
+
+
 function drawSnapshotPendingMark() {
     if (!snapshotQueuedPending || shadowDisplayHidden()) return;
     const w = 9, h = 9, x = 128 - w, y = 0;
@@ -14246,7 +14572,11 @@ function scanModulesForType(componentType) {
                                             const packId = (json.id || entry) + '-' + pe;
                                             const packName = info.name || pe;
                                             if (!result.find(m => m.id === packId)) {
-                                                result.push({ id: packId, name: packName });
+                                                /* A pack files under its host
+                                                 * module's category. */
+                                                result.push({ id: packId, name: packName,
+                                                              parentId: json.id || entry,
+                                                              subcategory: json.subcategory || "" });
                                             }
                                         } catch (e2) { /* skip */ }
                                     }
@@ -14258,7 +14588,10 @@ function scanModulesForType(componentType) {
                             if (!result.find(m => m.id === id)) {
                                 result.push({
                                     id: id,
-                                    name: json.name || entry
+                                    name: json.name || entry,
+                                    /* Rarely declared — the catalog is the
+                                     * usual source (module_categories.mjs). */
+                                    subcategory: json.subcategory || ""
                                 });
                             }
                         }
@@ -14318,6 +14651,40 @@ function dismissNotice() {
 const PICKER_FILTER_ID = "__list_filter__";
 let componentSelectFilter = null;
 
+/* ===== SWAP-PICKER SORT =====
+ *
+ * "A-Z" or "Type". Type groups the modules under their catalog category
+ * (Drum Machine, Polysynth, ...) with a heading row per group; see
+ * module_categories.mjs for where the category comes from. Session state for
+ * the same reason as the filter, and it persists across pickers the same way.
+ */
+const PICKER_SORT_ID = "__sort__";
+let componentSelectSort = "A-Z";
+
+/* The synthetic top rows the cursor must not OPEN on. */
+function pickerIsControlRow(row) {
+    const id = row && row.id;
+    return id === PICKER_FILTER_ID || id === PICKER_SORT_ID;
+}
+
+/* Regroup the MODULE rows of a scan by category, leaving None at the top and
+ * [Get more...] at the bottom. Runs before the Move rows are spliced in, so
+ * those still land directly under the loaded module wherever it now sits. */
+function pickerApplySort(entries, componentKey) {
+    if (componentSelectSort !== "Type") return entries;
+    const head = [], mods = [], tail = [];
+    for (const m of entries) {
+        if (!m) continue;
+        if (m.id === "") head.push(m);
+        else if (String(m.id).indexOf("__") === 0) tail.push(m);
+        else mods.push(m);
+    }
+    const catalog = ModuleCategories.loadCatalogCategories((path) => std.loadFile(path));
+    const grouped = ModuleCategories.groupRowsByCategory(
+        mods, ModuleCategories.taxonomyTypeFor(componentKey), catalog);
+    return [...head, ...grouped, ...tail];
+}
+
 /*
  * The MODULE ids among a set of picker rows.
  *
@@ -14376,7 +14743,10 @@ function pickerApplyFilter(entries, filterName) {
 function pickerFirstSelectableIndex(entries) {
     for (let i = 0; i < entries.length; i++) {
         const id = entries[i] && entries[i].id;
-        if (id === PICKER_FILTER_ID) continue;
+        /* Written out rather than via pickerIsControlRow / isCategoryHeader:
+         * tests lift this function on its own and drive it. */
+        if (id === PICKER_FILTER_ID || id === "__sort__") continue;
+        if (entries[i] && entries[i].type === "divider") continue;  /* a category heading */
         if (id === "__move_left__" || id === "__move_right__") continue;
         return i;
     }
@@ -14396,6 +14766,27 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
     /* Scan for available modules of this type */
     availableModules = scanModulesForType(comp.key);
+
+    /*
+     * Resolve the filter BEFORE applying it. A stored filter that matches
+     * nothing here — its list was deleted, or this component type has no
+     * member of it — falls back to All and SAYS so. A sticky filter that
+     * opens a near-empty screen is a trap: the row explaining it is one line
+     * up, and the user has no reason to suspect a filter they last touched in
+     * a different picker.
+     *
+     * Filter, then sort, then the Move rows: filtering after the sort would
+     * leave headings over groups it emptied, and sorting after the Move rows
+     * would carry them away from the module they belong under.
+     */
+    const eligible = pickerEligibleLists(availableModules);
+    let filterReset = false;
+    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
+        componentSelectFilter = null;
+        filterReset = true;
+    }
+    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+    availableModules = pickerApplySort(availableModules, comp.key);
 
     /* Where the loaded module sits in the scan list, or -1 if nothing is
      * loaded (or the loaded module is no longer installed). The rows added
@@ -14426,21 +14817,10 @@ function enterComponentSelect(slotIndex, componentIndex) {
     const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
     availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
-    /*
-     * Resolve the filter BEFORE applying it. A stored filter that matches
-     * nothing here — its list was deleted, or this component type has no
-     * member of it — falls back to All and SAYS so. A sticky filter that
-     * opens a near-empty screen is a trap: the row explaining it is one line
-     * up, and the user has no reason to suspect a filter they last touched in
-     * a different picker.
-     */
-    const eligible = pickerEligibleLists(availableModules);
-    let filterReset = false;
-    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
-        componentSelectFilter = null;
-        filterReset = true;
-    }
-    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+    /* Row 1: the sort. Same shape as the filter row above it. */
+    availableModules.unshift({ id: PICKER_SORT_ID, name: "Sort",
+                               value: componentSelectSort,
+                               clickVerb: "SORT" });
 
     /* Row 0, added LAST so the rows below are the finished, filtered set. */
     availableModules.unshift({ id: PICKER_FILTER_ID, name: "List",
@@ -14506,6 +14886,20 @@ function applyComponentSelection() {
         announce("List, " + (componentSelectFilter || "All"));
         return;
     }
+
+    /* The sort row toggles in place, exactly like the filter row. */
+    if (selected && selected.id === PICKER_SORT_ID) {
+        componentSelectSort = componentSelectSort === "Type" ? "A-Z" : "Type";
+        enterComponentSelect(selectedSlot, selectedChainComponent);
+        selectedModuleIndex = Math.max(0,
+            availableModules.findIndex(m => m && m.id === PICKER_SORT_ID));
+        announce("Sort, " + (componentSelectSort === "Type" ? "by type" : "A to Z"));
+        return;
+    }
+
+    /* A category heading is never under the cursor (the jog steps over it),
+     * but a click that somehow lands there must not load or leave. */
+    if (ModuleCategories.isCategoryHeader(selected)) return;
 
     /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
      * because applying it fills the very hole this recognises. */
@@ -14655,6 +15049,35 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
      * the module write below fills it — hence `insert` falling through rather
      * than returning.
      */
+    /*
+     * THE LOADED-PRESET RECORD IS NOT OURS ONCE THE POSITION CHANGES HANDS.
+     *
+     * currentUserPresets is keyed by slot+prefix rather than by module, so the
+     * entry outlives a swap and the incoming module opens its My Presets page
+     * reading the name that belonged to the outgoing one. Reported from
+     * hardware. Nothing is written to the wrong folder — enterPresetSaveAs and
+     * overwriteUserPreset both resolve presetDir from the module actually
+     * loaded, and userPresetHeaderMark short-circuits on a null record before
+     * it reads the live blob — so this is a wrong name on the one row that
+     * says which preset you are on.
+     *
+     * HERE rather than in applyChainComponentPick, for the same reason
+     * clearLfoRoutingForComponent lives here: this is the side where the pick
+     * actually happened. The feedback gate can still decline one, and its
+     * decline path reloads the chain without restoring this record, so
+     * clearing before the gate threw away the record of the component that
+     * STAYED — the same wrong-name-on-the-row bug, inverted.
+     *
+     * pickerReplacedModule is the existing answer to "did this pick replace
+     * something", case-insensitive on purpose because ids arrive from both the
+     * picker and the DSP and the DSP answers lowercase. It answers false for a
+     * removal by design, so the removal is asked separately rather than by
+     * loosening it — and asking it here means this and the LFO clear cannot
+     * drift apart.
+     */
+    if (!moduleId || pickerReplacedModule(choice ? choice.replaced : null, moduleId))
+        setUserPresetRecord(slotIndex, getComponentParamPrefix(comp.key), null);
+
     const shape = choice && choice.shape;
     if (shape) writeChainShape(slotChainTarget(slotIndex), shape);
     if (shape && shape.kind === "remove") {
@@ -14765,6 +15188,11 @@ function runChainSettingAction(slot, key) {
         enterBusSendsGrid(slot);
         return;
     }
+
+    /* Opens nothing: it acts and announces, so it needs no hand-off to the
+     * list the way Save/Delete do (gridActionOpenedSomething stays false). */
+
+
 
     if (key === "save") {
         /* Start save flow */
@@ -16521,7 +16949,8 @@ function componentEntryReader(slotIndex, componentKey, mfxIndex) {
 function openComponentEditor(slotIndex, componentKey, mfxIndex) {
     const decision = decideComponentEntry(
         componentEntryReader(slotIndex, componentKey, mfxIndex),
-        (json) => { try { return JSON.parse(json); } catch (e) { return null; } });
+        (json) => { try { return JSON.parse(json); } catch (e) { return null; } },
+        holdAttemptsFor(slotIndex, componentKey, mfxIndex));
 
     if (decision.action === ENTRY_HOLD) {
         holdForComponentLoad(slotIndex, componentKey, mfxIndex, decision.reason);
@@ -16580,6 +17009,15 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
         return;
     }
     enterComponentEditFallback(slotIndex, componentKey);
+}
+
+/* How many probes the CURRENT hold has already made for this position -- 0 on
+ * a fresh entry or for any other position. What lets the gate tell "not yet"
+ * from "never" (HOLD_UNSERVED_READ_LIMIT). */
+function holdAttemptsFor(slotIndex, componentKey, mfxIndex) {
+    const h = componentLoadHold;
+    return (h && h.slot === slotIndex && h.componentKey === componentKey && h.mfxIndex === mfxIndex)
+        ? h.attempts : 0;
 }
 
 function componentLoadHoldLabel() {
@@ -20090,6 +20528,116 @@ function moduleClaimedCcs(moduleId) {
  * returns without writing or logging, which is also what lets this restate
  * rather than memoise — the shim drops the flag unilaterally on the
  * display-mode edge and at init, and a JS mirror of that would latch. */
+/* WHICH STEP BUTTON IS HELD, or -1.
+ *
+ * Fed by the shim's step_observe forward (notes 16-31) and used by the p-lock
+ * gesture. The LAST press wins: two fingers down is not a gesture anyone can
+ * mean, and taking the earlier one would make the second press feel dead.
+ *
+ * Held state is tracked as a SET rather than a single index so that releasing
+ * one of two held steps leaves the other held -- the same reason the shim
+ * latches a claimed button per note rather than keeping one "a button is
+ * down" flag.
+ */
+const stepHeld = [];       /* index 0..15 -> truthy while held */
+let stepHeldLast = -1;
+
+function noteStepIndex(note) {
+    return (note >= 16 && note <= 31) ? (note - 16) : -1;
+}
+
+function onStepNote(note, velocity) {
+    const idx = noteStepIndex(note);
+    if (idx < 0) return false;
+    if (velocity > 0) {
+        stepHeld[idx] = 1;
+        stepHeldLast = idx;
+    } else {
+        stepHeld[idx] = 0;
+        if (stepHeldLast === idx) {
+            stepHeldLast = -1;
+            for (let i = 0; i < 16; i++) if (stepHeld[i]) stepHeldLast = i;
+        }
+    }
+    return true;
+}
+
+/* A READ, not a second search. `onStepNote` already decides which step is the
+ * held one -- including falling back to another that is still down -- and a
+ * scan here duplicated that decision: mutating the fallback out of onStepNote
+ * left the test green, because this loop quietly did the same job. One fact,
+ * one place; the mutation fails now. */
+function heldStepIndex() {
+    return (stepHeldLast >= 0 && stepHeld[stepHeldLast]) ? stepHeldLast : -1;
+}
+
+/* Ask the shim to forward step notes while a chain component's knob grid is on
+ * screen -- the only place the p-lock gesture can be made.
+ *
+ * RESTATED EVERY FRAME, never memoised: the shim drops step_observe itself
+ * when the shadow display closes, so a mirror would latch and the gesture
+ * would die silently after the first dismiss. That is the mistake pad_observe
+ * already paid for, and the binding is idempotent against the SHM for exactly
+ * this reason. Held state is dropped with the flag, or a step released while
+ * the UI was not watching stays "held" forever. */
+let uiViewLogTick = 0;
+/*
+ * WHO IS WATCHING THE STEP BUTTONS -- the host's knob grid, OR a module
+ * drawing its own.
+ *
+ * This asked `view === VIEWS.PARAM_PAGES` alone, and that is the fourth time
+ * one facility has been gated on the host's own view and been invisible to a
+ * module that binds the controller from its own `ui_chain.js`. The enum peek,
+ * the p-lock write, the modulation marks -- and this, which is worse than the
+ * others because it fails SILENTLY IN BOTH DIRECTIONS: on 9W9 no step was
+ * forwarded to the UI (so no p-lock gesture) and no step was withheld from
+ * Move (so every press toggled a note). Measured on hardware through the test
+ * bus: holding a step for 1.5 s added a note to the clip and tapping it
+ * removed one, which is Move receiving every press exactly as if the grid were
+ * not there.
+ *
+ * A component editor drawing a module's own UI is armed too. The p-lock is a
+ * CHAIN gesture -- any component parameter can be locked -- so which UI is
+ * drawing the knobs does not change whether a held step means "lock this".
+ * The cost for a module that never uses steps is that a tap toggles its note
+ * STEP_TAP_MS late instead of instantly, because the press is deferred rather
+ * than swallowed.
+ */
+function reconcileStepObserve() {
+    if (typeof host_step_observe !== "function") return;
+    const hostGrid = (view === VIEWS.PARAM_PAGES) &&
+                     paramPagesComponent() !== null &&
+                     paramPagesComponent() !== undefined &&
+                     paramPagesSlot() >= 0;
+    /* The same test reconcilePadBlock uses for "a module owns this screen",
+     * so the two cannot disagree about whose UI is up. */
+    const moduleGrid = view === VIEWS.COMPONENT_EDIT &&
+                       loadedModuleUi && loadedModuleUi.tick &&
+                       !coRunUiActive();
+    /* AND THE SCREEN HAS TO BE OURS.
+     *
+     * `view` survives a dismiss -- Menu hides the display and leaves the grid
+     * as the view we would come back to -- so the two tests above stayed true
+     * with Move on screen, the flag stayed 1, and the shim went on WITHHOLDING
+     * every bare step press. Reported from the device as "I can no longer
+     * toggle steps at all, in the sequencer, to place notes": the tap replay
+     * covers a press under STEP_TAP_MS, so short taps still worked and
+     * anything deliberate did not, which is why it reads as the sequencer
+     * being broken rather than as a Schwung flag left on.
+     *
+     * Same test the feedback modal uses for "is our UI actually up", for the
+     * same reason: a view is what we would draw, not what the user is
+     * looking at. */
+    const onScreen = typeof shadow_get_display_mode !== "function" ||
+                     shadow_get_display_mode() === 1;
+    const want = (hostGrid || !!moduleGrid) && onScreen;
+    host_step_observe(want ? 1 : 0);
+    if (!want) {
+        for (let i = 0; i < 16; i++) stepHeld[i] = 0;
+        stepHeldLast = -1;
+    }
+}
+
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
@@ -20464,7 +21012,14 @@ function resolveCardScriptPath(slot, component, scriptRef) {
  * header and footer. A module cannot take the shadow UI down by shipping a bad
  * page.
  */
-const canvasPageDrawers = {};      /* "moduleDir|script|overlay" -> fn | null */
+const canvasPageDrawers = {};   /* "moduleDir|script|overlay" -> fn | null */
+/* The overlay OBJECT and the page's own state, keyed exactly as the drawer is
+ * so all three are filled and invalidated by one load. */
+const canvasPageOverlays = {};
+const canvasPageStates = {};
+/* "the module asked to leave the door" — a sentinel rather than a boolean so it
+ * cannot be confused with a hook that merely returned true. */
+const CANVAS_PAGE_CLOSE = { close: true };
 const canvasPageDisabled = {};
 
 function canvasPageDrawer(slot, component, canvas) {
@@ -20486,7 +21041,88 @@ function canvasPageDrawer(slot, component, canvas) {
         debugLog(`canvas page: ${path} exposes no drawPage${loaded && loaded.error ? ` (${loaded.error})` : ""}`);
     }
     canvasPageDrawers[cacheKey] = fn;
+    /* ⭑ The OBJECT, not just its drawPage. An enterable canvas page also
+     * receives onMidi and handleBack, and resolving it a second time would
+     * evaluate the module's script twice and hand the two halves different
+     * closures — so the page's state would depend on which hook you asked. */
+    canvasPageOverlays[cacheKey] = ov || null;
     return fn;
+}
+
+/*
+ * One hook on a canvas PAGE's overlay, with its return value.
+ *
+ * The fullscreen dive has canvasOverlayHookResult; this is its counterpart for
+ * a page, and the two are deliberately the same contract from the module's side
+ * — same hook names, same meanings, same one-strike rule — because a module
+ * should not have to know which route the user took to reach its screen.
+ *
+ * The ctx is the page's own: no drawing (a hook is not a draw), the param
+ * accessors scoped to this slot and component, and a `state` object that lives
+ * as long as the loaded overlay does.
+ */
+function canvasPageHook(slot, component, canvas, hook, payload) {
+    if (!canvas || !hook) return undefined;
+    canvasPageDrawer(slot, component, canvas);      /* ensure loaded + cached */
+    const path = resolveCardScriptPath(slot, component, canvas.script);
+    if (!path) return undefined;
+    const cacheKey = `${path}|${canvas.overlay || ""}`;
+    if (canvasPageDisabled[cacheKey]) return undefined;
+    const ov = canvasPageOverlays[cacheKey];
+    if (!ov || typeof ov[hook] !== "function") return undefined;
+
+    const state = canvasPageState(slot, cacheKey);
+    const closed = { wanted: false };
+    const prefix = getComponentParamPrefix(component);
+    const full = (k) => (String(k).includes(":") ? String(k)
+                        : (prefix ? `${prefix}:${k}` : String(k)));
+    /* The same non-drawing surface a dive's event hooks get, so one script
+     * really does serve both routes: a dive script calling shiftHeld() or
+     * getValue() from onMidi must not throw -- and be disabled -- on a page. */
+    const ctx = {
+        width: SCREEN_WIDTH, height: SCREEN_HEIGHT,
+        state,
+        getParam: (k) => getSlotParam(slot, full(k)),
+        setParam: (k, v) => setSlotParam(slot, full(k), String(v)),
+        getValue: () => (canvas.key ? getSlotParam(slot, full(canvas.key)) || "" : ""),
+        setValue: (v) => (canvas.key ? setSlotParam(slot, full(canvas.key), String(v)) : false),
+        measureText: (text) => {
+            const t = String(text == null ? "" : text);
+            return typeof text_width === "function" ? text_width(t) : t.length * 6;
+        },
+        shiftHeld: () => isShiftHeld(),
+        now: () => Date.now(),
+        random: () => Math.random(),
+        /* "I am done" — the page's counterpart to the dive's ctx.close(). The
+         * controller owns the door, so this only records the wish; the caller
+         * reads it back and leaves the door on the module's behalf. */
+        close: () => { closed.wanted = true; return true; },
+    };
+    try {
+        const r = ov[hook](ctx, payload || {});
+        /* CANVAS_PAGE_CLOSE outranks whatever the hook returned: a module that
+         * asked to leave has finished, and the controller must not also act on
+         * a stale answer from the same call. */
+        return closed.wanted ? CANVAS_PAGE_CLOSE : r;
+    } catch (e) {
+        canvasPageDisabled[cacheKey] = true;
+        debugLog(`canvas page ${cacheKey} disabled after throw in ${hook}: ${e}`);
+        return undefined;
+    }
+}
+
+/*
+ * A canvas page's `state`, shared by its hooks AND its drawPage.
+ *
+ * ⚠ PER SLOT. The drawer and overlay caches are keyed by script, which is right
+ * for code and wrong for state: two slots running the same module would share
+ * one cursor. And it must reach drawPage -- a cursor that onMidi moves in
+ * ctx.state and the draw cannot see is navigation nobody can watch.
+ */
+function canvasPageState(slot, cacheKey) {
+    const k = `${slot}|${cacheKey}`;
+    if (!canvasPageStates[k]) canvasPageStates[k] = {};
+    return canvasPageStates[k];
 }
 
 function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
@@ -20510,6 +21146,8 @@ function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
             preset: (payload && payload.preset) || null,
             nowMs: payload && typeof payload.nowMs === "number" ? payload.nowMs : Date.now(),
             width: band.w, height: band.h,
+            /* The object the page's hooks see as ctx.state. */
+            state: canvasPageState(slot, cacheKey),
         });
     } catch (e) {
         canvasPageDisabled[cacheKey] = true;
@@ -20588,8 +21226,11 @@ function createCanvasRuntimeContext() {
         if (key.includes(":")) return key;
         return prefix ? `${prefix}:${key}` : key;
     };
+    /* The runtime this ctx belongs to, captured so a close() from a stale ctx
+     * cannot mark a canvas opened after it. */
+    const rt = canvasRuntime;
 
-    return {
+    const canvasCtx = {
         width: SCREEN_WIDTH,
         height: SCREEN_HEIGHT,
         state: canvasRuntime ? canvasRuntime.state : {},
@@ -20597,14 +21238,74 @@ function createCanvasRuntimeContext() {
         setPixel(x, y, value) { set_pixel(Math.round(x), Math.round(y), value ? 1 : 0); },
         drawRect(x, y, w, h, value) { draw_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0); },
         fillRect(x, y, w, h, value) { fill_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0); },
+        /* `draw_line`, not `display.drawLine`. There is no `display` object in
+         * the SHADOW context: shadow_ui.c calls js_display_register_bindings,
+         * which registers the bare snake_case globals only — the `display`
+         * wrapper is built in schwung_host.c, a different JSContext. So the
+         * old guard `if (display && ...)` did not read as falsy, it THREW a
+         * ReferenceError on an undeclared identifier, which disabled the
+         * overlay for the session and left a canvas page drawing its chrome
+         * around an empty body. Every sibling here calls the bare global. */
         drawLine(x1, y1, x2, y2, value) {
-            if (display && typeof display.drawLine === "function") {
-                display.drawLine(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
-            }
+            draw_line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
         },
         print(x, y, text, color = 1) { print(Math.round(x), Math.round(y), String(text), color ? 1 : 0); },
+        /*
+         * ⭐ HOW WIDE IS THAT TEXT? Needed by any module laying out its own
+         * chrome -- a right-aligned label, a hint pill, a column.
+         *
+         * Its absence here was a silent asymmetry: davebox's canvas ctx has
+         * offered `measureText` since it was written, as the hosted-canvas ctx
+         * does, so a module that measured worked there and had to guess a fixed
+         * advance on stock. Guessing is how a pill ends up a pixel wide of its
+         * text on one host and not the other.
+         *
+         * ⚠ On the draw path deliberately: a local glyph-table sum, not an SPI
+         * round trip, and layout is exactly where it is wanted.
+         */
+        measureText(text) {
+            const t = String(text == null ? "" : text);
+            return typeof text_width === "function" ? text_width(t) : t.length * 6;
+        },
         now() { return Date.now(); },
         random() { return Math.random(); },
+        /*
+         * ⭐ IS SHIFT DOWN? State, not chrome.
+         *
+         * A module owns its screen and draws its own hints, so it is the one
+         * that needs to know when a modifier is held -- to say the Shift+jog
+         * escape hatch is live, or to offer a fine-adjust. It cannot learn this
+         * from MIDI: the host reads Shift from the shim's shared memory
+         * (shadow_get_shift_held), and the CC does not reliably reach a canvas.
+         * A module that watched CC 49 worked under dAVEBOx, which forwards the
+         * byte, and silently did nothing here.
+         *
+         * ⚠ NOT stripped on the draw path, unlike the param accessors: this is
+         * a shared-memory read, not an SPI round trip, and drawing is exactly
+         * where it is wanted.
+         */
+        shiftHeld() { return isShiftHeld(); },
+        /*
+         * ⭐ THE MODULE SAYS IT IS DONE.
+         *
+         * An enterable canvas owns the click, which means it also owns the
+         * moment its job is finished -- picking the sample IS leaving the
+         * browser, and making the user press Back afterwards is one gesture too
+         * many on the commonest path through the screen. `handleBack` cannot
+         * express it: that answers a press, and this is not one.
+         *
+         * ⚠ STRIPPED FROM THE DRAW PATH along with the param accessors: a
+         * screen that closed itself mid-render would be tearing down the very
+         * thing being drawn. It is an action, and actions arrive at onMidi.
+         *
+         * ⚠ IT RECORDS THE WISH; THE CALLER LEAVES (consumeCanvasCloseRequest).
+         * Closing from inside the hook took the wrong exit twice: in co-run it
+         * ran unwrapped, so setView() moved the OUTER view off the running tool;
+         * and from handleBack it closed once here and again in the Back branch,
+         * whose second close overwrote the grid return with the list editor.
+         * The page route already worked this way (CANVAS_PAGE_CLOSE).
+         */
+        close() { if (rt) rt.closeRequested = true; return true; },
         getValue() {
             if (!fullCanvasKey) return "";
             return getSlotParam(hierEditorSlot, fullCanvasKey) || "";
@@ -20627,6 +21328,7 @@ function createCanvasRuntimeContext() {
             return canvasRuntime ? (canvasRuntime.scriptPath || "") : "";
         }
     };
+    return canvasCtx;
 }
 
 /* The ctx a given hook is allowed to see. Built once and cached on the
@@ -20635,36 +21337,73 @@ function canvasHookCtx(hookName) {
     const base = canvasRuntime.ctx;
     if (!DRAW_PATH_HOOKS.has(hookName)) return base;
     if (!canvasRuntime.drawCtx) {
-        const { getParam, setParam, getValue, setValue, ...rest } = base;
+        const { getParam, setParam, getValue, setValue, close, ...rest } = base;
         canvasRuntime.drawCtx = rest;
     }
     return canvasRuntime.drawCtx;
 }
 
-function invokeCanvasOverlayHook(hookName, payload) {
-    if (!canvasRuntime || !canvasRuntime.overlay) return false;
-    /* ONE STRIKE.
-     *
-     * This used to record canvasRuntime.error, log, and carry on -- so a
-     * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
-     * visible in the log and the flood was not.
-     *
-     * And it then returned TRUE, so a hook that threw reported success to its
-     * caller. Same defect class as move_midi_internal_send returning true on a
-     * discarded write: the failure is erased at the boundary, and nothing
-     * upstream can react to something it is never told about. */
-    if (canvasRuntime.hookDisabled) return false;
+/* "The hook did not run" -- told apart from a hook that ran and returned
+ * undefined, which Back has to distinguish and `draw` does not. */
+const CANVAS_HOOK_ABSENT = {};
+
+/*
+ * Call one overlay hook and hand back WHAT IT RETURNED.
+ *
+ * ONE STRIKE.
+ *
+ * This used to record canvasRuntime.error, log, and carry on -- so a
+ * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
+ * visible in the log and the flood was not.
+ *
+ * And it then returned TRUE, so a hook that threw reported success to its
+ * caller. Same defect class as move_midi_internal_send returning true on a
+ * discarded write: the failure is erased at the boundary, and nothing
+ * upstream can react to something it is never told about.
+ *
+ * ⚠ A throw answers CANVAS_HOOK_ABSENT, never a value. Back reads this, and a
+ * hook that died must not be able to consume the press -- being stuck on a
+ * screen whose script just threw is the one outcome this must not produce.
+ */
+function canvasOverlayHookResult(hookName, payload) {
+    if (!canvasRuntime || !canvasRuntime.overlay) return CANVAS_HOOK_ABSENT;
+    if (canvasRuntime.hookDisabled) return CANVAS_HOOK_ABSENT;
     const fn = canvasRuntime.overlay[hookName];
-    if (typeof fn !== "function") return false;
+    if (typeof fn !== "function") return CANVAS_HOOK_ABSENT;
     try {
-        fn(canvasHookCtx(hookName), payload || {});
+        return fn(canvasHookCtx(hookName), payload || {});
     } catch (e) {
         canvasRuntime.error = `${hookName} error: ${e}`;
         canvasRuntime.hookDisabled = true;
         debugLog(`canvas overlay disabled after throw in ${hookName}: ${e}`);
-        return false;
+        return CANVAS_HOOK_ABSENT;
     }
-    return true;
+}
+
+/* Did the hook run at all? The older question, and still the right one for
+ * `draw`, whose return value means nothing. */
+function invokeCanvasOverlayHook(hookName, payload) {
+    return canvasOverlayHookResult(hookName, payload) !== CANVAS_HOOK_ABSENT;
+}
+/*
+ * ⭐ IS THIS CANVAS A PAGE YOU ENTER, or a picture you look at?
+ *
+ * A canvas gets the jog WHEEL and the knobs, and the host keeps the jog CLICK
+ * and Back as the close gesture. For a visualiser -- a scope, a meter, a
+ * waveform -- that is right: there is nothing to enter, and two ways out is
+ * generous. For anything NESTED it is fatal, because the one gesture that means
+ * "enter" is the one spent on "leave", so a file browser or a settings menu
+ * cannot be built as a canvas at all.
+ *
+ * `enterable: true` says the module has navigation inside it. The click becomes
+ * the module's, and Back goes to the module first (see the Back branch below).
+ * Everything else about the canvas is unchanged, and a canvas that does not
+ * declare it behaves exactly as before.
+ *
+ * See docs/CANVAS_PAGES.md for the full model.
+ */
+function canvasIsEnterable() {
+    return !!getMetaOption(canvasParamMeta, "enterable", false);
 }
 
 function dispatchCanvasMidi(data, source) {
@@ -20689,6 +21428,7 @@ function dispatchCanvasMidi(data, source) {
     }
 
     invokeCanvasOverlayHook("onMidi", { source, data: midi });
+    consumeCanvasCloseRequest();
     return true;
 }
 
@@ -20703,6 +21443,12 @@ function openCanvasPreview(paramKey, meta) {
         overlay: null,
         state: {},
         ctx: null,
+        liveKeys: meta && Array.isArray(meta.extra_keys) ? meta.extra_keys.slice(0, 4) : [],
+        liveIntervalMs: meta && Number(meta.fullscreen_live_ms) > 0
+            ? Math.max(50, Number(meta.fullscreen_live_ms)) : 0,
+        lastLiveReadMs: 0,
+        liveCursor: 0,
+        liveValues: {},
         error: ""
     };
 
@@ -20733,9 +21479,13 @@ function openCanvasPreview(paramKey, meta) {
     const label = meta && (meta.label || meta.name) ? (meta.label || meta.name) : "Canvas";
     announce(`${label} canvas`);
     needsRedraw = true;
+    consumeCanvasCloseRequest();
 }
 
 function closeCanvasPreview(cancelled) {
+    /* Give the pads back. The tick that would have restated this is the very
+     * thing that stops here, so leaving it raised strands the flag. */
+    if (typeof host_pad_observe === "function") host_pad_observe(0);
     invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
     invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
     resetCanvasState();
@@ -20743,9 +21493,84 @@ function closeCanvasPreview(cancelled) {
     needsRedraw = true;
 }
 
+/*
+ * Act on a ctx.close() the module made during the hook that just returned.
+ * Returns true when it closed the canvas.
+ *
+ * ONE place leaves on the module's behalf, and it leaves the way the user's own
+ * gestures do: wrapped when the canvas is a co-run overlay (the outer view is
+ * the running tool, and an unwrapped setView() moves THAT), announced, once.
+ *
+ * ⚠ Only wrap when not already inside a wrapper. runCoRunChainEdit swaps
+ * `view` to CANVAS for its callback, and nesting a second one restores
+ * coRunView to CANVAS on the way out -- a closed canvas still "open".
+ */
+function consumeCanvasCloseRequest() {
+    if (!canvasRuntime || !canvasRuntime.closeRequested) return false;
+    canvasRuntime.closeRequested = false;
+    const wrap = view !== VIEWS.CANVAS && coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if (wrap) runCoRunChainEdit(function() { closeCanvasPreview(false); });
+    else closeCanvasPreview(false);
+    announce("Hierarchy Editor");
+    needsRedraw = true;
+    return true;
+}
+
+/* Fullscreen live values: ONE read per tick, never the whole set at once.
+ * A read is ~2.8 ms; four in one tick is an ~11 ms stall that lands on the
+ * frame every interval, which is a visible hitch on exactly the animated views
+ * this exists for. The cycle starts when the interval is due, takes one key per
+ * tick, and delivers onValues once every key has answered. Nothing is read for
+ * an overlay that cannot receive the answer -- none loaded, disabled after a
+ * throw, or no onValues hook. */
+function tickCanvasLiveValues() {
+    const rt = canvasRuntime;
+    if (!rt || !rt.liveIntervalMs || !rt.liveKeys.length || !rt.ctx) return;
+    if (!rt.overlay || rt.hookDisabled || typeof rt.overlay.onValues !== "function") return;
+    const now = Date.now();
+    if (rt.liveCursor === 0) {
+        if (now - rt.lastLiveReadMs < rt.liveIntervalMs) return;
+        rt.lastLiveReadMs = now;
+        rt.liveValues = {};
+    }
+    const key = rt.liveKeys[rt.liveCursor];
+    rt.liveValues[key] = rt.ctx.getParam(key);
+    rt.liveCursor++;
+    if (rt.liveCursor < rt.liveKeys.length) return;
+    rt.liveCursor = 0;
+    invokeCanvasOverlayHook("onValues", { values: rt.liveValues, nowMs: now });
+}
+
 function tickCanvasPreview() {
     if (view !== VIEWS.CANVAS) return;
+    /*
+     * ⭐ A CANVAS THAT ASKS FOR PADS HEARS THEM, passively.
+     *
+     * The knob grid already reconciles `pad_observe` from the module's
+     * contract, and opening a canvas LEAVES the grid — so a module-drawn
+     * browser could not tell which pad you pressed, on the one screen where
+     * filling a pad is the entire job. Measured on the device: knob-touch notes
+     * reach a canvas and pad notes do not, because nothing raises the flag here.
+     *
+     * OBSERVE, NEVER BLOCK. The shim adds a publish and does not `continue`, so
+     * the pad still plays the kit — which is exactly what you want while
+     * auditioning, since the point of hitting it is to hear what you just
+     * loaded, at the velocity you hit it with.
+     *
+     * ⚠ RESTATED EVERY TICK rather than raised on open: the shim drops the flag
+     * on its own authority when the shadow display closes, so a JS mirror of it
+     * goes stale and the feature dies silently for the rest of the session.
+     * host_pad_observe compares against the SHM and logs only on a transition,
+     * so reconciling it every tick costs nothing.
+     */
+    if (typeof host_pad_observe === "function") {
+        const ov = canvasRuntime && canvasRuntime.overlay;
+        host_pad_observe(ov && ov.wantsPads ? 1 : 0);
+    }
+    tickCanvasLiveValues();
     invokeCanvasOverlayHook("tick", {});
+    /* onValues is an event and may close(); tick's ctx has no close. */
+    consumeCanvasCloseRequest();
 }
 
 function drawCanvasPreview() {
@@ -20759,7 +21584,10 @@ function drawCanvasPreview() {
         const message = canvasRuntime && canvasRuntime.error ? canvasRuntime.error : "No module canvas overlay";
         print(Math.max(0, Math.floor((SCREEN_WIDTH - title.length * 5) / 2)), 10, truncateText(title, 24), 1);
         print(3, 29, truncateText(message, 24), 1);
-        print(3, 50, "Click/Back: return", 1);
+        /* ⚠ An enterable canvas keeps the click, so only Back returns -- and a
+         * broken overlay is exactly when the footer must not lie about the way
+         * out. */
+        print(3, 50, canvasIsEnterable() ? "Back: return" : "Click/Back: return", 1);
     }
 
     const showCanvasValue = !canvasParamMeta || canvasParamMeta.show_value !== false;
@@ -20778,6 +21606,7 @@ function drawCanvasPreview() {
         ]);
     }
 }
+
 
 /* Draw filepath browser for filepath chain params */
 function drawFilepathBrowser() {
@@ -21558,8 +22387,15 @@ function handleJog(delta, shift = isShiftHeld()) {
             }
             break;
         case VIEWS.COMPONENT_SELECT:
-            /* Navigate available modules list */
-            selectedModuleIndex = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+            /* Navigate available modules list. Category headings are
+             * stepped over; a step that could only land on one stays put. */
+            {
+                const dir = delta > 0 ? 1 : -1;
+                let next = Math.max(0, Math.min(availableModules.length - 1, selectedModuleIndex + delta));
+                while (next > 0 && next < availableModules.length - 1 &&
+                       ModuleCategories.isCategoryHeader(availableModules[next])) next += dir;
+                if (!ModuleCategories.isCategoryHeader(availableModules[next])) selectedModuleIndex = next;
+            }
             if (availableModules.length > 0) {
                 const mod = availableModules[selectedModuleIndex];
                 announceMenuItem("Module", mod.name || mod.id || "Unknown");
@@ -22186,7 +23022,8 @@ function handleSelect() {
                 /* The filter row loads nothing — it cycles in place, and
                  * applyComponentSelection announces the list it landed on.
                  * "Loading List" would name an action that is not happening. */
-                if (!selMod || selMod.id !== PICKER_FILTER_ID) {
+                if (!selMod || (!pickerIsControlRow(selMod) &&
+                                !ModuleCategories.isCategoryHeader(selMod))) {
                     announce(`Loading ${selMod.name || selMod.id || "module"}`);
                 }
             }
@@ -22557,6 +23394,12 @@ function handleSelect() {
             }
             break;
         case VIEWS.CANVAS:
+            /* ⚠ An enterable canvas owns the click, so "select" must not close
+             * it from here either. The MIDI path never reaches this case for
+             * one (the steal above declines and dispatchCanvasMidi consumes),
+             * but this is also the screen reader's and the remote UI's select,
+             * and those would otherwise close a browser mid-navigation. */
+            if (canvasIsEnterable()) break;
             closeCanvasPreview(false);
             announce("Hierarchy Editor");
             break;
@@ -24451,6 +25294,8 @@ function drawHelpDetail() {
     };
     _ctx.drawCanvasPageBody = (slot, component, drawCtx, band, canvas, payload) =>
         drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload);
+    _ctx.canvasPageHook = (slot, component, canvas, hook, payload) =>
+        canvasPageHook(slot, component, canvas, hook, payload);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
     /* Overtake session state (for tools menu "Resume" indicator) */
@@ -24510,6 +25355,10 @@ function drawHelpDetail() {
     _ctx.enterBusList = (...args) => enterBusList(...args);
     _ctx.chainSynthSplits = (slot) => chainSynthSplits(slot);
     _ctx.slotBusCountLabel = (slot) => slotBusCountLabel(slot);
+    /* ...and the same slot list's `Clear Lanes` row. One implementation, three
+     * surfaces — see clearSlotLanes. */
+    /* The knob grid's write path asks this whether a refused recording needs
+     * announcing (shadow_ui_param_pages.mjs). */
 })();
 
 /* Delegate draw/enter functions to extracted modules */
@@ -25404,6 +26253,10 @@ globalThis.init = function() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
+        /* The shim's boot restore ran load_file for this slot; lanes are not in
+         * that document, so they are read back here — after the chain exists,
+         * because a lane's target has to be there for lane_tick to find its
+         * parameter metadata. */
         /* Sync slot names + per-component bypass from autosave if present.
          * The shim's load_file restores synth/FX/MIDI-FX modules + params via
          * the chain_host parser, but bypass flags are not in the C parser path;
@@ -25669,6 +26522,23 @@ globalThis.tick = function() {
     e16ReconcilePace();
     e16BlastTick();
     e16NoiseTick();
+    reconcileStepObserve();
+    /* WHERE THE UI IS, once a second, when the debug log is armed.
+     *
+     * Every other instrument in this session could see Move (its screen, its
+     * file, its LEDs) and none could see the shadow UI's own view, which is
+     * why navigating it from a harness meant guessing. debugLog is a no-op
+     * unless /data/UserData/schwung/debug_log_on exists, and the throttle is
+     * the same 1 Hz the clip-state readout uses. */
+    uiViewLogTick = (uiViewLogTick + 1) % 60;
+    if (uiViewLogTick === 0) {
+        try {
+            debugLog("ui_view: " + view +
+                     " slot=" + paramPagesSlot() +
+                     " component=" + String(paramPagesComponent()) +
+                     " step_observe_want=" + (view === VIEWS.PARAM_PAGES));
+        } catch (e) { /* an observability line must never break the tick */ }
+    }
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -26055,7 +26925,11 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
         }
-        if (flags & SHADOW_UI_FLAG_SET_CHANGED) {
+        /* A LABELLED BLOCK, so an unidentified set change can abandon THIS
+         * work without returning from tick(): ~900 lines follow, including
+         * reconcilePadBlock(), which must run every frame or the pads stay
+         * dead in the Schwung UI while Move's own tracks still respond. */
+        if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
 
             /* 1. Save current state to outgoing directory */
@@ -26071,6 +26945,51 @@ globalThis.tick = function() {
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
+
+            /* A SET CHANGE WE CANNOT NAME IS NOT CONSUMED.
+             *
+             * `getSlotParam` goes over /schwung-param, which has ONE request
+             * slot and can simply be STARVED — it answers empty, which is not
+             * the same fact as "there is no set". Everything below treated it
+             * as the second: active_set.txt was left naming the OUTGOING set
+             * (it is only written `if (uuid)`), `newDir` fell back to the
+             * DEFAULT directory, and the flag was cleared at the end
+             * regardless — so the switch was never retried.
+             *
+             * Observed on the device: active_set.txt naming a set the user had
+             * DELETED while Move played another, `set_state/` holding a
+             * directory for the deleted one and none for the live one, and the
+             * user's p-locks written into the dead set's lane file at a row
+             * only that set had. They never played. On the next restart there
+             * was no directory to restore from, so no slot came up active at
+             * all and the instruments were gone.
+             *
+             * So: leave the flag SET and try again on the next tick. The old
+             * directory stays current meanwhile, which is the safe place to be
+             * — it is where this set's state actually is.
+             *
+             * BOUNDED, because a flag that can never be consumed is its own
+             * kind of hang: after SET_CHANGE_ID_TRIES the switch proceeds on
+             * the default directory exactly as it used to, having said so
+             * loudly first. Retrying forever would also keep re-saving the
+             * outgoing set on every tick. */
+            if (!uuid) {
+                setChangeIdTries++;
+                if (setChangeIdTries <= SET_CHANGE_ID_TRIES) {
+                    debugLog("SET_CHANGED: the shim did not name the set (" +
+                             JSON.stringify(activeSetRaw) + ") — attempt " +
+                             setChangeIdTries + "/" + SET_CHANGE_ID_TRIES +
+                             ", keeping " + activeSlotStateDir +
+                             " and retrying; the flag is NOT consumed");
+                    break setChange;
+                }
+                debugLog("SET_CHANGED: the shim never named the set after " +
+                         SET_CHANGE_ID_TRIES + " attempts — proceeding on the " +
+                         "default state directory. State for the incoming set " +
+                         "will NOT be restored, and active_set.txt still names " +
+                         "the outgoing set.");
+            }
+            setChangeIdTries = 0;
             /* Write active_set.txt for boot persistence (UI thread, not audio thread) */
             if (uuid) {
                 host_write_file("/data/UserData/schwung/active_set.txt", uuid + "\n" + setName);
@@ -26177,6 +27096,9 @@ globalThis.tick = function() {
              * selection on the synth, which is what a slot is about. */
             for (let i = 0; i < lastChainComponent.length; i++) lastChainComponent[i] = null;
             loadChainConfigFromDir(newDir);
+            /* Slot mute/solo FOLLOWS Move's tracks, so the set's own saved
+             * values just loaded are overridden by what Move has just read. */
+            syncSlotMixFromSong(uuid, setName);
 
             /* 6. Two-pass reload: clear ALL old slots first (freeing memory),
              *    then load new slots. This reduces peak memory when switching
@@ -26229,6 +27151,13 @@ globalThis.tick = function() {
                     syncUserPresetRecordsFromChain(i, null);
                 }
             }
+            /* Pass 3: the incoming set's automation lanes. After pass 2, so
+             * every lane's target exists; its own loop, because pass 2 has
+             * three branches and a lane survives its module being swapped out
+             * — a slot with no state file can still own lanes. */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            }
+
             /* Refresh UI state immediately so display reflects new slot contents */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 lastSlotModuleSignatures[i] = "";  /* force refresh */
@@ -27247,6 +28176,9 @@ globalThis.tick = function() {
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
         drawCcLearnFooter();
+        /* ...and the p-lock mark, which outlives neither: it is its own
+         * 600 ms and belongs on top of both, since it reports something that
+         * happened just now. */
     }
 
     } catch (e) {
@@ -27374,8 +28306,41 @@ globalThis.onMidiMessageInternal = function(data) {
      * (wrapped so coRunView returns to the hierarchy editor), mirroring the
      * non-co-run steal below. */
     var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    var canvasEnterable = (view === VIEWS.CANVAS || canvasInCorun) && canvasIsEnterable();
     if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
-        if (d1 === MoveMainButton && d2 > 0) {
+        /*
+         * ⭐⭐ SHIFT+JOG IS THE ESCAPE HATCH, and it is never the module's.
+         *
+         * An enterable canvas owns the jog, the click and (until it declines)
+         * Back, so a module whose own navigation is broken -- or simply deeper
+         * than the user expected -- can make leaving feel like work: Back,
+         * Back, Back, however far in you are.
+         *
+         * So Shift+jog closes the canvas and DOES NOT CONSUME THE TURN: the
+         * event falls through to the screen underneath, which pages. Exit and
+         * move on, in one gesture.
+         *
+         * ⭑ This is not new grammar. Shift+jog already pages out of every
+         * entered door -- a menu, a preset browser, an items list, and a canvas
+         * page here -- and Shift+click already reaches the section picker from
+         * anywhere. A dive was the one screen with no such way out, because it
+         * is the one screen a module owns entirely.
+         *
+         * ⚠ NEVER OFFERED TO THE MODULE, deliberately, and not gated on
+         * `enterable` either. An escape hatch a module can decline is not an
+         * escape hatch, and a canvas that does not take the click has no reason
+         * to want Shift+jog.
+         */
+        if (d1 === 14 && isShiftHeld() && d2 !== 0) {
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
+            else closeCanvasPreview(true);
+            needsRedraw = true;
+            /* NO return: the turn belongs to whatever is underneath now. */
+        } else
+        /* ⭐ AN ENTERABLE CANVAS KEEPS THE CLICK. Declining to steal is all that
+         * is needed -- the press falls through to dispatchCanvasMidi below like
+         * every other CC, and the module's onMidi sees it. */
+        if (d1 === MoveMainButton && d2 > 0 && !canvasEnterable) {
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(false); });
             else closeCanvasPreview(false);
             announce("Hierarchy Editor");
@@ -27383,6 +28348,28 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
         if (d1 === MoveBack && d2 > 0) {
+            /* ⭐ BACK IS THE EXIT CONTRACT, and it is the reason the click is
+             * safe to hand over.
+             *
+             *   handleBack() === true   "I went up a level" -- stay inside
+             *   anything else           "I am at my top level" -- un-enter
+             *
+             * So the module never has to implement a way OUT, only a way UP, and
+             * the host does what it would have done anyway the moment the module
+             * runs out of levels. A module that wrongly claims Back forever holds
+             * it on its own screen only: changing track, swapping the module and
+             * leaving the editor all take the user out without asking the canvas.
+             *
+             * Offered ONLY to an enterable canvas. A visualiser has no levels to
+             * climb, and asking it would make Back's meaning depend on a hook
+             * nobody declared. */
+            if (canvasEnterable) {
+                const up = canvasOverlayHookResult("handleBack");
+                /* A module that called ctx.close() from handleBack has already
+                 * been closed here -- falling through would close it AGAIN. */
+                if (consumeCanvasCloseRequest()) return;
+                if (up === true) { needsRedraw = true; return; }
+            }
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
             else closeCanvasPreview(true);
             announce("Hierarchy Editor");
@@ -27843,6 +28830,24 @@ globalThis.onMidiMessageInternal = function(data) {
             }
             return;
         }
+    }
+
+    /* STEP BUTTONS (notes 16-31), while the shim is forwarding them: remember
+     * which is held, for the p-lock gesture. Both edges, and BEFORE the
+     * handlers below, which return early for their own notes -- a release that
+     * never arrives leaves a step held forever, and the next knob turn on any
+     * page would p-lock it.
+     *
+     * Records only; the write happens on the knob's commit
+     * (componentParamPagesIo's onValueWritten), because that is the only point
+     * that knows the value the turn produced. Does NOT return: nothing else
+     * uses these notes, and swallowing them here would hide them from a tool
+     * that might. */
+    if (((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
+            noteStepIndex(d1) >= 0) {
+        onStepNote(d1, ((status & 0xF0) === MidiNoteOn) ? d2 : 0);
+        debugLog("plock: step note " + d1 + " v" + d2 +
+                 " held=" + heldStepIndex());
     }
 
     /* Handle Note On for knob touch - peek at current value without turning

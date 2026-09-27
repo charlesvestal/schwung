@@ -12,7 +12,16 @@ Schwung adds a Shadow UI that runs alongside stock Move, enabling additional Syn
 
 ## License
 
-MIT - See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
+Schwung's own code is MIT — see [LICENSE](LICENSE).
+
+The release also ships third-party components, some under the GPL. Two are
+separate programs (`link-subscriber` from Ableton Link and
+`lib/jack/jack_shadow.so` from jack2, both GPL-2.0-or-later) and impose nothing
+on the rest. One is linked: the default screen-reader build links
+`schwung-shim.so` against eSpeak NG, so **that binary is conveyed under
+GPL-3.0-or-later** — the source stays MIT, and building with
+`SCREEN_READER_ENABLED=0` produces an MIT shim. Full attribution, licences, and
+upstream sources: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 Schwung would not be possible without the work of the [Move Anything](https://github.com/bobbydigitales/move-anything) project which provided the base techniques for accessing Move's hardware and system functions. Thanks to @talktogreg, @impbox, @deets, and especially @bobbyd for those contributions.
 

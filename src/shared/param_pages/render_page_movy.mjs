@@ -29,7 +29,7 @@
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
 } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER, graphicValues } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
@@ -38,7 +38,7 @@ import { vizDiveTarget, VIZ_SAMPLE } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
-    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H,
+    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H, missingGlyphs,
 } from "./font_big_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
@@ -1805,7 +1805,20 @@ export function isCountedQuantity(meta) {
 
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
-    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.kind === KIND_OPAQUE) return false;
+    /*
+     * A PARAM MAY SAY IT IS READ RATHER THAN AIMED.
+     *
+     * isCountedQuantity concedes this for a closed list of NAMES, but a module
+     * cannot join that list, and the range alone cannot tell a swing
+     * percentage from a filter cutoff. A declaration can. It lifts the span
+     * cap and the enum refusal (a 2:4 trig condition is a value to read, and
+     * the enum square's two lines of 5x3 are not how you read it) for the
+     * declaring param only -- and only if the cell can hold it: see
+     * bigCellFits. Everything undeclared takes the rules below, unchanged.
+     */
+    if (meta.display === "big") return bigCellFits(meta);
+    if (meta.kind === KIND_ENUM) return false;
     if (!isWholeNumbered(meta)) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
@@ -1831,6 +1844,63 @@ export function bigNumberText(meta, raw) {
     if (!isFinite(n)) return "--";
     const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
     return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * DOES IT FIT, asked of the widest thing the cell can ever show.
+ *
+ * BIG_NUM_MAX_DIGITS is a proxy for this and a good one while every big value
+ * is an integer: an overflow does not clip, it runs over the next cell and
+ * clipped() reports nothing. Once a declaration can bring an option list here
+ * the proxy fails both ways ("1/4" is three characters and narrow, "88:88" is
+ * five and hopeless), so the width is measured -- and measured over every
+ * value, never the current one, so a cell cannot change widget as it is
+ * turned. A glyph the face lacks fails the fit too: a hole is not a reading.
+ */
+const BIG_CELL_BUDGET = CELL_W - 2;
+
+function bigTextFits(text) {
+    const t = String(text);
+    return missingGlyphs(t).size === 0 && numWidth(t) <= BIG_CELL_BUDGET;
+}
+
+function enumTexts(meta) {
+    const opts = Array.isArray(meta.options) ? meta.options : [];
+    const short = Array.isArray(meta.short_options) ? meta.short_options : null;
+    return opts.map((o, i) => String(short && short[i] !== undefined ? short[i] : o));
+}
+
+function bigCellFits(meta) {
+    if (meta.kind === KIND_ENUM) {
+        const texts = enumTexts(meta);
+        return texts.length > 0 && texts.every(bigTextFits);
+    }
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    return bigTextFits(bigNumberText(meta, meta.min)) && bigTextFits(bigNumberText(meta, meta.max));
+}
+
+/**
+ * The text a big cell draws.
+ *
+ * bigNumberText recomputes from the raw value, which is right for a counted
+ * quantity and wrong for what a declaration can bring: an enum's option, or a
+ * host reading with a unit ("54%"). The host's reading (formatValue, handed in
+ * as cellText) wins when the face can draw it inside the cell; then the
+ * option, short_options first, as the enum square resolves it; then the
+ * number. A reading that cannot be drawn falls back rather than smearing --
+ * the fit gate above only knew the static texts.
+ */
+export function bigValueText(meta, raw, cellText) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    if (cellText !== null && cellText !== undefined && cellText !== ""
+        && bigTextFits(cellText)) return String(cellText);
+    if (meta && meta.kind === KIND_ENUM) {
+        const idx = enumIndexOf(meta, raw);
+        const texts = enumTexts(meta);
+        return (idx >= 0 && idx < texts.length) ? texts[idx] : "--";
+    }
+    return bigNumberText(meta, raw);
 }
 
 /*
@@ -2147,6 +2217,9 @@ export function widgetKindFor(meta) {
     if (!meta) return WIDGET_KNOB;
     if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
     if (meta.writeOnly) return WIDGET_BUTTON;
+    /* A declared enum asks before the enum square takes it; see
+     * shouldDrawBigNumber. Undeclared, this line is inert. */
+    if (meta.display === "big" && shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
     if (shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     return WIDGET_KNOB;
@@ -2228,7 +2301,8 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      */
     if (widget === WIDGET_BIGNUM) {
         drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
-                      bigNumberText(meta, raw));
+                      meta.display === "big" ? bigValueText(meta, raw, cellText)
+                                             : bigNumberText(meta, raw));
         return;
     }
     /* `?? 0` because the ARC has to point somewhere: an unread value draws its
@@ -2260,6 +2334,22 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         const modNorm = normalizedOf(meta, modRaw);
         if (modNorm !== null) drawModDot(ctx, kx, ky, modNorm);
     }
+}
+
+/*
+ * THE AUTOMATION MARK: a solid 2x2, schwung-movy's own (renderer/label.ts),
+ * ported. "A sequencer lane moves this", as against the tilde's "a modulation
+ * source moves this" -- both are motion, and the controller treats them alike
+ * for the pointer and the riding dot, but a player reads them as two different
+ * things to go and change, so they wear two different marks. Mirrors the tilde
+ * across the label: tilde left of the text, this at its top-right.
+ *
+ * Exported so a host can tell a library that draws it from one that does not
+ * (a missing export is `undefined` on the namespace object, not a link error),
+ * and decide whether to keep folding its lanes into `isModulated`.
+ */
+export function drawAutomatedMark(ctx, x, y, on) {
+    ctx.fillRect(x, y, 2, 2, on);
 }
 
 /* schwung-movy renderer/label.ts drawWaveMark (the modulation tilde), ported. */
@@ -2318,7 +2408,7 @@ function drawWaveMark(ctx, x, y, on) {
  * shortening it as well would put two changes in one option, and `LBL_H` is odd
  * precisely so a 5-row face gets one clear row above and below.
  */
-export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated, automated = false) {
     const cellX = cellLeft(g, col);
     let text = String((showValue ? displayValue : label) ?? "");
     /* Trim MEASURED, never by character count — the face is proportional (I is
@@ -2365,6 +2455,17 @@ export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue,
         const onStrip = strip && wx >= tx - 1;
         drawWaveMark(ctx, wx, lblY + 1, onStrip ? 0 : 1);
     }
+    if (automated) {
+        /* One clear column past whatever it follows -- the text at rest, the
+         * strip's shoulder when inverted (touching the strip it reads as a
+         * notch in it, not a mark) -- clamped inside the cell. Polarity follows
+         * what it lands on, by the tilde's rule above: past the strip it is on
+         * ground, and only a run long enough to push the clamp back over the
+         * strip puts it on black. */
+        const ax = Math.min(tx + tw + (strip ? 2 : 1), cellX + g.cellW - 2);
+        const onStrip = strip && ax <= tx + tw;
+        drawAutomatedMark(ctx, ax, lblY, onStrip ? 0 : 1);
+    }
 }
 
 /* --------------------------------------------------------------- one row */
@@ -2403,7 +2504,7 @@ function resolveGeom(geom) {
  */
 export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     const g = resolveGeom(geom);
-    const { page, metaIndex, values, touched, modulated, viz, modValues, decorations } = o;
+    const { page, metaIndex, values, touched, modulated, automated, viz, modValues, decorations } = o;
     /*
      * EVERY held knob inverts, not just the one the header follows. A single
      * index could not express two fingers: touching a second knob overwrote it
@@ -2436,9 +2537,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
      * copying that at 55fps is pure garbage for the overwhelmingly common case
      * of nothing modulated at all. `hasMod` makes the empty case free.
      */
-    let hasMod = false;
-    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
-    const liveValues = hasMod ? Object.assign({}, values, modValues) : values;
+    const liveValues = graphicValues(values, modValues, page, decorations);
+    const hasMod = liveValues !== values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -2581,17 +2681,45 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * step you are looking at what the step will play, not at what the
          * knob is set to now), and `locked` marks the cell.
          *
-         * The MARK is where the two layouts diverge, and it has to. The dial
-         * layout inverts the label strip; this grid already spends that
-         * inversion on "a finger is on this knob", so reusing it would make a
-         * locked cell indistinguishable from a held one — and on the step-held
-         * view, where locks are read, several cells are locked and none is
-         * touched. The top-right 2x2 tick is likewise taken, by modulation.
-         * So a lock is the top-LEFT corner: the one unspent corner, mirroring
-         * the modulation tick across the cell.
+         * THE MARK IS BOTH: inverted like Elektron's, plus the corner.
+         *
+         * This comment used to argue for the corner ALONE, on the grounds that
+         * the inversion is already spent on "a finger is on this knob". The
+         * argument is right in general and wrong on this screen. Every
+         * Elektron manual describes the same thing — "the graphics become
+         * inverted for the locked parameter, and the locked parameter value is
+         * displayed" — and that inversion is how the gesture reads at a
+         * glance; a 2x2 corner pixel is something you have to be told about.
+         *
+         * The collision survives, but it is small and the corner settles it:
+         * inversion means "you are being shown a value" (touched or locked)
+         * and the top-left corner means "there is a lock here". The top-right
+         * 2x2 tick stays modulation's, so the two marks mirror each other
+         * across the cell.
          */
         const dec = decorations ? decorations[slot] : null;
         const locked = !!(dec && dec.locked);
+        /* ...AND WHETHER A POINT ACTUALLY SITS HERE.
+         *
+         * The two are not the same and the corner has always meant the second
+         * one -- see the comment above: inversion says "you are being shown a
+         * value", the corner says "there is a lock here". `exact` was read off
+         * `<key>:held`, carried into the decoration, and then never drawn, so
+         * a value the recorded CURVE merely passes through wore the lock mark
+         * exactly like a real lock.
+         *
+         * Reported from the device: clearing a lock left the knob showing a
+         * value, which is correct -- the readout answers the curve, and a
+         * recorded sweep still interpolates across the step whose point you
+         * removed -- but with the corner still lit there was nothing on screen
+         * to say the lock was gone, so a working clear looked like a broken
+         * one. "we cleared the LOCK but the recorded automation lane is still
+         * there and that's maybe what I'm seeing" -- exactly that.
+         *
+         * A decoration that does not carry `exact` keeps the old meaning, so a
+         * host that never supplied it is unchanged. */
+        const lockedExact = !!(dec && (dec.exact === undefined ? dec.locked
+                                                               : dec.exact));
         const decValue = (dec && dec.value !== undefined && dec.value !== null)
             ? dec.value : undefined;
         const raw = decValue !== undefined ? decValue : (values ? values[key] : null);
@@ -2627,11 +2755,28 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
              * at all. It looked like it worked because the graphics stand-down
              * moved the screen at the same moment.
              *
-             * The lock is what the step will play, so it wins over both the
-             * base and the modulated live value.
+             * The lock is what the step will play, so it wins over the
+             * modulated live value -- but NOT over the base, which the
+             * pointer keeps. See the arguments below.
              */
-            drawKnobWidget(ctx, g, col, rowY, meta, raw,
-                           modValues ? modValues[key] : undefined,
+            drawKnobWidget(ctx, g, col, rowY, meta,
+                           /* THE POINTER KEEPS THE BASE. A lock is what
+                            * AUTOMATION does to this parameter, and automation
+                            * already has a language on this grid: the pointer
+                            * is what you dialled, the mark rides at what is
+                            * being played. Moving the pointer to the lock
+                            * instead made the cell mean one thing while you
+                            * held the step and another while the lane played
+                            * it back -- same picture, two grammars. */
+                           values ? values[key] : null,
+                           /* ...and the lock rides as the MARK, which is also
+                            * what moves as you turn: the value being set is
+                            * the step's, not the track's. */
+                           decValue !== undefined ? decValue
+                               : (modValues ? modValues[key] : undefined),
+                           /* A widget that can only show ONE value shows the
+                            * lock, for the same reason it shows a modulated
+                            * value: it is what the step will play. */
                            decValue !== undefined ? decValue
                                : (liveValues ? liveValues[key] : undefined),
                            cellText, btnPhase,
@@ -2697,7 +2842,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * fact about this one parameter, and the controller already stands
          * graphics down while decorations are live precisely so a picture
          * cannot hide which of the cells it spans is locked. */
-        if (locked) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
+        if (lockedExact) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
 
         /*
          * `short_name` is for the CELL only -- the same split as short_options.
@@ -2734,8 +2879,30 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
-        drawLabelCell(ctx, g, col, lblY, label, display, isTouched, isTouched,
-                      modulated ? !!modulated(key) : false);
+        /*
+         * A LOCKED CELL READS AS ELEKTRON'S DOES: inverted, with the VALUE in
+         * the band rather than the parameter's name.
+         *
+         * Every Elektron manual that documents this says the same sentence --
+         * "the graphics become inverted for the locked parameter, and the
+         * locked parameter value is displayed" -- and it is the headline of
+         * the whole gesture: hold a trig and the screen tells you, at a
+         * glance, which parameters that step owns. The corner mark alone said
+         * it in a way you had to already know to read.
+         *
+         * The inversion is shared with "a finger is on this knob", which is
+         * why it was avoided here originally. On THIS screen that collision is
+         * benign and the corner mark resolves what is left of it: inversion
+         * means "you are being shown a value", touched or locked, and the
+         * top-left corner means "there is a lock here". Elektron has no
+         * capacitive knobs, so it never has to separate the two -- and on
+         * Elektron, touching a knob under a held trig creates a lock anyway,
+         * which is exactly what ours does too.
+         */
+        const showAsLock = isTouched || locked;
+        drawLabelCell(ctx, g, col, lblY, label, display, showAsLock, showAsLock,
+                      modulated ? !!modulated(key) : false,
+                      automated ? !!automated(key) : false);
     }
 }
 
@@ -2928,6 +3095,7 @@ export function drawFooter(ctx, hints, o = {}) {
  * @param {number} [o.touched]   physical knob 0-7 currently held, or -1
  * @param {Array}  [o.pageGroups] one bank id per page, for the bank bar
  * @param {Function} [o.modulated] (key) => boolean
+ * @param {Function} [o.automated] (key) => boolean — a sequencer lane drives it (2x2 mark)
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */

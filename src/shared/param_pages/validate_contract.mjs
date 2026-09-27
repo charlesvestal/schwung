@@ -274,7 +274,31 @@ export function validateContract({ id, hierarchy, chainParams, capabilities } = 
         const readOnly = new Set(
             cp.filter((p) => p && p.key && String(p.access || "").toLowerCase() === "read")
               .map((p) => p.key));
-        const real = unreachable.filter((k) => !viaChildren.has(k) && !readOnly.has(k));
+        /*
+         * A GATE IS REACHED, JUST NOT BY A FINGER.
+         *
+         * A key named by a `visible_if` is read by page_controller's gate lane
+         * when something outside the grid moves, so it is doing its job precisely by
+         * having no cell -- and giving it one would be the defect, since the
+         * value is derived and turning it would only disagree with whatever
+         * derives it. Reported as unreachable it reads as "your gate is
+         * broken", which is the opposite of the truth and is exactly the
+         * false positive the note above says teaches reviewers to stop reading
+         * the count.
+         */
+        const gateKeys = new Set();
+        for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
+            if (!lvl || typeof lvl !== "object") continue;
+            const note = (c) => {
+                /* The same three spellings the planner's noteCondition accepts. */
+                const k = c && (c.param || c.key || c.param_key);
+                if (k) gateKeys.add(String(k));
+            };
+            note(lvl.visible_if);
+            for (const item of lvl.params || []) if (item && typeof item === "object") note(item.visible_if);
+        }
+        const real = unreachable.filter(
+            (k) => !viaChildren.has(k) && !readOnly.has(k) && !gateKeys.has(k));
         if (real.length) {
             add("warn", "unreachable-params",
                 `${real.length} chain_params are listed in no level, so no UI can reach them: ` +

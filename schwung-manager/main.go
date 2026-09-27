@@ -50,11 +50,18 @@ type CatalogModule struct {
 	Description   string `json:"description"`
 	Author        string `json:"author"`
 	ComponentType string `json:"component_type"`
-	GithubRepo    string `json:"github_repo"`
-	DefaultBranch string `json:"default_branch"`
-	AssetName     string `json:"asset_name"`
-	MinHostVer    string `json:"min_host_version"`
-	Requires      string `json:"requires,omitempty"`
+	// Subcategory is the second categorisation axis: exactly one per module,
+	// from the vocabulary in the catalog's Taxonomy block. ComponentType still
+	// decides menu placement and install path; this only drives filtering.
+	Subcategory string `json:"subcategory,omitempty"`
+	// Tags are open, cross-cutting facets. Some are derived by CI from other
+	// catalog fields (needs-assets from Requires) and must not be hand-edited.
+	Tags          []string `json:"tags,omitempty"`
+	GithubRepo    string   `json:"github_repo"`
+	DefaultBranch string   `json:"default_branch"`
+	AssetName     string   `json:"asset_name"`
+	MinHostVer    string   `json:"min_host_version"`
+	Requires      string   `json:"requires,omitempty"`
 	// RequiresModules names other catalog modules this one cannot work without.
 	//
 	// Distinct from Requires, which is PROSE shown to the user about external
@@ -65,20 +72,97 @@ type CatalogModule struct {
 }
 
 // CatalogHost describes the host entry in the catalog.
+//
+// Channels is the optional beta/stable extension for the host itself
+// (see module_channel.go). Old catalogs that only set the top-level
+// LatestVersion/DownloadURL still resolve as stable — the field is
+// strictly additive.
 type CatalogHost struct {
-	Name           string `json:"name"`
-	GithubRepo     string `json:"github_repo"`
-	AssetName      string `json:"asset_name"`
-	LatestVersion  string `json:"latest_version"`
-	DownloadURL    string `json:"download_url"`
-	MinHostVersion string `json:"min_host_version"`
+	Name           string      `json:"name"`
+	GithubRepo     string      `json:"github_repo"`
+	AssetName      string      `json:"asset_name"`
+	LatestVersion  string      `json:"latest_version"`
+	DownloadURL    string      `json:"download_url"`
+	MinHostVersion string      `json:"min_host_version"`
+	Channels       *ChannelSet `json:"channels,omitempty"`
+}
+
+// hostResolveForChannel picks the host version + download URL for a
+// given channel. Same rules as resolveReleaseForChannel: stable users
+// see channels.stable (fallback to top-level), beta users see
+// channels.beta only when it is strictly newer than stable. Returns
+// which channel actually served the request so the UI can badge the
+// upgrade button when the offered build is a beta.
+func hostResolveForChannel(h CatalogHost, want string) (version, downloadURL, served string) {
+	// Reuse the module resolver by projecting the CatalogHost onto a
+	// ReleaseJSON. This keeps the two channel rules literally the same
+	// code path, so host and modules cannot drift.
+	rel := ReleaseJSON{
+		Version:     h.LatestVersion,
+		DownloadURL: h.DownloadURL,
+		Channels:    h.Channels,
+	}
+	entry, servedCh := resolveReleaseForChannel(rel, want)
+	return entry.Version, entry.DownloadURL, servedCh
+}
+
+// CatalogTaxonomy is the vocabulary, embedded in the catalog so a single fetch
+// carries display labels. Generated from taxonomy.json in the schwung repo by
+// tools/catalog/sync_taxonomy.mjs; never edited here.
+type CatalogTaxonomy struct {
+	Version       int                             `json:"taxonomy_version"`
+	Subcategories map[string][]CatalogSubcategory `json:"subcategories"`
+	Tags          []string                        `json:"tags"`
+}
+
+// CatalogSubcategory is one vocabulary entry: the slug stored on a module, and
+// the label shown to a person.
+type CatalogSubcategory struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // Catalog is the top-level catalog structure.
 type Catalog struct {
-	CatalogVersion int             `json:"catalog_version"`
-	Host           CatalogHost     `json:"host"`
-	Modules        []CatalogModule `json:"modules"`
+	CatalogVersion int               `json:"catalog_version"`
+	Host           CatalogHost       `json:"host"`
+	Modules        []CatalogModule   `json:"modules"`
+	Platforms      []CatalogPlatform `json:"platforms,omitempty"`
+	Taxonomy       CatalogTaxonomy   `json:"taxonomy"`
+}
+
+// subcategoryLabelFor resolves a slug to its display label using the catalog's
+// own embedded vocabulary.
+//
+// An unknown slug returns ITSELF, never "". A blank badge is indistinguishable
+// from a module that has no subcategory at all, and "this module was never
+// categorised" is exactly the state this axis exists to make visible.
+func subcategoryLabelFor(tax CatalogTaxonomy, componentType, id string) string {
+	if id == "" {
+		return ""
+	}
+	for _, sc := range tax.Subcategories[componentType] {
+		if sc.ID == id {
+			return sc.Label
+		}
+	}
+	return id
+}
+
+// CatalogPlatform is a boot target with no module in it: an alternative
+// platform that wants the manager's install plumbing. It has no
+// component_type because it is never loaded by the Schwung host — it replaces
+// it at boot.
+type CatalogPlatform struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Author        string `json:"author"`
+	GithubRepo    string `json:"github_repo"`
+	DefaultBranch string `json:"default_branch"`
+	AssetName     string `json:"asset_name"`
+	MinHostVer    string `json:"min_host_version"`
+	Requires      string `json:"requires,omitempty"`
 }
 
 // ModuleAssets describes user-uploadable assets for a module.
@@ -270,10 +354,32 @@ func (s *FileService) ListDir(dir string) ([]FileEntry, error) {
 }
 
 // ReleaseMeta holds release dates for a module.
+//
+// Channels is the optional per-channel version snapshot the catalog-site
+// generator produces so the Store UI can show what's on each channel
+// WITHOUT round-tripping each module's release.json at page-render time.
+// Old metadata files without a channels field still work — the UI
+// treats Version as the stable version and skips the beta hints.
 type ReleaseMeta struct {
-	FirstRelease string `json:"first_release"`
-	LastUpdated  string `json:"last_updated"`
-	Version      string `json:"version"`
+	FirstRelease string      `json:"first_release"`
+	LastUpdated  string      `json:"last_updated"`
+	Version      string      `json:"version"`
+	Channels     *ChannelSet `json:"channels,omitempty"`
+	// Releases is every release the generator could see, oldest first,
+	// each with a FULL published_at timestamp. It is what lets update
+	// detection order two versions by when they were published rather
+	// than by parsing their names. Absent on metadata written before
+	// that landed (including a stale copy in manager-cache/), which is
+	// why every reader falls back to the version compare.
+	Releases []ReleaseRef `json:"releases,omitempty"`
+}
+
+// ReleaseRef is one published release: the tag, when it went out, and
+// whether its author marked it a prerelease.
+type ReleaseRef struct {
+	Tag         string `json:"tag"`
+	PublishedAt string `json:"published_at"`
+	Prerelease  bool   `json:"prerelease"`
 }
 
 // CatalogService fetches and caches the remote module catalog.
@@ -282,19 +388,56 @@ type ReleaseMeta struct {
 // The disk cache lets the manager render — and let users remove/repair
 // installed modules — when the network is down or GitHub Pages is flaky.
 type CatalogService struct {
-	URL         string
-	CacheDir    string // root directory for persisted cache files
+	URL     string
+	MetaURL string // release-metadata.json; overridable so the update
+	//        // logic can be exercised against a fixture
+	CacheDir string // root directory for persisted cache files
+
+	// mu guards every mutable field below. net/http serves each request on
+	// its own goroutine and any handler may reach for the catalog, so the
+	// cache was being written by one request while another read it.
+	//
+	// It is held across the network fetch rather than only around the
+	// assignment. That serialises concurrent misses, which is the point:
+	// the second caller wants the answer the first is already fetching,
+	// not a second request for it.
+	mu          sync.Mutex
 	catalog     *Catalog
 	releaseMeta map[string]ReleaseMeta
 	fetched     time.Time
 	client      *http.Client
+
+	// Provenance of the catalog currently held, reported by Status().
+	// servedAt is when the held copy was OBTAINED -- the fetch time for a
+	// network copy, the cache file's mtime for a disk one -- and live says
+	// whether the last fetch ATTEMPT reached the network. A caller cannot
+	// derive either from the (catalog, error) pair: a served disk cache
+	// comes back with a non-nil catalog, and every page that renders it
+	// without saying so presents month-old data as today's.
+	servedAt time.Time
+	live     bool
 }
 
-const releaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
+// CatalogStatus describes where the catalog a caller was just handed came
+// from. Live=false with a non-zero At is the offline case: we are serving
+// the last-known-good copy from disk and it is At old.
+type CatalogStatus struct {
+	Live bool
+	At   time.Time
+}
 
-func NewCatalogService(url, cacheDir string) *CatalogService {
+// defaultReleaseMetaURL is where the catalog site publishes the release
+// snapshot. It is a var behind a flag rather than a const because update
+// detection now reads publish DATES out of this file, and a hardcoded
+// production URL makes that logic impossible to exercise end to end
+// without touching live data. Mirrors -catalog-url, which exists for
+// the same reason.
+const defaultReleaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
+
+func NewCatalogService(url, metaURL, cacheDir string) *CatalogService {
 	cs := &CatalogService{
 		URL:      url,
+		MetaURL:  metaURL,
 		CacheDir: cacheDir,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
@@ -316,12 +459,21 @@ func (cs *CatalogService) metaCachePath() string {
 	return filepath.Join(cs.CacheDir, "manager-cache", "release-metadata.json")
 }
 
+// loadFromDisk seeds the cache from the last-known-good files. It takes no
+// lock because NewCatalogService calls it before the service is published
+// to any handler -- and it must stay that way: fetch() holds mu across its
+// whole body, so a reload called from there would deadlock.
 func (cs *CatalogService) loadFromDisk() {
 	if p := cs.catalogCachePath(); p != "" {
 		if data, err := os.ReadFile(p); err == nil {
 			var cat Catalog
 			if json.Unmarshal(data, &cat) == nil {
 				cs.catalog = &cat
+				// The file's mtime is the only record of when this copy
+				// was current; the catalog itself carries no timestamp.
+				if fi, err := os.Stat(p); err == nil {
+					cs.servedAt = fi.ModTime()
+				}
 			}
 		}
 	}
@@ -354,27 +506,55 @@ func (cs *CatalogService) saveToDisk(path string, v any) {
 // disk) along with the error, so callers can render a usable page when the
 // network is unavailable.
 func (cs *CatalogService) Fetch() (*Catalog, error) {
-	if cs.catalog != nil && time.Since(cs.fetched) < 5*time.Minute {
+	return cs.fetch(false)
+}
+
+// Refresh fetches past the in-memory TTL, for a user who ASKED whether
+// there is an update.
+//
+// "Check for Update" went through Fetch, so within five minutes of any
+// other page's fetch it reported the cached answer as though it had just
+// looked -- including the "up to date" that a user who had been told to
+// fix their network was pressing the button to disprove. The button is the
+// one place in the manager where the TTL is exactly wrong: its whole
+// purpose is to go and ask.
+func (cs *CatalogService) Refresh() (*Catalog, error) {
+	return cs.fetch(true)
+}
+
+func (cs *CatalogService) fetch(force bool) (*Catalog, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if !force && cs.catalog != nil && time.Since(cs.fetched) < 5*time.Minute {
 		return cs.catalog, nil
 	}
 	resp, err := cs.client.Get(cs.URL)
 	if err != nil {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("fetching catalog: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("catalog returned %d", resp.StatusCode)
 	}
 	var cat Catalog
 	if err := json.NewDecoder(resp.Body).Decode(&cat); err != nil {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("decoding catalog: %w", err)
 	}
 	cs.catalog = &cat
 	cs.fetched = time.Now()
+	cs.servedAt = cs.fetched
+	cs.live = true
 	cs.saveToDisk(cs.catalogCachePath(), &cat)
 
 	// Fetch release metadata (best-effort, don't fail if unavailable).
-	if metaResp, err := cs.client.Get(releaseMetaURL); err == nil {
+	metaURL := cs.MetaURL
+	if metaURL == "" {
+		metaURL = defaultReleaseMetaURL
+	}
+	if metaResp, err := cs.client.Get(metaURL); err == nil {
 		defer metaResp.Body.Close()
 		if metaResp.StatusCode == http.StatusOK {
 			var meta map[string]ReleaseMeta
@@ -388,8 +568,25 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	return cs.catalog, nil
 }
 
+// Status reports the provenance of the catalog Fetch last returned.
+//
+// Fetch's TTL early-return does not touch either field, so a status
+// reflects the last real ATTEMPT rather than the last call.
+func (cs *CatalogService) Status() CatalogStatus {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return CatalogStatus{Live: cs.live, At: cs.servedAt}
+}
+
 // GetReleaseMeta returns cached release metadata.
+//
+// The map is returned by reference, which is safe only because a refresh
+// REPLACES it with a freshly decoded one rather than writing into the map
+// a caller is holding. Keep it that way: mutating in place would race a
+// handler mid-iteration.
 func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	if cs.releaseMeta == nil {
 		return map[string]ReleaseMeta{}
 	}
@@ -403,14 +600,7 @@ func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
 func discoverInstalledModules(base string) map[string]InstalledModule {
 	installed := make(map[string]InstalledModule)
 	// Walk known category dirs and the root modules dir.
-	dirs := []string{
-		filepath.Join(base, "modules"),
-		filepath.Join(base, "modules", "sound_generators"),
-		filepath.Join(base, "modules", "audio_fx"),
-		filepath.Join(base, "modules", "midi_fx"),
-		filepath.Join(base, "modules", "tools"),
-		filepath.Join(base, "modules", "overtake"),
-	}
+	dirs := moduleInstallDirs(base)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -500,6 +690,7 @@ var funcMap = template.FuncMap{
 		}
 		return ct
 	},
+	"subcategoryLabel": subcategoryLabelFor,
 	"isInstalled": func(id string, installed map[string]InstalledModule) bool {
 		_, ok := installed[id]
 		return ok
@@ -592,16 +783,61 @@ var funcMap = template.FuncMap{
 		}
 		return template.HTML(sb.String())
 	},
-	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
+	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta, channel string) bool {
 		inst, ok := installed[id]
 		if !ok {
 			return false
 		}
-		rm, ok := meta[id]
-		if !ok || rm.Version == "" {
+		rm := meta[id]
+		v := channelVersion(rm, channel)
+		if v == "" {
 			return false // Can't tell — don't show update button
 		}
-		return isNewerSemver(rm.Version, inst.Version)
+		return updateAvailable(rm, v, inst.Version)
+	},
+	// channelVersion returns the version string of the release the
+	// user's current channel would install. Empty when metadata has
+	// nothing to say about this module.
+	"channelVersion": func(rm ReleaseMeta, channel string) string {
+		return channelVersion(rm, channel)
+	},
+	// channelIsBeta reports whether the version channelVersion would
+	// return comes from the beta channel (rather than falling back to
+	// stable). Used to tag versions in the UI.
+	"channelIsBeta": func(rm ReleaseMeta, channel string) bool {
+		if channel != ChannelBeta || rm.Channels == nil || rm.Channels.Beta == nil {
+			return false
+		}
+		beta := rm.Channels.Beta.Version
+		stable := channelStableVersion(rm)
+		return beta != "" && versionNewer(beta, stable)
+	},
+	// installedIsBeta reports whether the version currently INSTALLED
+	// was published as a prerelease, so the installed list can say
+	// "you are running a beta build" — a fact that otherwise appears
+	// nowhere on the page.
+	"installedIsBeta": func(rm ReleaseMeta, version string) bool {
+		return installedIsPrerelease(rm, version)
+	},
+	// betaTeaser returns the beta version string when the user is on
+	// stable, the module publishes a beta, and that beta is newer than
+	// what stable would offer. Empty otherwise. Callers use this to
+	// nudge users toward opting in without popping a modal.
+	"betaTeaser": func(rm ReleaseMeta, channel string) string {
+		if channel == ChannelBeta {
+			return ""
+		}
+		if rm.Channels == nil || rm.Channels.Beta == nil {
+			return ""
+		}
+		beta := rm.Channels.Beta.Version
+		if beta == "" {
+			return ""
+		}
+		if !versionNewer(beta, channelStableVersion(rm)) {
+			return ""
+		}
+		return beta
 	},
 	"humanSize": func(b int64) string {
 		const unit = 1024
@@ -741,6 +977,56 @@ func isNewerSemver(latest, current string) bool {
 	return len(lp) > len(cp)
 }
 
+// hostOfferIsUpdate answers whether the catalog's offered host version is
+// worth showing as an update over what is installed.
+//
+// This was a bare `offered != installed` at both call sites, which is not a
+// version comparison: the catalog is served from an untimed on-disk cache
+// whenever the network fetch fails, so a device that had cached the catalog
+// before 2026-08-31 -- when host latest_version was still 1.0.0 -- rendered
+// "1.0.0 available" against an installed 1.4.0, with an Upgrade button
+// pointing at the v1.0.0 tarball. An offered DOWNGRADE presented as an
+// update, on stale data, with one click between the user and it.
+//
+// Modules never had this: they resolve through updateAvailable(), which
+// dates the releases and falls back to versionNewer. This is the host
+// arriving at the same rule.
+//
+// An installed version we cannot parse ("unknown", from a missing or
+// unreadable version.txt) still offers the update -- versionNewer reads its
+// components as 0, so anything beats it. That preserves the old behaviour
+// for the one case where refusing to offer would strand a device with no
+// way to name what it is running.
+// humanizeAge renders a catalog cache age for the offline notice. Coarse
+// on purpose: the reader's question is "is this data from today or from
+// weeks ago", and a stale cache is only ever wrong about a release.
+func humanizeAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return pluralAge(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return pluralAge(int(d.Hours()), "hour")
+	default:
+		return pluralAge(int(d.Hours())/24, "day")
+	}
+}
+
+func pluralAge(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit + " ago"
+	}
+	return fmt.Sprintf("%d %ss ago", n, unit)
+}
+
+func hostOfferIsUpdate(offered, installed string) bool {
+	if offered == "" || installed == "" {
+		return false
+	}
+	return versionNewer(offered, installed)
+}
+
 type templateMap map[string]*template.Template
 
 func loadTemplates() (templateMap, error) {
@@ -768,6 +1054,8 @@ func loadTemplates() (templateMap, error) {
 		"templates/remote_ui.html",
 		"templates/download.html",
 		"templates/repair.html",
+		"templates/boot.html",
+		"templates/platforms.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -806,6 +1094,7 @@ type App struct {
 	tmpl          templateMap
 	fileSvc       *FileService
 	catalogSvc    *CatalogService
+	channelPref   *ChannelPref
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
 	shm           *ShmConfig    // shared memory for live config sync (nil if not on device)
@@ -820,6 +1109,15 @@ type App struct {
 	downloadMu    sync.Mutex
 }
 
+// channel returns the manager's current channel preference, safe on a
+// nil pref (returns stable).
+func (app *App) channel() string {
+	if app == nil {
+		return ChannelStable
+	}
+	return app.channelPref.Channel()
+}
+
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
 	t, ok := app.tmpl[name]
 	if !ok {
@@ -831,6 +1129,9 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		data["CSRFToken"] = cookie.Value
 	}
+	// Every page that names a channel or hints at a beta asks this first;
+	// the feature is hidden unless manager-config.json switches it on.
+	data["BetaEnabled"] = app.channelPref.Enabled()
 	// Inject mirror enabled state for nav bar.
 	if app.shm != nil {
 		data["MirrorEnabled"] = app.shm.DisplayMirror()
@@ -939,14 +1240,18 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 
 	releaseMeta := app.catalogSvc.GetReleaseMeta()
 
-	// Check if any installed module has an update available.
+	// Check if any installed module has an update available. Uses the
+	// channel-resolved version so a beta user's "update all" button
+	// doesn't stay dark when the only update is a beta.
+	currentChannel := app.channel()
 	hasAnyUpdate := false
 	for id, inst := range installed {
-		rm, ok := releaseMeta[id]
-		if !ok || rm.Version == "" {
+		rm := releaseMeta[id]
+		v := channelVersion(rm, currentChannel)
+		if v == "" {
 			continue
 		}
-		if isNewerSemver(rm.Version, inst.Version) {
+		if updateAvailable(rm, v, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}
@@ -959,36 +1264,94 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 	if hostVersion == "" {
 		hostVersion = "unknown"
 	}
-	var hostLatestVersion, hostRepo string
-	var hostUpdateAvailable bool
+	var hostLatestVersion, hostRepo, hostServedChannel, hostBetaTeaser string
+	var hostUpdateAvailable, hostOfferedIsBeta bool
 	if cat != nil {
-		hostLatestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
-		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
+		hostLatestVersion, _, hostServedChannel = hostResolveForChannel(cat.Host, currentChannel)
+		hostUpdateAvailable = hostOfferIsUpdate(hostLatestVersion, hostVersion)
+		hostOfferedIsBeta = hostServedChannel == ChannelBeta
+		// Stable users get the same "beta X.Y.Z available" nudge that
+		// modules do, when the host publishes a beta ahead of stable.
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && versionNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
+	}
+
+	// Say so when the catalog on screen came off disk because the fetch
+	// failed. Every version on this page -- the host's and all 130-odd
+	// modules' -- is then as old as the cache, and nothing else about the
+	// render distinguishes it from a live one. That silence is what made a
+	// month-old "1.0.0 available" read as a real release rather than as a
+	// device that cannot reach GitHub.
+	catStatus := app.catalogSvc.Status()
+	catalogStale := cat != nil && !catStatus.Live
+	catalogAge := ""
+	if catalogStale && !catStatus.At.IsZero() {
+		catalogAge = humanizeAge(time.Since(catStatus.At))
+	}
+
+	// A nil catalog (offline, or first boot before the first fetch) yields the
+	// zero value, which renders no chips rather than panicking -- the module
+	// list must still work with no network.
+	var taxonomy CatalogTaxonomy
+	if cat != nil {
+		taxonomy = cat.Taxonomy
 	}
 
 	data := map[string]any{
 		"Title":               "Modules",
 		"Modules":             modules,
+		"Taxonomy":            taxonomy,
 		"Installed":           installed,
 		"HasInstalled":        len(installed) > 0,
 		"HasAnyUpdate":        hasAnyUpdate,
 		"ReleaseMeta":         releaseMeta,
+		"Channel":             currentChannel,
 		"Active":              "modules",
 		"HostVersion":         hostVersion,
 		"HostLatestVersion":   hostLatestVersion,
 		"HostRepo":            hostRepo,
 		"HostUpdateAvailable": hostUpdateAvailable,
+		"HostOfferedIsBeta":   hostOfferedIsBeta,
+		"HostBetaTeaser":      hostBetaTeaser,
+		"CatalogStale":        catalogStale,
+		"CatalogAge":          catalogAge,
 		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
 }
 
+// handleModulesChannelSet updates the manager-global module channel
+// preference. Redirects back to /modules on success so the change is
+// reflected in the page render — the toggle is not htmx-driven because
+// every update/install button on the page depends on the channel and
+// re-rendering the whole list is cleaner than dozens of partial swaps.
+func (app *App) handleModulesChannelSet(w http.ResponseWriter, r *http.Request) {
+	value := r.FormValue("channel")
+	if !app.channelPref.Enabled() {
+		http.Redirect(w, r, "/modules?flash=Beta+channel+is+not+enabled", http.StatusSeeOther)
+		return
+	}
+	if !app.channelPref.SetChannel(value) {
+		http.Redirect(w, r, "/modules?flash=Unknown+channel", http.StatusSeeOther)
+		return
+	}
+	app.logger.Info("module channel changed", "channel", app.channel())
+	http.Redirect(w, r, "/modules?flash=Channel+set+to+"+app.channel(), http.StatusSeeOther)
+}
+
 // findModuleDir locates the installed directory for a module by ID.
 func (app *App) findModuleDir(id string) string {
-	dirs := []string{"modules", "modules/sound_generators", "modules/audio_fx", "modules/midi_fx", "modules/tools", "modules/overtake"}
-	for _, d := range dirs {
-		candidate := filepath.Join(app.basePath, d, id)
+	for _, d := range moduleInstallDirs(app.basePath) {
+		candidate := filepath.Join(d, id)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
 		}
@@ -1111,9 +1474,14 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// One button per place the module is loaded; see module_webui_links.go
+	// for why a bare link to web_ui.html drove the wrong module.
+	webUI := app.moduleWebUILinks(id, mod.ComponentType, modDir)
+
 	data := map[string]any{
 		"Title":          mod.Name,
 		"Module":         mod,
+		"WebUI":          webUI,
 		"Installed":      installed,
 		"ModuleDir":      modDir,
 		"AssetsDir":      assetsDir,
@@ -1123,6 +1491,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"AssetGroups":    assetGroups,
 		"BuiltIn":        builtIn,
 		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
+		"Channel":        app.channel(),
 		"Active":         "modules",
 		"ModuleSchema":   moduleSchema,
 		"SettingValues":  settingValues,
@@ -1133,6 +1502,8 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // getInstallSubdir maps component_type to the install subdirectory name.
+// Every value returned here MUST be in installSubdirs (payload_paths.go) —
+// TestPayloadPathsCoverEveryInstallSubdir fails if one is not.
 func getInstallSubdir(componentType string) string {
 	switch componentType {
 	case "sound_generator":
@@ -1153,9 +1524,15 @@ func getInstallSubdir(componentType string) string {
 }
 
 // ReleaseJSON is the structure of a module's release.json file.
+//
+// The Channels field is the beta/stable extension (see module_channel.go).
+// Old release.json files (Version+DownloadURL only) still parse and are
+// treated as a stable release by resolveReleaseForChannel — the channel
+// feature is strictly additive.
 type ReleaseJSON struct {
 	Version     string                 `json:"version"`
 	DownloadURL string                 `json:"download_url"`
+	Channels    *ChannelSet            `json:"channels,omitempty"`
 	Modules     map[string]ReleaseJSON `json:"modules,omitempty"`
 }
 
@@ -1169,6 +1546,71 @@ func (r ReleaseJSON) forModule(moduleID string) (ReleaseJSON, bool) {
 	}
 	moduleRelease, ok := r.Modules[moduleID]
 	return moduleRelease, ok
+}
+
+// resolveDownloadURL fetches release.json for a payload and returns the URL to
+// download plus the version that URL represents. Falls back to the repo's
+// latest-release asset when release.json is missing or does not carry this id.
+// Shared by module and platform installs: one release.json contract, one
+// multi-module shape, one fallback.
+func (app *App) resolveDownloadURL(repo, branch, id, assetName string) (url, version string) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json", repo, branch)
+	app.logger.Info("fetching release.json", "url", releaseURL)
+
+	if resp, err := client.Get(releaseURL); err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var rel ReleaseJSON
+			if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil {
+				if r, ok := rel.forModule(id); ok {
+					entry, served := resolveReleaseForChannel(r, app.channel())
+					url, version = entry.DownloadURL, entry.Version
+					app.logger.Info("release.json resolved", "id", id,
+						"requested_channel", app.channel(),
+						"served_channel", served, "version", version)
+				} else {
+					app.logger.Warn("id missing from multi-module release.json; using fallback URL", "id", id)
+				}
+			} else {
+				app.logger.Warn("decoding release.json", "id", id, "err", err)
+			}
+		} else {
+			app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
+		}
+	} else {
+		app.logger.Warn("fetching release.json", "id", id, "err", err)
+	}
+	if url == "" {
+		url = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, assetName)
+	}
+	return url, version
+}
+
+// downloadToTemp saves a URL to a temp file under basePath (never /tmp — the
+// device's root FS is ~463MB and usually full). The caller removes it.
+func (app *App) downloadToTemp(url, name string) (string, error) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("downloading tarball: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	tmpPath := filepath.Join(app.basePath, name)
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("saving tarball: %w", err)
+	}
+	f.Close()
+	return tmpPath, nil
 }
 
 // installModule downloads and extracts a module from its GitHub release.
@@ -1226,67 +1668,14 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 		return err
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
-
-	// 1. Fetch release.json to get download URL.
-	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json",
-		mod.GithubRepo, mod.DefaultBranch)
-	app.logger.Info("fetching release.json", "url", releaseURL)
-
-	resp, err := client.Get(releaseURL)
-	if err != nil {
-		return fmt.Errorf("fetching release.json: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Fall back to latest release download URL.
-		app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
-	}
-
-	var downloadURL, releaseVersion string
-	if resp.StatusCode == http.StatusOK {
-		var rel ReleaseJSON
-		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-			return fmt.Errorf("decoding release.json: %w", err)
-		}
-		if moduleRelease, ok := rel.forModule(mod.ID); ok {
-			downloadURL = moduleRelease.DownloadURL
-			releaseVersion = moduleRelease.Version
-		} else {
-			app.logger.Warn("module missing from multi-module release.json; using fallback URL",
-				"id", mod.ID)
-		}
-	}
-	if downloadURL == "" {
-		// Fallback: use GitHub releases latest download.
-		downloadURL = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s",
-			mod.GithubRepo, mod.AssetName)
-	}
-
-	// 2. Download the tarball.
+	downloadURL, releaseVersion := app.resolveDownloadURL(
+		mod.GithubRepo, mod.DefaultBranch, mod.ID, mod.AssetName)
 	app.logger.Info("downloading module", "id", mod.ID, "url", downloadURL)
-	dlResp, err := client.Get(downloadURL)
+	tmpPath, err := app.downloadToTemp(downloadURL, ".tmp-module-download.tar.gz")
 	if err != nil {
-		return fmt.Errorf("downloading tarball: %w", err)
-	}
-	defer dlResp.Body.Close()
-	if dlResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download returned %d", dlResp.StatusCode)
-	}
-
-	// Save to temp file in /data/UserData/ (not /tmp which is on rootfs).
-	tmpPath := filepath.Join(app.basePath, ".tmp-module-download.tar.gz")
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return err
 	}
 	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("saving tarball: %w", err)
-	}
-	tmpFile.Close()
 
 	// 3. Extract to the correct category directory.
 	categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(mod.ComponentType))
@@ -1335,6 +1724,13 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 	chown := exec.Command("chown", "-R", "ableton:users", modDir)
 	if out, err := chown.CombinedOutput(); err != nil {
 		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
+	}
+
+	// Register whatever boot target the module declares. A refusal is NOT an
+	// install failure: the module works, it just gets no picker row, and the
+	// reason is in the log.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target registration", "id", mod.ID, "err", err)
 	}
 
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
@@ -1392,7 +1788,20 @@ func (app *App) uninstallModule(id string) error {
 			map[bool]string{true: "it", false: "those"}[len(dependents) == 1])
 	}
 	app.logger.Info("uninstalling module", "id", id, "path", modDir)
-	return os.RemoveAll(modDir)
+	if err := os.RemoveAll(modDir); err != nil {
+		return err
+	}
+	// Takes the picker row with it, found by OWNER — boot_target.id is
+	// optional and may differ from the module id.
+	//
+	// Warn-only, like the install path: the module IS gone by now, so
+	// returning reconcile's error would report "uninstall failed" for work
+	// that succeeded — and reconcile fails for reasons that have nothing to
+	// do with this module (a full picker, another payload's id collision).
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target deregistration", "id", id, "err", err)
+	}
+	return nil
 }
 
 // installedDependentsOf lists the modules PRESENT ON DISK that declare `id` in
@@ -1757,6 +2166,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
+		}
+
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub", http.StatusSeeOther)
 
@@ -1835,6 +2251,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
+		}
+
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+tarball", http.StatusSeeOther)
 
@@ -1852,17 +2275,35 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installed := discoverInstalledModules(app.basePath)
+	releaseMeta := app.catalogSvc.GetReleaseMeta()
+	channel := app.channel()
 	type apiModule struct {
 		CatalogModule
 		Installed        bool   `json:"installed"`
 		InstalledVersion string `json:"installed_version,omitempty"`
+		Channel          string `json:"channel"`
+		OfferedVersion   string `json:"offered_version,omitempty"`
+		OfferedIsBeta    bool   `json:"offered_is_beta,omitempty"`
+		BetaAvailable    string `json:"beta_available,omitempty"`
 	}
 	var result []apiModule
 	for _, m := range cat.Modules {
-		am := apiModule{CatalogModule: m}
+		am := apiModule{CatalogModule: m, Channel: channel}
 		if inst, ok := installed[m.ID]; ok {
 			am.Installed = true
 			am.InstalledVersion = inst.Version
+		}
+		rm := releaseMeta[m.ID]
+		am.OfferedVersion = channelVersion(rm, channel)
+		if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			am.OfferedIsBeta = b != "" && versionNewer(b, channelStableVersion(rm))
+		}
+		if app.channelPref.Enabled() && channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			if b != "" && versionNewer(b, channelStableVersion(rm)) {
+				am.BetaAvailable = b
+			}
 		}
 		result = append(result, am)
 	}
@@ -2648,14 +3089,29 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		version = strings.TrimSpace(string(verBytes))
 	}
 
-	// Best-effort catalog fetch for update check.
-	var latestVersion, hostRepo string
-	var updateAvailable bool
+	// Best-effort catalog fetch for update check. Route through the
+	// channel resolver so beta users see the newest beta build (and
+	// their Upgrade button installs it).
+	var latestVersion, hostRepo, hostBetaTeaser string
+	var updateAvailable, offeredIsBeta bool
+	currentChannel := app.channel()
 	cat, err := app.catalogSvc.Fetch()
 	if err == nil && cat != nil {
-		latestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
-		updateAvailable = latestVersion != "" && latestVersion != version
+		var served string
+		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
+		updateAvailable = hostOfferIsUpdate(latestVersion, version)
+		offeredIsBeta = served == ChannelBeta
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && versionNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
 	}
 
 	// Disk usage via stat (simplified).
@@ -2672,6 +3128,9 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		"LatestVersion":   latestVersion,
 		"HostRepo":        hostRepo,
 		"UpdateAvailable": updateAvailable,
+		"OfferedIsBeta":   offeredIsBeta,
+		"BetaTeaser":      hostBetaTeaser,
+		"Channel":         currentChannel,
 		"DiskTotal":       int64(diskTotal),
 		"DiskFree":        int64(diskFree),
 		"DiskUsed":        int64(diskTotal - diskFree),
@@ -2683,6 +3142,54 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		data["DiskPercent"] = int((diskTotal - diskFree) * 100 / diskTotal)
 	}
 	app.render(w, r, "system.html", data)
+}
+
+// handleBoot shows the boot registry as the picker on the device shows it:
+// Schwung first, then every registered target sorted by id, and Stock LAST —
+// the order bs_build_rows (src/host/boot_select_core.c) produces, mirrored by
+// bootPageRows. A page that lists them in another order means "the third row"
+// picks two different targets on the page and at boot. The registered count is shown against bootPickerTargetCap because
+// bs_row_insert_sorted drops the overflow SILENTLY in id order — a dropped
+// row is otherwise unattributable from the device.
+func (app *App) handleBoot(w http.ResponseWriter, r *http.Request) {
+	reg := bootTargetsDir()
+	entries, err := listRegistryEntries(reg)
+	if err != nil {
+		app.logger.Error("listing boot targets", "err", err)
+	}
+	current, _ := readBootDefault(reg)
+	rows := bootPageRows(entries, current)
+
+	var registered int
+	for _, e := range entries {
+		if e.ID != "schwung" {
+			registered++
+		}
+	}
+	data := map[string]any{
+		"Title":      "Boot",
+		"Active":     "boot",
+		"Rows":       rows,
+		"Registered": registered,
+		"Cap":        bootPickerTargetCap,
+		"OverCap":    registered > bootPickerTargetCap,
+		"Flash":      r.URL.Query().Get("flash"),
+	}
+	app.render(w, r, "boot.html", data)
+}
+
+// handleBootSetDefault writes the chosen boot default. setBootDefault refuses
+// an id that is neither "stock" nor registered, so a typo'd or removed id
+// cannot be written here.
+func (app *App) handleBootSetDefault(w http.ResponseWriter, r *http.Request) {
+	id := r.FormValue("id")
+	if err := app.setBootDefault(id); err != nil {
+		http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Could not set default: "+err.Error())+"&flash_type="+flashError,
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Boot default is now "+id)+"&flash_type="+flashSuccess,
+		http.StatusSeeOther)
 }
 
 // handleSystemRepair shows the dedicated repair page with the SSH
@@ -2716,12 +3223,18 @@ func (app *App) handleSystemRepairRecheck(w http.ResponseWriter, r *http.Request
 }
 
 func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) {
-	cat, err := app.catalogSvc.Fetch()
+	// Refresh, not Fetch: the user pressed a button that says it checks.
+	cat, err := app.catalogSvc.Refresh()
 	if err != nil {
 		http.Redirect(w, r, "/system?flash=Failed+to+check:+"+err.Error(), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/system?flash=Latest+version:+"+cat.Host.LatestVersion, http.StatusSeeOther)
+	version, _, served := hostResolveForChannel(cat.Host, app.channel())
+	msg := "Latest+version:+" + version
+	if served == ChannelBeta {
+		msg += "+(beta)"
+	}
+	http.Redirect(w, r, "/system?flash="+msg, http.StatusSeeOther)
 }
 
 func (app *App) setUpgradeStatus(status string) {
@@ -2751,11 +3264,17 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Compare versions.
+	// 2. Compare versions. Route through the channel resolver so a
+	// beta user's Upgrade button installs the beta build, not the
+	// stable one, and quietly falls back onto stable once stable
+	// catches up.
 	verBytes, _ := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
 	installedVersion := strings.TrimSpace(string(verBytes))
-	latestVersion := cat.Host.LatestVersion
-	downloadURL := cat.Host.DownloadURL
+	latestVersion, downloadURL, servedChannel := hostResolveForChannel(cat.Host, app.channel())
+	app.logger.Info("host upgrade resolved",
+		"requested_channel", app.channel(),
+		"served_channel", servedChannel,
+		"version", latestVersion)
 
 	if latestVersion != "" && latestVersion == installedVersion {
 		http.Redirect(w, r, "/system?flash=Already+up+to+date+("+installedVersion+")", http.StatusSeeOther)
@@ -3561,6 +4080,9 @@ func main() {
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
+	releaseMetaURL := flag.String("release-meta-url", "",
+		"Override the release-metadata.json URL (default: the catalog site). "+
+			"Lets update detection be exercised against a fixture.")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	// Deprecated flags — accepted but ignored for backwards compatibility with old entrypoints.
 	flag.String("move-backend", "", "(deprecated, ignored)")
@@ -3615,7 +4137,8 @@ func main() {
 	app := &App{
 		tmpl:         tmpl,
 		fileSvc:      &FileService{AllowedRoots: allowedRoots},
-		catalogSvc:   NewCatalogService(*catalogURL, basePath),
+		catalogSvc:   NewCatalogService(*catalogURL, *releaseMetaURL, basePath),
+		channelPref:  NewChannelPref(basePath),
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
@@ -3635,6 +4158,13 @@ func main() {
 	// entrypoint, so we can finish the install and reboot once.
 	app.healShimIfStale()
 
+	// Make the boot registry agree with what is on disk before anything can
+	// install, uninstall, or boot off a stale row. Never fails startup — a
+	// refused target just gets no picker row, logged.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target reconcile at startup", "err", err)
+	}
+
 	mux := http.NewServeMux()
 
 	// Static files.
@@ -3653,6 +4183,7 @@ func main() {
 	mux.HandleFunc("POST /modules/update-all", app.handleModuleUpdateAll)
 	mux.HandleFunc("POST /modules/install-all", app.handleModuleInstallAll)
 	mux.HandleFunc("POST /modules/install-custom", app.handleCustomInstall)
+	mux.HandleFunc("POST /modules/channel", app.handleModulesChannelSet)
 
 	// Module assets.
 	mux.HandleFunc("GET /modules/{id}/assets", app.handleModuleAssets)
@@ -3662,6 +4193,12 @@ func main() {
 
 	// API (JSON).
 	mux.HandleFunc("GET /api/modules", app.handleAPIModules)
+
+	// Clip-state debug (see clip_debug.go).
+	mux.HandleFunc("GET /clip-state", app.handleClipState)
+	mux.HandleFunc("GET /api/clip-state", app.handleAPIClipState)
+	mux.HandleFunc("POST /clip-state/arm", app.handleClipStateArm)
+	mux.HandleFunc("POST /clip-state/reset", app.handleClipStateReset)
 	mux.HandleFunc("POST /api/modules/{id}/install", app.handleAPIModuleInstall)
 
 	// Files.
@@ -3684,6 +4221,15 @@ func main() {
 	mux.HandleFunc("GET /modules/{id}/settings/values", app.handleConfigModuleValues)
 	mux.HandleFunc("POST /modules/{id}/settings/set", app.handleConfigModuleSet)
 	mux.HandleFunc("POST /modules/{id}/settings/clear", app.handleConfigModuleClearSecret)
+
+	// Boot — the picker's rows, from the web UI. See docs/BOOT_TARGETS.md.
+	mux.HandleFunc("GET /boot", app.handleBoot)
+	mux.HandleFunc("POST /boot/default", app.handleBootSetDefault)
+
+	mux.HandleFunc("GET /platforms", app.handlePlatforms)
+	mux.HandleFunc("POST /platforms/{id}/install", app.handlePlatformInstall)
+	mux.HandleFunc("POST /platforms/{id}/update", app.handlePlatformInstall) // install IS update
+	mux.HandleFunc("POST /platforms/{id}/uninstall", app.handlePlatformUninstall)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)

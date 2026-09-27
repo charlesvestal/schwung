@@ -58,6 +58,27 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 
   Get it wrong and the module does not load, with **no error on screen** — the only symptom is one line in `debug.log`: `dlopen failed: ... cannot open shared object file`. The failure mode is worth stating because the rules differ: copying an audio FX's build script to make a sound generator produces `<id>.so`, which is correct for the template and silently wrong for the copy. Set `dsp` to match whichever name your type requires, so the two agree.
 
+### `boot_target`
+
+A module that ships a binary worth booting into directly (or a platform
+payload's `platform.json`) can declare a top-level `boot_target` block and let
+Schwung Manager register it as a row in the boot selector's picker:
+
+```json
+"boot_target": { "id": "v", "name": "V", "exec": "entry.sh" }
+```
+
+- `id` (optional, defaults to your module id) matches `[a-z0-9-]+` and must
+  not be `schwung` or `stock`.
+- `name` is 1–24 printable-ASCII characters and must not contain `"` or `\`.
+- `exec` is **relative to your own module directory** — a payload never states
+  where it is installed, so the manager composes the absolute path.
+
+The manager writes the registry entry with an `owner` field and never touches
+one it does not own, so this is safe to declare alongside ordinary module
+fields. See `docs/BOOT_TARGETS.md` for the whole contract — validation
+details, the 14-target cap, and why the name rules are stricter than they look.
+
 ### Capabilities
 
 Add capability flags to enable special module behaviors. You can group them under
@@ -84,6 +105,7 @@ for keys anywhere in `module.json`).
 | `audio_in` | Module uses audio input |
 | `midi_in` | Module processes MIDI input |
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
+| `touch_observe` | Sound generator receives raw capacitive touch edges for Knobs 1–8 (notes 0–7) and the jog wheel (note 9) in `on_midi`, in the same SPI frame, with `source == MOVE_MIDI_SOURCE_TOUCH` (5). That source is how a touch is told apart from a played note 0–9. Touches go to the synth ONLY — never to the slot's MIDI FX, LFO retrigger, audio FX or Move's track. Master-volume touch (note 8) and external-cable notes are excluded. Opt in only for latency-sensitive performance control. |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
@@ -493,6 +515,15 @@ schwungRemote.setParam(comp + ":mix", "0.5");
 for *your* component, so they need no prefix. A page that ignores
 the flag defaults to `synth` and behaves exactly as before.
 
+**The module's page in the manager links the web UI once per place
+the module is loaded** — "Open web UI: Track 2 Synth", "Master FX 3",
+"Tool" — each carrying the same query the Remote UI's pop-out button
+builds. There is no bare link: opened with no query, the page falls
+back to slot 0 as `synth` and drives whatever is loaded on Track 1.
+Not loaded anywhere means no button. The one exception is an
+overtake/tool module with no DSP, which has no place to find and is
+linked on the tool channel.
+
 ### File layout
 
 ```
@@ -609,6 +640,36 @@ That means:
   HTML support (see `docs/plans/2026-04-08-remote-ui-plan.md`
   Task 5). Bump `min_host_version` in your catalog entry if your
   module depends on it.
+- **A panel that never appears was FOLDED, not missing.** A section's fold
+  state is DERIVED from what the component is (a component that ships a panel
+  opens; the lead position opens; the rest fold) and records only what the
+  user clicked — the right default depends on the `custom_ui` message, which
+  arrives after the slot state is built. Both render paths draw components in
+  one order, signal flow: `midi_fx1, synth, fx1, fx2`.
+- **`viz.extra_keys` reach the browser.** A widget may name a value that owns
+  no cell of its own (see `docs/PARAM_PAGES.md`), and a panel driven by one is
+  blind without it. Every path that completes an initial value send fetches
+  the extras — the `state` fast path returns early, so fixing only the
+  streaming path is invisible — and sends them FIRST: they are what the panel
+  draws with; the ordinary controls can populate a beat later. It reads every
+  spelling the device reads (`viz.extra_keys`, `viz.extraKeys`, and an
+  `as_page` canvas param's own `extra_keys` / `extraKeys`) under the device's
+  cap of four per declaration, plus a ceiling of 16 per component because the
+  browser reads every page's extras at once. Slot components only — a Master
+  FX panel does not receive extras.
+- **A declaration read that did not ANSWER is not "declares nothing".** The
+  key list is cached per component, but a timed-out read or the `""` a module
+  serves while still loading is believed for 5 s, not until the next module
+  swap — otherwise the first read after a load latched the pump off.
+- **An extra key is DERIVED, so no write ever names it.** The notify ring
+  carries the key that was written; a viz extra is computed from whatever
+  edit landed. A change to any of a component's params therefore refreshes
+  its extras (throttled to 150 ms, cached key list, no read at all when no
+  browser is subscribed), and a 500 ms heartbeat carries what no write
+  announces — the transport, or a worker thread finishing. Only values that
+  moved are sent. One push per component at a time: two overlapping reads
+  answer in channel order, and the browser then gets an older value after a
+  newer one, which presents as a playhead jumping backwards.
 
 ### Remote UI for overtake tools (the Tool tab)
 
@@ -1676,6 +1737,38 @@ Supported condition fields:
 
 Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
+#### The gate does not need a cell
+
+A condition's `param` does not need a knob of its own, so **a gate may be a
+value the player never turns** — a
+derived mode the module publishes and refuses writes to. That is the normal
+shape for a multi-engine instrument: a drum machine where the pad you hit
+selects the voice, and a cymbal wants different pages from a drum, publishes
+`ui_engine` and gates its two page sets on it.
+
+**It is an event, not a poll.** A gate whose value only moves because of a
+write from the grid already re-plans — the write path does it, and the planner
+reads whatever else the condition needs on demand. Nothing extra is read for
+those, so a module gated on one of its own knobs costs exactly what it costs
+today. The gates are read only when the grid learns of a move it did not
+cause: a live pad press, or the module changing its own focus.
+
+When that happens the gate keys of the WHOLE hierarchy are eligible, not just
+those of the level you are standing on — a level that is currently hidden must
+be able to come back. A gate declared on a child level is read for the
+instance the grid is showing (`pad3_type` for a `{ "param": "type" }` on a
+`child_prefix: "pad"` level), exactly as the condition itself is evaluated. They share the cap and the budget of a canvas page's
+`extra_keys`: at most four, one read per stop.
+
+**Four counts distinct gate PARAMS, not values or levels.** A drum machine
+with ten engines publishes one `ui_engine` taking ten values and gates every
+engine's pages on it — that is one key, however many levels read it. The cap
+only binds a module with more than four *independent* modes.
+
+`validate.mjs` does not report a gate as `unreachable-params`. Having no cell
+is what it is for, and giving one to a derived value would only let the player
+disagree with whatever derives it.
+
 ### Parameter visualisations (`viz`)
 
 A knob page can draw a parameter *group* as a picture instead of separate
@@ -2424,12 +2517,145 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
+- `enterable` (optional): The canvas has navigation inside it — see below (default `false`).
+- `extra_keys` (optional): Up to four additional parameter values used by an authored canvas page or bounded fullscreen live feed.
+- `fullscreen_live_ms` (optional): In fullscreen mode, refresh declared `extra_keys` at this interval and call `onValues(ctx, { values, nowMs })`. Clamped to at least 50 ms; omit it for no fullscreen reads. Keys are read one per tick and delivered together; a read that did not complete is `null`.
 
 Behavior notes:
 
 - Clicking the parameter enters a dedicated fullscreen canvas view.
 - Set `show_value: false` for button-style canvas entries that should not show a value.
-- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `onValues`, `tick`, `draw`, `onClose`, `onExit`.
+- `draw` and `tick` still receive no parameter accessors. Use the bounded
+  `onValues` payload instead of reading on the draw path.
+
+##### `enterable`: a canvas you navigate, not just look at
+
+By default a canvas gets the jog **wheel** and the knobs, while the host keeps
+the jog **click** and **Back** as the two ways out. That suits a visualiser you
+glance at and leave — a scope, a meter, a waveform.
+
+It does not suit anything **nested**. A file browser needs "enter this folder"; a
+settings menu needs "open this submenu"; and the only gesture that means enter
+is the one the host spends on leave. So a canvas cannot express a hierarchy
+unless it says it has one:
+
+```json
+{ "key": "browse", "name": "Browse", "type": "canvas",
+  "canvas_script": "browser.js", "enterable": true }
+```
+
+With `enterable: true`:
+
+- **the jog click is yours.** It arrives at `onMidi` as an ordinary CC like the
+  wheel does. Nothing else changes about input.
+- **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
+  yours to intercept, and not something to design around. It is there for when
+  your navigation goes wrong, or when someone four levels in wants out.
+- **`ctx.measureText(text)`** returns the drawn width of a string in the device
+  font, for laying out your own chrome. Available on the draw path; it is a
+  glyph-table sum, not a round trip.
+
+**On fonts:** `ctx.print` draws in the device's 5×7. The host's own chrome — hint
+rows, headers, knob labels — is drawn in a 4×5 the canvas does not expose, so a
+footer you draw in the default font is legible but visibly foreign. If you want
+your chrome to match, **carry the font**: the table is data and the blitter needs
+only `fillRect`, which you already have. `schwung-dr32`'s `browser.js` does
+exactly this in about a hundred lines. That keeps a screen you own drawable by
+you alone, rather than pending a host release.
+- **`ctx.shiftHeld()`** tells you whether Shift is down. Ask it rather than
+  watching CC 49: the host reads Shift from shared memory and the CC does not
+  reliably reach a canvas. Available on the draw path, so a module drawing its
+  own footer can advertise the escape hatch only while it is live.
+
+If you draw your own chrome, set **`show_footer: false`** on the param and the
+host draws nothing at all — the screen is yours, including the bottom rows.
+- **Back asks you first**, through a `handleBack(ctx)` hook:
+
+```javascript
+globalThis.canvas_overlay = {
+    handleBack(ctx) {
+        if (atTopLevel()) return false;   // "I'm at my top" -> the host closes
+        goUpOneLevel();
+        return true;                      // "I handled it"  -> you stay inside
+    },
+    onMidi(ctx, msg) { /* the click is in here now */ },
+    draw(ctx) { /* ... */ },
+};
+```
+
+So you implement a way **up**, never a way **out**: return `false` (or omit the
+hook) once you have run out of levels and the host does what it would have done
+anyway. A hook that throws disables the overlay and cannot consume the press, so
+a script that dies mid-navigation still leaves on the next Back.
+
+Holding Back is not required, and there is no special escape gesture. A canvas
+that wrongly claims Back forever holds it on its own screen only — changing
+track, swapping the module and leaving the editor all take the user out without
+consulting it.
+
+##### Leaving, and hearing the pads
+
+Two more things an enterable canvas can do.
+
+**`ctx.close()`** dismisses the screen from inside a gesture. Use it when the
+job is finished — picking the sample *is* leaving a sample browser, and making
+the user press Back afterwards is one gesture too many on the commonest path.
+It is not available from `draw` or `tick` (a screen must not tear itself down
+mid-render), and a host that predates it simply leaves the canvas up, so guard
+with `typeof ctx.close === "function"` if you care about older hosts.
+The close happens when your hook **returns**, not inside the call, so it is
+safe from `handleBack` too — return whatever you like after it; the host leaves
+exactly once.
+
+**`wantsPads: true`** on the overlay asks for hardware pad notes (68–99):
+
+```javascript
+globalThis.canvas_overlay = { wantsPads: true, onMidi(ctx, msg) { /* ... */ } };
+```
+
+Opening a canvas leaves the knob grid, and the grid is what normally reconciles
+pad observation — so without this a canvas hears knob touches but not pads.
+It is **passive**: the pad still plays, and your screen is told as well. That
+matters for an audition, where the point of hitting the pad is to hear what you
+just loaded at the velocity you hit it with. The note is the raw pad number,
+which a sequencer cannot produce, so it means "a finger hit this pad".
+
+##### `enterable` on an `as_page` canvas: your page becomes a door
+
+The same flag on a page (`as_page: true`) makes that page a **door** — the host
+concept menus, preset browsers and items lists already use. It is not entered on
+arrival: you page onto it normally, the bracket frame shows it can be entered,
+and a click goes in.
+
+While entered, the jog and the click are delivered to your `onMidi` as **CC 14**
+and **CC 3** — the bytes the hardware actually sends — so one script serves a
+page and a fullscreen dive without knowing which it is on. Back takes the same
+`handleBack` contract, so one hook means one thing on both routes.
+
+The eight knobs **stay with the level**, entered or not, exactly as they do
+inside every other door. A page that wants them will need a future
+`claims_knobs`; nothing has needed it yet.
+
+Three things worth knowing before you declare it:
+
+- **`enterable` + `preset_browser` is refused.** A preset page is already a door
+  with every control spoken for — the wheel browses, the knobs stay on the level
+  so the sound is still editable while you browse, and click and Back are its own
+  enter and exit. Declaring both leaves the page not enterable rather than
+  silently choosing a winner.
+- **Shift+click still opens the section picker** from inside a door, so a page
+  is never somewhere a user can be stuck.
+- **Shift+jog pages out**, of a door and of a fullscreen dive alike, and is
+  never offered to your module.
+
+- **`state` is shared between your hooks and `drawPage`**, per slot: what
+  `onMidi` puts in `ctx.state` arrives as `drawPage`'s `state` field. The hook
+  `ctx` carries the same non-drawing methods as a dive's (`getParam`,
+  `setParam`, `getValue`, `setValue`, `measureText`, `shiftHeld`, `now`,
+  `random`, `close`), so one script serves both routes.
+
+See `CANVAS_PAGES.md` for the model this belongs to.
 
 #### Custom widgets (`drawCell`)
 
@@ -2672,7 +2898,7 @@ nothing else, so a `"hidden": true` would be read by no one.)
 
 ```javascript
 globalThis.canvas_overlay = {
-    drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
+    drawPage(ctx, { values, base, keys, touched, nowMs, preset, state }) {
         /* ctx is frame-scoped to the BODY BAND. (0,0) is its top-left. */
     },
 };
@@ -3315,6 +3541,35 @@ that *also* has a waveform editor behind it. The predicate is `alsoOpens()` in
 
 Module authors influence all of this only through `type`, `options`, and
 whether a `wav_position` declares `min`/`max`.
+
+### `display: "big"` — a value that is read, not aimed
+
+```json
+{ "key": "cond", "name": "Condition", "type": "enum",
+  "options": ["1:1", "1:2", "2:2", "3:4"], "display": "big" }
+```
+
+The cell draws the value in the big face instead of an arc or an enum square.
+Small counted ints already get it without asking; this is for everything else
+of the same shape — a trig condition, a swing percentage, a clip length.
+Optional and inert when absent.
+
+- It works on enums too, and draws the option (`short_options` first).
+  Turning it raises no option panel: the cell already shows the answer.
+- The text a host supplies through `formatValue` wins when it fits, so `54%`
+  can carry its unit.
+- **It must fit.** The face spells `0-9 + - : % / .` and the note names `A-G #`, and the widest thing the
+  cell can ever show must fit in 30px. If it does not, the cell keeps the
+  widget it would have had — an option list with a word in it stays an enum
+  square — so a declaration can never smear into the next cell.
+
+### `turn: "absolute"` — a two-option choice that has an order
+
+A two-option enum drawn as a box TOGGLES on a turn, either way, because the box
+shows a state and not a direction. If your two options are ordered — Chromatic
+then In Key, Off then Latch — declare `"turn": "absolute"` and clockwise lands
+on the second option and stays there, counter-clockwise on the first. It still
+draws as the box; only the knob changes. Optional and inert when absent.
 
 ### Knob Acceleration
 

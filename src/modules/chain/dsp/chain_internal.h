@@ -189,6 +189,11 @@ typedef struct mod_source_contribution {
     int active;
     char source_id[32];
     float contribution;
+    /* An OVERRIDE carries an absolute value in `contribution` and replaces the
+     * base rather than adding to it. That is what an automation lane is: the
+     * lane IS the value, the knob is the base underneath it. Offsets from
+     * LFOs still sum on top, so the two compose. */
+    int is_override;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -548,7 +553,8 @@ typedef struct chain_instance {
      *
      * Written on the SPI callback: a plain int store, nothing else. */
     int synth_last_note;
-    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */
+    int synth_touch_observe; /* capabilities.touch_observe on the synth */
 
     /* Voices this synth can render into separate buffers, in the module's own
      * declared order — the index here IS the voice_out[] index handed to
@@ -800,6 +806,27 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
+    /* Clip phase, pushed by the shim once per block through the dlsym'd
+     * chain_set_clip_phase(). NOT read from host_api_v1_t: its `reserved` tail
+     * begins at +120, the exact offset a shipped breakbeat build calls as
+     * get_project_bpm(), so a live pointer there passes breakbeat's own
+     * if (host->fn) guard and SIGSEGVs on the SPI callback at slot restore --
+     * which boot-loops the device. Same reason move_plugin_render_split is
+     * dlsym'd rather than a field on plugin_api_v2_t. */
+    int    clip_phase_valid;      /* 0 = UNKNOWN. Not zero. Unknown. */
+    /* CLIP TIME, in quarter notes, which is the coordinate Move's own notes
+     * are in: measured 2026-09-12, a clip whose region/loop is 8..20 carries
+     * notes at startTime 0.0, 9.5 and 16.5 -- so notes are absolute from the
+     * clip's start and the loop is a WINDOW over them. Storing a lane in the
+     * same coordinate is what makes "the automation lines up with the notes"
+     * definitional instead of something we maintain.
+     *
+     * And the unit is the QUARTER, not the signature's beat: changing the set
+     * to 11/8 changed not one number in the file. So nothing here needs the
+     * time signature -- only converting BARS does, which is the strip reader's
+     * problem alone (quarters per bar = upper * 4 / lower). */
+    double clip_phase_beats;      /* quarters from the clip's start */
+
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
     float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
@@ -899,6 +926,16 @@ typedef struct chain_instance {
      * module.json; shim must never park the slot as fx_idle so stateful FX
      * (loopers, modulated delays) keep advancing internal time during silence. */
     int fx_requires_continuous[MAX_AUDIO_FX];
+
+    /* 1 = the SYNTH must never be parked by the shim's silence-skip either.
+     * Set when the sound generator's module.json declares
+     * capabilities.requires_continuous_processing, and IMPLIED for any synth
+     * that consumes line input (synth_consumes_line_input): such a module's
+     * output follows a jack the host never inspects and it receives no MIDI,
+     * so once the shim parks it on silence nothing exists to wake it inside
+     * the ~0.5 s probe interval — which reads to the user as the input being
+     * gated. */
+    int synth_requires_continuous;
     
     /* Synth load error message */
     char synth_load_error[256];
@@ -1135,6 +1172,7 @@ CHAIN_INTERNAL int json_get_int(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_int_in_section(const char *json, const char *section_key, const char *key, int *out);
 CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *section_key, const char *key, int *out);
+CHAIN_INTERNAL int json_get_flag_in_section(const char *json, const char *section_key, const char *key);
 CHAIN_INTERNAL int json_get_section_bounds(const char *json, const char *section_key, const char **out_start, const char **out_end);
 CHAIN_INTERNAL int json_get_string(const char *json, const char *key, char *out, int out_len);
 CHAIN_INTERNAL int json_get_string_in_section(const char *json, const char *section_key, const char *key, char *out, int out_len);
@@ -1177,6 +1215,7 @@ CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
+CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

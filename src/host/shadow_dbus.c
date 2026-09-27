@@ -32,6 +32,8 @@
 
 #include "shadow_dbus.h"
 #include "metronome_announce.h"
+#include "editor_bar_announce.h"
+#include "mute_follow.h"
 
 /* ============================================================================
  * Internal state
@@ -64,6 +66,25 @@ volatile int in_set_overview = 0;
  * volatile int, the same as in_set_overview above.
  */
 volatile int shadow_metronome_on = 0;
+
+/*
+ * Move's step-editor page, 1-based, 0 = not yet announced.
+ *
+ * The ONLY external statement of which page the editor is on. The playhead
+ * cannot supply it -- it is visible exactly when the displayed page contains
+ * it, so deriving the page from the playhead assumes the phase you wanted to
+ * check. Not persisted: it is Move's live UI state and stale is worse than
+ * absent.
+ *
+ * Written on the D-Bus monitor thread, read by the worker. A plain volatile
+ * int, like shadow_metronome_on above.
+ */
+volatile int shadow_editor_bar = 0;
+volatile unsigned shadow_editor_bar_seq = 0;
+
+/* Which slot Move's next "<name> muted"/"unmuted" belongs to. Fed by the
+ * shim's Mute / Track scan on the SPI callback, read here. See mute_follow.h. */
+mute_follow_t shadow_mute_follow = { 0, -1, 0 };
 
 bool tts_priority_announcement_active = false;
 uint64_t tts_priority_announcement_time_ms = 0;
@@ -209,6 +230,14 @@ static void shadow_dbus_handle_text(const char *text)
         host.log(msg);
     }
 
+    {
+        int bar = editor_bar_parse(text);
+        if (bar > 0) {
+            shadow_editor_bar = bar;
+            shadow_editor_bar_seq++;
+        }
+    }
+
     /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
      * press reaches Move's native firmware instead of being captured by us.
      * Also signal the JS UI to save all state before power-off. */
@@ -254,8 +283,14 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Track native Move sampler source from stock announcements. */
-    host.native_sampler_update(text);
+    /* No sampler-source classifier here any more. It matched bare substrings
+     * ("mic", "line in", "usb-c") against EVERY announcement reaching this
+     * function — including Schwung's own TTS, which returns through it — and
+     * latched the verdict for the session. Captured on hardware: Move's USB-C
+     * *output* menu row and Schwung's own Global Settings rows were the only
+     * things that ever moved it, and it fed a gate no shipped UI could reach.
+     * See metronome_announce.h, two calls below, for the rule this file has
+     * already learned once. */
 
     /*
      * Move's metronome, from Move's own notification.
@@ -275,6 +310,41 @@ static void shadow_dbus_handle_text(const char *text)
                 snprintf(msg, sizeof(msg), "Metronome: Move reports %s",
                          now_on ? "ON" : "OFF");
                 host.log(msg);
+            }
+        }
+    }
+
+    /*
+     * Move's track mute / solo, followed onto the slot the GESTURE named. The
+     * text gives only the state; the track comes from mute_follow_target(),
+     * which is -1 unless Mute was just pressed with a track (or alone) — never
+     * for Mute+pad, whose drum-cell announcement has the same shape. Before
+     * the priority-announcement block below, which would otherwise drop Move's
+     * answer whenever Schwung happened to be speaking.
+     */
+    {
+        mute_announce_t ma = mute_announce_classify(text);
+        if (ma != MUTE_ANNOUNCE_NONE) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+            int slot = mute_follow_target(&shadow_mute_follow, now_ms);
+            if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
+                int is_solo = (ma == MUTE_ANNOUNCE_SOLOED || ma == MUTE_ANNOUNCE_UNSOLOED);
+                int want = (ma == MUTE_ANNOUNCE_MUTED || ma == MUTE_ANNOUNCE_SOLOED);
+                int have = is_solo ? host.chain_slots[slot].soloed : host.chain_slots[slot].muted;
+                if (have != want) {
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "Mute follow: Move says %s -> slot %d",
+                             is_solo ? (want ? "soloed" : "unsoloed")
+                                     : (want ? "muted" : "unmuted"), slot);
+                    host.log(msg);
+                }
+                if (is_solo) {
+                    if (host.apply_solo) host.apply_solo(slot, want);
+                } else if (host.apply_mute) {
+                    host.apply_mute(slot, want);
+                }
             }
         }
     }
@@ -374,7 +444,10 @@ static void shadow_dbus_handle_text(const char *text)
      * until manually un-muted. The pads_held guard was timing-fragile and only
      * caught a subset. Deliberate slot mute/solo is set directly by the
      * Mute+Track / Shift+Mute+Track combos in schwung_shim.c, so removing the
-     * text-based sync loses no intended behavior. */
+     * text-based sync loses no intended behavior.
+     *
+     * Both came back, above, in the one form that is safe: the TRACK is named
+     * by the gesture and only the STATE is read from the text. */
 
     /* After receiving any screen reader message from Move, inject our pending announcements */
     shadow_inject_pending_announcements();

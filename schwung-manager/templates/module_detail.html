@@ -156,19 +156,35 @@
             <dd>
                 {{if isInstalled .Module.ID .Installed}}
                     <a href="{{releaseURL .Module.GithubRepo (index .Installed .Module.ID).Version}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (index .Installed .Module.ID).Version}}</code></a>
-                    {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
-                        <a class="update-available" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}} available</a>
+                    {{if hasUpdate .Module.ID .Installed .ReleaseMeta .Channel}}
+                        <a class="update-available" href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer">{{versionStr (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}} available</a>
+                        {{if channelIsBeta (releaseMeta .Module.ID .ReleaseMeta) .Channel}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}
                     {{else}}
                         <span class="text-muted">up to date</span>
                     {{end}}
+                    {{if $.BetaEnabled}}{{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
+                        <span class="beta-teaser" title="Enable Beta channel on the Modules page to install this pre-release">beta {{versionStr .}} available</span>
+                    {{end}}{{end}}
                 {{else}}
-                    {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
-                        <a href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</code></a>
+                    {{if (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}
+                        <a href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}</code></a>
+                        {{if channelIsBeta (releaseMeta .Module.ID .ReleaseMeta) .Channel}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}
                     {{else}}
                         <span class="text-muted">—</span>
                     {{end}}
+                    {{if $.BetaEnabled}}{{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
+                        <span class="beta-teaser" title="Enable Beta channel on the Modules page to install this pre-release">beta {{versionStr .}} available</span>
+                    {{end}}{{end}}
                 {{end}}
             </dd>
+
+            {{if .BetaEnabled}}
+            <dt>Channel</dt>
+            <dd>
+                <span class="channel-value">{{if eq .Channel "beta"}}Beta{{else}}Stable{{end}}</span>
+                <span class="text-muted">&mdash; <a href="/modules">change</a></span>
+            </dd>
+            {{end}}
 
         </dl>
     </div>
@@ -176,12 +192,15 @@
     {{if not .BuiltIn}}
     <div class="detail-actions" aria-label="Module actions" role="group">
         {{if isInstalled .Module.ID .Installed}}
-        {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
+        {{if hasUpdate .Module.ID .Installed .ReleaseMeta .Channel}}
         <form method="POST" action="/modules/{{.Module.ID}}/update" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-primary">Update to {{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
+            <button type="submit" class="btn btn-primary">Update to {{versionStr (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}</button>
         </form>
-        <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
+        <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
+        {{end}}
+        {{range .WebUI.Links}}
+        <a class="btn btn-secondary" href="{{.URL}}" target="_blank" rel="noopener">Open web UI{{with .Where}}: {{.}}{{end}}</a>
         {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Module.Name}}?" data-confirm-title="Uninstall" data-confirm-label="Uninstall" data-confirm-danger="true">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -192,11 +211,14 @@
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-primary">Install {{.Module.Name}}</button>
         </form>
-        {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
-        <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
+        {{if (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}
+        <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
         {{end}}
         {{end}}
     </div>
+    {{if and .WebUI.Present (not .WebUI.Links)}}
+    <p class="text-muted">{{if .WebUI.Unknown}}This module has a web UI, but the device did not answer when asked where it is loaded. Reload to try again, or open it from <a href="/remote-ui">Remote UI</a>.{{else}}This module has a web UI, which opens against a loaded copy of it. Load the module to open it here.{{end}}</p>
+    {{end}}
     {{else}}
     <p class="text-muted">Built-in module — included with Schwung.</p>
     {{end}}

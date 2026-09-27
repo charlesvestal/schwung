@@ -64,6 +64,24 @@ import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs'
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
+/*
+ * TRUE only inside enterParamPages, between the controller existing and the
+ * view flipping to PARAM_PAGES.
+ *
+ * ⚠ THE FIRST PLAN HAPPENS INSIDE THAT WINDOW. controller.load() below builds
+ * the page set, and evaluateVisibilityCondition decides whose slot a
+ * `visible_if` reads against by asking whether the grid is up -- which, on the
+ * way up, it is not yet. So the very first plan resolved every condition
+ * against the LIST editor's slot (-1 from here), read null, and took the
+ * fail-open branch: every gated level visible, exactly the bug
+ * test_grid_visible_if_context.sh pins, one step earlier in the lifecycle.
+ *
+ * setView is NOT moved ahead of the load to fix it: it closes the knob card
+ * and clears the touch set, and reordering those against the load is a much
+ * larger blast radius than saying plainly that the grid is the context while
+ * it is being built.
+ */
+let entering = false;
 
 /*
  * Whether the shim should be forwarding hardware pad notes to us. Reconciled
@@ -300,8 +318,25 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
          */
         controller = createController(Object.assign({
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
-            setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
+            /* A write while Record is lit and the clip phase is UNKNOWN records
+             * no lane, and the user has to be told -- Record lit plus a moving
+             * knob plus no lane is indistinguishable from a broken feature.
+             * The host gates itself to once per gesture, reads included, so
+             * this costs a detent nothing (see noteLaneWriteRefusal). */
+            setParam: (key, value) => {
+                if (typeof ctx.noteLaneWriteRefusal === 'function')
+                    ctx.noteLaneWriteRefusal(currentSlot, key);
+                return ctx.setSlotParam(currentSlot, key, value);
+            },
             announce,
+            /* THE SHIM'S CONFIRMATION COUNTER, so a p-lock that landed can be
+             * recognised without asking the refusal registers at all. Bumped
+             * only when a lock is confirmed, which makes it provenance rather
+             * than timing -- see judgePendingRefusal. */
+            plockSeq: () => {
+                if (typeof shadow_get_plock_seq !== "function") return null;
+                try { return shadow_get_plock_seq(); } catch (e) { return null; }
+            },
             /* The list editor marks these with "~"; the grid ticks the cell.
              * A synthesised contract may answer for itself — slot settings
              * does, because the generic oracle both got it wrong for `slot:*`
@@ -335,6 +370,16 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
                 if (typeof ctx.drawCanvasPageBody !== 'function') return;
                 ctx.drawCanvasPageBody(currentSlot, currentComponent, drawCtx, band, canvas, payload);
             },
+            /*
+             * One hook on that page's overlay, for a page the module can be
+             * ENTERED into. Same seam and same reason as drawCanvasPage above:
+             * the controller knows which page is on screen, and only the
+             * consumer knows which slot and component that page belongs to.
+             */
+            canvasPageHook: (canvas, hook, payload) => {
+                if (typeof ctx.canvasPageHook !== 'function') return undefined;
+                return ctx.canvasPageHook(currentSlot, currentComponent, canvas, hook, payload);
+            },
         }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
@@ -348,11 +393,16 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * editor slot/component, which is stale while the grid is up — fine for a
      * component (the grid and the list agree on which one), wrong for a
      * synthesised contract, so an io may carry its own. */
-    controller.load({
-        slot, component, prefix: prefix || component,
-        visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
-        paginate: paramPagesPaginate(),
-    });
+    entering = true;
+    try {
+        controller.load({
+            slot, component, prefix: prefix || component,
+            visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
+            paginate: paramPagesPaginate(),
+        });
+    } finally {
+        entering = false;
+    }
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. "List" is the same
      * engine with the knob page arranged as five rows (LAYOUT_LIST). The
@@ -452,6 +502,14 @@ export function paramPagesRevalue() {
 
 export function paramPagesActive() {
     return controller !== null;
+}
+
+/**
+ * Is the grid the context for a visible_if, even though the view has not
+ * flipped to it yet? True only while enterParamPages builds the first plan.
+ */
+export function paramPagesEntering() {
+    return entering;
 }
 
 /** Which component the grid is pointed at, for handing back to the list. */

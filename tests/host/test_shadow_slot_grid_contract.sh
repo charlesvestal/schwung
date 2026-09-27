@@ -79,14 +79,17 @@ function makeSlot(over) {
    * seeing "Main - 2" here means somebody moved them back onto root.
    */
   if (grids.length !== 4) fail("expected 4 grid pages (Main + Sends + two LFOs), got " + grids.length);
-  if (menus.length !== 1) fail("expected one actions menu page, got " + menus.length);
+  /* TWO menus now: Automation and Actions.
+   *
+   * Automation is its own section rather than three rows among the Actions
+   * because its scopes are a SET -- this clip, every clip, undo -- and because
+  if (menus.length !== 1) fail("expected one menu page (Actions), got " + menus.length);
   if (pages[pages.length - 1].kind !== "menu") {
     fail("Actions must come LAST — a level emits its menu before any level it " +
          "navigates to, which is why the menu lives on its own level: " +
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "Sends", "LFO 1", "LFO 2", "Actions"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }

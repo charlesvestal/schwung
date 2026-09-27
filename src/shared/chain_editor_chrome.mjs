@@ -209,7 +209,11 @@ export function drawChainPicker(ctx, o) {
     drawListScreen(ctx, {
         headerLeft: o.headerLeft,
         headerRight: "SELECT",
-        entries: (o.entries || []).map((item) => ({
+        entries: (o.entries || []).map((item) => (item && item.type === "divider")
+            /* A category heading (Sort: Type) is drawMenuList's own divider
+             * row — a captioned rule, never selectable. Passed through whole. */
+            ? { type: "divider", label: item.label || "" }
+            : ({
             name: item.name || item.id || "Unknown",
             /* An entry carrying its OWN value wins — that is the list-filter
              * row, whose value is the current list. Everything else gets the
@@ -275,7 +279,8 @@ export function drawListScreen(ctx, o) {
     drawPageChromeList(ctx,
         { x: MENU_LIST_X, y: MENU_LIST_Y,
           w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
-        entries.map((e) => ({ name: e.name, value: e.value || "" })),
+        entries.map((e) => (e && e.type === "divider")
+            ? e : { name: e.name, value: e.value || "" }),
         o.index);
     drawFooter(ctx, o.footer || [["BACK", "EXIT"]]);
 }

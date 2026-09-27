@@ -13,7 +13,9 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
+#include "playhead_anchor.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
 #include "param_slow.h"    /* attribute a serve that ate the frame — header-only */
@@ -25,6 +27,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
+#include "song_abl_mix.h"
 #include "shadow_state.h"
 #include "shadow_midi.h"
 #include "unified_log.h"
@@ -69,6 +72,7 @@ void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) 
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 int (*shadow_chain_fx_requires_continuous)(void *instance) = NULL;
+int (*shadow_chain_synth_requires_continuous)(void *instance) = NULL;
 void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
                                  int n_sends, int frames,
                                  int slot_volume_0_127) = NULL;
@@ -76,6 +80,19 @@ void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
                                      int n_sends, const int16_t *post_fx,
                                      int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
+/* Optional, and NULL on any chain built before automation lanes. A NULL here
+ * is "phase unknown" for every slot: the call site is guarded, which is the
+ * only degradation that is safe -- see the plan's ABI note for why this is a
+ * dlsym and not a host_api_v1_t field. */
+void (*shadow_chain_set_clip_phase)(void *instance, int valid,
+                                    double phase_beats, double loop_len,
+                                    int track, int clip_slot, int fp_valid,
+                                    const double *fp) = NULL;
+/* The deletion half of the same seam, and optional for the same reason. A NULL
+ * means a deleted clip's lanes are never orphaned -- they go stale instead, by
+ * fingerprint, which is silent and retained either way. */
+void (*shadow_chain_set_clip_deleted)(void *instance, int track,
+                                      int slot) = NULL;
 host_api_v1_t shadow_host_api;
 
 /* Global send buses. Zero-initialised BSS: every position empty, both returns
@@ -98,6 +115,8 @@ static int shadow_chain_slot_recv_channel(void *instance) {
     }
     return -2;
 }
+
+
 int shadow_inprocess_ready = 0;
 
 /* Master FX slots */
@@ -792,6 +811,85 @@ void shadow_apply_mute(int slot, int is_muted) {
     snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
     shadow_log(msg);
     shadow_save_state();
+}
+
+/* Set a slot's solo to a known state, as Move reported it. Exclusive, like
+ * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
+ * and Move announces only the track it soloed. */
+void shadow_apply_solo(int slot, int is_soloed) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    is_soloed = is_soloed ? 1 : 0;
+    if (is_soloed == shadow_chain_slots[slot].soloed &&
+        (!is_soloed || shadow_solo_count == 1)) return;
+    if (is_soloed) {
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            shadow_chain_slots[i].soloed = 0;
+        shadow_chain_slots[slot].soloed = 1;
+    } else {
+        shadow_chain_slots[slot].soloed = 0;
+    }
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        if (shadow_chain_slots[i].soloed) n++;
+    shadow_solo_count = n;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Solo: slot %d %s", slot, is_soloed ? "soloed" : "unsoloed");
+    shadow_log(msg);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    shadow_save_state();
+}
+
+/* Set every slot's mute and solo at once, as Move's Song.abl states them.
+ * Copies the file as-is; Move's solo is exclusive, so it names at most one. */
+void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
+        shadow_chain_slots[i].muted = muted[i] ? 1 : 0;
+        shadow_chain_slots[i].soloed = soloed[i] ? 1 : 0;
+        if (shadow_chain_slots[i].soloed) n++;
+    }
+    shadow_solo_count = n;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Move mix state: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+             muted[0], muted[1], muted[2], muted[3], soloed[0], soloed[1], soloed[2], soloed[3]);
+    shadow_log(msg);
+    shadow_save_state();
+}
+
+/* Boot: read the set Move is loading and take its track mute/solo. File I/O —
+ * init path only, never the SPI callback. Returns 1 if applied. */
+int shadow_sync_mix_from_song(const char *uuid, const char *set_name) {
+    if (!uuid || !uuid[0] || !set_name || !set_name[0]) return 0;
+    char path[768];
+    snprintf(path, sizeof(path), "%s/%s/%s/Song.abl", SAMPLER_SETS_DIR, uuid, set_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 16 * 1024 * 1024) { fclose(f); return 0; }
+    char *buf = malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[got] = '\0';
+    int muted[4], soloed[4];
+    int n = song_abl_mix_parse(buf, muted, soloed);
+    free(buf);
+    if (n < SONG_ABL_MIX_TRACKS) return 0;   /* not a whole answer: keep what we have */
+    shadow_apply_mix_state(muted, soloed);
+    return 1;
+}
+
+/* "m0 m1 m2 m3 s0 s1 s2 s3" -- the JS set-change path's copy of the above. */
+static int shadow_parse_mix_state(const char *value, int muted[4], int soloed[4]) {
+    if (!value) return 0;
+    return sscanf(value, "%d %d %d %d %d %d %d %d",
+                  &muted[0], &muted[1], &muted[2], &muted[3],
+                  &soloed[0], &soloed[1], &soloed[2], &soloed[3]) == 8;
 }
 
 void shadow_toggle_solo(int slot) {
@@ -2437,6 +2535,8 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_process_fx");
     shadow_chain_fx_requires_continuous = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_fx_requires_continuous");
+    shadow_chain_synth_requires_continuous = (int (*)(void *))
+        dlsym(shadow_dsp_handle, "chain_synth_requires_continuous");
     /* Optional, and NULL on any chain built before the send buses landed: the
      * shim null-checks it and the sends simply receive nothing. */
     shadow_chain_drain_sends = (void (*)(void *, int16_t *const *, int, int, int))
@@ -2446,6 +2546,11 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
+    shadow_chain_set_clip_phase =
+        (void (*)(void *, int, double, double, int, int, int, const double *))
+        dlsym(shadow_dsp_handle, "chain_set_clip_phase");
+    shadow_chain_set_clip_deleted = (void (*)(void *, int, int))
+        dlsym(shadow_dsp_handle, "chain_set_clip_deleted");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p midi_wake=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -2454,6 +2559,12 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: synth_keep_alive=%p",
+            (void*)shadow_chain_synth_requires_continuous);
+    unified_log("shim", LOG_LEVEL_INFO,
+            "chain dlsym: clip_phase=%p clip_deleted=%p",
+            (void*)shadow_chain_set_clip_phase,
+            (void*)shadow_chain_set_clip_deleted);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);
@@ -2923,6 +3034,17 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_apply_mute(slot, atoi(value));
         return 1;
     }
+    if (strcmp(key, "slot:move_mix") == 0) {
+        /* All four slots at once, from Move's Song.abl on a set change (the
+         * slot index is ignored). Pure assignment -- the UI did the file read. */
+        int muted[4], soloed[4];
+        if (!shadow_parse_mix_state(value, muted, soloed)) {
+            shadow_log("slot:move_mix: malformed value, ignored");
+            return 1;   /* consumed: never forward a slot key to the plugin */
+        }
+        shadow_apply_mix_state(muted, soloed);
+        return 1;
+    }
     if (strcmp(key, "slot:feedback_hold") == 0) {
         /* JS clears the boot feedback guard once jack state is safe. Pure flag
          * write — the caller separately sets slot:muted to unmute (confirmed) or
@@ -3023,6 +3145,78 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
                                                const char *key,
                                                const char *value);
 
+/* A STEP P-LOCK BECOMES A PHASE HERE, AND ONLY HERE.
+ *
+ * "<target> <param> <step> <value>" in; "<target> <param> <phase> <value>"
+ * out, for the chain's `lanes:plock`. The gesture knows a STEP BUTTON and the
+ * chain understands only a PHASE, and all four facts that bridge them live on
+ * this side: the displayed bar (the strip's bold segment, read off Move's own
+ * screen), the step grid and the time signature (clip_regions), and the clip's
+ * length. So the arithmetic happens once -- neither the UI nor the chain
+ * carries a copy. This feature has already paid twice for computing one fact
+ * in two places.
+ *
+ * CALLED FROM BOTH PARAM PATHS. `shadow_direct_set_param` serves the web UI's
+ * ring buffer; the SHM handler serves the shadow UI and the test daemon. The
+ * first version of this lived in the direct path only, so the key the actual
+ * gesture would use fell through to the chain -- which does not serve
+ * `plock_step` -- and was silently dropped. Measured: no log line at all,
+ * because the branch was never reached.
+ *
+ * Refusals are LOGGED with the reason, because a gesture that does nothing is
+ * indistinguishable from one that worked until the loop comes round.
+ *
+ * Returns 1 with `out` filled, else 0. */
+
+
+
+/* Weak for the same reason: the tests/host units that compile this file
+ * without the shim must still link. */
+
+
+/* Moved ABOVE the translate that uses it, rather than forward-declared: a
+ * declaration matching `^static int shadow_component_param_split` is a
+ * SECOND hit for the awk range tests/host/test_plock_from_write.sh lifts
+ * this function with, and the range then ran to the wrong closing brace. */
+static int shadow_component_param_split(const char *key)
+{
+    if (!key) return 0;
+    const char *c = strchr(key, ':');
+    if (!c || c == key) return 0;
+    size_t n = (size_t)(c - key);
+    if (n == 5 && strncmp(key, "synth", 5) == 0) return (int)n;
+    if (n > 2 && strncmp(key, "fx", 2) == 0) {
+        for (size_t i = 2; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    if (n > 7 && strncmp(key, "midi_fx", 7) == 0) {
+        for (size_t i = 7; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    return 0;
+}
+
+
+/* Defined in schwung_shim.c; see its comment for the two guards it owns.
+ *
+ * WEAK, so the tests/host units that compile this file WITHOUT the shim still
+ * link -- there are several, and they exist to exercise chain management, not
+ * the gesture. The shim's definition is strong and wins wherever both are
+ * present, so the device never sees this one. A test that wants the gesture
+ * supplies its own. */
+
+/* IS THIS A CHAIN COMPONENT'S PARAMETER, and if so where does it split?
+ *
+ * `synth:cutoff`, `fx3:mix`, `midi_fx1:rate` -- the three addresses a lane can
+ * name as its target. Returns the offset of the ':' or 0. Deliberately NOT a
+ * general "has a colon" test: `lanes:`, `slot:`, `buses:` and the rest share
+ * that shape and are not parameters of anything. */
+
+
+
+
+
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Master FX params (web set-ring path). Web-originated sets arrive here via
@@ -3064,6 +3258,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         return;
     }
 
+    
     /* Forward to plugin set_param */
     if (shadow_plugin_v2 && shadow_plugin_v2->set_param &&
         slot < SHADOW_CHAIN_INSTANCES &&
@@ -3817,15 +4012,15 @@ static void pserve_emit(pserve_span_t *ps) {
     if (!ps->sp) return;
     struct timespec w1;
     clock_gettime(CLOCK_MONOTONIC, &w1);
-    uint64_t us = (uint64_t)(w1.tv_sec - ps->w0.tv_sec) * 1000000ull
-                + (uint64_t)(w1.tv_nsec - ps->w0.tv_nsec) / 1000ull;
+    /* The borrow is handled in param_slow_elapsed_us -- see there for what the
+     * obvious form reports instead. */
+    const uint32_t us = param_slow_elapsed_us(&ps->w0, &w1);
     if (us < PARAM_SLOW_THRESHOLD_US) return;
-    if (us > 0xFFFFFFFFull) us = 0xFFFFFFFFull;
 
     /* SHADOW_PARAM_REQ: 1 = set, 2 = get. Read from the request rather than
      * from the response, which a GET has already overwritten by now. */
     param_slow_record(&shim_param_slow, ps->sp->key, ps->sp->slot,
-                      ps->req_type == 1, (uint32_t)us);
+                      ps->req_type == 1, us);
 }
 
 void shadow_inprocess_handle_param_request(void) {
@@ -5033,4 +5228,23 @@ void shadow_chain_refresh_wants_sysex_tick(void)
     if (len <= 0) { shadow_chain_slots[i].wants_sysex = 0; return; }
     buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
     shadow_chain_slots[i].wants_sysex = (atoi(buf) == 1);
+}
+
+void shadow_chain_refresh_touch_observe_tick(void)
+{
+    static int next = 0;
+    int i = next;
+    next = (next + 1) % SHADOW_CHAIN_INSTANCES;
+
+    if (!shadow_chain_slots[i].instance || !shadow_plugin_v2 ||
+        !shadow_plugin_v2->get_param) {
+        shadow_chain_slots[i].touch_observe = 0;
+        return;
+    }
+    char buf[8];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                          "touch_observe", buf, sizeof(buf));
+    if (len <= 0) { shadow_chain_slots[i].touch_observe = 0; return; }
+    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+    shadow_chain_slots[i].touch_observe = (atoi(buf) == 1);
 }

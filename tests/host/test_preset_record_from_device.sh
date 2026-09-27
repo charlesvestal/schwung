@@ -71,6 +71,7 @@ const DEVICE_ANSWER = "{\"a\":1.000,\"b\":2.000}";
       setUserPresetRecord: (s2, p2, rec) => { calls.push(["record", s2, p2, rec]); deps._rec = rec; },
       makeRecord: CP.makeRecord,
       paramPagesRefreshTrailing: () => calls.push(["refresh"]),
+      notifyModuleUiPresetsChanged: () => calls.push(["notify"]),
       needsRedraw: false,
     };
     let fn;

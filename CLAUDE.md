@@ -54,6 +54,34 @@ than restating one.
 
 Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
+### install.sh could skip the manager build in SILENCE
+
+Its rebuild was guarded on `command -v go`, so on a machine with Docker but no
+local Go the whole block evaluated to false and was skipped without a word --
+the only warning sat on the build-FAILED branch, inside an `if` that never ran.
+`install.sh local` then uploaded whatever `schwung-manager` was already in the
+tarball and reported success, so a manager fix could be deployed, confirmed
+deployed, and still not be running.
+
+`scripts/build-manager.sh` is the single builder for all THREE callers (local
+`go`, else a golang container, else a hard failure), and install.sh now FAILS
+rather than warns: shipping a stale manager takes `SCHWUNG_ALLOW_STALE_MANAGER=1`,
+which says so on the way past. Same defect class as the link sidecar's silent
+skip -- a build step that can be skipped silently defeats every bisect after it.
+
+**The third caller is `release.yml`, and it is the one that ships.** Fixing the
+two local scripts and leaving the workflow's own `go build` in place would have
+kept the copies free to disagree on exactly the path users take. Its tarball
+check was `grep schwung-manager || echo "WARNING: ..."` — the same non-check
+ci.yml condemns for link-subscriber — and now fails the release.
+
+**CI could not have caught any of this**, which is why it went unnoticed: the
+`cross-compile` job builds through Docker, where build.sh's manager block is
+skipped by `/.dockerenv`, so the CI tarball never carried a manager for
+anything to check. That job now builds one on the runner exactly as release.yml
+does, checks it is aarch64 with the other artifacts, and verifies it reached the
+tarball. `tests/host/test_manager_build_single_source.sh` pins the shape.
+
 ## Testing
 
 Static/regression suite: `for t in tests/{host,shadow,store,build}/*.sh; do bash "$t"; done`
@@ -233,10 +261,25 @@ instance is zeroed by construction (`mm_init` memsets, `shadow_host_api` is BSS,
 `overtake_host_api` is a static, `chain_host` memcpy's `sizeof()`).
 
 **It does not make the ABI extensible** — appending a real field still requires
-rebuilds. It buys a safe failure instead of a crash. So **consume `reserved`
-from the front** when adding a field and never reduce the total;
+rebuilds. It buys a safe failure instead of a crash.
+
+**So do NOT consume the run — not from the front, and not from the back.** This
+file said "from the front" for a while and that advice is the crash: `reserved`
+begins at **exactly +120** (measured; `sizeof(host_api_v1_t)` is 184 and
+`get_beat_position` sits at +112), which is the offset breakbeat reads. A real
+field there is a **live pointer at the crash site** — breakbeat's own
+`if (host->fn)` guard passes and the device boot-loops again. Taking from the
+back shortens the run instead, and old binaries start reaching past it.
+**A new host capability goes in as a dlsym'd export** — `chain_set_clip_phase`,
+`chain_take_midi_tick_wake`, `move_plugin_render_split` — which is what that
+precedent is for.
+
 `tests/host/test_host_api_reserved_tail.c` fails on a shrunken tail, on a field
-appended *after* `reserved`, and on +120 specifically.
+appended *after* `reserved`, and (now) on a field inserted *before* it, which
+moves the run to +128. It could not see that on its own: it inspects a
+`memset`-zeroed struct, so a real field at +120 reads NULL there and passes. The
+enforcement is the geometry check plus a `_Static_assert(offsetof(host_api_v1_t,
+reserved) == 120)` beside the field.
 
 **The diagnosis needed the load base.** The shim's SIGSEGV handler prints `pc`,
 `lr` and `sp` plus a `/proc/self/maps` dump to
@@ -269,6 +312,15 @@ CC 79 is the host volume knob by default. Modules can claim it via `capabilities
 ## Move Hardware MIDI
 
 Pads notes 68–99. Steps notes 16–31. Tracks CCs 40–43 (**reversed**: CC43=Track1, CC40=Track4). Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71–78 (knobs). Notes 0–9: capacitive knob touch (filter if unused).
+
+**CC 50 is ALSO Move's Note/Session toggle**, which is worth knowing because
+"menu" reads as ours. Pressed while Move owns the screen it puts up *Session
+Mode*, and **in Session Mode the PADS LAUNCH CLIPS**: rows descend by eight
+(92–99 = Track 1, 84 = Track 2, 76 = Track 3, 68 = Track 4) and the column is
+the clip slot, so note 76 launches Track 3 clip 1. Pressing a playing clip
+RETRIGGERS it rather than stopping it. Measured 2026-09-13 by injection —
+and only after scanning every other CC and note in 0–127 for it, because the
+one already named in this line was the one not tried.
 
 ## SPI Protocol
 
@@ -526,6 +578,83 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **A P-LOCK IS DECIDED BELOW THE UI, and a RECORDING PASS is never converted.**
+  Hold a step, turn a knob. Both halves used to live in the host's param-pages
+  io, so a module drawing its own screen from `ui_chain.js` could RECORD
+  automation and never p-lock — `lane_on_set_param` intercepts every component
+  write, which is what made it read as a module bug. A component write made
+  while exactly ONE step is held is now also a p-lock
+  (`shadow_lanes_plock_from_write`). The guard is what this took two attempts
+  to get: a p-lock writes a RECTANGLE, recording writes a SLOPE, into the same
+  lane — so a stale held step made ordinary recording WORSE, not merely
+  useless. It asks the chain `lanes:recording`, the record branch's own
+  condition, never a copy of it. And `no_bar` on a module's own screen was a
+  STATE artifact (the strip names one track, and only that track's slot),
+  measured, not a structural blocker.
+- **A SLOT MAY NOT CLEAR ITS LANE FILE UNTIL A RESTORE IS CONFIRMED.**
+  `restoreSlotLanes` pushed the document with `setSlotParam` and never checked
+  it landed, while setting the write cache as though it had — and the param
+  channel is busiest exactly there, at boot, behind a chain still
+  instantiating. The autosave then asked the slot, got `""` (served-and-empty,
+  a perfectly good answer for an empty DSP), saw the cache disagree and
+  DELETED the file. Two sets of automation lost on one device, recovered only
+  from a hand-taken copy. The restore now READS BACK what it pushed, and the
+  delete branch refuses an unconfirmed slot — an absent or empty FILE still
+  confirms, because that is positive knowledge that the slot owns nothing.
+- **A LOCK IS DRAWN AS MODULATION IS**: pointer on the BASE, mark at the
+  step's value, and the mark is what moves as you turn. Replacing the pointer
+  made the cell mean one thing while held and another during playback — two
+  grammars for one picture. "An LFO drives this to 0.1" and "this step plays
+  0.1" now render pixel-identically in the knob; the corner mark and the
+  inverted band are what say *which step*.
+- **A P-LOCK OWNS ONE STEP, via `lane_point_t.span`** — `[phase, phase+span)`
+  and nothing else; outside it the lane answers as if the spanned points were
+  absent, so a sweep underneath keeps playing and a lane of only locks goes
+  SILENT between them. A held point with **span 0 keeps the legacy meaning**
+  (hold until the next point), so lanes on disk are unchanged. The step LENGTH
+  is the HOST's to supply. Before this, one lock meant the whole bar and the
+  part of it BEFORE the lock too.
+- **The edit buttons are claimed as a ROW while a step is held.** Claiming
+  only Delete (which deletes clips) left Copy reaching Move, which DUPLICATES
+  the clip and selects the copy — so later p-locks addressed a different clip
+  than the lane being edited. Undo reached Move too and undid a NOTE edit.
+- **REMOVE ONE STEP'S AUTOMATION: hold DELETE, then PICK** — a knob touch
+  takes that parameter, releasing without a pick takes the whole step
+  (`lanes:clear_point`, host-translated from the held step). The grain did not
+  exist: every other clear verb takes a whole lane or more. Move has no
+  encoder press, so Elektron's verb is re-mapped onto the grid's own
+  copy/clear idiom. **Delete must be claimed even with no child levels**, or
+  it reaches Move and deletes the CLIP. A lane emptied this way is FREED and
+  its override released, or the parameter stays stuck where the lane left it.
+- **A STEP IS TWO GESTURES: a TAP toggles Move's note, a HOLD locks the
+  parameter** (`step_note_withhold`, `STEP_TAP_MS` 250). The press is DEFERRED,
+  not swallowed — swallowing it outright removed Move's own step editing for as
+  long as the grid was up. A tap is replayed to Move **after**
+  `shadow_midi_in_compact()`, on/off in consecutive frames; a hold is never
+  replayed, which is what makes a **lock trig** (automation on a step with no
+  note) possible. **`step_observe` is armed for a module-drawn grid as well as
+  `PARAM_PAGES`** — gating it on the host's view alone meant that on 9W9 no
+  step reached the UI and none was withheld from Move, failing silently in both
+  directions.
+- **HOLD A STEP TO SEE AND EDIT WHAT IS LOCKED ON IT.** `<key>:held` (shim
+  answers; chain evaluates via `lanes:probe`) returns `"<value> <exact>"` —
+  `exact` meaning a point SITS there, not that the curve passes through. The
+  window must be passed IN: `lane_eval` says nothing for a zero `loop_len`,
+  and the live geometry is zero whenever the transport is stopped, which is
+  when step editing happens. Every "no" is the empty string, never 0. The
+  gesture follows Elektron: the turn continues from the LOCK, and a landed
+  p-lock REPLACES the live write instead of accompanying it — a refusal still
+  falls through, so a knob never goes dead. Which step is held comes from the
+  SHIM (`shadow_control_t.held_step`), so the value shown and the value a turn
+  replaces cannot disagree.
+- **THE GESTURE IS SILENT, so it draws a MARK** — the knob grid's mod-dot plus,
+  top right, 600 ms, from the overlay block AFTER the view switch so it lands
+  over a module's own frame. Eight p-locks that landed correctly were reported
+  as the feature not working, because nothing on the panel says so and the
+  value only speaks a loop later. `shadow_control_t.plock_seq` counts ACCEPTED
+  ones — asked of `lanes:plocked`, never assumed from "we forwarded it", and
+  bumped at all THREE write paths or the gesture reports itself on some screens
+  and not others.
 - **`synth:last_note` is recorded at BOTH synth-feed paths**, via
   `chain_record_synth_note`. `v2_tick_midi_fx` is the one that looks optional
   and is not: an ARPEGGIATOR emits from `tick()`, not `process_midi()`, so
@@ -584,6 +713,110 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   tick, then ONE `chain_take_midi_tick_wake`, then the render — because `take`
   is one-shot and a "no" is what clears the double-tick guard. Transitions in
   `chain_idle_tick.h` so `tests/host` can drive them.
+- **An automation lane is ABSOLUTE and TIME-ADDRESSED, and it has no length of
+  its own.** Breakpoints are beats from the clip's `loop_start`; playback wraps
+  at whatever `loop_len` the clip has *now*, considering only points below it,
+  so extending a clip reveals what was recorded there and shrinking it makes
+  the tail dormant — nothing is rescaled and nothing is deleted. It drains
+  through an **override** source class in `chain_mod` (`effective = (override ?
+  override : base) + Σ offsets`), so LFOs still sum on top and clearing returns
+  the parameter to the knob. **Move's clips carry no identity** — no id, no
+  uuid — so a lane is keyed to a grid POSITION plus a fingerprint of the clip's
+  notes, and a mismatch makes it STALE: retained, silent, never guessed at.
+  **Unknown phase refuses** both playback and recording, and is never phase 0.
+  The arm is Move's own Record button, read off its LED. See `docs/CHAIN.md`.
+  **Only the CONTENT half of the fingerprint is compared** — neither loop field
+  is, because a clip that grew and a clip whose loop was dragged are both the
+  same clip, and going stale on either is silent. **And a content mismatch
+  while NOT orphaned is an EDIT**: the lane re-stamps and plays on. Identity is
+  CONTINUITY — a replaced clip went through a deletion, which the worker
+  reports as `orphaned`. Before that, `note_count` + `first_note` meant adding
+  or deleting ONE note silenced the clip's automation (measured on hardware),
+  which is most of what anyone does to a clip.
+- **A breakpoint is CLIP TIME in QUARTERS, and the loop is a WINDOW over it.**
+  Move's notes are absolute from the clip's start (a clip whose loop is 8..20
+  carries a note at 0.0, which does not play), so a lane in the same coordinate
+  keeps automation on its notes when the loop moves or grows — loop-relative
+  storage slid a sweep two bars and made a step p-lock unaddressable. The unit
+  is the quarter: changing a set to **11/8** changed not one number in
+  `Song.abl`, so only converting BARS needs the signature. Points outside the
+  window are dormant at EITHER end, a pass wraps at the window (never at 0),
+  and the dlsym'd seam did not grow an argument — the window's start rides in
+  `fp[0]`. Documents are `V 2` and a `V 1` one is REFUSED, loudly: the format
+  never shipped, and the two coordinates are indistinguishable per point.
+- **A p-lock is a RECTANGLE, and a held step's phase is settled arithmetic.**
+  `lane_point_t.hold` (free — the struct was padded) holds a value to the next
+  point instead of ramping, the LEFT point of a segment deciding, and a rewrite
+  replaces the shape with the value. `step_plock.h` inverts the verified
+  mapping — but **Move NAMES the displayed page itself**, so the mapping is
+  just `phase = stepEditorScrollPosition + step * res`: no bar, no signature,
+  no page count, and 4/4 and 11/8 are one path. The bar-and-page form it
+  replaced could only REFUSE a bar wider than the 16 buttons, which is every
+  bar of an 11/8 set at 1/16 (22 steps) — p-locks did not work there at all.
+  The scroll is FILE-aged, so the live strip cross-checks it and wins on
+  disagreement. Three more that each cost a hardware session:
+  a **TRIPLET grid deactivates every fourth BUTTON** (12 steps per page, so
+  `button != step`, and the duration cannot reveal triplet-ness — 1/16t and a
+  straight 1/24 are both 1/6); a **p-lock edits the SELECTED clip**, which the
+  file calls `isPlaying`, never the playing one (the live identity says -1 when
+  stopped, and stopped is how step editing is done); and a **one-bar loop
+  draws thin with no thickening**, so `bold_segment` 0 means both "bar 1" and
+  "cannot say" — `step_strip_displayed_bar()` is the only thing that tells
+  them apart. `lanes:plock_reason` names the refusal, because this runs on the
+  SPI callback where `shadow_log()` is a no-op and five causes otherwise share
+  one bit.
+  **The GESTURE works** — `step_observe` forwards Move's steps to the UI, which
+  writes `lanes:plock_step` on a knob COMMIT (a turn's write is DEBOUNCED, so
+  the hook wraps `setParam` rather than sitting on one of six call sites).
+  Verified on hardware, driven entirely by injection. The forward is PASSIVE,
+  so a p-lock also toggles a note until the swallow lands.
+- **CLEARING HAS FOUR GRAINS and undo is a SWAP.** `lanes:clear` was the only
+  one and empties the whole SLOT — every clip, every parameter. Beside it now:
+  `clear_clip` (the bound clip), `clear_param` (one knob on it), and
+  `clear_target` (one component, which is what the module's own page offers,
+  because that is where the knobs you automated are). `lanes:undo` is one
+  level and SWAPS its buffer, so the same verb is redo — the right shape when
+  the mistake is HEARD rather than seen. **The store cannot clear anything by
+  itself**: a driving lane holds a modulation override, and dropping it
+  without releasing leaves the parameter pinned where automation last wrote
+  it. On the grid this is its own **Automation** section (the words matter:
+  "Clear Clip Automation" truncates to "Clear Clip...", which beside Move's
+  own clip deletion reads as *delete this clip*), each row naming its clip as
+  `C1` — never `T3C1`, since `lane_track` IS the slot index. **Undo is slot
+  level only**, one buffer per slot.
+- **A clip Move has not saved yet can be recorded onto, and the two missing
+  facts arrive separately.** The length comes from the step editor's strip NOW
+  (bar resolution, origin assumed 0); the identity and true origin come from
+  the file ~10 s later, and the lane is then **adopted** — points shifted by
+  the real `loop_start`, fingerprint stamped, one step, exact arithmetic.
+  `fp_valid == 0 with a valid phase` is the provisional signal, so the dlsym'd
+  seam needed no new argument. Adoption is scoped to THIS session's blind takes
+  (`origin_pending`, never serialized): the same bytes on disk mean "never
+  identified", and adopting those would bind a lane to a stranger's clip. A
+  blind take PLAYS while unidentified — its position is the one playing, and
+  staleness needs a fingerprint to establish.
+- **Move's step editor draws the clip's bar count, and we READ it rather than
+  model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
+  no length, so no phase, so recording refuses — and Move's own screen has the
+  answer: a full-width strip on **row 59** in equal segments, the displayed bar
+  thickened, the playhead a **1 px interruption** (against 2 px bar gaps, which
+  is what keeps it from inflating the count) plus a stub below. Page-independent,
+  unlike the step LEDs. It does **not** say where the loop begins, which costs
+  nothing because lane phases are loop-relative. `src/host/step_strip.c`, decoded
+  where the frame COMPLETES on the callback and paired with the track selected at
+  that instant. The geometry is measured and the rejection gates are not, so it
+  is **a diagnostic first** (`clip_state.json`'s `step_strip`, the manager's
+  `/clip-state`) and nothing depends on it yet. Never build a parallel model of
+  Move's sequencer UI: read its answer. **A segment is a BAR, ROUNDED UP**, so the
+  strip answers a RANGE (`segments × quarters_per_bar`) and never better than
+  bar resolution. Two wrong answers preceded that, both from coincidences —
+  `bars × 4`, then "a 16-step page" — and only a clip whose bar and page counts
+  differ (16 quarters under 11/8: 2.91 bars, 4 pages, strip drew 3) could tell
+  them apart. **A one-bar loop draws a thin line with NO thickening** (the
+  manual says so), so the displayed-bar gate refused every new clip until it
+  was scoped to 2+ segments. The grid runs **1/8t to 1/64**, so a TRIPLET
+  suffix must parse — `sscanf("\"%d/%d\"")` read `1/8t` as a straight eighth,
+  a silent 50% error.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -621,6 +854,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   direction, so it TOGGLES either way, latched to one flick. The turn partition
   must EQUAL the draw partition or a shape promises what the knob won't do.
   `flipsOnClick` defines "is a two-way", not "flip".
+- **Four opt-ins for a host that owns its pages, all inert when absent** —
+  `turn: "absolute"` (a two-way steps by direction), `display: "big"` (read,
+  not aimed; must FIT, else the old widget), `io.allowEnumPeek` (can only
+  DECLINE) and `activity()` beside `settled()` (per-key durations; a stream is
+  REPORTED, never aged out). `tests/host/test_fleet_render_baseline.sh` pins
+  what every fleet cell draws and where a gesture lands it — the proof that
+  "opt-in" moved nothing.
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
@@ -1010,7 +1250,12 @@ component load gate, and the input-dispatch order. Read it before editing
   Schwung. `reconcilePadBlock()` restates it every frame beside
   `reconcileCcClaim()`; `js_host_pad_block` is idempotent **against the SHM**,
   which is what makes a per-frame restate free AND is why the caller must never
-  memoise — the shim drops the flag unilaterally, so a mirror latches.
+  memoise — the shim drops the flag unilaterally, so a mirror latches. **The
+  on-screen KEYBOARD is the second claimant and no longer lowers it either**:
+  `closeTextEntry`'s `host_pad_block(0)` was correct only while a keyboard
+  could not be open over `COMPONENT_EDIT`, which a module-owned grid's `Save
+  As` row ends — it wrote 0 over a running module's claim. Same answer as the
+  exits: the close hands the decision back to the reconcile.
 - **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
   "this position is empty" made a filled chain position open the module picker —
   and the *correct* read milliseconds later is what made it permanent, by matching.
@@ -1105,7 +1350,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 
-Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track) — these stay in sync, which is intended. Shadow slot mute/solo is set **only** by these combos — there is no D-Bus screen-reader text sync. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
+Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track). **The slot FOLLOWS Move's track mute AND solo rather than toggling beside them** — a blind toggle stays opposite forever once the two drift (a plain Mute tap mutes only Move). Live: Move announces `"<instrument> muted/unmuted/soloed/unsoloed"`; the text supplies only the STATE, and the TRACK comes from the gesture (`src/host/mute_follow.h`): Mute+Track (or Shift+Mute+Track) names that track, a plain Mute tap names the selected track (only after a Track press has been seen), and Mute+pad or any other button during the hold names nothing — the drum-cell announcement has the same shape. The shim still toggles as the fallback for a reply that never comes. At BOOT and SET LOAD the slots take `tracks[i].mixer.speakerOn` / `solo-cue` from the set's `Song.abl` (C: `song_abl_mix.h`; JS: `song_mix.mjs` → `slot:move_mix`), over the per-set saved values — Move has just read that file, so there it IS Move's state. **`speakerOn` has an OBJECT form** (`{"value": false, "presetValue": true}`) that a line/truthiness test reads as unmuted, and the same keys sit on every drum cell's mixer deeper in the track. This REVERSES fa6b97509 (2026-03), which removed the Song.abl sync on the view that slot and track mute are independent; they are not — Mute passes through. A consequence: a slot cannot keep a mute its Move track does not have past a set load. Solo is EXCLUSIVE on both sides (Move's confirmed 2026-09-26), so the live follow unsolos the other slots; a set load copies the file as-is. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
 ### A master-bus metronome is gone under Move→Schwung by CONSTRUCTION
 
@@ -1434,6 +1679,38 @@ IP and a QR of `http://<ip>:7700`. The old on-device store module is retired
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
+**The catalog is served from an UNTIMED disk cache when the fetch fails, and
+the host check was not a version comparison.** `manager-cache/catalog.json` is
+last-known-good with no TTL — deliberately, so a device with no network can
+still repair and remove modules — but `/modules` rendered it with nothing
+saying so. Meanwhile both host checks were `offered != installed`, so a device
+that had cached the catalog before 2026-08-31, when host `latest_version` was
+still **1.0.0**, showed *"1.0.0 available"* against an installed 1.4.0 with an
+Upgrade button pointing at the v1.0.0 tarball: an offered DOWNGRADE, on
+month-old data, one click away. Modules never had it — they resolve through
+`updateAvailable()`, which dates the releases and falls back to
+`versionNewer`; `hostOfferIsUpdate` is the host arriving at the same rule. A
+stale render now says **Offline** and how old the copy is, because the silence
+is what made it read as a real release rather than as a device that cannot
+reach GitHub. `"unknown"` installed still gets offered (nothing to compare,
+and refusing strands a device that cannot name what it runs).
+`schwung-manager/host_update_test.go` renders the page against a backdated
+cache — the comparison alone passes either way, since the defect was in what
+the handler COMPOSED.
+
+Two things found while reading that, fixed after: **`Check for Update` shared
+the 5-minute TTL**, so within five minutes of any page's fetch it reported the
+cached answer as though it had looked — including the "up to date" a user who
+had just fixed their network was pressing it to disprove (`Refresh()` forces
+past the TTL; `Fetch()` still honours it, since a page render must not hit the
+network every time). And **`CatalogService` had no lock** while every handler
+runs on its own goroutine — `mu` is held across the fetch, not just the
+assignment, so concurrent misses collapse into one request. `loadFromDisk`
+deliberately takes no lock (it runs before publication, and `fetch` holds `mu`
+across its whole body, so a reload from there would deadlock), and
+`GetReleaseMeta` hands out the map by reference, which is safe only while a
+refresh REPLACES it rather than writing into the copy a caller holds.
+
 **Shim mirror + stuck-shim repair (web update).** The manager runs as `ableton`
 and can't write `/usr/lib`, so a web update mirrors the new shim via the
 setuid-root `schwung-heal` helper (synchronously in `post-update.sh` + the
@@ -1450,6 +1727,18 @@ for devices whose `heal` is **blessed** (root-owned + setuid — i.e. they ran
 installer). See memory `web-update-shim-bootstrap-gap`.
 
 The manager also serves a **file browser** (`/files`, under `/data/UserData/`) and per-slot module **Remote UIs** (auto-discovers `web_ui.html` per module, served in a sandboxed iframe). The file browser is keyboard- and screen-reader-accessible: rows are `tabindex=0` with spoken `aria-label`s, **Enter opens** (dir → in, file → download), **Space selects**, with a checkbox column for multi-select. Source: `schwung-manager/templates/files.html`, `remote_ui.go`.
+
+**A manager-installed payload can register a BOOT TARGET, and the registry is
+OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's
+`platform.json`) — `exec` relative, because a payload never states where it is
+installed. The manager writes `boot-targets/<id>/boot.json` with an `owner`
+field and touches **only** entries whose owner it recognises, so a
+hand-installed target and Schwung's self-registered entry survive reconcile. A
+name carrying `"` or `\` is REFUSED, not escaped — measured, not assumed: both
+`boot.json` readers truncate a quoted value at its first `"` and neither can
+unescape. The picker holds 14 targets beside Stock and Schwung, dropping the
+overflow **silently in id order**, so registration past the cap is refused
+instead. Installing never changes `default`. See `docs/BOOT_TARGETS.md`.
 
 ### Catalog Format (v2)
 
@@ -1483,6 +1772,12 @@ The manager also serves a **file browser** (`/files`, under `/data/UserData/`) a
 {"version": "0.2.0",
  "download_url": "https://github.com/user/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"}
 ```
+
+An optional `channels` block adds beta/stable channels — see
+`docs/MODULE_CHANNELS.md`. **The manager hides the whole feature unless
+`manager-config.json` sets `"beta_channel_enabled": true`** (default off,
+read at startup); off, everyone resolves as Stable. Old release.json without it keeps working
+unchanged; the channel feature is strictly additive.
 
 Repositories that publish multiple catalog modules may key each release by
 catalog ID. Schwung Manager and the shared store utilities select the matching
@@ -1559,12 +1854,56 @@ inline is how this file got to 151 KB.
 - `docs/DIAGNOSTICS.md` — **Measuring the device.** On-device E2E, OTLP tracing,
   the param tally, the SPI frame tally. Every switch is off by default.
 
+- `docs/CANVAS_PAGES.md` — **Enterable canvases.** A module-drawn screen you
+  navigate: `enterable` hands it the click, `handleBack` is the exit contract
+  (a way UP, never a way out), an `as_page` canvas becomes a door, and Shift+jog
+  always leaves. `ctx.close()` records a wish the host acts on after the hook.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
+- `docs/MOVE_UI_MAP.md` — **Move's own UI, measured by driving it** on firmware
+  **2.1.0**: the known-state reset, how to tell which pad mode you are in (three
+  modes, not two — **Set Overview swaps the loaded SET from both its pads AND its
+  steps**), the LED language, every control per mode, and a machine-readable
+  action table. Two hazards a driver must respect: an **armed Copy source is a
+  landmine** that persists across screens and the reset until the next step press
+  pastes, and **Menu is not idempotent on an overlay** (the first tap dismisses).
+  **Move already owns hold-step + encoder as per-step automation**, which is the
+  gesture Schwung's own p-lock is built on — and its feedback is the encoder
+  RING turning red, never the step, which stays `122`. The step-content LED is
+  decoded there too: test **`== 122`**, never `122` against a fixed "empty"
+  value, because empty is a PER-TRACK colour index (98/112/124 seen) and `122`
+  follows the selected drum voice. Holding **Mute** publishes a per-track
+  automation mask on CCs 71-78 — the cheapest "does this parameter have
+  per-step automation?" query on the device, straight off the CC stream.
+  **Two reading channels beat every probe and were found late**: Move Manager
+  ships a 6.4 MB SOURCE MAP with `sourcesContent` (Ableton's own TypeScript API
+  client, so endpoints are read rather than guessed), and `strings
+  /opt/move/MoveOriginal` yields **675 `ableton::move` RTTI class names** plus a
+  single mangled symbol carrying Move's whole VIEW TREE in construction order.
+  Both are read-only, cost the device nothing, and answer questions no amount of
+  button-pressing can. Reach for them FIRST.
+  **`com.ableton.update` exposes `factoryReset` as a plain D-Bus method on the
+  SYSTEM bus.** Introspecting that tree is safe; anyone enumerating it is one
+  method call from wiping the instrument. (`…/auth`'s `setSecret` is the Manager
+  PIN flow seen from the other side -- the thing `pin_check_and_speak()` watches
+  for.) Move ships **no shared libraries at all** -- everything is statically
+  linked into the 29.7 MB `MoveOriginal`, so the DSP image and the UI image are
+  one file, and `/opt/move/Dsp/` is 194 wavetable WAVs with no code in it.
+- `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
+  being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
+  the two disagree the DEVICE is the authority. Carries the reconciliation table.
+- `docs/MOVE_COPY_GESTURES.md` — **Move's own copy/paste**, for steps, pages and
+  clips, measured by driving each gesture and diffing `Song.abl`. Read it before
+  mirroring automation locks onto a copy. Copy is HELD and step presses **PAIR
+  UP** (source, destination, new source, …); **Loop + Copy** makes the pair
+  PAGES; re-tapping the source pastes onto itself and CONSUMES the pair rather
+  than cancelling; an EMPTY source is a no-op and does **not** clear the
+  destination. Its "Not known" section is load-bearing — a mirror built on the
+  untested half desyncs locks from notes silently.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/E16_REMOTE.md` — **OXI E16 remote mode**, and the fixed input map it forces. The spec sheet is not private; it exports as CSV. Payloads are 8-to-7 packed, and the MSB byte is always zero for LABELS and RING — so a packer that emits a constant zero works on everything except the FRAMEBUFFER, which is the one that matters. **SysEx does not reach a MULTI-JACK USB device on USB-A** (three ports on an E16); one jack fixes both directions. **Partial OLED updates (SCANLINE/RECTANGLE/CLEAR/ACK/NACK) are built against a DRAFT spec OXI has not shipped** — the diff engine clusters by ROW RUN, not one bounding box, because two far-apart changes (e.g. opposite map corners) otherwise degrade into one screen-spanning rectangle; a RECTANGLE's width/height are DIMENSIONS (1-128, 1-64), not coordinates, and masking them like coordinates truncates the ordinary values 128 and 64 to zero — caught only by a holistic review after all five per-piece tasks passed their own tests. A NACK must pair `invalidateBuf()` with `invalidate()`, same as the self-heal heartbeat; the first call alone only clears what the surface *believes* is shown; it never marks a repaint owed.
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
@@ -1575,7 +1914,19 @@ inline is how this file got to 151 KB.
 
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
-3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
+3. **Version**: bump **all three** in the release PR — `src/host/version.txt`,
+   `module-catalog.json` (host `latest_version` + download URL, and
+   `channels.stable` if present) and **`release.json`**. `release.yml`
+   deliberately commits none of them: `main` is branch-protected, so a
+   `github-actions[bot]` push is rejected (GH006) and would fail the workflow
+   *after* the release and its asset had published. That note delegated to
+   "the release PR" and this step did not name `release.json`, so it sat at
+   **0.12.1 from v1.0.0 through v1.4.0** — fourteen releases — undetected,
+   because nothing shipped reads it any more (the manager takes both the offer
+   and the download URL from the catalog's host block). The enforcement is
+   `tests/host/test_release_version_agreement.sh`, which also fails on a
+   bumped version beside a stale URL — that downloads the old tarball while
+   reporting the new number.
 4. **Docs**: update the subsystem file (`docs/PARAM_PAGES.md`, `docs/SHADOW_UI.md`,
    `docs/CHAIN.md`, `docs/DIAGNOSTICS.md`) and add a bullet to `CLAUDE.md`'s hook
    for it — **not** the prose itself. Then `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
@@ -1587,3 +1938,49 @@ inline is how this file got to 151 KB.
 ## Dependencies
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
+
+### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
+
+Two different relationships, and collapsing them is the trap — the first draft
+of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
+`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
+and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
+are separate programs reached over `/dev/shm`, sockets and `exec`.
+
+**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
+`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
+`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
+NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
+is GPL-compatible so this is permitted, and the source stays MIT; what changes
+is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
+in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
+giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+
+Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
+the real binary (`NEEDED` entries), not the intent — the build flag is what
+decides this, and it is easy to reason about the wrong configuration.
+
+The trap is that **one file's header can silently claim otherwise.**
+`JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
+JackMoveDriver by Cycling '74 (GPL-2.0)", while its `.h` carried the correct
+GPL block the whole time — which is exactly what made the `.cpp` read as a typo
+rather than as a claim about somebody else's code. It is built with
+`-DSERVER_SIDE` against jack2's GPL-only server headers (39 of the 138 vendored
+headers are GPL-2.0+, the other 96 LGPL-2.1+), so MIT was never available to it.
+
+`THIRD_PARTY_LICENSES.md` is the single third-party document — an extensionless
+second copy diverged for months — and it **must ship**: it was absent from
+`package.sh`'s `ITEMS` entirely, so the tarball carried GPL-2.0 and GPL-3.0
+binaries with no licence text and no attribution. `build.sh` stages it,
+`LICENSE`, and `licenses/GPL-{2,3}.0.txt` **unconditionally** (a `|| true` here
+is the link-subscriber silent-skip shape: a non-compliant release that looks
+identical to a good one), and `package.sh` HARD-FAILS on a missing one.
+`tests/host/test_license_consistency.sh` pins all of it, including that no
+CC BY-NC-SA claim returns — `LICENSE` went MIT in 2026-03 and the third-party
+doc went on asserting CC BY-NC-SA 4.0, a licence that is not a software licence
+and whose NC clause is incompatible with every GPL component above.
+
+**`lib/libpcaudio.so.0` is ours** (`src/host/pcaudio_stub.c`), not pcaudiolib —
+a stub so eSpeak NG resolves without dragging in libpulse/libX11.

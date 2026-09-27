@@ -51,6 +51,21 @@ void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2)
 /* In overtake mode, clear Move's cable-0 LED packets from MIDI_OUT buffer. */
 void shadow_clear_move_leds_if_overtake(void);
 
+/* Move's Record button, decoded from its LED by the cable-0 scan in
+ * shadow_clear_move_leds_if_overtake (see rec_arm.h). Settled once per frame.
+ *
+ *   recording  solid at full brightness -- Move is capturing, so lanes record
+ *   flashing   an animation channel -- armed, or counting in; NOT recording
+ *   seen       a CC 86 has ever arrived, so a readout can tell "off" from
+ *              "this button has never reported anything"
+ *
+ * Both callers read callback-written ints: the shim, to push `lanes:armed`,
+ * and the worker, to log it. A torn read is at worst one frame stale against a
+ * window that is beats long. */
+int shadow_rec_arm_recording(void);
+int shadow_rec_arm_flashing(void);
+int shadow_rec_arm_seen(void);
+
 /* Flush pending LED updates to hardware, rate-limited. */
 void shadow_flush_pending_leds(void);
 
@@ -103,6 +118,12 @@ typedef struct {
     uint8_t status;     /* full status byte incl. channel */
     uint8_t d1;
     uint8_t d2;
+    /* Musical + modal context, sampled at record time on the SPI callback.
+     * Without these the log says WHAT Move lit and not WHERE IN THE BAR, and
+     * a pad LED cannot be told from a clip LED because the pads mean clips
+     * only in Session mode. Both are plain volatile int reads. */
+    uint8_t  ui_mode;    /* shadow_control->move_ui_mode: 1=session 2=note 3=sets */
+    uint32_t pulses;     /* shadow_transport_pulses: 24 PPQN since 0xFA */
 } led_capture_entry_t;
 
 void led_queue_set_capture_enabled(int on);

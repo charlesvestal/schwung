@@ -5,8 +5,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,15 +17,36 @@ func TestLoadTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadTemplates: %v", err)
 	}
-	required := []string{
-		"config.html",
-		"module_detail.html",
-		"system_cpu.html",
+	// EVERY page template must be registered, derived from the directory
+	// rather than restated here.
+	//
+	// This list used to name three templates by hand, so it could only fail
+	// for a page that already worked. boot.html and platforms.html shipped
+	// unregistered and this test stayed green: loadTemplates parses whatever
+	// `pages` names, and a page missing from that literal is not a parse
+	// error -- it is an HTTP 500 at runtime, "template not found", visible
+	// only on the device.
+	entries, err := os.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range required {
-		if _, ok := m[name]; !ok {
-			t.Errorf("missing template %q", name)
+	var found int
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".html" {
+			continue
 		}
+		// base.html is the layout every page clone is built from, not a page.
+		if e.Name() == "base.html" {
+			continue
+		}
+		found++
+		if _, ok := m[e.Name()]; !ok {
+			t.Errorf("templates/%s exists but is not in loadTemplates' pages list; "+
+				"it will 500 with \"template not found\" at runtime", e.Name())
+		}
+	}
+	if found == 0 {
+		t.Fatal("no page templates found: this test would pass vacuously")
 	}
 }
 
@@ -211,5 +234,93 @@ func TestResolveModuleDefaultSource_Containment(t *testing.T) {
 	}
 	if got := resolveModuleDefaultSource(tmp, "/etc/passwd"); got != "" {
 		t.Errorf("absolute path allowed: %q", got)
+	}
+}
+
+// renderModulesPage executes modules.html the way App.render does, minus the
+// HTTP plumbing: same templateMap, same ExecuteTemplate-by-name.
+func renderModulesPage(t *testing.T, data map[string]any) string {
+	t.Helper()
+	m, err := loadTemplates()
+	if err != nil {
+		t.Fatalf("loadTemplates: %v", err)
+	}
+	tpl, ok := m["modules.html"]
+	if !ok {
+		t.Fatal("modules.html is not registered in loadTemplates")
+	}
+	var buf bytes.Buffer
+	if err := tpl.ExecuteTemplate(&buf, "modules.html", data); err != nil {
+		t.Fatalf("execute modules.html: %v", err)
+	}
+	return buf.String()
+}
+
+// The subcategory axis is only useful if it reaches the MARKUP. A card without
+// data-subcategory is invisible to the filter, and that failure shows up as a
+// chip that silently matches nothing -- never as an error.
+func TestModulesTemplateRendersSubcategory(t *testing.T) {
+	tax := CatalogTaxonomy{
+		Version: 1,
+		Subcategories: map[string][]CatalogSubcategory{
+			"sound_generator": {{ID: "virtual-analog", Label: "Virtual Analog"}},
+			"audio_fx":        {{ID: "reverb", Label: "Reverb"}},
+		},
+		Tags: []string{"polyphonic", "vintage-emulation"},
+	}
+	data := map[string]any{
+		"Title":    "Modules",
+		"Active":   "modules",
+		"Taxonomy": tax,
+		"Channel":  "stable",
+		"Modules": []CatalogModule{{
+			ID:            "obxd",
+			Name:          "OB-Xd",
+			ComponentType: "sound_generator",
+			Subcategory:   "virtual-analog",
+			Tags:          []string{"polyphonic", "vintage-emulation"},
+		}},
+		"Installed":   map[string]InstalledModule{},
+		"ReleaseMeta": map[string]ReleaseMeta{},
+		"FlashType":   "info",
+	}
+
+	out := renderModulesPage(t, data)
+
+	for _, want := range []string{
+		`id="subcategory-filters"`,
+		`data-subfilter="virtual-analog"`,
+		`data-parent="sound_generator"`,
+		`data-subcategory="virtual-analog"`,
+		`Virtual Analog`,
+		`vintage-emulation`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered modules page is missing %q", want)
+		}
+	}
+}
+
+// An unknown slug must print as ITSELF. A blank badge is indistinguishable from
+// a module that has no subcategory, which is the state this axis exists to make
+// visible.
+func TestSubcategoryLabelForUnknownSlug(t *testing.T) {
+	tax := CatalogTaxonomy{
+		Subcategories: map[string][]CatalogSubcategory{
+			"sound_generator": {{ID: "virtual-analog", Label: "Virtual Analog"}},
+		},
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", "virtual-analog"); got != "Virtual Analog" {
+		t.Errorf("known slug: got %q, want %q", got, "Virtual Analog")
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", "not-in-vocab"); got != "not-in-vocab" {
+		t.Errorf("unknown slug: got %q, want it echoed back", got)
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", ""); got != "" {
+		t.Errorf("empty slug: got %q, want empty", got)
+	}
+	// A slug valid under a DIFFERENT component_type is not valid here.
+	if got := subcategoryLabelFor(tax, "audio_fx", "virtual-analog"); got != "virtual-analog" {
+		t.Errorf("cross-type slug: got %q, want it echoed back", got)
 	}
 }

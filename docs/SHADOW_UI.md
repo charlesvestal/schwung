@@ -317,6 +317,21 @@ what was withheld is a pad **note**, so the worst a mid-hold drop hands Move is
 an unmatched note-off. Copy/Delete is the case that needs a latch, and keeps
 one. `tests/host/test_pad_block_lifecycle.sh`.
 
+**And the KEYBOARD does not lower it either — the reconcile does.**
+`closeTextEntry` used to write `host_pad_block(0)` on the way out, which was
+right for exactly as long as the second owner above could only be open over
+views that are **not** `COMPONENT_EDIT`. A module-owned param grid with a
+`Save As` row ends that: a keyboard opened and closed over a component that
+owns the pads wrote 0 straight over its claim, leaving pads going to Move in
+the middle of a mode the module still believes it owns — and healing only if
+that module happens to re-state the flag every tick rather than on entering
+the mode (9W9 memoises in `padBlocked`, so it does not). The close hands the
+decision back instead: the reconcile skips only while a keyboard is up, so the
+frame after it closes is already the invariant being restated. It is the same
+answer as the exits: **one site states the rule, nothing enumerates the ways
+out of it.** The cost is one frame of pads withheld after a keyboard closes
+over a view that did not want them.
+
 ### A component editor WAITS; it does not decide from one read
 
 Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
@@ -824,6 +839,17 @@ test.
   way to clear the position and no way to the store is a dead end. They are not
   all shaped alike either — `None` carries the EMPTY id while the others are
   `__`-prefixed, so `pickerRealIds` is written once rather than twice.
+- **Row 1 is `Sort` (A-Z / Type)**, and Type groups the modules under their
+  catalog category with `drawMenuList` divider rows as headings. The category
+  comes from the manager's cached catalog
+  (`manager-cache/catalog.json`), not from `module.json`: no fleet module
+  declares one, though one that does wins (`src/shared/module_categories.mjs`).
+  An uncategorised module lands under **Other, last**, never dropped, so a
+  device that has never fetched the catalog shows one group rather than an
+  empty list. The order is **filter, then sort, then the Move rows**: sorting
+  after the splice would pull Move Left/Right away from their module, and
+  filtering after the sort would leave headings over emptied groups. The jog
+  steps over headings.
 - **Favorites cannot be renamed or deleted**, and its Rename/Delete rows are
   **absent** rather than present-and-refusing — a row that answers a click by
   doing nothing teaches that the screen is broken. Clear works.
@@ -1643,3 +1669,83 @@ and why the shim branch logs nothing: `shadow_log` calls `unified_log`.
 Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
+
+### `Clear Lanes`, and the one read a refusal is allowed to cost
+
+Automation lanes (`docs/CHAIN.md`) are recorded by turning a knob while Move's
+Record button is lit. **`Clear Lanes` is the only gesture that undoes one**, so
+it sits on all three forms a slot's settings take — `CHAIN_SETTINGS_ITEMS`,
+`SLOT_SETTINGS` and `SLOT_GRID_ACTIONS` — for the reason the `Buses` row
+records: the knob grid is the default Param View, so a row only on the two lists
+is unreachable for most users. All three reach one `clearSlotLanes(slot)`; three
+copies of the read-and-announce would be three chances for one of them to
+announce a count it never read.
+
+It is **unconditional**, not hidden until a lane exists. The count it announces
+is what says whether there was anything to clear, and a row that appeared only
+when a lane existed would need a per-draw parameter read to decide. For the same
+reason the row declares no `showsValue`: an action row draws no value by
+default, and asking for one would spend a ~2.8 ms round trip per draw to print
+`-`.
+
+**It announces a NUMBER, and the three answers are kept apart.** `lanes:cleared`
+coming back `null` is a read that did not complete and `""` is
+served-but-empty — announcing "0 cleared" for either is the confidently-wrong
+answer, because the user pressed a button and was told, with a number, that
+there was nothing there. Both say `Clear lanes: no answer` instead. No file is
+written here: the autosave pass already removes `lanes_<i>.json` when the slot
+serves an empty document, and a ~120 ms eMMC write inside a click handler is
+exactly the cost that cache exists to avoid.
+
+**The refusal is the other half, and its read budget is 0 / 0 / 1.** A knob turn
+while armed with the clip phase unknown records nothing, and silence there is
+indistinguishable from a broken feature: Record is lit, the knob moves, no lane
+appears. So `noteLaneWriteRefusal` announces *"Armed, clip phase unknown"* — but
+a parameter round trip is ~2.8 ms against a 1.68 ms whole-page render, so a read
+per detent would be slower than redrawing the screen on every one of them, and
+the grid would feel laggy exactly while the user is turning something. The
+gesture gate is therefore decided **first**, from a timestamp already in hand,
+and only the first write of a spin pays for a read: **zero per frame, zero per
+detent, one per gesture** — and a second one only while actually armed, which is
+Record held down. A gesture ends when the writes stop, so the timestamp is
+stamped *before* the early return or a continuing spin would re-announce.
+
+Lanes themselves are persisted by the autosave pass as
+`set_state/<uuid>/lanes_<i>.json` — the whole store fetched as one opaque
+`lanes:state` string and written straight to the file, with no second
+serializer. `persistSlotLanes` obeys the tri-state rule: `null` writes nothing,
+`""` **removes** the file (once, and only if it is there — an unconditional
+remove every five seconds is the churn the write cache exists to avoid), and
+only a non-empty document is written. `restoreSlotLanes` runs on both restore
+paths **after `load_file`**, because that reinstantiates the chain and a lane
+names a target that must exist for `lane_tick` to find its parameter metadata.
+
+#### A Track press Move never received must not relabel Move's view
+
+`shadow_control_t.move_ui_mode` is our belief about what **Move** is showing.
+D-Bus announcements are the authority for Session and Set Overview; the one
+thing no announcement reports is a track selection, so the shim infers NOTE from
+a Track button press (CC 40–43). That inference was unconditional, and it was
+wrong for the one press that never reaches Move at all.
+
+**Shift+Vol+Track is the gesture that opens the shadow UI**, and its Track CC is
+swallowed, so Move never sees it. Move's view therefore does not change — but
+the label said NOTE, and nothing sets it back except the exact `"Session Mode"`
+announcement, which never arrives because the user was **already** in Session.
+`clip_state_on_led` then rejects every pad event (its gate is Session-only, and
+deliberately so), so **clip identity froze** on whatever was playing when the UI
+was opened: the user switched clips, Schwung kept the old ones, and lanes played
+against a clip that was no longer running. Stale rather than invalid — the
+outcome the clip-awareness design explicitly refuses.
+
+**The rule is delivery, not a list of combos**: a press may relabel only if it
+was delivered to Move (`move_ui_mode_track_press_relabels` in
+`src/host/move_ui_mode_label.h`, tied to the swallow itself, so a future
+shortcut that withholds a Track press is covered the day it is written). Two
+presses are deliberately **not** excluded, because Move does receive both: the
+Track tap while the shadow UI is up (the "Keep Schwung" slot switch, whose CC is
+left unblocked precisely so Move's selected track follows the slot), and the
+500 ms Track hold (whose real press is not swallowed, and which injects a track
+tap for Move when it fires). Suppressing either would claim SESSION while Move
+was in NOTE, which opens the clip gate over a keyboard and invents clip launches
+— strictly worse than the bug above.
