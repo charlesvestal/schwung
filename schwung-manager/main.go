@@ -1048,6 +1048,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/config.html",
 		"templates/system.html",
 		"templates/system_cpu.html",
+		"templates/controls.html",
 		"templates/install.html",
 		"templates/help.html",
 		"templates/remote_ui.html",
@@ -4249,6 +4250,13 @@ func main() {
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
 
+	// Controls: the set's Custom surface pages and CC map (controls.go)
+	mux.HandleFunc("GET /controls", app.handleControls)
+	mux.HandleFunc("GET /api/controls", app.handleControlsGet)
+	mux.HandleFunc("PUT /api/controls", app.handleControlsPut)
+	mux.HandleFunc("GET /api/controls/params", app.handleControlsParams)
+	mux.HandleFunc("GET /controls/js/{path...}", app.handleControlsJS)
+
 	// Remote UI.
 	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)
 
@@ -4275,7 +4283,7 @@ func main() {
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
-	// Display server proxy (/mirror and /stream-auto).
+	// Display server proxy (/mirror, /stream-auto and /stream-e16).
 	displayProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
@@ -4295,7 +4303,18 @@ func main() {
 	}
 	mux.Handle("GET /mirror", displayProxy)
 	mux.Handle("GET /mirror/", displayProxy)
-	mux.Handle("GET /stream-auto", displayProxy)
+	// THE STREAMS ARE ENDLESS, so the server WriteTimeout (60 s) must not apply
+	// to them: Go enforces it on every response, and it cut each mirror feed
+	// once a minute -- the page froze until the EventSource reconnected. The
+	// deadline is lifted for these two routes only.
+	streamProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		displayProxy.ServeHTTP(w, r)
+	})
+	mux.Handle("GET /stream-auto", streamProxy)
+	// The OXI E16 mirror (display_server /stream-e16), shown under Move's
+	// screen on /mirror while an E16 is live.
+	mux.Handle("GET /stream-e16", streamProxy)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	// SecurityHeaders runs outermost so headers are set even on responses

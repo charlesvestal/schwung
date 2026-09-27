@@ -58,8 +58,11 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_overtake_midi_route \
 	$(BUILD_DIR)/test_ext_midi_ring \
 	$(BUILD_DIR)/test_ui_midi_out_carry \
+	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_ui_midi_ring_order \
+	$(BUILD_DIR)/test_master_filter \
 	$(BUILD_DIR)/test_midi_in_compact \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
@@ -160,6 +163,12 @@ $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
+$(BUILD_DIR)/test_ui_midi_ring_order: test_ui_midi_ring_order.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_master_filter: test_master_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
+
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
@@ -228,6 +237,9 @@ $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../sr
 
 $(BUILD_DIR)/test_send_fx_key: test_send_fx_key.c ../../src/host/send_fx_key.h ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SEND_BUSES=$(SEND_BUSES) -DTEST_SEND_FX_SLOTS=$(SEND_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_ui_midi_out_ring: test_ui_midi_out_ring.c ../../src/host/ui_midi_out_ring.h ../../src/host/shadow_constants.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_fx_load_gate: test_fx_load_gate.c ../../src/host/fx_load_gate.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)

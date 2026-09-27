@@ -1480,6 +1480,117 @@ static void ui_midi_out_drop_tick(void)
 }
 
 /*
+ * Foreign cable-2 packets landing in the mailbox while a message of ours is
+ * still going out -- i.e. Move's own output spliced into the middle of a SysEx
+ * the receiving device is still assembling.
+ *
+ * Separate from the drop counter because it is a different failure with the
+ * opposite remedy: a drop says we are sending too FAST for the carry, while
+ * this says our message is on the wire too LONG and somebody else wrote into
+ * it. Reading one as the other is what kept an interleave problem being
+ * treated as a rate problem.
+ */
+/*
+ * Packets we placed in Move's mailbox that Move never took.
+ *
+ * The last uninstrumented hand-off on the way out. Everything upstream of it
+ * counts its own drops and reports zero under load while the screen garbles,
+ * so this is where a loss inside our own system would still be invisible.
+ */
+/*
+ * How many packets we actually placed this window.
+ *
+ * The positive control for every other counter here: they fire only on
+ * failure, so without this a window of zeros cannot be told from a window
+ * where nothing was sent -- which is how three separate captures on
+ * 2026-09-11 read as "clean" while proving nothing at all.
+ */
+static void ui_midi_out_volume_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ui_midi_out_placed;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[140];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d packet(s) placed this window (%d total)",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
+static void ui_midi_out_stranded_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ui_midi_out_stranded;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d packet(s) would have REPEATED this window (%d "
+             "total) - still in the mailbox a frame later and cleared before "
+             "they could be transmitted twice; a repeat corrupts a SysEx as "
+             "badly as a drop",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
+/*
+ * Messages re-sent because Move's own notes were spliced into them.
+ *
+ * THE POSITIVE CONTROL FOR THE FIX, and the reason it is a number rather than
+ * an inference from the screen: "it stopped garbling" is equally consistent
+ * with the retry working and with the retry never firing while something else
+ * changed. A count tells those apart; eyes do not -- and this feature has
+ * already lost two days to a capture that read clean while measuring nothing.
+ *
+ * `unretryable` is a message too long for the retry buffer. Counted rather
+ * than skipped, because a repair that quietly does not happen looks exactly
+ * like one that happened and collided again.
+ */
+static void ui_midi_out_retry_tick(void)
+{
+    static int last_total = 0;
+    static int last_unret = 0;
+    int total = shim_ui_midi_out_retries;
+    int unret = shim_ui_midi_out_unretryable;
+    int delta = total - last_total;
+    int udelta = unret - last_unret;
+    if (delta <= 0 && udelta <= 0) { last_total = total; last_unret = unret; return; }
+    last_total = total;
+    last_unret = unret;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d message(s) RESENT this window (%d total) after "
+             "Move's own notes were spliced into them; %d too long to resend "
+             "(%d total)",
+             delta, total, udelta, unret);
+    LOG_DEBUG("shim", msg);
+}
+
+static void ui_midi_out_foreign_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ui_midi_out_foreign;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d foreign cable-2 packet(s) in the mailbox this "
+             "window (%d total) while our own message was still going out - "
+             "Move's output is interleaving with our SysEx, which corrupts it "
+             "at the receiver regardless of pace",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
+/*
  * Drain the slow-param ring.
  *
  * WHY IT IS WORTH A LOG LINE OF ITS OWN. `param=7/20051` in the spi_timing
@@ -1717,6 +1828,10 @@ static void *worker_main(void *arg) {
             ext_midi_drop_tick();
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
+    ui_midi_out_foreign_tick();
+    ui_midi_out_retry_tick();
+    ui_midi_out_stranded_tick();
+    ui_midi_out_volume_tick();
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
         }

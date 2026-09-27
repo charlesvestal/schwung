@@ -51,7 +51,7 @@ import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/s
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
 import { RULE_Y as MOVY_RULE_Y,
-         drawHeader as drawMovyHeader, drawFooter as drawMovyFooter }
+         drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, hintPairWidth }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 /* The enum option screen. Shared with the PEEK the knob grid raises on a turn:
  * opposite commit semantics, so they cannot be one view, but one screen — see
@@ -106,6 +106,9 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
  * wrapped them, so an over-wide one starts at a negative x. */
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
+import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
+import { createLayoutEditor, createCCEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
+import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -137,6 +140,13 @@ import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mj
 import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
     from '/data/UserData/schwung/shared/snapshot.mjs';
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
+import { createSurface as createE16Surface, E16_PULSES_PER_DETENT, E16_ACCEL }
+    from '/data/UserData/schwung/shared/e16_surface.mjs';
+import { createEc4Surface, DEFAULT_SETUP as EC4_DEFAULT_SETUP,
+         DEFAULT_PULSES_PER_DETENT as EC4_DEFAULT_PULSES }
+    from '/data/UserData/schwung/shared/ec4_surface.mjs';
+import { createController as createPageController }
+    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
     ENTRY_ENTER, ENTRY_HOLD, ENTRY_FAILED,
@@ -376,6 +386,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_TAKE = 0x0100;
 const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
 const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
 const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
+const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -475,6 +486,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // One FX bus's 8-position editor (master or a send)
     FX_BUS_PICKER: "fxbuspicker", // Which FX bus to edit: Master FX, Send A, Send B
+    SURFACE_LAYOUT: "surfacelayout", // Master FX Settings -> Surface Layout / CC Map (control_editor.mjs)
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
@@ -492,6 +504,7 @@ const VIEWS = {
      */
     NOTICE: "notice",         // One-shot message screen: title, lines, dismiss
     CONNECT: "connect",       // Device address + QR for Schwung Manager
+    EC4_SETUP: "ec4_setup",   // Install Schwung's setup onto a Faderfox EC4
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
     OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
     GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
@@ -3762,6 +3775,101 @@ function fxBusReturnNow(index) {
     return isNaN(n) ? -1 : n;
 }
 
+/*
+ * MASTER FX SETTINGS -> SURFACE LAYOUT: the Custom layout's pages, on Move.
+ * The rows, the cursor and the two-click confirmations live in
+ * control_editor.mjs (tested); this is the drawing and the routing.
+ */
+let surfaceLayoutEditor = null;
+function surfaceLayoutEd() {
+    if (!surfaceLayoutEditor) {
+        surfaceLayoutEditor = createLayoutEditor({
+            controls: () => controlHost.controls(),
+            edit: (fn) => controlHost.edit(fn),
+        });
+    }
+    return surfaceLayoutEditor;
+}
+let ccEditor = null;
+function ccEd() {
+    if (!ccEditor) {
+        ccEditor = createCCEditor({
+            controls: () => controlHost.controls(),
+            edit: (fn) => controlHost.edit(fn),
+            ccMap,
+        });
+    }
+    return ccEditor;
+}
+/* The editor on screen: Surface Layout or CC Map -- one view, two lists. */
+let activeControlEditor = null;
+
+function enterControlEditor(ed, title) {
+    controlHost.reconcile();
+    activeControlEditor = ed;
+    ed.reset();
+    setView(VIEWS.SURFACE_LAYOUT);
+    needsRedraw = true;
+    const r = ed.rows()[0];
+    announce(title + (r ? ", " + r.label : ""));
+}
+
+function drawSurfaceLayoutEditor() {
+    /* The web editor may have changed the file: re-read by content, <= 1 Hz. */
+    controlHost.reconcile();
+    const ed = activeControlEditor || surfaceLayoutEd();
+    const rows = ed.rows();
+    clear_screen();
+    drawHeader(ed.title());
+    drawMenuList({
+        items: rows,
+        selectedIndex: ed.cursor,
+        getLabel: (r) => r.label,
+        getValue: (r) => r.value || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        /* No fixed value column: "Cutoff S1" was cut to "Cu..." at x=92 with
+         * the row half empty. The label floor keeps the label legible. */
+        valueX: 0,
+    });
+    const r = rows[ed.cursor];
+    const verb = !r ? "" : (r.kind === "page" || r.kind === "binding") ? "Click: open"
+        : r.kind === "add" ? "Click: add" : r.kind === "rename" ? "Click: rename"
+        : r.kind === "knob" ? (r.value === "--" ? "" : "Click: clear")
+        : r.kind === "delete" ? "Click: delete" : r.kind === "mode" ? "Click: toggle"
+        : r.kind === "learn" ? (ccMap.learning ? "Click: stop" : "Click: learn") : "Click: move";
+    drawFooter(verb ? [verb, "Back"] : ["Back"]);
+}
+
+function surfaceLayoutJog(delta) {
+    const r = (activeControlEditor || surfaceLayoutEd()).jog(delta);
+    if (r) announceMenuItem(r.label, r.value || "");
+    needsRedraw = true;
+}
+
+function surfaceLayoutSelect() {
+    const ed = activeControlEditor || surfaceLayoutEd();
+    const out = ed.click();
+    if (out && out.rename) {
+        const i = out.rename.page;
+        openTextEntry({
+            title: "Page Name",
+            initialText: out.rename.name,
+            onAnnounce: announce,
+            onConfirm: (text) => { ed.rename(i, text); needsRedraw = true; },
+        });
+        return;
+    }
+    const r = ed.rows()[ed.cursor];
+    if (r) announceMenuItem(r.label, r.value || "");
+    needsRedraw = true;
+}
+
+function surfaceLayoutBack() {
+    if ((activeControlEditor || surfaceLayoutEd()).back()) { activeControlEditor = null; enterMasterFxSettings(); return; }
+    needsRedraw = true;
+}
+
 function enterFxBusPicker() {
     selectedFxBusRow = currentFxBusIndex;
     /* Read the three summaries ONCE, on entry. Three IPC round trips at ~2.8 ms
@@ -4653,6 +4761,11 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
       options: MFX_MIDI_CHANNEL_OPTIONS },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
+    /* The Custom surface layout's pages -- per set, so here, not in Global
+     * Settings. Opens its own list (control_editor.mjs). */
+    { key: "surface_layout", label: "Surface Layout", type: "action" },
+    /* Any controller's CCs bound to parameters, per set (cc_map.mjs). */
+    { key: "cc_map", label: "CC Map", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -5566,6 +5679,7 @@ const CHAIN_SETTINGS_ITEMS = [
      * its stored gain until something turns the knob, which then pulls it into
      * range. */
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
+    { key: "slot:pan", label: "Pan", type: "float", min: -1, max: 1, step: 0.05 },
     /*
      * THE SEND MIXER'S DOOR -- one row for every level into A and B.
      *
@@ -7764,6 +7878,11 @@ function setSlotParam(slot, key, value) {
     try {
         const ok = shadow_set_param(slot, key, String(value));
         if (!ok) return false;
+        /* Tell the E16 surface at once -- see noteParamWrite. A const declared
+         * later in this file is in its TDZ during early init: caught. */
+        try { for (const sf of externalSurfaces()) sf.noteParamWrite(slot, key, value); } catch (e) {}
+        /* A parameter moved on Move while a control is waiting to LEARN one. */
+        try { controlHost.observeWrite(slot, key, value); } catch (e) {}
 
         /* Re-check MIDI FX warnings immediately after sync/module changes. */
         if (key === "midi_fx1:module") {
@@ -9501,7 +9620,12 @@ function saveChainConfigToDir(dir) {
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, forward_channel: fwd, muted: muted, soloed: soloed });
+            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            /* The sends the shim keeps for a slot with no module (a slot with
+             * one saves its sends in its own state). */
+            const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
+                                parseInt(getSlotParam(i, "slot:empty_send2") || "0", 10) || 0];
+            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, empty_sends: emptySends, forward_channel: fwd, muted: muted, soloed: soloed });
         }
         host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
     } catch (e) {
@@ -9697,6 +9821,11 @@ function loadChainConfigFromDir(dir) {
         for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
             const s = data.slots[i];
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
+            /* Absent (a set saved before pan existed) means centre. */
+            setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
+            const es = Array.isArray(s.empty_sends) ? s.empty_sends : [0, 0];
+            setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
+            setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
             /* Always write receive_channel: use saved value if present, else
              * default to slot index + 1. Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
@@ -10687,6 +10816,870 @@ function loadSaveStems() {
  * headphones in, On for one that never reports speaker at all. Neither escapes
  * Move->Schwung -- outside it Move's own enhancer is in the path.
  */
+/*
+ * EXTERNAL CONTROL SURFACE (Global Settings -> Surfaces -> Surface: CC Only / E16 / EC4).
+ *
+ * 0 = off, 1 = OXI E16. The lifecycle itself is pure and lives in
+ * src/shared/e16_surface.mjs; what is here is the three seams it needs -- a
+ * clock, a sender, and somewhere to put the toggle.
+ *
+ * ON DOES NOT MEAN A DEVICE IS ATTACHED, and nothing can ask: gear on Move's
+ * USB-A never enumerates in Linux (docs/SYSEX.md, issue #358). The surface
+ * SEEKS instead, sending ENTER REMOTE MODE until the device acks, and keeps a
+ * slow probe going afterwards so a replug -- which power-cycles an E16 out of
+ * remote mode without a word -- heals itself.
+ */
+let externalSurfaceMode = 0;
+
+/* The outbound door. It returns FALSE when the buffer is full, which means
+ * RETRY -- the surface treats that as "not sent" and tries again on the next
+ * tick rather than advancing its clock past a message the device never saw. */
+/*
+ * WHICH USB-MIDI CABLE THE SURFACE GOES OUT ON.
+ *
+ * Default 2, the external port, which is also where Move sends its own notes,
+ * aftertouch and clock -- and sharing it is the whole bug: a 34-packet screen
+ * update spans ~5 SPI frames, so anything Move emits in that window lands
+ * inside our SysEx, which a conformant receiver must then discard.
+ *
+ * USB-MIDI multiplexes 16 virtual cables over ONE endpoint and the RECEIVER
+ * demuxes on the cable nibble, so a different cable is a separate stream that
+ * Move's output cannot splice into -- immunity without a second physical jack,
+ * which is the thing Move's XMOS cannot give us.
+ *
+ * Measured 2026-09-11: the XMOS does emit for cables 3-8 (cable 1 produces
+ * nothing). What is NOT yet known is whether the nibble survives to the device
+ * or is flattened onto one stream on the way -- and a BLE adapter cannot
+ * answer that, because BLE MIDI has no cable concept and flattens by design.
+ * Only the E16 itself can, which is what this override is for:
+ *
+ *   ssh ableton@move.local "echo 3 > /data/UserData/schwung/e16_cable"
+ *   ssh ableton@move.local "rm /data/UserData/schwung/e16_cable"   # back to 2
+ *
+ * Screen fine and no longer garbling -> the cable separates the streams.
+ * Screen fine and still garbling     -> the XMOS flattens; cable buys nothing.
+ * Screen dead                        -> the E16 listens on one cable only.
+ */
+let e16CableCheckedAt = 0;
+let e16Cable = 2;
+function e16ReconcileCable() {
+    const now = Date.now();
+    if (now - e16CableCheckedAt < 1000) return;
+    e16CableCheckedAt = now;
+    let want = 2;
+    try {
+        const path = "/data/UserData/schwung/e16_cable";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+            /* 0 is Move's own hardware bus and 15 is the SPI protocol itself --
+             * neither is a destination, and writing SysEx at 15 would corrupt
+             * the transport carrying it. */
+            if (!isNaN(n) && n >= 1 && n <= 14) want = n;
+        }
+    } catch (e) {}
+    e16Cable = want;
+}
+
+function e16Send(packets) {
+    e16ReconcileCable();
+    if (e16Cable !== 2 && typeof move_midi_cable_send === "function") {
+        return move_midi_cable_send(e16Cable, packets);
+    }
+    if (typeof move_midi_external_send !== "function") return false;
+    return move_midi_external_send(packets);
+}
+
+/*
+ * The chain, in the shape e16_map.buildMap wants: four slots of module NAMES.
+ *
+ * chainConfigs holds entries, not ids (`{module, params}` or null), and
+ * buildMap stringifies whatever it is given -- so handing it the raw config
+ * fills every map cell with "[object Object]". Read from the in-memory mirror
+ * rather than the DSP because the map is rebuilt on a held Shift, and a param
+ * round trip per position under a modifier is a screen that arrives after the
+ * finger has left it.
+ */
+const e16ChainReadAt = [-Infinity, -Infinity, -Infinity, -Infinity];
+function e16ChainShape() {
+    const idOf = (entry) => (entry && entry.module ? String(entry.module) : null);
+    const slotsOut = [];
+    const now = Date.now();
+    for (let s = 0; s < 4; s++) {
+        /* ensureChainConfigFresh, not chainConfigs[s]: the mirror is filled
+         * LAZILY, when a slot is opened in this UI, so a slot never visited
+         * since boot read as empty and its row on the map was blank. A fresh
+         * slot costs nothing; a stale one is read once and cached.
+         *
+         * A read that did not COMPLETE leaves the slot stale, and this is
+         * called several times a tick (map cells, ring colours, names) -- so
+         * an unanswered slot is retried at most once a second, never once per
+         * call: each retry is a run of ~2.8 ms blocking reads. */
+        let cfg;
+        if (chainConfigFresh[s] || now - e16ChainReadAt[s] >= 1000) {
+            if (!chainConfigFresh[s]) e16ChainReadAt[s] = now;
+            cfg = ensureChainConfigFresh(s);
+        } else {
+            cfg = chainConfigs[s];
+        }
+        cfg = cfg || createEmptyChainConfig();
+        slotsOut.push({
+            midiFx: (cfg.midiFx || []).map(idOf),
+            synth: idOf(cfg.synth),
+            fx: (cfg.fx || []).map(idOf),
+        });
+    }
+    return { slots: slotsOut };
+}
+
+/*
+ * FOLLOW FOCUS (Global Settings -> Surfaces -> Follow Focus), 0 = off, 1 = on.
+ *
+ * On, the surface mirrors whatever component Move's screen is editing instead
+ * of holding its own focus, and its map is disabled while it does. It is
+ * ONE-WAY by construction: this side only ever READS currentEditFocus(), so
+ * there is no path by which the E16 could move Move's screen.
+ *
+ * The mode lives here rather than in e16_surface.mjs because it is a SETTING --
+ * persisted, reachable from the grid -- while the surface module is pure. The
+ * surface is told on the edge (setFollow) and polls the source itself.
+ */
+let externalSurfaceFollow = 0;
+
+/*
+ * SURFACE NAV (Global Settings -> Surfaces -> Surface Nav), PER DEVICE: how
+ * that device's knobs navigate -- "map" or "knobs" (layout_common.mjs).
+ * Keyed by Ext Surface value; each device starts on the layout it was
+ * designed around. The surfaces read it every tick through navigationOf,
+ * so a change needs no restart.
+ */
+const SURFACE_NAVS = ["map", "knobs", "custom"];
+const externalSurfaceNav = { 1: "map", 2: "knobs" };
+function surfaceNavIndex() {
+    const nav = externalSurfaceNav[externalSurfaceMode] || externalSurfaceNav[1];
+    return Math.max(0, SURFACE_NAVS.indexOf(nav));
+}
+function setSurfaceNav(v) {
+    const nav = SURFACE_NAVS[parseInt(v, 10) || 0] || "map";
+    /* Under CC Only there is no device to set it for -- and the row is
+     * hidden there (visible_if), so nothing can ask. */
+    if (externalSurfaceNav[externalSurfaceMode] !== undefined) externalSurfaceNav[externalSurfaceMode] = nav;
+}
+
+/*
+ * THE SURFACE. Lifecycle, navigator, view, display pacing and its own page
+ * controller, assembled in src/shared/e16_surface.mjs so the whole path is
+ * runnable in tests/host -- this file cannot be imported under node, and a
+ * component that only a grep can check is how the first eleven tasks of this
+ * feature shipped green with nothing wired together.
+ *
+ * Constructed unconditionally and INERT until the setting turns it on: its
+ * tick() returns after the lifecycle's two comparisons while disabled, so
+ * there is nothing to gate here and no second place where "is it on" is
+ * answered.
+ */
+/*
+ * Layout probe arming, read from a file so a pattern can be changed without a
+ * rebuild -- the whole point is a fast loop against the device.
+ *
+ * Throttled to ~1 Hz: it is an eMMC stat on the shadow_ui loop, and this exists
+ * for a debugging session, not for the steady state. Absent file, or an
+ * unparseable one, means -1: draw the real view.
+ */
+let e16ProbeValue = -1;
+let e16ProbeCheckedAt = 0;
+
+/*
+ * TRANSPORT TESTER -- is the loss the E16, or the link?
+ *
+ * Every buffer Schwung owns reports zero drops under load while the screen
+ * visibly corrupts (measured 2026-09-11, four hand-offs, twice). That puts the
+ * loss downstream of Move's mailbox, where we have no instrument -- so the only
+ * way forward is to put a DIFFERENT receiver on the same wire and see whether
+ * it loses packets too.
+ *
+ * The surface itself cannot do that: it withholds every frame until the device
+ * ACKs, and a Mac or a BLE adapter will never send an E16 ACK. Hence a sender
+ * that answers to nothing but a file.
+ *
+ * The message is SELF-VERIFYING, because "did it arrive intact" must not
+ * depend on anyone eyeballing 1180 bytes:
+ *
+ *   F0 00 21 5B 02 01 7F <seq> <ramp...> F7
+ *
+ *   seq   increments per message, so a WHOLE message lost is visible as a gap
+ *   ramp  byte i is (i & 0x7F), so ANY missing or altered byte breaks the
+ *         sequence at a nameable offset
+ *
+ * Armed with the payload length, so the same rig can compare a framebuffer-
+ * sized message against a labels-sized one on the same link:
+ *
+ *   echo 1171 > /data/UserData/schwung/e16_blast    # framebuffer-sized
+ *   echo 92   > /data/UserData/schwung/e16_blast    # labels-sized
+ *   rm        /data/UserData/schwung/e16_blast
+ */
+let e16BlastCable = 2;
+let e16BlastLen = 0;
+let e16BlastCheckedAt = 0;
+let e16BlastSentAt = 0;
+let e16BlastSeq = 0;
+const E16_BLAST_INTERVAL_MS = 250;
+
+function e16BlastTick() {
+    const now = Date.now();
+    if (now - e16BlastCheckedAt >= 1000) {
+        e16BlastCheckedAt = now;
+        e16BlastLen = 0;
+        try {
+            const path = "/data/UserData/schwung/e16_blast";
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+                if (!isNaN(n) && n > 0) e16BlastLen = Math.min(n, 4000);
+            }
+        } catch (e) {}
+        e16BlastCable = 2;
+        try {
+            const cpath = "/data/UserData/schwung/e16_blast_cable";
+            if (typeof host_file_exists === "function" && host_file_exists(cpath)) {
+                const c = parseInt(String(host_read_file(cpath) || "").trim(), 10);
+                if (!isNaN(c) && c >= 0 && c <= 15) e16BlastCable = c;
+            }
+        } catch (e) {}
+    }
+    if (!e16BlastLen) return;
+    if (now - e16BlastSentAt < E16_BLAST_INTERVAL_MS) return;
+    e16BlastSentAt = now;
+
+    const msg = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x7F, e16BlastSeq & 0x7F];
+    for (let i = 0; i < e16BlastLen; i++) msg.push(i & 0x7F);
+    msg.push(0xF7);
+    e16BlastSeq++;
+
+    /* Straight down the same path a frame takes -- packetize, cable 2, the
+     * carry, the mailbox -- so the test measures the wire this feature uses
+     * and not some other one. */
+    try {
+        const packets = [];
+        let i = 0;
+        while (msg.length - i > 3) {
+            packets.push(0x04, msg[i], msg[i + 1], msg[i + 2]);
+            i += 3;
+        }
+        const left = msg.length - i;
+        packets.push(left === 1 ? 0x05 : left === 2 ? 0x06 : 0x07,
+                     msg[i] || 0, msg[i + 1] || 0, msg[i + 2] || 0);
+        /* Cable from a file, default 2 -- see js_move_midi_cable_send. The
+         * question this answers is whether the XMOS emits anything at all for
+         * a cable other than 2, because a separate cable is the only thing
+         * that would make a screen update unsplittable by Move's own notes. */
+        const cable = e16BlastCable;
+        if (cable !== 2 && typeof move_midi_cable_send === "function") {
+            move_midi_cable_send(cable, packets);
+        } else if (typeof move_midi_external_send === "function") {
+            move_midi_external_send(packets);
+        }
+    } catch (e) {}
+}
+/*
+ * SYNTHETIC INTERFERENCE, ON A CABLE WE CHOOSE.
+ *
+ * The garbling was isolated to Move's own note output on cable 2, which our
+ * SysEx shares. Sending the surface on cable 3 instead did NOT fix it -- but
+ * that experiment has a hole: we do not control which cable Move's notes go
+ * out on, nor whether the XMOS relabels either stream on the way.
+ *
+ * This closes it by generating BOTH streams ourselves. Notes here, screen on
+ * another cable, Move's transport stopped and its output irrelevant. If the
+ * screen still garbles, SysEx reassembly downstream is not per-cable, proven
+ * with nothing of Move's in the experiment at all.
+ *
+ *   echo 5  > /data/UserData/schwung/e16_noise_cable
+ *   echo 12 > /data/UserData/schwung/e16_noise     # note pairs per tick
+ *   rm /data/UserData/schwung/e16_noise            # stop
+ *
+ * Note-ON then note-OFF every tick, so nothing is left sounding if the file is
+ * removed mid-burst -- and velocity 1 on channel 16, which is about as inert as
+ * a note can be if anything downstream is listening.
+ */
+let e16NoiseCheckedAt = 0;
+let e16NoiseCount = 0;
+let e16NoiseCable = 5;
+let e16NoiseNote = 36;
+function e16NoiseTick() {
+    const now = Date.now();
+    if (now - e16NoiseCheckedAt >= 1000) {
+        e16NoiseCheckedAt = now;
+        e16NoiseCount = 0;
+        try {
+            const p = "/data/UserData/schwung/e16_noise";
+            if (typeof host_file_exists === "function" && host_file_exists(p)) {
+                const n = parseInt(String(host_read_file(p) || "").trim(), 10);
+                if (!isNaN(n) && n > 0) e16NoiseCount = Math.min(n, 64);
+            }
+            const cp = "/data/UserData/schwung/e16_noise_cable";
+            if (typeof host_file_exists === "function" && host_file_exists(cp)) {
+                const c = parseInt(String(host_read_file(cp) || "").trim(), 10);
+                if (!isNaN(c) && c >= 1 && c <= 14) e16NoiseCable = c;
+            }
+        } catch (e) {}
+    }
+    if (!e16NoiseCount) return;
+    if (typeof move_midi_cable_send !== "function") return;
+    try {
+        const pkts = [];
+        for (let i = 0; i < e16NoiseCount; i++) {
+            const n = 36 + ((e16NoiseNote + i) % 24);
+            pkts.push(0x09, 0x9F, n, 1);    /* note-on,  ch16, vel 1 */
+            pkts.push(0x08, 0x8F, n, 0);    /* note-off, ch16        */
+        }
+        e16NoiseNote = (e16NoiseNote + 1) % 24;
+        move_midi_cable_send(e16NoiseCable, pkts);
+    } catch (e) {}
+}
+
+function e16TestPattern() {
+    const now = Date.now();
+    if (now - e16ProbeCheckedAt < 1000) return e16ProbeValue;
+    e16ProbeCheckedAt = now;
+    e16ProbeValue = -1;
+    try {
+        const path = "/data/UserData/schwung/e16_testpattern";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const raw = host_read_file(path);
+            const n = parseInt(String(raw == null ? "" : raw).trim(), 10);
+            if (!isNaN(n) && n >= 0) e16ProbeValue = n;
+        }
+    } catch (e) {}
+    return e16ProbeValue;
+}
+
+/*
+ * PACING PROBE. Same shape as the test pattern above, and for the same reason:
+ * the value it sets decides how long a framebuffer takes to cross the wire
+ * (394 packets at N per SPI frame, 2.90 ms a frame), and 3 was never measured
+ * -- it was the first value that stopped the garbling. Searching upward used to
+ * mean a cross-compile and a restart per try; it is now an echo:
+ *
+ *   ssh ableton@move.local "echo 8 > /data/UserData/schwung/e16_pace"
+ *
+ * Absent or 0 means the compiled default. Checked once a second, so a change
+ * lands within a second with nothing to restart.
+ */
+let e16PaceCheckedAt = 0;
+let e16PaceValue = 0;
+function e16ReconcilePace() {
+    const now = Date.now();
+    if (now - e16PaceCheckedAt < 1000) return;
+    e16PaceCheckedAt = now;
+    let want = 0;
+    try {
+        const path = "/data/UserData/schwung/e16_pace";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+            if (!isNaN(n) && n > 0) want = n;
+        }
+    } catch (e) {}
+    if (want === e16PaceValue) return;
+    e16PaceValue = want;
+    try {
+        if (typeof host_ui_midi_pace === "function") host_ui_midi_pace(want);
+    } catch (e) {}
+}
+
+/*
+ * THE CONTROL FOUNDATION (src/shared/control_host.mjs; design in
+ * docs/superpowers/specs/2026-09-26-custom-surface-layout-design.md): the
+ * per-set control document (set_state/<uuid>/controls.json), the TARGET IO
+ * every control source writes through, and the LEARN broker. Assembled there
+ * so tests/host can run it; this is only the wiring. The Custom surface
+ * layout is its first user; the generic CC map is its next.
+ */
+const controlHost = createControlHost({
+    fs: {
+        exists: (path) => host_file_exists(path),
+        read: (path) => host_read_file(path),
+        write: (path, text) => host_write_file(path, text),
+        ensureDir: (dir) => host_ensure_dir(dir),
+    },
+    stateDir: () => activeSlotStateDir,
+    getParam: (slot, key) => getSlotParam(slot, key),
+    setParam: (slot, key, value) => setSlotParam(slot, key, value),
+    /* Module ids from the mirrors the UI already holds -- never a read per
+     * call (e16ChainShape re-reads a stale slot at most once a second). */
+    chainShape: () => e16ChainShape(),
+    masterFx: () => ensureMasterFxConfigFresh(),
+    log: (line) => debugLog(line),
+    announce: (text) => announce(text),
+    onReload: () => { try { for (const sf of externalSurfaces()) sf.reloadControls(); } catch (e) {} },
+    /* Sends and returns are saved levels, like their grid rows. */
+    onWrite: (slot, key) => {
+        if (key.startsWith("buses:") || key.endsWith(":return")) sendLevelsDirty = true;
+    },
+});
+
+/*
+ * THE GENERIC CC MAP (cc_map.mjs): any controller's CC drives a parameter,
+ * per set. The shim hands over only bound CCs (and swallows them from Move),
+ * or every CC while learning -- via the claim table restated below.
+ */
+const ccMap = createCCMap({
+    controls: () => controlHost.controls(),
+    edit: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
+    setShimLearn: (on) => { if (typeof host_cc_learn === "function") host_cc_learn(!!on); },
+    /* Only the idle end is shown this way; while learn is on, the FOOTER
+     * carries it (drawCcLearnFooter). */
+    notify: (title, text) => { showOverlay(title, text, 90); needsRedraw = true; },
+    announce: (text) => announce(text),
+});
+
+/*
+ * While CC learn mode is on, the FOOTER of whatever screen is up says where it
+ * is -- "LEARN  Cutoff: CC18" -- replacing that screen's hints. Painted after
+ * the view switch, with the other on-top overlays, so it reaches every view
+ * without each one knowing. Learn progresses without input on the screen (a
+ * controller CC), so the TICK notices a change and asks for a frame -- the
+ * draw path does not run without one.
+ */
+let ccLearnFooterShown = null;
+function drawCcLearnFooter() {
+    const text = ccLearnFooterShown;
+    if (!text || shadowDisplayHidden()) return;
+    fill_rect(0, MOVY_RULE_Y, SCREEN_WIDTH, SCREEN_HEIGHT - MOVY_RULE_Y, 0);
+    drawFooter([text]);
+}
+/* The claim table follows the document: restated whenever it changes. */
+let ccClaimRev = -1;
+function reconcileCcClaim_() {
+    const doc = controlHost.controls();
+    if (doc.rev === ccClaimRev) return;
+    ccClaimRev = doc.rev;
+    ccMap.reload();
+    if (typeof host_cc_claim_set === "function") host_cc_claim_set(ccMap.claimPairs());
+}
+
+/* A surface's OWN writes (its page controller, its Mixer) go through here so
+ * the learn broker never mistakes them for the user choosing a parameter. */
+function surfaceSetParam(slot, key, value) {
+    return controlHost.write(slot, key, value);
+}
+
+/*
+ * A SURFACE'S PARAMETER READ, with one substitution: a module that draws its
+ * own screen may REFUSE ui_hierarchy -- serving one would stop the host from
+ * loading its ui_chain.js (Teng: "that is what takes the pads") -- and publish
+ * the same shape as `ui_pages` for anything else that wants its knobs. Teng's
+ * own ui_chain.js makes exactly this rewrite for its own controller. Only a
+ * FAILED hierarchy read falls back, and only to an answer: a module serving
+ * neither keeps the null, so the tri-state rule is untouched (a timed-out
+ * read of a module that has no ui_pages is still a timeout).
+ */
+function surfaceGetParam(slot, key) {
+    const v = getSlotParam(slot, key);
+    if ((v === null || v === undefined) && /:ui_hierarchy$/.test(String(key))) {
+        const alt = getSlotParam(slot, String(key).replace(/:ui_hierarchy$/, ":ui_pages"));
+        if (alt) return alt;
+    }
+    return v;
+}
+
+/*
+ * THE MIXER'S WAY TO THE PARAMETERS, one object for every surface: the E16's
+ * and the EC4's Mixer drive the same slot volumes, sends and returns as Slot
+ * Settings writes -- slot:volume is also what Move's own track volume drives
+ * -- so a surface, the slot grid and Move move one value. Sends and returns
+ * mark sendLevelsDirty like their grid; volume / mute / solo ride the slot
+ * state like every other slot setting.
+ */
+const surfaceMixerIo = {
+    getSlot: (slot, key) => getSlotParam(slot, key),
+    setSlot: (slot, key, value) => {
+        const ok = surfaceSetParam(slot, key, value);
+        if (ok && String(key).startsWith("buses:")) sendLevelsDirty = true;
+        return ok;
+    },
+    getGlobal: (key) => {
+        try { return typeof shadow_get_param === "function" ? shadow_get_param(0, key) : null; }
+        catch (e) { return null; }
+    },
+    setGlobal: (key, value) => {
+        let ok = false;
+        try { ok = typeof shadow_set_param === "function" && shadow_set_param(0, key, String(value)); }
+        catch (e) { ok = false; }
+        /* Only the returns are saved levels; the filter is not saved. */
+        if (ok && String(key).endsWith(":return")) sendLevelsDirty = true;
+        return ok;
+    },
+    /* Same save as Shift+Capture on Move. */
+    skipback: () => {
+        try { return typeof shadow_set_param === "function" && shadow_set_param(0, "master_fx:skipback_save", "1"); }
+        catch (e) { return false; }
+    },
+    nameOf: (slot) => {
+        const sl = (e16ChainShape().slots || [])[slot] || {};
+        return sl.synth ? String(sl.synth) : ("Slot " + (slot + 1));
+    },
+};
+
+const e16Surface = createE16Surface({
+    now: () => Date.now(),
+    /* Called only from ticks, after e16KnobScale (below) exists. */
+    pulsesPerDetentOf: () => e16KnobScale(),
+    accelOf: () => e16KnobAccel(),
+    navigationOf: () => externalSurfaceNav[1],
+    /* The Custom layout's seams: the control document and the target io. */
+    controls: () => controlHost.controls(),
+    editControls: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
+    /* The shim's current pace, so the surface's per-tick packet budget
+     * follows it (0 = no file = the shim default). */
+    paceOf: () => e16PaceValue,
+    send: e16Send,
+    chainOf: e16ChainShape,
+    followFocusOf: e16FollowFocus,
+    testPatternOf: e16TestPattern,
+    /* "labels" only if the file says so; the drawn panel otherwise. */
+    screenModeOf: () => {
+        try {
+            const path = "/data/UserData/schwung/e16_screen";
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                return String(host_read_file(path) || "").trim().toLowerCase() === "labels"
+                    ? "labels" : "framebuffer";
+            }
+        } catch (e) {}
+        return "framebuffer";
+    },
+    /* Move's own cable-2 traffic, counted by the shim. The surface gates its
+     * self-heal restate on this -- see FOREIGN_QUIET_MS in e16_surface.mjs. */
+    foreignOf: () => {
+        try {
+            return typeof host_ui_midi_foreign === "function"
+                ? host_ui_midi_foreign() : 0;
+        } catch (e) { return 0; }
+    },
+    /*
+     * A FACTORY, and the surface gets a controller of its OWN.
+     *
+     * A page controller has ONE current page, and the surface's lower eight
+     * encoders drive page N+1 -- which it reaches by moving the controller
+     * before applying the turn. Sharing the grid's controller would therefore
+     * drag Move's screen to the next page on every lower-row knob: two small
+     * in-range page indices disagreeing, with nothing logged.
+     *
+     * `focus` is a LIVE view of the surface's slot/component, not a snapshot,
+     * because one controller outlives many jumps -- one closed over the slot it
+     * was born with would keep addressing that slot after the first jump.
+     */
+    makeController: (focus) => createPageController({
+        getParam: (key) => surfaceGetParam(focus.slot, key),
+        setParam: (key, value) => surfaceSetParam(focus.slot, key, value),
+    }),
+    /* THE MIXER (a tap of Shift; e16_mixer.mjs) -- see surfaceMixerIo. */
+    /* The web mirror (display_server /stream-e16): what the E16 shows. */
+    mirror: (frame, rings, active) => {
+        if (typeof host_e16_mirror === "function") host_e16_mirror(frame, rings, !!active);
+    },
+    mixer: surfaceMixerIo,
+});
+
+/*
+ * THE FADERFOX EC4 (Ext Surface = EC4). The E16's navigator, pages and Mixer
+ * on a device whose screen is text -- see src/shared/ec4_surface.mjs. Same
+ * seams as the E16 above, plus one: which EC4 setup holds Schwung's map.
+ *
+ * That is setup 13 unless /data/UserData/schwung/ec4_setup names another
+ * (1-16). EC4 Setup (below) writes it, with the setup it installed into; by
+ * hand it is
+ *   ssh ableton@move.local "echo 14 > /data/UserData/schwung/ec4_setup"
+ * Read ~1 Hz, like the E16's other armed files.
+ */
+/*
+ * AN ARMED FILE, read at most once a second: a number in
+ * /data/UserData/schwung/<name>, or the default when the file is absent or
+ * does not parse to something `accept` takes. For settings that are tuned by
+ * hand on the device rather than from a menu.
+ */
+function armedFileNumber(name, parse, accept, dflt) {
+    const path = "/data/UserData/schwung/" + name;
+    let value = dflt, checkedAt = -Infinity;
+    const read = () => {
+        const now = Date.now();
+        if (now - checkedAt < 1000) return value;
+        checkedAt = now;
+        value = dflt;
+        try {
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                const n = parse(String(host_read_file(path) || "").trim());
+                if (accept(n)) value = n;
+            }
+        } catch (e) {}
+        return value;
+    };
+    /* A write from this process is seen on the next read, not a second later. */
+    read.invalidate = () => { checkedAt = -Infinity; };
+    return read;
+}
+
+/* Which EC4 setup holds Schwung's map, 1-16 in the file (EC4 Setup writes it),
+ * 0-based here; by hand:
+ *   ssh ableton@move.local "echo 14 > /data/UserData/schwung/ec4_setup" */
+const ec4SetupFile = armedFileNumber("ec4_setup", (t) => parseInt(t, 10),
+    (n) => n >= 1 && n <= 16, EC4_DEFAULT_SETUP + 1);
+const ec4Setup = () => ec4SetupFile() - 1;
+
+/* EC4 pulses per Move detent -- the feel of every continuous knob on the EC4
+ * (ec4_surface.mjs); bigger = slower:
+ *   ssh ableton@move.local "echo 0.4 > /data/UserData/schwung/ec4_knob_scale" */
+const ec4KnobScale = armedFileNumber("ec4_knob_scale", parseFloat,
+    (n) => n > 0 && n <= 32, EC4_DEFAULT_PULSES);
+
+/* E16 ticks per Move detent (e16_surface.mjs, E16_PULSES_PER_DETENT); bigger
+ * = slower:
+ *   ssh ableton@move.local "echo 0.3 > /data/UserData/schwung/e16_knob_scale" */
+const e16KnobScale = armedFileNumber("e16_knob_scale", parseFloat,
+    (n) => n > 0 && n <= 32, E16_PULSES_PER_DETENT);
+/* How much of the E16's own fast-turn acceleration is kept (0 = none,
+ * 0.5 = the default x8 -> x2.5; e16_surface.mjs e16Curve):
+ *   ssh ableton@move.local "echo 0.3 > /data/UserData/schwung/e16_knob_accel" */
+const e16KnobAccel = armedFileNumber("e16_knob_accel", parseFloat,
+    (n) => n >= 0 && n <= 2, E16_ACCEL);
+
+const ec4Surface = createEc4Surface({
+    now: () => Date.now(),
+    navigationOf: () => externalSurfaceNav[2],
+    controls: () => controlHost.controls(),
+    editControls: (fn) => controlHost.edit(fn),
+    targets: controlHost.targets,
+    learn: controlHost.learn,
+    send: e16Send,
+    chainOf: e16ChainShape,
+    followFocusOf: e16FollowFocus,
+    setupOf: ec4Setup,
+    pulsesPerDetentOf: ec4KnobScale,
+    onInstalled: ec4Installed,
+    log: (line) => console.log(line),
+    makeController: (focus) => createPageController({
+        getParam: (key) => surfaceGetParam(focus.slot, key),
+        setParam: (key, value) => surfaceSetParam(focus.slot, key, value),
+    }),
+    mixer: surfaceMixerIo,
+});
+
+/*
+ * EC4 SETUP (Global Settings -> Surfaces -> EC4 Setup): put Schwung's setup onto
+ * an EC4 plugged into Move, with no computer. The steps and the transfer are
+ * the surface's (ec4_surface.mjs, INSTALLING THE SCHWUNG SETUP); this is the
+ * screen and the three presses:
+ *
+ *   click  take the setup the EC4 is on as the one to replace
+ *   click  send, once the EC4 is in receive mode
+ *   click  done
+ *
+ * Opening it sets Ext Surface to EC4: the E16 surface's probes would otherwise
+ * share the port with the transfer.
+ */
+let ec4SetupReturnView = null;
+
+function enterEc4Setup(returnView) {
+    ec4SetupReturnView = returnView || VIEWS.SLOTS;
+    if (externalSurfaceMode !== 2) {
+        setExternalSurfaceMode(2);
+        saveExternalSurfaceConfig();
+    }
+    ec4Surface.installBegin();
+    setView(VIEWS.EC4_SETUP);
+    needsRedraw = true;
+    announce("EC4 Setup. On the EC4, choose the setup to replace, then click.");
+}
+
+function exitEc4Setup() {
+    const st = ec4Surface.installState;
+    /* Mid-transfer, Back is refused: an EC4 left in receive mode with half a
+     * message has to be cancelled on the EC4 itself. */
+    if (st && st.phase === "sending") return;
+    ec4Surface.installEnd();
+    const back = ec4SetupReturnView || VIEWS.SLOTS;
+    ec4SetupReturnView = null;
+    if (back === VIEWS.GLOBAL_SETTINGS) { enterGlobalSettings(); return; }
+    setView(back);
+    needsRedraw = true;
+}
+
+function ec4SetupClick() {
+    const st = ec4Surface.installState;
+    if (!st) return;
+    if (st.phase === "pick") {
+        if (!ec4Surface.installArm()) { announce("No EC4 answering on USB-A."); return; }
+        announce("Setup " + (ec4Surface.installState.setup + 1) +
+                 ". Put the EC4 in receive mode: function and encoder 4, then encoder 14. Then click.");
+    } else if (st.phase === "ready") {
+        ec4Surface.installSend();
+        announce("Sending.");
+    } else if (st.phase === "done") {
+        exitEc4Setup();
+        return;
+    }
+    needsRedraw = true;
+}
+
+/* The surface calls this when the whole message has gone out. */
+function ec4Installed(setup) {
+    try { host_write_file("/data/UserData/schwung/ec4_setup", String(setup + 1)); } catch (e) {}
+    ec4SetupFile.invalidate();
+    announce("Done. EC4 setup " + (setup + 1) + " is Schwung's. Its name is unchanged; rename it on the EC4 to label it.");
+    needsRedraw = true;
+}
+
+function drawEc4Setup() {
+    clear_screen();
+    const st = ec4Surface.installState || { phase: "pick", current: null };
+    const lines = [];
+    let foot = "Back: exit";
+    if (st.phase === "pick" && st.current === null) {
+        lines.push("Plug the EC4 into", "Move's USB-A port.");
+    } else if (st.phase === "pick") {
+        lines.push("On the EC4, choose the", "setup to replace:", "  setup " + (st.current + 1));
+        foot = "Click: use it";
+    } else if (st.phase === "ready") {
+        lines.push("Setup " + (st.setup + 1) + ". Now on EC4:", "FUNC+enc 4, then", "enc 14 (receive)");
+        foot = "Click: send";
+    } else if (st.phase === "sending") {
+        lines.push("Sending to setup " + (st.setup + 1), Math.round(st.progress * 100) + "%");
+        foot = "";
+    } else {
+        /* A single-setup download carries no name, so the setup keeps the
+         * one it had; say so, or "SCHW" not appearing reads as a failure. */
+        lines.push("Setup " + (st.setup + 1) + " is Schwung's.", "Its name is unchanged:",
+                   "rename it on the EC4.");
+        foot = "Click: done";
+    }
+    print(2, 1, "EC4 SETUP", 1);
+    fill_rect(0, 10, 128, 1, 1);
+    lines.forEach((l, i) => print(2, 14 + i * 10, l, 1));
+    if (foot) drawFooter([foot]);
+    /* The EC4's setup number and the progress change without input. */
+    needsRedraw = true;
+}
+
+
+/*
+ * EVERY SURFACE, indexed by Ext Surface - 1 (1 = OXI E16, 2 = Faderfox EC4).
+ * One device at a time -- both read the same claimed CCs (e16_claim.h) -- but
+ * every surface is fed and ticked: a disabled one gates itself, and still owes
+ * its goodbye (the E16's EXIT, the EC4's names) after being switched off.
+ * A function, not a const, because the surfaces are consts declared above and
+ * early callers (setSlotParam during init) must not trip their TDZ.
+ */
+function externalSurfaces() {
+    return [e16Surface, ec4Surface];
+}
+
+function setExternalSurfaceFollow(v) {
+    const mode = (parseInt(v, 10) || 0) ? 1 : 0;
+    if (mode === externalSurfaceFollow) return;
+    externalSurfaceFollow = mode;
+    /* The surface parks its own focus on the OFF->ON edge and restores it on
+     * the way back, so it must see the EDGE, not poll the setting. */
+    for (const sf of externalSurfaces()) sf.setFollow(mode === 1);
+}
+
+/*
+ * The follow SOURCE: what the E16 mirrors, or null.
+ *
+ * Handed to createNav as `followFocusOf`. NULL IS AN ANSWER -- it means "there
+ * is nothing to follow right now", and the surface leaves its focus where it
+ * is rather than defaulting to slot 0. Collapsing the two would drag the
+ * surface to slot 0 on every tick where the shadow UI is on a view with no
+ * component, and back off it the moment there is one, which reads as a
+ * flickering surface rather than as a missing answer.
+ */
+function e16FollowFocus() {
+    if (!externalSurfaceFollow) return null;
+    const f = currentEditFocus();
+    if (typeof f.slot !== "number" || f.slot < 0 || !f.component) return null;
+    /*
+     * ONLY A MODULE IN A CHAIN IS SOMETHING TO FOLLOW. Global Settings, Slot
+     * Settings, Master FX Settings and the bus Send Mixer are knob grids too,
+     * pointed at slot 0 (or a slot) with a SYNTHESISED component -- followed,
+     * the surface loaded a "module" with no pages and went blank in either
+     * layout, which is exactly where you stand to change Surface Nav
+     * (hardware, 2026-09-26). Null keeps the focus where it was.
+     */
+    if (!/^(synth|fx\d+|midi_fx\d+)$/.test(String(f.component))) return null;
+    return f;
+}
+
+function setExternalSurfaceMode(v) {
+    /* 1 = OXI E16, 2 = Faderfox EC4. One device at a time: both are read
+     * from the same claimed CCs (src/host/e16_claim.h). */
+    const mode = (v === 1 || v === 2) ? v : 0;
+    if (mode === externalSurfaceMode) return;
+    externalSurfaceMode = mode;
+    /* EXIT is sent from here, once, or the device is left blank with the
+     * feature switched off. An EXIT the buffer refuses is owed and drained by
+     * externalSurfaceTick(). */
+    externalSurfaces().forEach((sf, i) => sf.setEnabled(mode === i + 1));
+}
+
+function saveExternalSurfaceConfig() {
+    try {
+        const configPath = "/data/UserData/schwung/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.external_surface = externalSurfaceMode;
+        config.external_surface_follow = externalSurfaceFollow;
+        config.external_surface_nav = { e16: externalSurfaceNav[1], ec4: externalSurfaceNav[2] };
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadExternalSurfaceConfig() {
+    try {
+        const content = host_read_file("/data/UserData/schwung/shadow_config.json");
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.external_surface !== undefined) {
+            setExternalSurfaceMode(parseInt(config.external_surface, 10) || 0);
+        }
+        if (config.external_surface_follow !== undefined) {
+            setExternalSurfaceFollow(config.external_surface_follow);
+        }
+        const nav = config.external_surface_nav;
+        if (nav && typeof nav === "object") {
+            if (SURFACE_NAVS.includes(nav.e16)) externalSurfaceNav[1] = nav.e16;
+            if (SURFACE_NAVS.includes(nav.ec4)) externalSurfaceNav[2] = nav.ec4;
+        }
+    } catch (e) {}
+}
+
+/* Called every frame. Cheap by construction: while the surface is off and
+ * nothing is owed, this is two comparisons. */
+function externalSurfaceTick() {
+    /* The per-set control document: loaded on a set change, and re-read when
+     * another writer (the web editor) changed it. Only while a surface is on. */
+    /* The control document is loaded whatever the Surface setting: the CC
+     * map works under CC Only, and beside a surface. */
+    controlHost.reconcile();
+    reconcileCcClaim_();
+    ccMap.tick();
+    const learnText = ccMap.learnFooter((action) => hintPairWidth("Learn", action) <= SCREEN_WIDTH - 2);
+    if (learnText !== ccLearnFooterShown) { ccLearnFooterShown = learnText; needsRedraw = true; }
+    for (const sf of externalSurfaces()) sf.tick();
+}
+
+/* Cable-2 bytes, three at a time with the CIN already stripped. Fed
+ * unconditionally: the surface's assembler is what decides whether a run is
+ * ours, and a gate here would mean a message that began before the setting was
+ * switched on is spliced onto one that began after. Everything downstream of
+ * the assembler is gated on the setting inside the surface. */
+function externalSurfaceMidi(data) {
+    for (const sf of externalSurfaces()) sf.feedMidi(data);
+}
+
 let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */
 const SPEAKER_EQ_NAMES = ["auto", "off", "on"];
 
@@ -11123,6 +12116,13 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "surface_layout" || key === "cc_map") {
+        /* From the grid this runs from the menu INTENT, after the controller
+         * has finished with its input, so leaving the grid here is safe. */
+        if (paramPagesActive()) exitParamPages();
+        enterControlEditor(key === "cc_map" ? ccEd() : surfaceLayoutEd(), key === "cc_map" ? "CC Map" : "Surface Layout");
+        return;
+    }
     if (key === "mfx_lfo1" || key === "mfx_lfo2") {
         const lfoIdx = (key === "mfx_lfo1") ? 0 : 1;
         lfoCtx = makeMfxLfoCtx(lfoIdx);
@@ -12346,6 +13346,10 @@ function handleGlobalSettingsAction(key) {
     }
     if (key === "connect") {
         enterConnect(VIEWS.GLOBAL_SETTINGS);
+        return;
+    }
+    if (key === "ec4_setup") {
+        enterEc4Setup(VIEWS.GLOBAL_SETTINGS);
         return;
     }
 }
@@ -14655,6 +15659,12 @@ function globalGridIoFor() {
                 return String(speakerEqMode);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+            case "external_surface":
+                return String(externalSurfaceMode);
+            case "follow_focus":
+                return String(externalSurfaceFollow);
+            case "surface_nav":
+                return String(surfaceNavIndex());
 
             /* The two doors have no state to report. They are answered anyway,
              * with option 0: an UNSERVED key makes the row announce "not read
@@ -14662,6 +15672,7 @@ function globalGridIoFor() {
              * on a control that works. See GLOBAL_ROUTING's `js.stateless`. */
             case "connect":
             case "help":
+            case "ec4_setup":
                 return "0";
             }
             return "";
@@ -14794,6 +15805,24 @@ function globalGridIoFor() {
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
                 return;
+            case "external_surface":
+                /* Its own saver, like pad_typing -- GLOBAL_ROUTING marks it
+                 * persist: "own", so the shared sink never fires for it. */
+                setExternalSurfaceMode(parseInt(value, 10) || 0);
+                saveExternalSurfaceConfig();
+                return;
+            case "follow_focus":
+                /* Same saver as the row above -- the two settings share one
+                 * block in shadow_config.json, so there is one writer for
+                 * both and no way for them to be persisted apart. */
+                setExternalSurfaceFollow(value);
+                saveExternalSurfaceConfig();
+                return;
+            case "surface_nav":
+                /* The same block again, per device. */
+                setSurfaceNav(value);
+                saveExternalSurfaceConfig();
+                return;
 
             /* connect / help never arrive here: their routing names an ACTION,
              * so createGlobalGridIo queues them and the param-pages host drains
@@ -14820,6 +15849,8 @@ function globalGridIoFor() {
         runAction: (action) => runGlobalActionFromGrid(action),
     };
 
+    /* visible_if reads the grid's own value first (a debounced turn). */
+    io.cachedValue = (key) => paramPagesCachedValue(key);
     return createGlobalGridIo(io);
 }
 
@@ -14977,6 +16008,11 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "slot:volume") {
         const pct = Math.round(parseFloat(val) * 100);
         return `${pct}%`;
+    }
+    if (setting.key === "slot:pan") {
+        const p = parseFloat(val) || 0;
+        if (Math.abs(p) < 0.01) return "C";
+        return (p < 0 ? "L " : "R ") + Math.round(Math.abs(p) * 100);
     }
     if (setting.key === "slot:muted") {
         return parseInt(val) ? "Yes" : "No";
@@ -19610,6 +20646,53 @@ function reconcilePadBlock() {
     if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
 }
 
+/* The shim's copy of "is a surface attached" is RESTATED, never memoised.
+ *
+ * /dev/shm does not survive a shim restart, so the flag comes back as 0 with
+ * nothing telling JS it happened -- the surface would go dark and stay dark,
+ * with the setting still reading E16 on screen. Same rule, and the same
+ * reason, as reconcilePadBlock() below. The binding compares against the SHM
+ * and returns early when unchanged, so a per-tick restate is a byte compare. */
+function reconcileExternalSurface() {
+    if (typeof host_external_surface !== "function") return;
+    host_external_surface(externalSurfaceMode ? 1 : 0);
+}
+
+/*
+ * WHICH COMPONENT IS THIS SCREEN EDITING? -- the one derivation, two consumers.
+ *
+ * The knob grid keeps its own slot/component (enterParamPages never touches
+ * hierEditorSlot), so on that view the identity comes from the grid and
+ * everywhere else from the list editor's pair. Written down once because it is
+ * now asked by reconcileCcClaim (which uses it as the memo key for a ~2.8 ms
+ * module-id read) AND by Follow Focus, and this codebase's recurring failure is
+ * one fact with two consumers drifting apart.
+ *
+ * It is the FOLLOW SOURCE: `createNav({ followFocusOf })` in
+ * src/shared/e16_surface.mjs polls this and mirrors it. That direction is the
+ * whole of the coupling -- nothing on the surface side writes back here, which
+ * is what makes follow one-way rather than a negotiation.
+ */
+function currentEditFocus() {
+    const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
+    /*
+     * A MODULE THAT DRAWS ITS OWN SCREEN (ui_chain.js -> COMPONENT_EDIT) is
+     * edited from selectedSlot / editingComponentKey, and neither of the two
+     * pairs below is set on the way in. Answering from them anyway left the
+     * surface's Follow Focus on the PREVIOUS module: it followed Hank (the
+     * grid) and then stayed there when Teng (its own UI) was opened
+     * (hardware, 2026-09-26). The key is a component KEY ("midiFx"), so it
+     * goes through chainComponentId to the chain id the others speak.
+     */
+    if (view === VIEWS.COMPONENT_EDIT && editingComponentKey) {
+        return { slot: selectedSlot, component: chainComponentId(editingComponentKey) };
+    }
+    return {
+        slot: onGrid ? paramPagesSlot() : hierEditorSlot,
+        component: onGrid ? paramPagesComponent() : hierEditorComponent,
+    };
+}
+
 function reconcileCcClaim() {
     if (typeof host_claim_ccs !== "function") return;
     const onScreen = !!CC_CLAIM_VIEWS[view] ||
@@ -19618,12 +20701,9 @@ function reconcileCcClaim() {
      * blocking get_param round-trip (~2.8 ms), so it is consulted only when
      * this tuple changes -- not on every one of the ~44 ticks/sec. A module
      * SWAP always transits COMPONENT_SELECT, which moves `view`, so the tuple
-     * catches swaps too. The knob grid keeps its own slot/component
-     * (enterParamPages never touches hierEditorSlot), so on that view the
-     * identity comes from the grid. */
+     * catches swaps too. */
     const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
-    const slot = onGrid ? paramPagesSlot() : hierEditorSlot;
-    const comp = onGrid ? paramPagesComponent() : hierEditorComponent;
+    const { slot, component: comp } = currentEditFocus();
     /*
      * THE DISPLAY MODE IS PART OF THE IDENTITY, because the SHIM CLEARS THE
      * CLAIM AND DOES NOT TELL US.
@@ -21107,6 +22187,9 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.SLOTS:
             handleSlotsJog(delta);
             break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutJog(delta);
+            break;
         case VIEWS.FX_BUS_PICKER: {
             selectedFxBusRow = Math.max(0, Math.min(FX_BUSES.length - 1,
                                                     selectedFxBusRow + delta));
@@ -21589,6 +22672,9 @@ function handleSelect() {
         case VIEWS.FX_BUS_PICKER:
             enterFxBus(selectedFxBusRow);
             break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutSelect();
+            break;
         case VIEWS.BUS_LIST: {
             const rows = busRowsNow();
             const row = rows[busListIndex];
@@ -22020,6 +23106,9 @@ function handleSelect() {
             break;
         case VIEWS.CONNECT:
             exitConnect();
+            break;
+        case VIEWS.EC4_SETUP:
+            ec4SetupClick();
             break;
         case VIEWS.CHAIN_SETTINGS:
             {
@@ -22743,6 +23832,9 @@ function handleBack() {
                 }
             }
             break;
+        case VIEWS.SURFACE_LAYOUT:
+            surfaceLayoutBack();
+            break;
         case VIEWS.FX_BUS_PICKER:
             /* The top of this branch of the tree — dismiss, as the chain editor
              * does from its own top. */
@@ -22813,6 +23905,9 @@ function handleBack() {
             break;
         case VIEWS.CONNECT:
             exitConnect();
+            break;
+        case VIEWS.EC4_SETUP:
+            exitEc4Setup();
             break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
@@ -25110,6 +26205,7 @@ globalThis.init = function() {
     loadPadTypingConfig();
     loadTextPreviewConfig();
     loadParamViewConfig();
+    loadExternalSurfaceConfig();
     retireFilebrowserService();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
@@ -25359,6 +26455,7 @@ function dispatchCoRunDraw() {
         case VIEWS.SLOTS:                drawSlots(); break;
         case VIEWS.MASTER_FX:            drawMasterFx(); break;
         case VIEWS.FX_BUS_PICKER:        drawFxBusPicker(); break;
+        case VIEWS.SURFACE_LAYOUT:       drawSurfaceLayoutEditor(); break;
         case VIEWS.BUS_LIST:             BusViews.drawBusList(); break;
         case VIEWS.BUS_ACTIONS:          BusViews.drawBusActions(); break;
         case VIEWS.BUS_VOICES:           BusViews.drawBusVoices(); break;
@@ -25402,6 +26499,7 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
         case VIEWS.NOTICE:               drawNotice(); break;
         case VIEWS.CONNECT:              drawConnect(); break;
+        case VIEWS.EC4_SETUP:            drawEc4Setup(); break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
         default:
             /* Unknown view in co-run — render slot list as a recoverable
@@ -25412,11 +26510,18 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    /* FIRST: MIDI was read just before this tick, so every E16 reply that has
+     * arrived is delivered. Anything slow below must not age its ACK timers. */
+    try { for (const sf of externalSurfaces()) if (sf.markInputRead) sf.markInputRead(); } catch (e) {}
     /* Button claims, re-derived from whatever is on screen. Kept at the top of
      * the tick as the SINGLE re-check point for that entry condition -- see the
      * table above reconcileCcClaim(). */
     reconcileCcClaim();
     reconcilePadBlock();
+    reconcileExternalSurface();
+    e16ReconcilePace();
+    e16BlastTick();
+    e16NoiseTick();
     reconcileStepObserve();
     /* WHERE THE UI IS, once a second, when the debug log is armed.
      *
@@ -25498,6 +26603,9 @@ globalThis.tick = function() {
             }
         }
     }
+
+    /* Seek / hold the external control surface. Off, it is two comparisons. */
+    externalSurfaceTick();
 
     /* Live preset audition: debounced apply of the highlighted module preset
      * while scrolling the list (see shadow_ui_presets.mjs). Called every frame —
@@ -25801,6 +26909,13 @@ globalThis.tick = function() {
             }
         }
         snapshotServiceFlags(flags);
+        /* Shift+Vol+Sample: CC learn mode on/off, from anywhere. */
+        if (flags & SHADOW_UI_FLAG_CC_LEARN_TOGGLE) {
+            if (typeof shadow_clear_ui_flags === "function") shadow_clear_ui_flags(SHADOW_UI_FLAG_CC_LEARN_TOGGLE);
+            if (ccMap.learning) ccMap.cancelLearn(); else ccMap.beginLearn();
+            showOverlay("CC Learn", ccMap.learning ? "on" : "off", 60);
+            needsRedraw = true;
+        }
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
@@ -25924,6 +27039,13 @@ globalThis.tick = function() {
                     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
                         if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
+                    }
+                    /* The control document (Custom surface pages, CC map) is
+                     * part of the set: the copy list is by NAME, so a file not
+                     * named here is silently left behind by a duplicate. */
+                    {
+                        const ctl = host_read_file(copySourceDir + "/controls.json");
+                        if (ctl) host_write_file(newDir + "/controls.json", ctl);
                     }
                     /* Also copy chain config */
                     const chainCfg = host_read_file(copySourceDir + "/shadow_chain_config.json");
@@ -26768,6 +27890,9 @@ globalThis.tick = function() {
         case VIEWS.FX_BUS_PICKER:
             drawFxBusPicker();
             break;
+        case VIEWS.SURFACE_LAYOUT:
+            drawSurfaceLayoutEditor();
+            break;
         case VIEWS.BUS_LIST:
             BusViews.drawBusList();
             break;
@@ -26839,6 +27964,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.CONNECT:
             drawConnect();
+            break;
+        case VIEWS.EC4_SETUP:
+            drawEc4Setup();
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();
@@ -27047,6 +28175,7 @@ globalThis.tick = function() {
         /* ...and the armed-recall mark, after it: the toast is transient and
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
+        drawCcLearnFooter();
         /* ...and the p-lock mark, which outlives neither: it is its own
          * 600 ms and belongs on top of both, since it reports something that
          * happened just now. */
@@ -27838,6 +28967,16 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
+    /* BEFORE the canvas dispatch, and unconditional: SysEx arrives as a run of
+     * 1-3 byte fragments, so a branch that could skip one fragment would leave
+     * the assembler holding half a message and splice the next one onto it. */
+    externalSurfaceMidi(data);
+    /* The CC map, never for a message the active surface claims (its own
+     * encoders: CC 1-16 on channel 1 -- e16_claim.h, the EC4 uses the same). */
+    if (data && data.length >= 3 && (data[0] & 0xF0) === 0xB0) {
+        const claimed = externalSurfaceMode !== 0 && (data[0] & 0x0F) === 0 && data[1] >= 1 && data[1] <= 16;
+        try { ccMap.feed(data[0], data[1], data[2], claimed); } catch (e) {}
+    }
     if (dispatchCanvasMidi(data, "external")) {
         needsRedraw = true;
     }

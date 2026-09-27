@@ -15,6 +15,7 @@ int eval_buf(JSContext *ctx, const void *buf, int buf_len,
 int eval_file(JSContext *ctx, const char *filename, int module);
 int getGlobalFunction(JSContext *ctx, const char *func_name, JSValue *retFunc);
 int callGlobalFunction(JSContext *ctx, JSValue *pfunc, unsigned char *data);
+int callGlobalFunctionN(JSContext *ctx, JSValue *pfunc, unsigned char *data, int n);
 
 /* Path / process helpers shared by the file and store bindings.
  * validate_path: path must live under /data/UserData, no "..", symlinks

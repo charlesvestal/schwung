@@ -54,6 +54,16 @@ static int packetize(const uint8_t *msg, int len, uint8_t *out)
     return n;
 }
 
+/*
+ * NOTE: the drain is PACED at UI_MIDI_CARRY_PACKETS_PER_FRAME packets per
+ * frame. It used to fill every free slot in the mailbox, which sent a long
+ * SysEx at ~6900 packets/s -- measured on hardware 2026-09-10, a 394-packet
+ * message arrived with most of its middle missing, because the loss on that
+ * path is rate dependent (docs/SYSEX.md: 31 packets alone byte-perfect, 34
+ * amid traffic losing 8). These expectations therefore count the CAP, not the
+ * free space, wherever the two differ.
+ */
+
 static void test_fits_in_one_frame(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
@@ -64,9 +74,11 @@ static void test_fits_in_one_frame(void)
         CHECK(ui_midi_carry_push(&c, pkt), "small push accepted");
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 5, "all five placed in one frame");
-    CHECK(c.len == 0, "carry empty after a drain that fit");
-    CHECK(region_used(region) == 5, "five slots used");
+    CHECK(placed == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "the per-frame cap is placed, not everything that fits");
+    CHECK(c.len == (5 - UI_MIDI_CARRY_PACKETS_PER_FRAME) * 4,
+          "the remainder waits for the next frame");
+    CHECK(region_used(region) == UI_MIDI_CARRY_PACKETS_PER_FRAME, "the cap decides how many slots are used");
 }
 
 static void test_overflow_is_held_not_dropped(void)
@@ -80,9 +92,11 @@ static void test_overflow_is_held_not_dropped(void)
         ui_midi_carry_push(&c, pkt);
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 20, "one frame places exactly the 20 the mailbox holds");
+    CHECK(placed == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "one frame places the per-frame cap");
     /* THE REGRESSION. The old code discarded these. */
-    CHECK(c.len == (53 - 20) * 4, "the other 33 are HELD, not discarded");
+    CHECK(c.len == (53 - UI_MIDI_CARRY_PACKETS_PER_FRAME) * 4,
+          "the remainder is HELD, not discarded");
     CHECK(c.drops == 0, "holding is not dropping");
 }
 
@@ -107,7 +121,8 @@ static void test_large_sysex_survives_three_frames(void)
     /* Drain frame by frame, reassembling from the mailbox as the XMOS would. */
     uint8_t got[256];
     int got_len = 0, frames = 0;
-    while (c.len > 0 && frames < 10) {
+    /* Enough frames for the paced rate: ceil(53/cap) plus slack. */
+    while (c.len > 0 && frames < 53) {
         uint8_t region[REGION]; memset(region, 0, sizeof(region));
         ui_midi_carry_drain(&c, region, REGION);
         for (int i = 0; i < REGION; i += 4) {
@@ -120,7 +135,8 @@ static void test_large_sysex_survives_three_frames(void)
         frames++;
     }
 
-    CHECK(frames == 3, "53 packets take three frames at 20 per frame");
+    CHECK(frames == (53 + UI_MIDI_CARRY_PACKETS_PER_FRAME - 1) / UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "53 packets take ceil(53/cap) frames");
     CHECK(got_len == (int)sizeof(msg), "every byte arrived");
     CHECK(memcmp(got, msg, sizeof(msg)) == 0,
           "reassembled message is byte-identical - order preserved");
@@ -138,15 +154,30 @@ static void test_order_across_a_partial_frame(void)
     }
     uint8_t region[REGION]; memset(region, 0, sizeof(region));
     ui_midi_carry_drain(&c, region, REGION);
-    CHECK(c.buf[1] == 20, "head of the carry is packet 20, not packet 0");
+    CHECK(c.buf[1] == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "head of the carry is the first UNPLACED packet, not packet 0");
 
     /* Append after the partial drain, then finish. New work must land BEHIND. */
     uint8_t late[4] = { 0x24, 0xEE, 0, 0 };
     ui_midi_carry_push(&c, late);
     memset(region, 0, sizeof(region));
     ui_midi_carry_drain(&c, region, REGION);
-    CHECK(region[1] == 20, "next frame resumes at packet 20");
-    CHECK(region[10 * 4 + 1] == 0xEE, "the late packet is last, not first");
+    CHECK(region[1] == UI_MIDI_CARRY_PACKETS_PER_FRAME, "next frame resumes where the last stopped");
+
+    /* Drain to empty and check ORDER rather than a fixed slot: with a paced
+     * drain the late packet's position depends on the cap, but the property
+     * that matters is that new work lands BEHIND what was already queued.
+     * Asserting a slot index would pin the rate; asserting the order pins the
+     * invariant. */
+    uint8_t last_seen = 0;
+    int guard = 0;
+    while (c.len > 0 && guard++ < 64) {
+        memset(region, 0, sizeof(region));
+        ui_midi_carry_drain(&c, region, REGION);
+        for (int i = 0; i < REGION; i += 4)
+            if (region[i]) last_seen = region[i + 1];
+    }
+    CHECK(last_seen == 0xEE, "the late packet is last, not first");
 }
 
 static void test_partially_occupied_region(void)
@@ -161,8 +192,10 @@ static void test_partially_occupied_region(void)
         ui_midi_carry_push(&c, pkt);
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 10, "only the ten free slots are used");
-    CHECK(c.len == 20 * 4, "the rest is held for the next frame");
+    CHECK(placed == (10 < UI_MIDI_CARRY_PACKETS_PER_FRAME ? 10 : UI_MIDI_CARRY_PACKETS_PER_FRAME),
+          "free space and the cap both bound a frame, whichever is smaller");
+    CHECK(c.len == (30 - (10 < UI_MIDI_CARRY_PACKETS_PER_FRAME ? 10 : UI_MIDI_CARRY_PACKETS_PER_FRAME)) * 4,
+          "the rest is held for the next frame");
     CHECK(region[0] == 0x09, "an occupied slot is never overwritten");
 }
 
@@ -192,6 +225,341 @@ static void test_backpressure_threshold(void)
           "sees the false return that already exists");
 }
 
+
+/* ===========================================================================
+ * INTERLEAVE: quiet-start and the collision retry.
+ *
+ * Only System Realtime bytes may appear inside a SysEx, so a Note On spliced
+ * into one makes a conformant receiver abort the whole message. Isolated on
+ * hardware 2026-09-11 with the transport STOPPED both ways: playing notes with
+ * Move's MIDI out ON garbles the E16, MIDI out OFF is clean -- while 559
+ * packets/sec with no foreign traffic stayed perfectly clean, which is what
+ * rules out the rate explanation the bug wore for three sessions.
+ * ======================================================================== */
+
+/* A note-on from Move, on cable 2 -- the packet that does the damage. */
+static void put_foreign(uint8_t *region, int slot)
+{
+    region[slot*4 + 0] = 0x29;   /* cable 2, CIN 9 = note-on */
+    region[slot*4 + 1] = 0x90;
+    region[slot*4 + 2] = 60;
+    region[slot*4 + 3] = 100;
+}
+
+static void test_quiet_start_defers_into_a_dirty_mailbox(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 0);
+
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 0,
+          "quiet-start: a run must not OPEN into a mailbox that already holds "
+          "foreign cable-2 traffic -- starting there splices the note in");
+    CHECK(region_used(region) == 1,
+          "quiet-start: nothing of ours was placed, only Move's own packet is there");
+
+    /* Next frame is clear, so it goes. */
+    memset(region, 0, REGION);
+    placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed > 0, "quiet-start DEFERS, it does not drop -- the clear frame sends");
+}
+
+static void test_quiet_start_gives_up_rather_than_starving(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* A mailbox that is never clear. The screen must still update: the
+     * quiet-start is an optimisation, never a precondition. */
+    int total = 0;
+    for (int f = 0; f < UI_MIDI_CARRY_START_DEFER_MAX + 2; f++) {
+        uint8_t region[REGION] = {0};
+        put_foreign(region, 0);
+        total += ui_midi_carry_drain(&c, region, REGION);
+    }
+    CHECK(total > 0,
+          "a dense note stream must not be able to stop the screen updating "
+          "ALTOGETHER -- the defer is capped and we go anyway");
+}
+
+/*
+ * The retry is OFF by default (UI_MIDI_CARRY_MSG_RETRIES == 0) because at this
+ * link's collision rate it made the garbling WORSE -- see the constant. These
+ * two tests drive the machinery at a non-zero cap so it stays correct for
+ * whoever turns it on, and are skipped when the cap is 0 rather than deleted.
+ */
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
+static void test_collided_run_is_requeued_whole(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)(i + 1);
+    int n = packetize(msg, 60, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* Frame 1: clear, opens the run and places `pace` packets. */
+    uint8_t region[REGION] = {0};
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(c.msg_len > 0, "the run is open after the first frame");
+
+    /* Frame 2: Move drops a note in, mid-run. */
+    memset(region, 0, REGION);
+    put_foreign(region, 0);
+    ui_midi_carry_drain(&c, region, REGION);
+
+    /* Drain on clear frames until the run closes and the retry is appended --
+     * then STOP, or the next frames start draining the re-queued copy and the
+     * carry no longer holds the thing under test. */
+    for (int f = 0; f < 8; f++) {
+        if (ui_midi_carry_retry_count() != before) break;
+        memset(region, 0, REGION);
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+
+    CHECK(ui_midi_carry_retry_count() == before + 1,
+          "a run with a foreign packet inside it is re-queued exactly once");
+    CHECK(c.len == n * 4,
+          "the re-queue is the WHOLE message -- a partial resend is another "
+          "truncated SysEx, which is the fault being repaired");
+
+    /* And it is byte-identical to what went in. */
+    CHECK(memcmp(c.buf, pkts, (size_t)(n * 4)) == 0,
+          "the re-queued copy is byte-for-byte the original run");
+}
+
+#endif /* UI_MIDI_CARRY_MSG_RETRIES > 0 */
+
+/* Valid at ANY cap, including 0: a clean run is never resent. */
+static void test_clean_run_is_not_requeued(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    for (int f = 0; f < 12 && c.len > 0; f++) {
+        uint8_t region[REGION] = {0};
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+    CHECK(ui_midi_carry_retry_count() == before,
+          "A CLEAN RUN IS NEVER RESENT -- retrying unconditionally would double "
+          "every message on the wire and make the rate problem real");
+    CHECK(c.len == 0, "and the carry is empty afterwards");
+}
+
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
+static void test_retry_is_capped(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[60], pkts[96];   /* 20 packets: > ATOMIC_MAX, the splittable path */
+    for (int i = 0; i < 60; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 60, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* Every frame collides. Without a cap this re-queues forever. */
+    for (int f = 0; f < 400 && c.len > 0; f++) {
+        uint8_t region[REGION] = {0};
+        put_foreign(region, 19);   /* last slot: ours still get placed */
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+
+    CHECK(ui_midi_carry_retry_count() - before <= UI_MIDI_CARRY_MSG_RETRIES,
+          "the retry is CAPPED -- under continuous playing every attempt can "
+          "collide, and a message that re-queues itself forever starves the "
+          "next real update");
+    CHECK(c.drops == 0,
+          "A RETRY MUST NEVER COST A DROP -- repairing a garble by dropping a "
+          "packet is the identical fault one buffer along");
+}
+#endif /* UI_MIDI_CARRY_MSG_RETRIES > 0 */
+
+/*
+ * The cap is a bounded, positive number -- it is not unlimited, and it is not
+ * zero. Zero is a real configuration (a quieter link) but it is not what this
+ * device measured well with, and it was set once on a build that never
+ * contained the code under test. See the constant.
+ */
+static void test_retry_cap_is_bounded_and_on(void)
+{
+    CHECK(UI_MIDI_CARRY_MSG_RETRIES > 0,
+          "the retry is ON -- the build that measured clean had it at 2, and "
+          "the 'even worse' report that turned it off was against a binary "
+          "that never contained it");
+    CHECK(UI_MIDI_CARRY_MSG_RETRIES <= 4,
+          "and BOUNDED -- a message that re-queues itself forever starves the "
+          "next real update");
+}
+
+
+/* ---------------------------------------------------------------------------
+ * FRAME-ATOMIC MESSAGES. A message that fits is placed WHOLE in one frame,
+ * only after Move's last cable-2 packet -- so a Move packet can never land
+ * inside it on the wire. The 2026-09-11 measurement this rests on: a message
+ * placed in a single frame arrived intact 78/78 under a flood of notes.
+ * ------------------------------------------------------------------------- */
+static void push_msg(ui_midi_carry_t *c, int bytes, uint8_t tag)
+{
+    uint8_t msg[64], pkts[96];
+    msg[0] = 0xF0;
+    for (int i = 1; i < bytes - 1; i++) msg[i] = (uint8_t)((tag + i) & 0x7F);
+    msg[bytes - 1] = 0xF7;
+    int n = packetize(msg, bytes, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(c, &pkts[i*4]);
+}
+
+static void test_atomic_small_message_goes_whole(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 1);                       /* a SCANLINE: 10 packets */
+    uint8_t region[REGION] = {0};
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 10, "a 10-packet message is placed WHOLE in one frame, above a pace of 3");
+    CHECK(c.len == 0, "...nothing of it is left for a later frame");
+}
+
+static void test_atomic_goes_after_moves_packet(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 2);
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 6);                    /* Move's note in slot 6 */
+    ui_midi_carry_drain(&c, region, REGION);
+    int before = 0;
+    for (int q = 0; q < 6; q++) if (region[q*4] && (region[q*4] >> 4) == 2) before++;
+    CHECK(before == 0, "no packet of ours is placed BEFORE Move's note in the same frame");
+    CHECK(region_used(region) == 11, "...all ten go after it");
+}
+
+static void test_atomic_waits_whole_rather_than_splitting(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    push_msg(&c, 28, 3);                       /* 10 packets */
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 14);                   /* only 5 slots after it */
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 0, "a message that does not fit after Move's packet WAITS whole");
+    memset(region, 0, REGION);
+    placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 10, "...and goes whole on the next clear frame");
+}
+
+/* THE PROPERTY, on a simulated wire: hundreds of frames, Move notes dropped into
+ * random slots, our small messages flowing through the carry. The cable-2 wire
+ * order is every frame's slots in index order, frame after frame. No Move
+ * packet may ever sit between one of our F0s and its F7. */
+static void test_atomic_no_note_ever_inside_a_message(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    unsigned seed = 12345;
+    int inside = 0, ours = 0, notes = 0, open = 0;
+    int sent = 0;
+    for (int f = 0; f < 600; f++) {
+        if (sent < 400 && c.len < 200) {
+            for (int k = 0; k < 3; k++, sent++)
+                push_msg(&c, 9 + (int)((seed = seed * 1103515245u + 12345u) >> 16) % 25, (uint8_t)sent);
+        }
+        uint8_t region[REGION] = {0};
+        seed = seed * 1103515245u + 12345u;
+        int nf = (seed >> 16) % 4;             /* 0-3 Move notes this frame */
+        for (int k = 0; k < nf; k++) {
+            seed = seed * 1103515245u + 12345u;
+            int sl = (seed >> 16) % 20;
+            put_foreign(region, sl);
+        }
+        ui_midi_carry_drain(&c, region, REGION);
+        for (int q = 0; q < REGION; q += 4) {                     /* the wire */
+            if (!region[q] || (region[q] >> 4) != 2) continue;
+            const int cin = region[q] & 0x0F;
+            if (cin == 0x09) { notes++; if (open) inside++; continue; }
+            ours++;
+            if (cin == 0x04 && region[q + 1] == 0xF0) open = 1;
+            if (cin >= 0x05 && cin <= 0x07) open = 0;
+        }
+    }
+    CHECK(ours > 1000 && notes > 300, "the simulation actually moved traffic (positive control)");
+    CHECK(inside == 0, "not ONE Move note landed inside one of our messages");
+}
+
+/*
+ * A SECOND DRAIN IN THE SAME FRAME WIPES THE FIRST ONE'S PACKETS.
+ *
+ * Every drain opens by clearing "last frame's" packets still in the mailbox
+ * (so nothing is sent twice). Called twice between two transfers, the second
+ * call finds the FIRST call's packets -- placed this frame, not yet sent --
+ * and clears them. This is what shadow_inject_ui_midi_out() did, and it is
+ * why it must drain exactly ONCE per frame (pinned by
+ * test_ui_midi_one_drain_per_frame.sh). Hardware, 2026-09-24: whole E16 rows
+ * never reached the wire.
+ */
+static void test_second_drain_in_a_frame_wipes_the_first(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t region[REGION] = {0};
+    push_msg(&c, 28, 1);
+    CHECK(ui_midi_carry_drain(&c, region, REGION) == 10, "first drain places a message");
+    CHECK(region_used(region) == 10, "...it is in the mailbox");
+    /* Same frame, new packets taken in -- exactly the old second call. */
+    const int before = ui_midi_carry_stranded_count();
+    push_msg(&c, 28, 2);
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(ui_midi_carry_stranded_count() - before == 10,
+          "a second drain in the SAME frame wipes all 10 of the first message's unsent packets "
+          "-- so the caller must drain once per frame");
+}
+
+/*
+ * A MESSAGE THAT ENDS ENDS THE FRAME'S PACED RUN. The paced path kept placing
+ * into the NEXT message after one closed, appending its head to the closed
+ * message's retry copy -- a retry then re-sent A plus half of B.
+ */
+static void test_paced_run_stops_at_the_end_of_a_message(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    ui_midi_carry_set_pace(12);
+    push_msg(&c, 60, 1);                 /* 20 packets: the paced path */
+    push_msg(&c, 9, 2);                  /* 3 packets behind it */
+    uint8_t r1[REGION] = {0}, r2[REGION] = {0};
+    CHECK(ui_midi_carry_drain(&c, r1, REGION) == 12, "the long message: 12 this frame");
+    CHECK(ui_midi_carry_drain(&c, r2, REGION) == 8,
+          "...its last 8 next frame, and NOTHING of the message behind it");
+    CHECK(c.len == 3 * 4, "...which is still whole in the carry for a later frame");
+    ui_midi_carry_set_pace(UI_MIDI_CARRY_PACKETS_PER_FRAME);
+}
+
+/*
+ * LAST FRAME'S PACKETS ARE CLEARED EVEN WHEN THE CARRY IS NOW EMPTY. The check
+ * ran after the empty-carry early return, so it was skipped on exactly the
+ * frame after a message went out -- when its packets are still in the
+ * (copied-back) mailbox and would be sent a second time.
+ */
+static void test_leftovers_cleared_when_the_carry_empties(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t region[REGION] = {0};
+    push_msg(&c, 28, 3);
+    CHECK(ui_midi_carry_drain(&c, region, REGION) == 10, "a message goes out");
+    CHECK(c.len == 0, "...and the carry is empty");
+    /* Next frame: the mailbox still holds it (the post-transfer copy-back). */
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(region_used(region) == 0, "its packets are cleared, not transmitted twice");
+}
+
 int main(void)
 {
     test_fits_in_one_frame();
@@ -201,6 +569,21 @@ int main(void)
     test_partially_occupied_region();
     test_full_carry_drops_newest_and_counts();
     test_backpressure_threshold();
+    test_quiet_start_defers_into_a_dirty_mailbox();
+    test_quiet_start_gives_up_rather_than_starving();
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
+    test_collided_run_is_requeued_whole();
+    test_retry_is_capped();
+#endif
+    test_clean_run_is_not_requeued();
+    test_retry_cap_is_bounded_and_on();
+    test_atomic_small_message_goes_whole();
+    test_atomic_goes_after_moves_packet();
+    test_atomic_waits_whole_rather_than_splitting();
+    test_atomic_no_note_ever_inside_a_message();
+    test_second_drain_in_a_frame_wipes_the_first();
+    test_paced_run_stops_at_the_end_of_a_message();
+    test_leftovers_cleared_when_the_carry_empties();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");

@@ -120,6 +120,19 @@ extern char shim_step_plock_key[64];         /* the key that last spent a press 
  * no press on record -- that is "cannot tell", not "held forever". */
 int shim_step_press_is_hold(int step);
 extern volatile int shim_ui_midi_out_drops;
+/*
+ * The other three outbound counters, published the same way and for a reason
+ * worth stating: they live in ui_midi_out_carry.h as `static`, which gives
+ * every translation unit ITS OWN COPY. shadow_midi.c incremented its copies
+ * while shim_worker.c read its own, so all three reported zero forever --
+ * including a window where the screen was visibly garbling, which read as
+ * "our side is clean" and nearly became the conclusion.
+ */
+extern volatile int shim_ui_midi_out_placed;
+extern volatile int shim_ui_midi_out_stranded;
+extern volatile int shim_ui_midi_out_foreign;
+extern volatile int shim_ui_midi_out_retries;
+extern volatile int shim_ui_midi_out_unretryable;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
  * -1 until observed. Worker persists it on change and re-asserts it at boot —

@@ -30,6 +30,7 @@
 #define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN (test bus owns it during overtake) */
 #define SHM_SHADOW_MIDI_INJECT_UI "/schwung-midi-inject-ui" /* shadow UI's own inject — always bound for Move's firmware */
 #define SHM_SHADOW_EXT_MIDI_REMAP "/schwung-ext-midi-remap" /* Cable-2 channel remap table */
+#define SHM_SHADOW_CC_CLAIM       "/schwung-cc-claim"       /* CC map: which external CCs are bound */
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_TEST_STREAM_MIDI_OUT "/schwung-test-stream-midi-out" /* Shim → schwung-testd MIDI_OUT events (E2E test bus, dev-only) */
@@ -137,7 +138,20 @@
  * shadow_shm_map() refuses a short attach rather than handing back a mapping
  * whose tail is SIGBUS. write_idx is a uint16_t byte offset and still addresses
  * this fine; the _Static_assert below fails if that ever stops being true. */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 1024
+/* 2048 = 512 packets. Raised from 1024 (256 packets) because a single E16
+ * OLED FRAMEBUFFER message is 1180 bytes -> 394 packets -> 1576 bytes, which
+ * did not fit. js_shadow_midi_send wrote the 256 that fit, dropped 138, and
+ * returned false; the caller correctly read false as "not sent" and re-owed the
+ * repaint, so it retried every tick forever, shoving another truncated burst at
+ * the device each time. Measured on hardware 2026-09-10: six framebuffers a
+ * second, every one of them short, and an E16 wedged by the flood.
+ *
+ * A message that can NEVER fit turns a correct retry into a livelock, which is
+ * why ui_midi_carry.h now refuses an oversized send outright rather than
+ * letting the caller spin -- the size must be big enough for the largest single
+ * message any producer sends, and the refusal is the backstop for when it
+ * is not. */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 4096
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 /* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
  * struct below) — the old flat byte-buffer size is gone. */
@@ -219,6 +233,7 @@
 #define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot NOW */
 #define SHADOW_UI_FLAG_SNAPSHOT_QUEUED 0x0400  /* recall armed for the next boundary */
 #define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
+#define SHADOW_UI_FLAG_CC_LEARN_TOGGLE   0x1000 /* Shift+Vol+Sample: CC learn on/off */
 
 /* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
  * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */
@@ -655,6 +670,61 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t delete_held;
+
+    /*
+     * External control surface (an OXI E16 on the USB-A port). 1 = also deliver
+     * cable-2 MIDI to the shadow UI outside overtake mode, where it is normally
+     * dropped, and stop diverting cable-2 note-ons into shadow_queue_input_led
+     * -- that queue is for M8-style LED protocols and coalesces per note, so it
+     * would eat the E16's encoder buttons. Default 0, so a device with nothing
+     * attached behaves exactly as before.
+     *
+     * APPENDED (after main's own run of appended fields), for the reason
+     * stated on speaker_eq_mode.
+     */
+    volatile uint8_t external_surface;
+
+    /*
+     * Outbound USB-MIDI packets per SPI frame, or 0 for the compiled default.
+     *
+     * Here rather than in a header constant because the value it controls is
+     * the one the user feels -- a 394-packet framebuffer is ceil(394/pace)
+     * frames at 2.90 ms, so 3 is 383 ms and 12 would be 96 -- and 3 was never
+     * measured. It was the first value that stopped the garbling after
+     * "everything at once" failed, and a ceiling nobody searched for is a
+     * ceiling nobody knows. Trying one more value cost a cross-compile and a
+     * device restart; through this field it costs an echo.
+     *
+     * Written by shadow_ui (SCHED_OTHER, may read files), read by the shim's
+     * drain on the SPI callback, which may not. One byte, so no tearing, and a
+     * stale read costs exactly one frame.
+     */
+    volatile uint8_t ui_midi_pace;
+
+    /*
+     * Cable-2 packets MOVE put in the mailbox while a message of ours was
+     * still going out -- the interleave counter, published so JS can see it.
+     *
+     * The E16 surface needs one fact the UI process cannot observe for itself:
+     * is Move transmitting RIGHT NOW. Its own notes, aftertouch and clock go
+     * out on the external port, and shadow_ui never sees them -- pads arrive
+     * on cable 0 and a playing clip arrives nowhere at all, so there is no way
+     * to infer it from the UI side.
+     *
+     * It matters because the surface's 1.5 s self-heal restate is pure repair:
+     * it exists to fix a corruption we cannot detect. While Move is talking,
+     * that restate is also the most likely thing to BE corrupted, and it is
+     * the only traffic we have at idle -- so repeating it is how a screen that
+     * would have sat there correct gets broken once a second. Suppressing it
+     * while Move is busy costs nothing (nothing changed) and removes the
+     * exposure entirely.
+     *
+     * Free-running, never reset; JS reads the DELTA. Written by the shim on
+     * the SPI callback and read by shadow_ui, so it is a plain uint32 with no
+     * handshake -- a torn read is impossible on ARM64 for a naturally aligned
+     * word, and a stale one costs one tick.
+     */
+    volatile uint32_t ui_midi_foreign;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
@@ -963,7 +1033,7 @@ typedef struct shadow_param_t {
  */
 typedef struct shadow_midi_out_t {
     /* uint16_t, and it MUST be: the buffer is SHADOW_MIDI_OUT_BUFFER_SIZE
-     * bytes (now 1024) and this is a BYTE offset into it. As a uint8_t it
+     * bytes (now 4096) and this counts BYTES through it. As a uint8_t it
      * saturated at 255, so
      *   - only the first 63 packets of a 128-packet buffer were addressable,
      *     and the back half was never read at all;
@@ -977,9 +1047,19 @@ typedef struct shadow_midi_out_t {
      * costs nothing — it takes one of the reserved bytes, so sizeof is
      * unchanged and both mappers (shadow_ui.c:83, schwung_shim.c:3417) use
      * sizeof. */
-    volatile uint16_t write_idx;     /* Shadow UI increments after writing */
-    volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[1];
+    /* PRODUCER-OWNED (shadow_ui). Free-running byte count, not an offset. */
+    volatile uint16_t write_idx;
+    /* CONSUMER-OWNED (the shim). Same units. The shim writes THIS AND NOTHING
+     * ELSE in the segment — see src/host/ui_midi_out_ring.h for why, and for
+     * the bug that ends when it stops writing the buffer.
+     *
+     * It takes the space of the old `ready` counter and its reserved byte,
+     * which is deliberate: `ready` only ever answered "has JS flushed since
+     * last time", and `write_idx != read_idx` answers that exactly, with no
+     * wrap ambiguity. Reusing the bytes keeps sizeof unchanged, so neither
+     * mapper needs a resize and no stale-segment SIGBUS is possible on
+     * upgrade. */
+    volatile uint16_t read_idx;
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
 
@@ -1273,5 +1353,21 @@ typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SH
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) <= SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_floor_check[(SHADOW_OVERLAY_BUFFER_SIZE >= 512) ? 1 : -1];
 typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
+
+/*
+ * THE GENERIC CC MAP'S CLAIM TABLE (cc_claim.h has the routing and the why).
+ * The shadow UI writes it; the shim reads it in the cable-2 walk, AFTER the
+ * surface's own claim. `count` is non-zero while any CC is bound (saturating
+ * -- it is a fast path, not a tally); `learn` publishes every CC to the UI
+ * without swallowing it, so a controller keeps working while one is picked.
+ */
+typedef struct schwung_cc_claim_t {
+    volatile uint8_t version;        /* CC_CLAIM_VERSION */
+    volatile uint8_t learn;          /* 1 = the UI is learning a CC */
+    volatile uint8_t count;          /* 0 = nothing bound: one comparison per CC */
+    uint8_t _reserved[5];
+    volatile uint8_t bits[256];      /* bit (channel * 128 + cc) = bound */
+} schwung_cc_claim_t;                /* 264 bytes */
+typedef char schwung_cc_claim_size_check[(sizeof(schwung_cc_claim_t) == 264) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

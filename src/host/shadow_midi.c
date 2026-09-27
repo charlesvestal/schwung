@@ -13,6 +13,7 @@
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
 #include "ui_midi_out_carry.h"  /* outbound packets that did not fit this frame */
+#include "ui_midi_out_ring.h"   /* SPSC discipline for the /schwung-midi-out SHM */
 #include "shim_worker.h"        /* shim_ui_midi_out_drops */
 #include "touch_observe.h"      /* touch_observe_is_edge */
 
@@ -609,50 +610,61 @@ void shadow_forward_external_cc_to_out(void)
  * See ui_midi_out_carry.h for why they now have somewhere to live. */
 static ui_midi_carry_t ui_midi_carry;
 
-void shadow_inject_ui_midi_out(void)
+static void ui_midi_out_ingest(shadow_midi_out_t *midi_out_shm)
 {
-    shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
-    static uint8_t last_ready = 0;
-
-    if (!midi_out_shm) return;
-
-    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
-    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
-
-    /* Drain the carry FIRST, and unconditionally — before the `ready` check,
-     * not after it. The old early-return keyed the whole function to "did JS
-     * flush since last time", which is a 60 Hz question, while the mailbox
-     * empties at 344 Hz. Anything held over has to go out on frames where JS
-     * said nothing, or the extra frames buy us nothing at all. */
-    ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
-    shim_ui_midi_out_drops = ui_midi_carry.drops;
-
-    if (midi_out_shm->ready == last_ready) return;
+    if (ui_midi_out_used(midi_out_shm) == 0) return;
 
     /* Backpressure: leave the SHM buffer alone while the carry is deep. It
      * fills, js_shadow_midi_send() starts returning false, and a module that
      * paces on that return value is now pacing on the actual mailbox. Do NOT
-     * advance last_ready — this snapshot is deferred, not skipped. */
+     * commit read_idx — this snapshot is deferred, not skipped. */
     if (!ui_midi_carry_wants_more(&ui_midi_carry)) return;
 
-    last_ready = midi_out_shm->ready;
+    /*
+     * THE WHOLE SNAPSHOT FITS, OR WE TAKE NONE OF IT.
+     *
+     * ui_midi_carry_push() drops the NEWEST packet when the carry is full, one
+     * packet at a time -- so a snapshot that overruns the carry leaves a
+     * message's head queued and its tail discarded. That is a truncated SysEx
+     * on the wire, which the receiver renders as a garbled screen: exactly the
+     * fault just fixed in js_shadow_midi_send(), one buffer further along, and
+     * the carry's own comment warns of it ("Refusing the newest packet
+     * truncates one message").
+     *
+     * The existing `wants_more` backpressure is necessary and not sufficient:
+     * it only asks whether the carry is below half, while a snapshot can be
+     * the full ring, so half-full plus a full snapshot overruns -- and the
+     * overrun lands mid-message.
+     *
+     * Deferring is free and already the established response here: read_idx is
+     * NOT committed, so the same bytes are still queued and the same snapshot
+     * is taken whole on a later frame once the carry has drained. It costs
+     * latency, never a corrupt message.
+     */
+    /* ONE snapshot of the producer's index, used for the capacity test AND the
+     * copy. Re-reading it between the two would let a burst that arrived in
+     * between be admitted past a check that did not measure it. */
+    uint16_t copy_len = ui_midi_out_used(midi_out_shm);
+    /* The index was read first; the bytes it covers must not be read from
+     * before it. ARM64 may reorder the two loads, and a copy taking bytes the
+     * producer had not yet written is a corrupt packet inside a message --
+     * indistinguishable from a garble on the wire. */
+    __sync_synchronize();
+    {
+        int free_bytes = UI_MIDI_CARRY_BYTES - ui_midi_carry.len;
+        if ((int)copy_len > free_bytes) return;
+    }
+
     if (host_init_led_queue) host_init_led_queue();
 
-    /* Snapshot buffer first, then reset write_idx.
-     * Copy before resetting to avoid a race where the JS process writes
-     * new data between our reset and memcpy. */
-    int snapshot_len = midi_out_shm->write_idx;
+    /* Copy, then RELEASE — and nothing else is written to the segment. The
+     * consumer owns read_idx alone; write_idx and the buffer belong to
+     * shadow_ui, which is a different process. See ui_midi_out_ring.h. */
     uint8_t local_buf[SHADOW_MIDI_OUT_BUFFER_SIZE];
-    int copy_len = snapshot_len < (int)SHADOW_MIDI_OUT_BUFFER_SIZE
-                 ? snapshot_len : (int)SHADOW_MIDI_OUT_BUFFER_SIZE;
-    if (copy_len > 0) {
-        memcpy(local_buf, midi_out_shm->buffer, copy_len);
-    }
-    __sync_synchronize();
-    midi_out_shm->write_idx = 0;
-    memset(midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+    ui_midi_out_copy(midi_out_shm, local_buf, copy_len);
+    ui_midi_out_commit(midi_out_shm, copy_len);
 
-    for (int i = 0; i < copy_len; i += 4) {
+    for (int i = 0; i < (int)copy_len; i += 4) {
         uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
         uint8_t status = local_buf[i + 1];
@@ -674,8 +686,58 @@ void shadow_inject_ui_midi_out(void)
         ui_midi_carry_push(&ui_midi_carry, &local_buf[i]);
     }
 
+}
+
+void shadow_inject_ui_midi_out(void)
+{
+    shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
+
+    if (!midi_out_shm) return;
+
+    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
+    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
+
+    /*
+     * ONE DRAIN PER FRAME, after this frame's packets are taken in.
+     *
+     * The drain used to run TWICE here -- once up front (so held packets go
+     * out on frames where JS said nothing) and again after new packets were
+     * pushed. But every drain opens by clearing "last frame's" packets still
+     * in the mailbox, so they cannot be sent twice -- and on the second call
+     * the packets it found were the ones the FIRST call had placed a moment
+     * earlier, in this same frame. They were wiped before the transfer and
+     * never sent. Hardware, 2026-09-24: whole E16 rows (11 packets each, the
+     * "would have REPEATED" count) missing from the wire, never answered,
+     * healing only when re-sent -- the "dead lines". The second call also
+     * counted our own packets as Move's traffic and restarted the per-frame
+     * cap, letting one frame take up to 24 of the 20 slots' 12 we may use.
+     * The ingest below no longer returns out of the function; the one drain
+     * at the end runs on every frame, JS or no JS.
+     */
+    /* Pace from the control block when it names one. An int assignment, which
+     * is all this is, is safe on the callback; the FILE it ultimately comes
+     * from is read by shadow_ui, which is allowed to. */
+    {
+        /* Through host_shadow_control, the injected indirection this file
+         * already uses -- it has no `shadow_control` global of its own, and
+         * the shim's is a different translation unit. */
+        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc && sc->ui_midi_pace) ui_midi_carry_set_pace(sc->ui_midi_pace);
+    }
+    ui_midi_out_ingest(midi_out_shm);
+
     ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
     shim_ui_midi_out_drops = ui_midi_carry.drops;
+    shim_ui_midi_out_placed = ui_midi_carry_placed_count();
+    shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
+    shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
+    {   /* Publish for the UI process: the E16 surface gates its self-heal
+         * restate on this. Same indirection the pace read above uses. */
+        shadow_control_t *sc_pub = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc_pub) sc_pub->ui_midi_foreign = (uint32_t)ui_midi_carry_foreign_count();
+    }
+    shim_ui_midi_out_retries = ui_midi_carry_retry_count();
+    shim_ui_midi_out_unretryable = ui_midi_carry_unretryable_count();
 }
 
 /* ---- Shim-originated packets bound for Move's firmware --------------------
