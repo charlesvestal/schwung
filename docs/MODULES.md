@@ -1438,6 +1438,24 @@ Guidelines:
 - Missing/stale targets should fail silently (do not crash or spam logs).
 - Multiple sources can target the same parameter; the host sums contributions and clamps to target range.
 
+### Scenes: what a module must do to be morphed (nothing new)
+
+Scenes (the Scenes screen, Shift+Vol+Step3) lock and morph any parameter your
+module declares in `chain_params`, through the same overlay LFOs use. Nothing
+has to be added, but four things already true of a well-behaved module matter
+more here:
+
+- **Accept numbers for every declared key**, including enums: the host writes
+  an enum as its option INDEX (`"2"`), a float with six decimals.
+- **`set_param` must be cheap.** A fader sweep writes every locked parameter
+  once per audio block while it moves -- on the SPI callback, like every entry
+  point.
+- **`state` must describe what you currently hold.** Around a `state` read the
+  host briefly puts the knob's value back so a save records the knob and not
+  the morph; a module that caches its state blob elsewhere defeats that.
+- **Keys that are not knobs should not be in `chain_params`.** Anything
+  declared there can be locked by an armed scene.
+
 ### Plugin API v1 (Deprecated)
 
 V1 is a singleton API - only one instance can exist. **Do not use for new modules:**

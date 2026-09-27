@@ -435,6 +435,25 @@ whose read did not complete is `null` (see the three-answer rule for
 `shadow_get_param`). Nothing is read while the overlay has no `onValues` hook or
 has been disabled after a throw.
 
+### Scenes (shadow UI)
+
+The scene crossfader lives in shared memory, so these cost no IPC:
+
+```javascript
+shadow_get_scene_state()      // { a, b, edit, flash, xfade, rev } -- a/b/edit are 0..15 or -1
+shadow_set_scene_ab(a, b)     // -1 = none
+shadow_set_scene_xfade(x)     // 0..1; the shim slews it
+shadow_set_scene_edit(n)      // arm scene n for editing, -1 disarms
+shadow_set_scene_unlock(on)   // Delete held: an armed write unlocks instead
+shadow_clear_scene_flash()
+host_step_claim(on)           // with host_step_observe(1): step presses never reach Move
+```
+
+The bank itself is reached through the param channel, per scope: a slot's
+`scenes:<verb>`, `master_fx:scenes:<verb>` and `send<N>:scenes:<verb>`
+(`lock`, `unlock`, `clear`, `copy`, `load`; reads `dump`, `count`, `locks`,
+`rev`). The CC Map / surface target `scenes:xfade` addresses the fader.
+
 ## Utility Functions
 
 ```javascript

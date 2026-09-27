@@ -1497,3 +1497,45 @@ document is fetched a clip at a time instead of whole — is designed and
 degrades resolution rather than dropping the gesture (the write replaces its
 nearest point and counts a `full_hits`), because a lost write mid-sweep is a
 hole the user can neither see nor fix.
+
+### Scenes -- a MORPH contribution, the table verbs, and the edit arm
+
+A slot's share of the scene bank lives on `chain_instance_t` (`scenes`, a
+`scene_table_t` from `src/host/scene_morph.h`) and is projected into the
+modulation bus by `chain_scene.c`. The user-facing model is in
+`docs/SHADOW_UI.md` ("Scenes").
+
+- **A MORPH is a fourth contribution kind** beside offsets and overrides:
+  `mod_source_contribution_t.is_morph` stores the two ENDS (`morph_has_a`,
+  `morph_a`, `morph_has_b`, `morph_b`) and the fader, and
+  `chain_mod_recompute_effective` resolves them against `entry->base_value`.
+  Storing ends rather than a value is what makes a knob write mid-morph move
+  the unlocked end with nothing re-emitting. Offsets still sum on top.
+- **`MAX_MOD_TARGETS` is 64**, not 32: a scene takes a target per locked pair
+  (up to `SCENE_MAX_PAIRS`) beside the LFOs. ~14 KB per instance.
+- **The crossfader is the dlsym'd `chain_set_scene_morph(inst, a, b, x, edit,
+  edit_flags)`**, called by the shim for every active slot every frame before
+  the idle gate. It only stores and marks dirty; `chain_scene_tick` runs first
+  thing in `lfo_tick` (so on idle frames too, via `mod:tick`), only when
+  something changed plus a revalidation every 32 blocks that picks up late
+  modules and swaps. It returns the slot's scene revision and a one-shot
+  refusal code.
+- **An int/enum write inside `MOD_INT_ENUM_MIN_INTERVAL_MS` is DROPPED, not
+  queued.** The tick stays dirty until the module holds what the scene says,
+  or an enum that crossed 0.5 just after another write sits on the wrong option
+  until the next revalidation (found by the unit test).
+- **Verbs**, never JSON on the callback: `scenes:lock` `"<n> <target> <param>
+  <value> <module>"`, `scenes:unlock`, `scenes:clear`, `scenes:copy`,
+  `scenes:load` (one lock per line, ALL-OR-NOTHING, parsed into a static
+  scratch); reads `scenes:dump`, `scenes:count`, `scenes:locks`, `scenes:rev`.
+- **The edit arm is routed AHEAD of the component routes**
+  (`chain_scene_route_set`), and a plain read of a param locked in the armed
+  scene answers the lock (`chain_scene_edit_read`, in front of the plain-key
+  base answer on all three component routes).
+- **Dormancy is by module id**: a pair locked under `obxd` is skipped while
+  anything else is loaded at that position. `chain_reorder.c` re-aims pair
+  targets on a permutation and drops the pairs of a removed position.
+- **`v2_get_param` is a wrapper**: `chain_scene_get_around_state` puts the base
+  back into the module around a `<comp>:state` read, so a save records the knob
+  rather than the morph.
+
