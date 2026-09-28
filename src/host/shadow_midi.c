@@ -317,24 +317,27 @@ static int shadow_chain_apply_transpose(int slot, uint8_t *msg)
  * When skip_direct is 1, slots with receive=All and forward=THRU are skipped
  * because they receive MIDI via the direct MIDI_IN path instead. */
 static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct,
-                          int only_all);
+                          int lane_track);
 
 void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct)
 {
-    dispatch_impl(pkt, log_on, midi_log_count, skip_direct, 0);
+    dispatch_impl(pkt, log_on, midi_log_count, skip_direct, -1);
 }
 
-/* Drum lanes (drum_lanes.h): a Move drum track's pads as MPE -- one channel
- * per pad -- through exactly this routing, but only into slots listening on
- * All. MPE uses every channel, so a slot on channel N would otherwise catch
- * pad N's lane by accident. */
-void shadow_chain_dispatch_lane_midi(const uint8_t *pkt)
+/* Drum lanes (drum_lanes.h): Move track `track`'s pads as MPE -- one channel
+ * per pad. Routed by SOURCE, not by channel: a slot takes them when it
+ * listens to that track (receive channel == track + 1, the normal slot N /
+ * track N pairing) or to All. The pad's channel is kept -- no forward remap,
+ * as with MPE THRU -- because it is the pad's identity; transpose and MIDI FX
+ * still apply. Matching on the lane's own channel instead would hand pad N to
+ * whichever slot happens to listen on channel N. */
+void shadow_chain_dispatch_lane_midi(const uint8_t *pkt, int track)
 {
-    dispatch_impl(pkt, 0, NULL, 0, 1);
+    dispatch_impl(pkt, 0, NULL, 0, track);
 }
 
 static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct,
-                          int only_all)
+                          int lane_track)
 {
     const plugin_api_v2_t *pv2 = *host_plugin_v2;
     uint8_t status_usb = pkt[1];
@@ -359,10 +362,10 @@ static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, i
             host_chain_slots[i].forward_channel == -2)
             continue;
 
-        /* Check channel match: slot receives this channel, or slot is set to All (-1) */
-        if (host_chain_slots[i].channel != (int)midi_ch && host_chain_slots[i].channel != -1)
-            continue;
-        if (only_all && host_chain_slots[i].channel != -1)
+        /* Check channel match: slot receives this channel, or slot is set to All (-1).
+         * A drum-lanes event matches on its SOURCE track instead (see above). */
+        const int match_ch = (lane_track >= 0) ? lane_track : (int)midi_ch;
+        if (host_chain_slots[i].channel != match_ch && host_chain_slots[i].channel != -1)
             continue;
 
         /* Lazy activation check — any loaded component (synth, audio FX,
@@ -425,7 +428,9 @@ static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, i
 
         /* Send MIDI to this slot */
         if (pv2 && pv2->on_midi) {
-            uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
+            /* A lane keeps its pad's channel (MPE THRU); everything else remaps. */
+            uint8_t msg[3] = { lane_track >= 0 ? pkt[1] : shadow_chain_remap_channel(i, pkt[1]),
+                               pkt[2], pkt[3] };
             if (shadow_chain_apply_transpose(i, msg)) {
                 pv2->on_midi(host_chain_slots[i].instance, msg, 3,
                              MOVE_MIDI_SOURCE_EXTERNAL);
