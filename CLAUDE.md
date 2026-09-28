@@ -567,6 +567,12 @@ The `ui_hierarchy` and `chain_params` declarations (what a module must publish f
 the shadow UI to know its steps, ranges and enum options), the chain host's file
 layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 
+- **AUTOMATION FOLLOWS MOVE'S EDITS** -- step/page paste, Double Loop, Undo,
+  Redo, clip delete/undo/duplicate (`edit_gesture.c` → `edit_follow.c` →
+  `lane_edit.c`). Buttons give the INTENT, the model's per-note ids PROVE Move
+  did it; nothing is mirrored Move did not do. Rules were measured against
+  Move's OWN automation envelopes -- a paste REPLACES the destination step's
+  automation, Delete+step KEEPS it. See `docs/MOVE_MODEL.md`.
 - **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
   Clip, loop, launch beat, step page and grid are READ; deletions and copies
   are diffs of it. Several bullets below describe the LED / step-strip /

@@ -207,6 +207,14 @@ void lane_undo_take(chain_instance_t *inst) {
     inst->lanes_undo_valid = 1;
 }
 
+/* Release every driving lane of one clip -- before a verb rewrites its points. */
+static void lane_release_clip(chain_instance_t *inst, int track, int slot) {
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (lane_is_for_clip(ln, track, slot) && ln->driving) lane_release_one(inst, ln);
+    }
+}
+
 void lane_release_all(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < LANE_MAX; i++) {
@@ -1568,6 +1576,68 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     /* UNDO, which is also REDO -- the buffer is swapped, not copied back.
      * Every override is released first: the lanes about to be swapped out are
      * holding them, and the set swapped in must re-establish its own. */
+    /* ---- AUTOMATION FOLLOWS MOVE'S EDITS (host/lane_edit.h) -------------
+     *
+     * Sent by the host only after Move's live model CONFIRMED the edit
+     * happened -- a paste Move declined (an "empty" source) never arrives, so
+     * nothing here second-guesses it. Every verb releases the lanes it is
+     * about to change first, for the reason every clear verb does: a lane
+     * holding an override would otherwise pin its parameter where it was. */
+    if (strcmp(sub, "paste_span") == 0) {
+        int track = -1, slot = -1;
+        double src = 0, dst = 0, len = 0;
+        unsigned id = 0;
+        inst->lanes_last_pasted = 0;
+        if (!val || sscanf(val, "%d %d %lf %lf %lf %u", &track, &slot, &src, &dst, &len, &id) != 6 ||
+            !id || !lane_key_in_range(track, slot))
+            return;
+        lane_release_clip(inst, track, slot);
+        lane_journal_entry_t *je = &inst->lanes_journal[id % LANE_JOURNAL_DEPTH];
+        je->id = id;
+        int rc = lane_paste_span(&inst->lanes, track, slot, src, dst, len, je);
+        if (rc < 0) je->id = 0;               /* refused whole: nothing to undo */
+        inst->lanes_last_pasted = rc;
+        return;
+    }
+    if (strcmp(sub, "journal") == 0) {
+        char dir[8] = {0};
+        unsigned id = 0;
+        inst->lanes_last_journaled = 0;
+        if (!val || sscanf(val, "%7s %u", dir, &id) != 2 || !id) return;
+        lane_journal_entry_t *je = &inst->lanes_journal[id % LANE_JOURNAL_DEPTH];
+        if (je->id != id) return;             /* overwritten: too far back */
+        if (je->nrec > 0) lane_release_clip(inst, je->rec[0].track, je->rec[0].slot);
+        inst->lanes_last_journaled = lane_journal_apply(&inst->lanes, je, strcmp(dir, "redo") == 0);
+        return;
+    }
+    if (strcmp(sub, "stash") == 0) {
+        int track = -1, slot = -1;
+        unsigned id = 0;
+        inst->lanes_last_stashed = 0;
+        if (!val || sscanf(val, "%d %d %u", &track, &slot, &id) != 3 || !id ||
+            !lane_key_in_range(track, slot))
+            return;
+        lane_release_clip(inst, track, slot);
+        lane_stash_t *sh = &inst->lanes_stash[id % LANE_STASH_DEPTH];
+        sh->id = id;
+        inst->lanes_last_stashed = lane_stash_row(&inst->lanes, track, slot, sh);
+        if (!inst->lanes_last_stashed) sh->id = 0;
+        return;
+    }
+    if (strcmp(sub, "unstash") == 0) {
+        int track = -1, slot = -1;
+        unsigned id = 0;
+        inst->lanes_last_unstashed = 0;
+        if (!val || sscanf(val, "%u %d %d", &id, &track, &slot) != 3 || !id ||
+            !lane_key_in_range(track, slot))
+            return;
+        lane_stash_t *sh = &inst->lanes_stash[id % LANE_STASH_DEPTH];
+        if (sh->id != id) return;             /* overwritten, or never had lanes */
+        lane_release_clip(inst, track, slot);
+        inst->lanes_last_unstashed = lane_unstash_row(&inst->lanes, sh, track, slot);
+        return;
+    }
+
     if (strcmp(sub, "undo") == 0) {
         if (!val || atoi(val) == 0) return;
         if (!inst->lanes_undo_valid) { inst->lanes_last_undone = 0; return; }
@@ -1708,6 +1778,13 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     /* How many lanes the store holds that a snapshot could not capture, asked
      * BEFORE taking one so the snapshot itself can report it. */
+    if (strcmp(sub, "pasted") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_pasted);
+    if (strcmp(sub, "journaled") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_journaled);
+    if (strcmp(sub, "stashed") == 0)
+        return snprintf(buf, buf_len, "%d %d", inst->lanes_last_stashed, inst->lanes_last_unstashed);
+
     if (strcmp(sub, "unsaved") == 0)
         return snprintf(buf, buf_len, "%d",
                         lane_store_provisional_count(&inst->lanes));

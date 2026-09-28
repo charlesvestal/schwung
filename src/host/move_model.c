@@ -232,13 +232,13 @@ static int read_build_id(char *out, size_t cap)
 enum {
     C_SONG, C_TRANSPORT, C_PARAMETER, C_TIMESIG, C_TRACKLIST, C_TRACK, C_CLIPS,
     C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_ABSDEV,
-    C_MIXPARAMS, C_COUNT
+    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_COUNT
 };
 static const char *CLASS_NAMES[C_COUNT] = {
     "live.Song", "live.Transport", "live.Parameter", "live.TimeSignature", "live.TrackList",
     "live.Track", "live.Clips", "live.PlayingState", "live.ClipSlot", "live.SessionClip",
     "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent", "live.AbstractDevice",
-    "live.AudioMixerParameters",
+    "live.AudioMixerParameters", "live.ClipEnvelopeList", "live.ClipEnvelope", "live.Automation",
 };
 static uint64_t g_cls[C_COUNT];
 
@@ -269,7 +269,8 @@ enum {
     O_CLIPS_PLAYSTATE, O_PS_MODE, O_PS_SLOT, O_PS_START, O_SLOT_CLIP, O_SC_CLIP, O_CLIP_REGION,
     O_CLIP_TIMESIG, O_CLIP_CONTENT, O_RG_START, O_RG_END, O_RG_LOOP, O_LOOP_START, O_LOOP_END,
     O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_TRACK_MIXER, O_DEV_COMPONENTS,
-    O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_MC_NOTES, O_COUNT
+    O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_MC_NOTES, O_SC_ENVELOPES,
+    O_ENVLIST_ENVS, O_ENV_AUTOMATION, O_AUTO_BREAKPOINTS, O_AUTO_PARAM, O_COUNT
 };
 static moff_t g_off[O_COUNT] = {
     {C_SONG, "mTransport", 0}, {C_SONG, "mTracks", 0},
@@ -287,6 +288,8 @@ static moff_t g_off[O_COUNT] = {
     {C_SONG, "mStepEditorResolution", 0}, {C_TRACK, "mTrackMixerDevice", 0},
     {C_ABSDEV, "mComponents", 0}, {C_MIXPARAMS, "mVolume", 0}, {C_MIXPARAMS, "mPan", 0},
     {C_MIXPARAMS, "mSolo", 0}, {C_MIXPARAMS, "mSpeakerOn", 0}, {C_MIDICONTENT, "mNotes", 0},
+    {C_SESSIONCLIP, "mClipEnvelopes", 0}, {C_ENVLIST, "mClipEnvelopes", 0}, {C_ENVELOPE, "mAutomation", 0},
+    {C_AUTOMATION, "mBreakpoints", 0}, {C_AUTOMATION, "mpParameter", 0},
 };
 
 /* flip basic-type value slots, measured: Type ends at +0x64 (a 4-byte
@@ -580,8 +583,53 @@ static int walk(uint64_t hdr, uint64_t *out, int max)
     return n;
 }
 
-static int read_clip(uint64_t sc, mm_clip_t *c)
+/* THE CLIP BEING EDITED, watched every tick. A paste onto an occupied step
+ * replaces a note without resizing Move's notes vector, so no guard moves;
+ * the content is re-hashed each tick instead (a few hundred bytes) and a
+ * difference forces a walk at once. Envelopes are Move's OWN automation,
+ * which Move's edits and Undo change along with the notes. */
+#define MM_PROBE_ENVS 16
+typedef struct {
+    uint64_t notes_vec;                    /* address of the Blob's {begin, end} */
+    int      nenv;
+    uint64_t env_vec[MM_PROBE_ENVS];
+    uint64_t env_param[MM_PROBE_ENVS];
+} probe_t;
+static probe_t g_probe_tab[MM_TRACKS][MM_SLOTS];
+static probe_t g_probe;                    /* the selected track's current clip */
+static uint32_t g_probe_expect;
+static int g_probe_valid;
+
+static int hash_vec(uint64_t vec, uint32_t *h)
 {
+    uint64_t be[2];
+    if (RD(vec, be, sizeof be)) return -1;
+    if (be[1] < be[0] || be[1] - be[0] > (1u << 20)) return -1;
+    uint8_t buf[4096];
+    for (uint64_t at = be[0]; at < be[1]; at += sizeof buf) {
+        size_t n = (be[1] - at < sizeof buf) ? (size_t)(be[1] - at) : sizeof buf;
+        if (RD(at, buf, n)) return -1;
+        for (size_t i = 0; i < n; i++) { *h ^= buf[i]; *h *= 16777619u; }
+    }
+    return 0;
+}
+static int probe_hash(const probe_t *p, uint32_t *out)
+{
+    uint32_t h = 2166136261u;
+    if (p->notes_vec && hash_vec(p->notes_vec, &h)) return -1;
+    for (int k = 0; k < p->nenv; k++) {
+        uint64_t id = p->env_param[k];
+        for (int b = 0; b < 8; b++) { h ^= (uint8_t)(id >> (8 * b)); h *= 16777619u; }
+        if (hash_vec(p->env_vec[k], &h)) return -1;
+    }
+    *out = h;
+    return 0;
+}
+
+static int read_clip(uint64_t sc, mm_clip_t *c, int t, int s)
+{
+    probe_t *pr = &g_probe_tab[t][s];
+    memset(pr, 0, sizeof *pr);
     uint64_t clip = sc + OFF(O_SC_CLIP);
     uint64_t rg = clip + OFF(O_CLIP_REGION), lp = rg + OFF(O_RG_LOOP);
     uint64_t ts = clip + OFF(O_CLIP_TIMESIG);
@@ -615,7 +663,20 @@ static int read_clip(uint64_t sc, mm_clip_t *c)
             for (size_t i = 0; i < n; i++) { h ^= buf[i]; h *= 16777619u; }
         }
         c->notes_hash = h;
+        pr->notes_vec = nb;
     }
+    /* Move's own automation for this clip: SessionClip.mClipEnvelopes. */
+    uint64_t envs[MM_PROBE_ENVS];
+    int ne = walk(sc + OFF(O_SC_ENVELOPES) + OFF(O_ENVLIST_ENVS) + V_WORD, envs, MM_PROBE_ENVS);
+    if (ne < 0) return -1;
+    for (int k = 0; k < ne && k < MM_PROBE_ENVS; k++) {
+        uint64_t au = envs[k] + OFF(O_ENV_AUTOMATION);
+        pr->env_vec[pr->nenv] = au + OFF(O_AUTO_BREAKPOINTS) + V_WORD;
+        pr->env_param[pr->nenv] = rq(au + OFF(O_AUTO_PARAM) + V_REFOBJ);
+        pr->nenv++;
+    }
+    if (probe_hash(pr, &c->content_hash)) return -1;
+    c->n_envelopes = pr->nenv;
     return 0;
 }
 
@@ -708,12 +769,76 @@ static int snapshot(move_model_t *m)
             int n1 = walk(slots[s] + OFF(O_SLOT_CLIP) + V_WORD, sc, 2);
             if (n1 < 0) return -1;
             if (n1 >= 1 && vp_is(&g_vp_sessionclip, guard(sc[0])))
-                if (read_clip(sc[0], &T->slot[s])) return -1;
+                if (read_clip(sc[0], &T->slot[s], t, s)) return -1;
         }
     }
     derive(m);
     m->valid = 1;
     return 0;
+}
+
+/* ---- the edited clip's notes, decoded (model thread only) -------------- */
+
+#define MM_NOTES_MAX 512
+static mm_note_t g_notes[2][MM_NOTES_MAX];   /* [0] now, [1] the previous state */
+static int g_nnotes[2];
+static mm_clip_ref_t g_notes_ref[2];
+
+static int decode_notes(uint64_t vec, mm_note_t *out, int max)
+{
+    uint64_t be[2];
+    if (!vec || RD(vec, be, sizeof be) || be[1] < be[0] || be[1] - be[0] > 37u * MM_NOTES_MAX) return -1;
+    static uint8_t raw[37 * MM_NOTES_MAX];
+    size_t len = (size_t)(be[1] - be[0]);
+    if (len && RD(be[0], raw, len)) return -1;
+    int n = 0;
+    for (size_t o = 0; o + 37 <= len && n < max; o += 37) {
+        const uint8_t *r = raw + o;   /* {i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag, i64 id}, big-endian */
+        uint64_t u; uint32_t w; double dv; float fv;
+        w = (uint32_t)r[0] << 24 | (uint32_t)r[1] << 16 | (uint32_t)r[2] << 8 | r[3];
+        out[n].pitch = (int32_t)w;
+        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[4 + i];  memcpy(&dv, &u, 8); out[n].start = dv;
+        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[12 + i]; memcpy(&dv, &u, 8); out[n].dur = dv;
+        w = (uint32_t)r[20] << 24 | (uint32_t)r[21] << 16 | (uint32_t)r[22] << 8 | r[23]; memcpy(&fv, &w, 4); out[n].vel = fv;
+        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[29 + i]; out[n].id = (int64_t)u;
+        n++;
+    }
+    return n;
+}
+
+/* After a published walk: point the probe at the selected track's current
+ * clip, and when that clip's content moved, decode it (previous kept). */
+static void edited_clip_update(const move_model_t *m)
+{
+    g_probe_valid = 0;
+    if (m->selected_track < 0) return;
+    const mm_track_t *T = &m->track[m->selected_track];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return;
+    const mm_clip_t *c = &T->slot[cs];
+    g_probe = g_probe_tab[m->selected_track][cs];
+    g_probe_expect = c->content_hash;
+    g_probe_valid = 1;
+    if (g_notes_ref[0].clip_id == c->clip_id && g_notes_ref[0].content_hash == c->content_hash) return;
+    g_notes[1][0] = g_notes[0][0];
+    memcpy(g_notes[1], g_notes[0], sizeof(mm_note_t) * (size_t)g_nnotes[0]);
+    g_nnotes[1] = g_nnotes[0];
+    g_notes_ref[1] = g_notes_ref[0];
+    int n = decode_notes(g_probe.notes_vec, g_notes[0], MM_NOTES_MAX);
+    g_nnotes[0] = n < 0 ? 0 : n;
+    g_notes_ref[0].track = m->selected_track;
+    g_notes_ref[0].slot = cs;
+    g_notes_ref[0].clip_id = c->clip_id;
+    g_notes_ref[0].content_hash = c->content_hash;
+    g_notes_ref[0].valid = n >= 0;
+}
+
+int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
+{
+    const int k = previous ? 1 : 0;
+    if (notes) *notes = g_notes[k];
+    if (ref) *ref = g_notes_ref[k];
+    return g_notes_ref[k].valid ? g_nnotes[k] : -1;
 }
 
 /* Replay the plan into a copy of `skel` (the walk that recorded it).
@@ -802,6 +927,8 @@ static int plan_replay(const move_model_t *skel, move_model_t *m)
 static move_model_t g_pub;
 static move_model_listener_fn g_listener;
 void move_model_set_listener(move_model_listener_fn fn) { g_listener = fn; }
+static move_model_tick_fn g_tick_hook;
+void move_model_set_tick_hook(move_model_tick_fn fn) { g_tick_hook = fn; }
 static atomic_uint g_seq;          /* odd while writing */
 static atomic_uint g_changes;
 
@@ -948,6 +1075,10 @@ static void *reader_main(void *arg)
             else if (r1 == 0 && r2 == 0) { torn++; continue; }
             else have_plan = 0;                    /* the shape moved: walk now */
         }
+        if (ok && g_probe_valid) {                 /* the edited clip, in place */
+            uint32_t h = 0;
+            if (probe_hash(&g_probe, &h) || h != g_probe_expect) ok = 0;
+        }
         if (!ok) {
             g_rec = &a; g_nplan = 0; g_plan_overflow = 0;
             int ra = snapshot(&a);
@@ -966,9 +1097,11 @@ static void *reader_main(void *arg)
         }
         if (b.doc_id != prev.doc_id) doc_gen++;         /* a different document: a set load */
         b.doc_gen = doc_gen;
+        edited_clip_update(&b);
         int changed = !same_shape(&b, &prev) || prev.valid != b.valid || prev.playing != b.playing;
         publish(&b);
         if (changed && g_listener) g_listener(&b, &prev);
+        if (g_tick_hook) g_tick_hook(&b);
         if (changed) atomic_fetch_add(&g_changes, 1);
         if (diag) {
             double t = now_s();

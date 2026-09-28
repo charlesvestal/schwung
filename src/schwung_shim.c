@@ -2132,8 +2132,24 @@ static void shadow_inprocess_render_to_buffer(void) {
          * doubled the clip and the lane reported nothing, three placements
          * running. Reading it into a local first also means every slot sees
          * the same answer, which a mid-loop clear would not give. */
-        const int lane_double_now = lane_double_pending;
+        /* With the live model, Double Loop is mirrored as a CONFIRMED paste
+         * (move_model_sync.c) -- journaled, so Move's Undo follows it too. */
+        const int lane_double_now = lane_double_pending && !move_model_sync_active();
         lane_double_pending = 0;
+
+        /* LANE COMMANDS FROM THE LIVE MODEL (move_model_sync.h): a paste Move
+         * made, its undo/redo, a deleted clip's stash, its restore, a copy.
+         * Decided off this thread; applied here because only the callback may
+         * touch a chain. A few per frame, so a burst cannot stack on one block. */
+        if (shadow_plugin_v2->set_param) {
+            int cs;
+            char ck[24], cv[104];
+            for (int k = 0; k < 4 && move_model_sync_pop_cmd(&cs, ck, sizeof ck, cv, sizeof cv); k++) {
+                if (cs >= 0 && cs < SHADOW_CHAIN_INSTANCES && shadow_chain_slots[cs].active &&
+                    shadow_chain_slots[cs].instance)
+                    shadow_plugin_v2->set_param(shadow_chain_slots[cs].instance, ck, cv);
+            }
+        }
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
@@ -9301,6 +9317,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* Copy/Loop/step/Undo presses, for the automation that follows
+             * Move's own edits (move_model_sync.h). Intent only: nothing is
+             * changed unless the live model confirms Move made the edit. */
+            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B))
+                move_model_sync_on_midi(status, d1, d2);
 
             /* Anything else pressed while Mute is down makes it some other
              * gesture — Mute+pad is a drum-CELL mute whose announcement looks

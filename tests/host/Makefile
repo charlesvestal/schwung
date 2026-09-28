@@ -52,6 +52,8 @@ BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_move_model \
+	$(BUILD_DIR)/test_lane_edit \
+	$(BUILD_DIR)/test_edit_follow \
 	$(BUILD_DIR)/test_move_model_sync \
 	$(BUILD_DIR)/test_editor_bar_announce \
 	$(BUILD_DIR)/test_clip_regions \
@@ -296,8 +298,14 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
 
-$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c
+$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c -lm
+
+$(BUILD_DIR)/test_lane_edit: test_lane_edit.c ../../src/host/lane_edit.c ../../src/host/lane_store.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_edit.c ../../src/host/lane_edit.c ../../src/host/lane_store.c -lm
+
+$(BUILD_DIR)/test_edit_follow: test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c -lm
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
