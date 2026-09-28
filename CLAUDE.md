@@ -1858,6 +1858,14 @@ inline is how this file got to 151 KB.
   navigate: `enterable` hands it the click, `handleBack` is the exit contract
   (a way UP, never a way out), an `as_page` canvas becomes a door, and Shift+jog
   always leaves. `ctx.close()` records a wish the host acts on after the hook.
+- `docs/MOVE_MODEL.md` — **Move's live song model, read from its own memory.**
+  Move's set is a flip document in MoveOriginal's heap; the shim reads it by
+  NAME (flip's class registry + decoded accessor stubs), fault-safe via
+  `process_vm_readv`, ~1.6% of a core. Selected track, the playing/selected
+  clip, region/loop, step-editor page, step grid and the exact launch beat are
+  all current to the edit — `Song.abl` is ~10 s stale and has no new clips.
+  Only the transport run-flag/beat clock is build-pinned. Read it before
+  building anything that needs clip state again.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging

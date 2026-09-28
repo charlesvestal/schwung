@@ -58,6 +58,7 @@
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
+#include "host/move_model.h"
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
@@ -11175,6 +11176,7 @@ static void shim_spi_init(void)
         shim_worker_set_hooks(&hooks);
     }
     shim_worker_start();
+    move_model_start();   /* Move's live song document -- move_model.h */
     snap_worker_start();   /* off-RT remote-snapshot servicer (idle until a browser pulls) */
 
     /* Start LED capture logger thread (gated by flag file) */
