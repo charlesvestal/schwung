@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)
 #include <elf.h>
 #include "unified_log.h"
 #endif
@@ -138,7 +138,7 @@ double mm_clip_position(const mm_clip_t *c, double start_beats, double song_beat
     return pos;
 }
 
-#ifdef __linux__   /* the runtime half; tests/host builds only the pure half on any OS */
+#if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)   /* the runtime half; tests/host builds only the pure half (-DMOVE_MODEL_PURE_ONLY) */
 /* ====================================================================== */
 /* Runtime: memory access                                                 */
 /* ====================================================================== */
