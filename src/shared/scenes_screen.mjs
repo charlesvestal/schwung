@@ -7,8 +7,9 @@
  * they are). The fader morphs the ACTIVE scene from its A to its B.
  *
  *   step                 pick the active scene
- *   tap an A pad         that snapshot becomes the scene's A (the lit one
- *                        again: none);  B pads the same
+ *   tap an A pad         that snapshot becomes the scene's A, on the PRESS
+ *                        (the lit one again: none, on the release);
+ *                        B pads the same
  *   hold a pad           EDIT that snapshot (latched; tap it to stop)
  *   jog / knob 8         the fader (1/64 per detent, Shift 1/256)
  *   jog click            snap the fader to the nearer end
@@ -91,6 +92,7 @@ export function createScenesScreen(io) {
     const now = io.now || (() => Date.now());
     const pressAt = new Map();           /* note -> press time */
     const holdFired = new Map();
+    const tappedOnPress = new Set();     /* notes whose tap already fired on the press */
     const painted = new Map();           /* note -> colour last sent */
     let copyHeld = false, deleteHeld = false;
     let copySource = null;               /* { kind: "scene", k } | { kind: "snap", side, i } */
@@ -225,12 +227,27 @@ export function createScenesScreen(io) {
                     (p[j] >= 0 ? snapName(side, i) : "none"));
     }
 
+    /* A pad that CHANGES the active scene's pairing acts on the PRESS: switching
+     * B mid-bar is a rhythmic gesture, and the release lands late by however
+     * long the finger stayed down. Holding it still goes on to edit, so pairing
+     * first costs nothing -- you edit what you just picked. The two taps that
+     * UNDO something stay on the release, where a hold can still mean "edit"
+     * instead: the lit pad (a tap unpairs it) and the snapshot being edited (a
+     * tap stops editing). */
+    function padPairsOnPress(side, i) {
+        if (st().edit === snapHalf(side, i)) return false;
+        const k = scn().active;
+        if (k < 0) return true;
+        return pairOf(k)[side === "a" ? 0 : 1] !== i;
+    }
+
     return {
         enter() {
             copyHeld = deleteHeld = false;
             copySource = null;
             pressAt.clear();
             holdFired.clear();
+            tappedOnPress.clear();
             painted.clear();
             learnPending = false;
             refreshCounts(true);
@@ -333,12 +350,15 @@ export function createScenesScreen(io) {
             if (on) {
                 pressAt.set(d1, now());
                 holdFired.set(d1, false);
+                tappedOnPress.delete(d1);
                 if (copyHeld || deleteHeld) { holdFired.set(d1, true); padTap(ps.side, ps.i); }
+                else if (padPairsOnPress(ps.side, ps.i)) { tappedOnPress.add(d1); padTap(ps.side, ps.i); }
             } else {
                 const was = pressAt.get(d1);
                 pressAt.delete(d1);
-                if (was && !holdFired.get(d1)) padTap(ps.side, ps.i);
+                if (was && !holdFired.get(d1) && !tappedOnPress.has(d1)) padTap(ps.side, ps.i);
                 holdFired.delete(d1);
+                tappedOnPress.delete(d1);
             }
             this.paintLeds();
             return true;
