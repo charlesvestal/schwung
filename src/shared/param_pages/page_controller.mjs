@@ -1978,10 +1978,12 @@ export function createController(io = {}) {
          * generic key the evaluator asks for; left in place, the pad we just
          * left would go on deciding what the new pad's pages are. Marked due
          * so the new instance's answer is read rather than waited for.
-         * ⚠ Deliberately NOT the listed-key test gateWireKey uses: a
-         * module-wide gate on this level (DR32's `ui_engine`) moves with the
-         * focus too, and dropping it here is what re-reads it after a PAD
-         * knob turn, which nothing else would. */
+         * Deliberately wider than gateWireKey's per-instance test: a
+         * module-wide gate on this level (DR32's `ui_engine`) can move with
+         * the focus too, so it is dropped and marked due with the rest. Only
+         * reached when a GATED level's own index moves (an instance pick);
+         * a module-driven focus change is marked due by
+         * syncChildIndexFromModule regardless. */
         const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
         if (lvlDef && s.conditionKeys) {
             for (const k of s.conditionKeys) {
@@ -2528,7 +2530,15 @@ export function createController(io = {}) {
                 if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
                 const gv = getParam(gateWireKey(k));
                 const before = s.values[k];
-                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                /* "" is a MISS for anything but an opaque key -- the chain
+                 * host's answer for a key nobody serves (acceptValue's rule).
+                 * Storing it is how a wrongly resolved gate used to become a
+                 * cached verdict the evaluator then trusted for good; a miss
+                 * leaves the evaluator to read the key itself. */
+                const meta = s.metaIndex ? s.metaIndex.getOrGuess(k) : null;
+                const miss = gv === "" && !(meta && meta.kind === KIND_OPAQUE);
+                if (miss) delete s.values[k];
+                else if (gv !== null && gv !== undefined) s.values[k] = gv;
                 if (s.values[k] !== before) replanIfCondition(k);
                 return null;
             }

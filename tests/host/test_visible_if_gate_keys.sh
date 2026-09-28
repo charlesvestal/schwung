@@ -305,7 +305,7 @@ Promise.all([
     const hm = { focus_press_param: "live_press", levels: {
       root: { name: "R", knobs: [], params: [
         { level: "pads", label: "Pad" }, { level: "tone", label: "Tone" }, { level: "shell", label: "Shell" }] },
-      pads:  child("Pad",   { knobs: ["cur", "vol"] }),
+      pads:  child("Pad",   { knobs: ["vol"] }),
       tone:  child("Tone",  { knobs: ["pitch"], visible_if: { param: "ui_engine", equals: 1 } }),
       shell: child("Shell", { knobs: ["ring"],  visible_if: { param: "ui_engine", equals: 2 } }),
     } };
@@ -351,6 +351,49 @@ Promise.all([
         fail("after pad " + pad + " (no engine) neither engine page should show, got: " + got);
     }
     console.log("  ok  a module-wide gate on a child level is read bare, and the pages follow every pad");
+  }
+
+  /* ---- 4e: A LISTED GATE IS PER-INSTANCE EVEN WHEN ONLY THE BARE KEY IS
+   * DECLARED ---------------------------------------------------------------
+   *
+   * The other half of the rule 4d pins. A level that LISTS its gate key names a
+   * per-instance param, exactly as the evaluator resolves it
+   * (hierChildKeyFor), whatever chain_params happens to declare. And an
+   * answer of "" is a MISS: it must not be cached as the value of the gate. */
+  {
+    const child = (name, extra) => Object.assign({ name, child_prefix: "pad", child_count: 4 }, extra);
+    const hl = { focus_press_param: "live_press", levels: {
+      root: { name: "R", knobs: ["vol"], params: [{ level: "cym", label: "Cym" }] },
+      cym:  child("Cym", { knobs: ["size", "type"], visible_if: { param: "type", equals: "1" } }),
+    } };
+    const cpl = ["vol", "type", "size", "live_press"].map((k) => ({ key: k, name: k, type: "int", min: 0, max: 100 }));
+    let answer = { pad0_type: "1" };
+    const rl = [];
+    const sl = (k) => {
+      const b = k.slice(k.indexOf(":") + 1);
+      if (b === "ui_hierarchy") return JSON.stringify(hl);
+      if (b === "chain_params") return JSON.stringify(cpl);
+      rl.push(b);
+      if (b in answer) return answer[b];
+      if (b === "vol" || /^pad\d_size$/.test(b)) return "5";
+      return "";
+    };
+    const cl = C.createController({ getParam: sl, setParam: () => {} });
+    cl.load({ slot: 0, component: "synth", prefix: "synth", visible: () => true });
+    for (let i = 0; i < 20; i++) cl.tick();
+    rl.length = 0;
+    cl.vouchLivePress();
+    for (let i = 0; i < 3; i++) cl.tick();
+    if (rl.indexOf("type") >= 0 || rl.indexOf("pad0_type") < 0)
+      fail("a gate the level LISTS must be read per pad (pad0_type), got: " + rl.join(","));
+    if (cl.state.values.type !== "1")
+      fail("the listed gate should hold pad 0\x27s answer, got " + JSON.stringify(cl.state.values.type));
+    answer = { pad0_type: "" };           /* the module stops serving it */
+    cl.vouchLivePress();
+    for (let i = 0; i < 3; i++) cl.tick();
+    if (cl.state.values.type !== undefined)
+      fail("an empty answer was cached as the gate\x27s value: " + JSON.stringify(cl.state.values.type));
+    console.log("  ok  a listed gate is read per pad, and an empty answer is a miss, not a value");
   }
 
   /* The NEIGHBOUR LANE note was replaced rather than joined in the first cut
