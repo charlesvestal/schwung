@@ -24,6 +24,7 @@ void shadow_apply_mute(int slot, int v) { n_mute++; last_slot = slot; last_val =
 void shadow_apply_solo(int slot, int v) { n_solo++; last_slot = slot; last_val = v; }
 void shadow_poll_current_set(void) { n_poll++; }
 void shadow_log(const char *m) { (void)m; }
+uint64_t shadow_set_pages_last_publish_ms(void) { return 0; }
 /* The reader's liveness: "just published" unless a test says otherwise. */
 #include <time.h>
 static long long fake_pub_age_ms = 0;   /* -1: never published */

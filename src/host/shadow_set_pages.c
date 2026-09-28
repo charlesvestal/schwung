@@ -481,10 +481,23 @@ static uint64_t set_pages_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+static volatile uint64_t s_last_publish_ms;
+uint64_t shadow_set_pages_last_publish_ms(void) { return s_last_publish_ms; }
+
 static void shadow_set_pages_publish(const char *name, const char *uuid)
 {
     uint32_t gen = move_model_sync_gen();
     int settled = move_model_sync_settled();
+    s_last_publish_ms = set_pages_now_ms();
+    /* A REPUBLISH OF THE SAME READ KEEPS ITS AGE. The worker republishes
+     * every ~200 ms while misaligned; restamping read_ms each time meant a
+     * read never reached the 300 ms the consume waits for, and the switch
+     * only happened when the 15 s give-up forced it (measured on hardware). */
+    if (set_snapshot.gen == gen && !strcmp(set_snapshot.name, name ? name : "") &&
+        !strcmp(set_snapshot.uuid, uuid ? uuid : "") && !(set_snapshot.seq & 1u)) {
+        set_snapshot.settled = settled;
+        return;
+    }
     set_snapshot.seq++;            /* odd: write in progress */
     __sync_synchronize();
     snprintf(set_snapshot.name, sizeof(set_snapshot.name), "%s", name ? name : "");
