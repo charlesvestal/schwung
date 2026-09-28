@@ -174,6 +174,35 @@ Pending ids also carry a per-boot token now: the sequence restarted at 1 every
 boot, so `__pending-26-1` named a different unsaved set each session and a new
 one silently loaded an old one's leftovers.
 
+### Review fixes (2026-09-28)
+
+- **The ack names the generation the UI HANDLED.** `active_set` answers
+  `uuid\nname\ngen`, read together; the UI clears SET_CHANGED and *then* acks
+  `set_aligned <gen>`. A set loaded while the UI was switching to the previous
+  one has a newer generation, so the ack raises SET_CHANGED again -- before, the
+  UI's clear erased it, the ack copied the latest generation, and edits to the
+  new set autosaved into the old set's folder. A same-name reload aligns in C
+  only once the last change was acked. `tests/host/test_set_alignment.sh`
+  drives the real consume/ack through exactly that sequence.
+- **A read is consumed only once the model could have disagreed with it**:
+  300 ms old, and still the current generation. A read taken in the ~20 ms
+  between Move's Settings.json rewrite and the model's edge named the new set
+  under the old generation -- which is what the pending-set migration trusts.
+- **Active means LIVE.** `move_model_sync_active()` requires a valid publish
+  in the last 2 s, and the worker mirrors that into `move_model_ready`, so a
+  reader that lost the Song hands mute/solo and set detection back to the
+  fallbacks instead of owning them while following nothing. The mixer class is
+  mandatory at resolve; resolve gives up after 8 attempts; the Song re-find
+  backs off to a minute.
+- **A misalignment nothing can resolve expires after 15 s** (no SET_CHANGED
+  pending): an unreadable Settings.json otherwise gated autosave all session.
+- **Mute/solo are applied on the SPI thread**, posted by the reader through a
+  ring (`move_model_sync_apply_pending`), so the slot mix flags have one writer
+  with `slot:muted` / `slot:soloed`. The mutators now only REQUEST a state save
+  and the worker writes it -- which also takes that file I/O off the callback.
+- **A torn model read keeps the last good snapshot** (`move_model_get` leaves
+  `out` untouched), instead of zeroing it into "no clip, phase unknown".
+
 ## Not RT, and cheap
 
 The reader is its own SCHED_OTHER thread on cores 0–2, created from shim init.
