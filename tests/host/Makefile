@@ -313,7 +313,7 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
 $(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c | $(BUILD_DIR)
-	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c -lm
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
