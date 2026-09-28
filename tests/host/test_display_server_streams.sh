@@ -16,6 +16,9 @@
 #   3. Bare /stream-auto (an old page) sees only default events and `hb`.
 #   4. Twenty idle streams against sixteen slots: the newest is still served
 #      (evict-oldest), where it used to be refused and the proxy said 502.
+#   5. SOUND (default queue size): `&audio=1` gets `pcm` chunks whose `pos`
+#      runs on without a gap and whose samples decode to exactly what the
+#      writer put in the ring; a client that did not ask gets none.
 #
 # Mutation check, done by hand: making client_flush treat EAGAIN as an error
 # (the old behaviour) fails case 1.
@@ -30,6 +33,11 @@ trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$T"' EXIT
     -DSURFACE_LIVE_SHM_PATH="\"$T/surface\"" -DE16_MIRROR_SHM_PATH="\"$T/e16\"" \
     -DDISPLAY_SERVER_TEST_SNDBUF=2048 -DOUT_CAP=8192 -DSTALL_DROP_MS=3000 \
     -o "$T/ds" src/host/display_server.c src/host/unified_log.c -lpthread
+"$CC" -O1 -Isrc/host \
+    -DSHM_PATH="\"$T/live\"" -DNORNS_SHM_PATH="\"$T/norns\"" \
+    -DSURFACE_LIVE_SHM_PATH="\"$T/surface\"" -DE16_MIRROR_SHM_PATH="\"$T/e16\"" \
+    -DAUDIO_LIVE_SHM_PATH="\"$T/audio\"" \
+    -o "$T/ds_audio" src/host/display_server.c src/host/unified_log.c -lpthread
 
 T="$T" python3 - <<'EOF'
 import json, mmap, os, random, socket, struct, subprocess, sys, threading, time
@@ -111,6 +119,45 @@ time.sleep(1.0)
 buf, closed = read(socks[-1], 1.5); ev, _ = events(buf)
 check(len(ev) > 0 and not closed, "past sixteen streams the newest is still served")
 for x in socks: x.close()
+
+srv.terminate(); srv.wait()
+
+# 5. sound
+import base64
+AF = 16384
+au = mk(T + "/audio", 32 + AF * 4)
+au[0:8] = b"AUDLV1\0\0"; au[8:12] = struct.pack("<I", 1); au[12:16] = struct.pack("<I", 44100)
+def ramp(i): return (i * 7) % 65536 - 32768        # the frame index, recoverable from L
+def audio_writer():
+    wp = 0; t0 = time.monotonic()
+    while not stop:
+        due = int((time.monotonic() - t0) * 44100) // 128 * 128
+        while wp < due:
+            blk = b"".join(struct.pack("<hh", ramp(wp + f), -ramp(wp + f) if ramp(wp + f) > -32768 else 32767) for f in range(128))
+            at = (wp % AF) * 4; au[32 + at:32 + at + 512] = blk; wp += 128
+            struct.pack_into("<Q", au, 16, wp)
+        time.sleep(0.002)
+threading.Thread(target=audio_writer, daemon=True).start()
+PORT += 1
+srv = subprocess.Popen([T + "/ds_audio", str(PORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+for _ in range(50):
+    try: socket.create_connection(("127.0.0.1", PORT)).close(); break
+    except OSError: time.sleep(0.1)
+time.sleep(0.5)
+s = stream("/stream-auto?v=2&audio=1"); q = stream("/stream-auto?v=2")
+buf, _ = read(s, 3.0); qbuf, _ = read(q, 0.5); s.close(); q.close()
+body = buf.split(b"\r\n\r\n", 1)[1]
+chunks = [json.loads(e.split(b"data: ", 1)[1]) for e in body.split(b"\n\n")[:-1] if e.startswith(b"event: pcm")]
+gaps = sum(1 for a, b in zip(chunks, chunks[1:]) if b["pos"] != a["pos"] + a["n"])
+wrong = 0; total = 0
+for c in chunks:
+    pcm = base64.b64decode(c["d"]); total += c["n"]
+    for f in range(c["n"]):
+        if struct.unpack_from("<h", pcm, f * 4)[0] != ramp(c["pos"] + f): wrong += 1
+check(len(chunks) > 30 and total > 44100 * 2, f"sound streams: {len(chunks)} chunks, {total} frames in 3 s")
+check(gaps == 0, f"pcm chunks run on without a gap ({gaps})")
+check(wrong == 0, f"every sample decodes to what was written ({wrong} wrong)")
+check(b"event: pcm" not in qbuf, "a client that did not ask for sound gets none")
 
 stop = True; srv.terminate(); srv.wait()
 sys.exit(1 if fails else 0)

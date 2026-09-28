@@ -52,6 +52,7 @@
 #include "norns_display_shm.h"
 #include "e16_mirror_shm.h"
 #include "surface_live_shm.h"
+#include "audio_live_shm.h"
 #include "unified_log.h"
 
 #define DEFAULT_PORT       7681
@@ -69,8 +70,14 @@
 #define SSE_BUF_SIZE       7000
 #define HEARTBEAT_MS       2000   /* `event: hb` to every stream; the page's watchdog keys on it */
 #ifndef OUT_CAP
-#define OUT_CAP            32768  /* per-client queue of whole events */
+/* Per-client queue of whole events. Sized for SOUND: a listening client takes
+ * ~240 KB/s of base64 PCM, so this is about a second of Wi-Fi stall before a
+ * chunk is skipped. Static, and only the pages a client actually fills are
+ * ever resident. */
+#define OUT_CAP            262144
 #endif
+#define AUDIO_CHUNK_MAX    4096   /* frames per pcm event (93 ms); older is skipped */
+#define AUDIO_START_BACK   1024   /* a first read starts this far behind the writer */
 #ifndef STALL_DROP_MS
 #define STALL_DROP_MS      15000  /* a queue that has not drained for this long is a dead peer */
 #endif
@@ -123,6 +130,7 @@ typedef struct {
     stream_mode_t stream_mode;
     int needs_initial_frame;
     int extras;                    /* /stream-auto?v=2: also surface + e16 as named events */
+    int audio;                     /* ...&audio=1: also `pcm` (audio_live_shm.h) */
     long long connected_ms;        /* eviction picks the oldest stream */
     char buf[CLIENT_BUF_SIZE];
     int buf_len;
@@ -404,6 +412,7 @@ static void client_remove(int idx) {
     clients[idx].stalled_since = 0;
     clients[idx].resync = 0;
     clients[idx].extras = 0;
+    clients[idx].audio = 0;
 }
 
 /* Push what is queued. Returns -1 when the client was removed. */
@@ -500,6 +509,8 @@ static void handle_http(int idx) {
         const char *eol = strstr(clients[idx].buf, "\r\n");
         const char *v2 = strstr(clients[idx].buf, "v=2");
         clients[idx].extras = (v2 && eol && v2 < eol) ? 1 : 0;
+        const char *au = strstr(clients[idx].buf, "audio=1");
+        clients[idx].audio = (clients[idx].extras && au && eol && au < eol) ? 1 : 0;
         const char *sse_header =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -574,6 +585,12 @@ int main(int argc, char *argv[]) {
     long long last_surface_shm_attempt = 0;
     static surface_live_shm_t surface_snap, surface_last;
     int surface_have = 0;
+    const audio_live_shm_t *audio_ptr = NULL;
+    long long last_audio_shm_attempt = 0;
+    uint64_t audio_cursor = 0;     /* next frame to send; 0 = not started */
+    static int16_t audio_pcm[AUDIO_CHUNK_MAX * 2];
+    static char audio_b64[AUDIO_CHUNK_MAX * 4 * 4 / 3 + 8];
+    static char pcm_evt[AUDIO_CHUNK_MAX * 4 * 4 / 3 + 128];
 
     /* Listen socket */
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -687,6 +704,26 @@ int main(int argc, char *argv[]) {
                         if (p != MAP_FAILED) {
                             surface_ptr = (const surface_live_shm_t *)p;
                             LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s", SURFACE_LIVE_SHM_PATH);
+                        }
+                    }
+                    close(fd);
+                }
+            }
+        }
+
+        /* The mirror's audio ring (audio_live_shm.h), made by the shim. */
+        if (!audio_ptr) {
+            long long now = now_ms();
+            if (now - last_audio_shm_attempt >= SHM_RETRY_MS) {
+                last_audio_shm_attempt = now;
+                int fd = open(AUDIO_LIVE_SHM_PATH, O_RDONLY);
+                if (fd >= 0) {
+                    struct stat st;
+                    if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(audio_live_shm_t)) {
+                        void *p = mmap(NULL, sizeof(audio_live_shm_t), PROT_READ, MAP_SHARED, fd, 0);
+                        if (p != MAP_FAILED) {
+                            audio_ptr = (const audio_live_shm_t *)p;
+                            LOG_INFO(DISPLAY_LOG_SOURCE, "opened %s", AUDIO_LIVE_SHM_PATH);
                         }
                     }
                     close(fd);
@@ -863,11 +900,15 @@ int main(int argc, char *argv[]) {
 
         /* ---- Events, built once and only if someone will get them ---- */
         int legacy_len = 0, auto_len = 0, e16_len = 0, e16n_len = 0, surf_len = 0, hb_len = 0;
-        int want_legacy = 0, want_auto = 0, want_e16 = 0, want_extras = 0;
+        int want_legacy = 0, want_auto = 0, want_e16 = 0, want_extras = 0, want_audio = 0;
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].fd < 0) continue;
             if (clients[i].stream_mode == STREAM_MODE_LEGACY) want_legacy = 1;
-            if (clients[i].stream_mode == STREAM_MODE_AUTO) { want_auto = 1; if (clients[i].extras) want_extras = 1; }
+            if (clients[i].stream_mode == STREAM_MODE_AUTO) {
+                want_auto = 1;
+                if (clients[i].extras) want_extras = 1;
+                if (clients[i].audio) want_audio = 1;
+            }
             if (clients[i].stream_mode == STREAM_MODE_E16) want_e16 = 1;
         }
         if (want_legacy && shm_ptr) {
@@ -895,6 +936,30 @@ int main(int argc, char *argv[]) {
                                 "event: surface\ndata: {\"v\":%d,\"frame\":%u,\"data\":\"%s\"}\n\n",
                                 SURFACE_LIVE_VERSION, surface_snap.frame, b64_buf);
         }
+        /* Sound: everything new since the last pass, as one event every
+         * listener gets. `pos` is the frame index of the first sample, so a
+         * page can tell a gap (a skipped chunk, a lapped ring) from a
+         * continuation. With no listener the cursor is dropped, and the next
+         * one starts near the writer instead of replaying a stale ring. */
+        int pcm_len = 0;
+        if (!want_audio) audio_cursor = 0;
+        if (want_audio && audio_ptr && memcmp(audio_ptr->magic, AUDIO_LIVE_MAGIC, 6) == 0 &&
+            audio_ptr->version == AUDIO_LIVE_VERSION) {
+            uint64_t wp = __atomic_load_n(&audio_ptr->write_pos, __ATOMIC_ACQUIRE);
+            if (audio_cursor == 0 || audio_cursor > wp || wp - audio_cursor > AUDIO_LIVE_FRAMES / 2)
+                audio_cursor = wp > AUDIO_START_BACK ? wp - AUDIO_START_BACK : 0;
+            if (wp - audio_cursor > AUDIO_CHUNK_MAX) audio_cursor = wp - AUDIO_CHUNK_MAX;
+            if (wp > audio_cursor) {
+                int n = audio_live_read(audio_ptr, audio_cursor, wp, audio_pcm);
+                (void)base64_encode((const uint8_t *)audio_pcm, n * 4, audio_b64);
+                pcm_len = snprintf(pcm_evt, sizeof pcm_evt,
+                                   "event: pcm\ndata: {\"pos\":%llu,\"n\":%d,\"rate\":%u,\"d\":\"%s\"}\n\n",
+                                   (unsigned long long)audio_cursor, n, audio_ptr->sample_rate, audio_b64);
+                if (pcm_len >= (int)sizeof pcm_evt) pcm_len = 0;
+                audio_cursor = wp;
+            }
+        }
+
         int hb_due = (now - hb_at >= HEARTBEAT_MS);
         if (hb_due) {
             hb_at = now;
@@ -929,6 +994,8 @@ int main(int argc, char *argv[]) {
                     rc = client_send(i, surf_evt, surf_len, now);
                 if (rc == 0 && c->extras && (full || e16_changed) && e16n_len)
                     rc = client_send(i, e16n_evt, e16n_len, now);
+                if (rc == 0 && c->audio && pcm_len)
+                    rc = client_send(i, pcm_evt, pcm_len, now);
                 break;
             case STREAM_MODE_E16:
                 if ((full || e16_changed) && e16_len) rc = client_send(i, e16_evt, e16_len, now);
@@ -950,6 +1017,7 @@ int main(int argc, char *argv[]) {
     if (norns_shm_ptr) munmap(norns_shm_ptr, sizeof(norns_display_shm_t));
     if (e16_shm_ptr) munmap(e16_shm_ptr, sizeof(e16_mirror_shm_t));
     if (surface_ptr) munmap((void *)surface_ptr, sizeof(surface_live_shm_t));
+    if (audio_ptr) munmap((void *)audio_ptr, sizeof(audio_live_shm_t));
     if (norns_shm_fd >= 0) close(norns_shm_fd);
     unified_log_shutdown();
     return 0;
