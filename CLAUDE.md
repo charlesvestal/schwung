@@ -896,6 +896,10 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   REPORTED, never aged out). `tests/host/test_fleet_render_baseline.sh` pins
   what every fleet cell draws and where a gesture lands it — the proof that
   "opt-in" moved nothing.
+- **Two per-param declarations, inert when absent** — `peek: false` (the
+  contract declines its own peek; allowEnumPeek is the host's) and `commit:
+  "release"` (the turn is shown, the write waits for the hand to let go — an LFO
+  Target enum would otherwise drive every param it scrolls past).
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,

@@ -333,7 +333,7 @@ import { locateAudioData, sampleReader, sampleBytesFor } from '/data/UserData/sc
  * functions they need with new Function). wav_io_qjs.mjs names `std` and `os`,
  * which are QuickJS modules; anywhere node can reach, that import is fatal. */
 import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
-import { createSlotGridIo, createMasterGridIo,
+import { createSlotGridIo, createMasterGridIo, lfoTargetOptions, lfoTargetIndex,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
@@ -16402,6 +16402,11 @@ function slotGridIoFor(slotIndex) {
          * routing differently, and cached per scope because a miss is a dozen
          * IPC round trips inside a draw. */
         describeTarget: (lfoIndex) => describeLfoTargetFor(makeSlotLfoCtx(slotIndex, lfoIndex)),
+        /* Target as a knob — see lfoTargetOptionsFor / commitLfoTargetFromGrid. */
+        targetOptions: (lfoIndex, current) =>
+            lfoTargetOptionsFor(makeSlotLfoCtx(slotIndex, lfoIndex), current),
+        commitTarget: (lfoIndex, route) =>
+            commitLfoTargetFromGrid(makeSlotLfoCtx(slotIndex, lfoIndex), route),
         /* Only the LFO params reach this — see createSlotGridIo.isModulated. */
         isModulated: (realKey) => isHierarchyParamModulated(slotIndex, realKey),
     });
@@ -16466,6 +16471,8 @@ function masterGridIoFor() {
          * list can never describe one routing differently, and cached per scope
          * because a miss is a dozen IPC round trips inside a draw. */
         describeTarget: (lfoIndex) => describeLfoTargetFor(makeMfxLfoCtx(lfoIndex)),
+        targetOptions: (lfoIndex, current) => lfoTargetOptionsFor(makeMfxLfoCtx(lfoIndex), current),
+        commitTarget: (lfoIndex, route) => commitLfoTargetFromGrid(makeMfxLfoCtx(lfoIndex), route),
         isModulated: (realKey) => isHierarchyParamModulated(0, realKey),
         runAction: (action) => runMasterFxActionFromGrid(action),
     });
@@ -24724,8 +24731,13 @@ function handleSelect() {
             if (lfoTargetComponents.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 if (comp.key === "__clear__") {
-                    lfoCtx.setParamBlocking("target", "");
-                    lfoCtx.setParamBlocking("target_param", "");
+                    /* From the grid, clearing is switching off — it has no
+                     * Enabled cell. The list keeps its own row. */
+                    if (lfoTargetFromGrid) commitLfoTargetFromGrid(lfoCtx, null);
+                    else {
+                        lfoCtx.setParamBlocking("target", "");
+                        lfoCtx.setParamBlocking("target_param", "");
+                    }
                     if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
@@ -24744,8 +24756,12 @@ function handleSelect() {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 const param = lfoTargetParams[selectedLfoTargetParam];
-                lfoCtx.setParamBlocking("target", comp.key);
-                lfoCtx.setParamBlocking("target_param", param.key);
+                if (lfoTargetFromGrid) {
+                    commitLfoTargetFromGrid(lfoCtx, { target: comp.key, param: param.key });
+                } else {
+                    lfoCtx.setParamBlocking("target", comp.key);
+                    lfoCtx.setParamBlocking("target_param", param.key);
+                }
                 if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
@@ -26868,6 +26884,71 @@ function describeLfoTargetFor(ctx) {
  *  keys on the routing, and a swap changes the NAME without changing it. */
 function resetLfoTargetLabels() {
     for (const k in _lfoTargetLabelCache) delete _lfoTargetLabelCache[k];
+    /* The knob's list is built from the same names and params, so a swap
+     * stales it the same way. */
+    _lfoTargetOptionsEpoch++;
+}
+
+/*
+ * EVERY ROUTING AN LFO CAN BE TURNED TO, for the knob grid's Target cell —
+ * see lfoTargetParam in shared/param_pages/lfo_page.mjs.
+ *
+ * Built from the picker's own two halves (getTargetComponents and
+ * getTargetParams), so the knob and the picker can never offer different
+ * lists. That costs a chain_params read per component, so it is built ONCE
+ * per scope and kept until a module changes (resetLfoTargetLabels) — the
+ * controller re-reads chain_params on every contract poll, and a rebuild there
+ * would be a dozen round trips every eighth tick.
+ *
+ * `current` is the stored routing when the caller has just read it. A list
+ * that lacks it is stale — the routing was set somewhere that did not reset
+ * the epoch (the list editor's picker) — and is rebuilt, since reading None
+ * over a live routing would let the next detent replace it.
+ */
+let _lfoTargetOptionsEpoch = 0;
+const _lfoTargetOptionsCache = Object.create(null);
+function lfoTargetOptionsFor(ctx, current) {
+    if (!ctx) return null;
+    const scope = ctx.scopeId || ctx.title || "lfo";
+    const hit = _lfoTargetOptionsCache[scope];
+    if (hit && hit.epoch === _lfoTargetOptionsEpoch &&
+        (!current || lfoTargetIndex(hit.value.routes, current.target, current.param) >= 0)) {
+        return hit.value;
+    }
+    const value = lfoTargetOptions({
+        components: ctx.getTargetComponents ? ctx.getTargetComponents() : [],
+        paramsFor: (key) => (ctx.getTargetParams ? ctx.getTargetParams(key) : []),
+        current: current || { target: ctx.getParam("target") || "",
+                              param: ctx.getParam("target_param") || "" },
+    });
+    _lfoTargetOptionsCache[scope] = { epoch: _lfoTargetOptionsEpoch, value };
+    return value;
+}
+
+/*
+ * A routing chosen on the knob grid, `enabled` included.
+ *
+ * The grid has no Enabled cell: a target IS the LFO switched on and None is
+ * it switched off. The list editor keeps its own Enabled row and its picker is
+ * untouched — this is the grid's commit only.
+ *
+ * `enabled` goes FIRST on the way on. The DSP gives a fresh LFO full depth
+ * when it is enabled with no routing yet (chain_host.c's `lfo->depth == 0 &&
+ * !lfo->target[0]` guard); enabling after the target would leave it at 0%,
+ * an LFO that is routed and does nothing. Blocking throughout, for the reason
+ * the picker is: consecutive non-blocking writes to one slot clobber.
+ */
+function commitLfoTargetFromGrid(ctx, route) {
+    if (!ctx) return;
+    if (!route || !route.target) {
+        ctx.setParamBlocking("target", "");
+        ctx.setParamBlocking("target_param", "");
+        ctx.setParamBlocking("enabled", "0");
+        return;
+    }
+    ctx.setParamBlocking("enabled", "1");
+    ctx.setParamBlocking("target", route.target);
+    ctx.setParamBlocking("target_param", route.param);
 }
 
 /** The LFO the editor is currently pointed at. */

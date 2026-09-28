@@ -311,6 +311,15 @@ export const ANNOUNCE_THROTTLE_MS = 120;
  * dropped — see `pendingWrite` below — it is caught by the next tick or by
  * release, so the final settled value always reaches the device exactly. */
 export const SETPARAM_THROTTLE_MS = 20;
+/*
+ * How long a `commit: "release"` key waits for a hand that never lets go.
+ *
+ * Such a key is written when the knob is RELEASED, not per detent — see
+ * onKnobTurn. The release is the real boundary; this is only the backstop for
+ * a turn the cap sensor never saw, which would otherwise leave the choice on
+ * screen and never on the device.
+ */
+export const RELEASE_COMMIT_IDLE_MS = 1000;
 
 /**
  * How many modulated params get a live re-read per tick.
@@ -805,6 +814,8 @@ export function createController(io = {}) {
         modCursor: 0,
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
+        /* key -> ms of the last detent, for `commit: "release"` keys only. */
+        releaseTurnMs: Object.create(null),
         tickCount: 0,
         /* Tick at which the neighbour-prefetch lane may resume; armed on every
          * page change so the arrived page gets one whole pass to itself. See
@@ -1765,6 +1776,11 @@ export function createController(io = {}) {
         const t = now();
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
+            if (s.releaseTurnMs[key] !== undefined) {
+                if (keyUnderFinger(key)) continue;
+                if (t - s.releaseTurnMs[key] < RELEASE_COMMIT_IDLE_MS) continue;
+                delete s.releaseTurnMs[key];
+            }
             sendPending(key);
                 replanIfCondition(key);
             s.lastWriteMs[key] = t;
@@ -2828,8 +2844,11 @@ export function createController(io = {}) {
         const key = p.keys[at];
         if (!key) return null;
 
-        /* Do not clobber a value the user is actively turning. */
+        /* Do not clobber a value the user is actively turning — nor one
+         * still waiting for its release (`commit: "release"`), which the
+         * device has not been told yet and would read back as the old one. */
         if ((s.settleUntil[key] || 0) > s.tickCount) return null;
+        if (s.pendingWrite[key] !== undefined) return null;
 
         /* Refresh this key's modulation flag on the SAME rotation as its value.
          *
@@ -4118,10 +4137,22 @@ export function createController(io = {}) {
          * established that this is a knobs page with a key under the cursor,
          * and the question here is only what the layout can SHOW.
          */
+        /*
+         * ...AND A PARAM THAT SAYS SO DOES NOT PEEK.
+         *
+         * `peek: false` is the contract's own answer, for an enum whose square
+         * already says everything: two short words ("UNI"/"BI", "FRE"/"SYN")
+         * that flip on the next detent. The panel for those covers the page
+         * to show the one other word, on the control most likely to be
+         * flipped back and forth. allowEnumPeek is the host's version of the
+         * same question; this one travels with the declaration, so every
+         * host drawing the contract agrees.
+         */
         if (s.layout !== LAYOUT_LIST
             && meta.divable && meta.kind === KIND_ENUM
             && !drawnWide(key) && !drawnAsSwitch(key) && !drawnBig(meta)
             && Array.isArray(meta.options) && meta.options.length >= 2
+            && meta.peek !== false
             && !(allowEnumPeek && allowEnumPeek(fullKey(key), meta) === false)) {
             const pi = Math.round(Number(value));
             s.peek = {
@@ -4136,11 +4167,25 @@ export function createController(io = {}) {
         }
 
         cacheWritten(key, wire);
+        /*
+         * `commit: "release"` — the cell, the header and the peek follow the
+         * knob, but the DEVICE hears only where it stops.
+         *
+         * For a key whose every value is a consequence, not a position. An LFO
+         * target is the case: writing each option a turn passes over re-routes
+         * the modulation to every parameter on the way, so scrolling from
+         * Cutoff to Resonance would briefly wobble the forty in between.
+         * Held in pendingWrite, which release already flushes — see
+         * onKnobTouch — and flushDueWrites backstops a turn the cap sensor
+         * never saw.
+         */
+        const releaseCommit = meta.commit === "release";
+        if (releaseCommit) s.releaseTurnMs[key] = t;
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
          * left in pendingWrite for tick() to flush once the window passes,
          * and onKnobTouch(false) flushes immediately on release. */
         const lastWrite = s.lastWriteMs[key] || 0;
-        if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
+        if (!releaseCommit && t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
             delete s.pendingStep[key];
@@ -4441,6 +4486,7 @@ export function createController(io = {}) {
              * strand the feature.
              */
             if (key) delete s.triggerKnobLastMs[key];
+            if (key) delete s.releaseTurnMs[key];
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
                 replanIfCondition(key);
@@ -6234,6 +6280,12 @@ export function createController(io = {}) {
      * already being the list. A switch is one cell wide and would pass the
      * width test.
      */
+    /* Is a finger on the knob that addresses `key` on this page? */
+    function keyUnderFinger(key) {
+        for (const slot of s.touchOrder) if (keyAt(slot) === key) return true;
+        return false;
+    }
+
     function drawnAsSwitch(key) {
         for (const g of vizGroups()) {
             if (g.kind === VIZ_SWITCH && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;

@@ -138,11 +138,65 @@ export const SLOT_SEND_PARAMS = [
  * /data/UserData path does not exist. shadow/ and shared/ are siblings on the
  * device and in src/, so the one specifier resolves in both.
  */
-import { lfoParams, lfoLevels } from '../shared/param_pages/lfo_page.mjs';
+import { lfoParams, lfoLevels, lfoTargetIndex } from '../shared/param_pages/lfo_page.mjs';
 export {
     LFO_SHAPES, LFO_SHAPES_SHORT, LFO_DIVISIONS, LFO_DIVISIONS_SHORT,
-    lfoParams, lfoKnobKeys, lfoLevels,
+    lfoParams, lfoKnobKeys, lfoLevels, lfoTargetOptions, lfoTargetIndex,
 } from '../shared/param_pages/lfo_page.mjs';
+
+/*
+ * TARGET AS A KNOB — the io half of lfoTargetParam, shared by both contracts.
+ *
+ * The grid drives an enum by index; the device stores a routing as a
+ * component and a param. So the read turns the stored pair into its position
+ * in the host's list, and the write turns a position back into the pair —
+ * committed by the HOST (io.commitTarget), which writes `enabled` with it and
+ * blocks between the keys, because consecutive non-blocking writes to one
+ * slot clobber each other.
+ *
+ * Inert when the host supplies no io.targetOptions: Target is then declared a
+ * door (see lfoTargetParam) and every call below answers null, so the caller
+ * falls through to what it did before.
+ *
+ * @param {object} io         the host's io (targetOptions, commitTarget)
+ * @param {(lfoIdx:number, name:string)=>string} read  a real LFO key
+ */
+function lfoTargetBridge(io, read) {
+    const on = typeof io.targetOptions === "function" && typeof io.commitTarget === "function";
+    const optionsFor = (i, current) => (on ? io.targetOptions(i, current) : null);
+    return {
+        /* lfoN's enum for chain_params, 1-based to match lfoParams. */
+        targetsFor(n) { return optionsFor(n - 1, null); },
+        read(i) {
+            if (!on) return null;
+            const target = read(i, "target") || "";
+            const param = read(i, "target_param") || "";
+            const o = optionsFor(i, { target, param });
+            if (!o) return null;
+            return String(Math.max(0, lfoTargetIndex(o.routes, target, param)));
+        },
+        write(i, value) {
+            const o = optionsFor(i, null);
+            if (!o) return false;
+            const idx = parseInt(value, 10);
+            const route = o.routes[Number.isFinite(idx) ? idx : 0];
+            if (route) io.commitTarget(i, route);
+            return true;
+        },
+        /* The option the knob is ON, which during a turn is not yet the
+         * stored routing — so it is read off `raw`, never off the device. */
+        format(i, raw, surface) {
+            const o = optionsFor(i, null);
+            if (!o) return null;
+            const idx = parseInt(raw, 10);
+            const long = o.options[Number.isFinite(idx) ? idx : 0];
+            if (long === undefined) return null;
+            if (surface === "header") return long;
+            const at = long.indexOf(": ");
+            return at < 0 ? long : long.slice(at + 2);
+        },
+    };
+}
 
 /*
  * Actions, in the order they appear on the menu page.
@@ -154,8 +208,8 @@ export {
  */
 export const SLOT_GRID_ACTIONS = [
     { label: "Knob Mapping", action: "knobs", when: null },
-    /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
-     * params are turnable and the widgets draw the thing itself. */
+    /* LFO 1 and LFO 2 are PAGES now, not menu entries — every param on them
+     * is turnable and the widgets draw the thing itself. */
     /* Buses is a DOOR, not a page: it opens a list of this slot's split-voice
      * buses, each with its own voices, inserts and sends. It is here as well as
      * on the two settings LISTS because this menu is what the grid shows in
@@ -257,10 +311,16 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
     return { modes: null, levels };
 }
 
-/** Every declared param across the slot page and both LFO pages. */
-export function allSlotGridParams() {
+/**
+ * Every declared param across the slot page and both LFO pages.
+ *
+ * @param {(lfoIndex:number)=>object} [targetsFor]  Target's options for LFO N
+ *   (1-based) — see lfoTargetParam. Omitted, Target is a door.
+ */
+export function allSlotGridParams(targetsFor) {
+    const t = (n) => ({ targets: targetsFor ? targetsFor(n) : null });
     return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
-                           .concat(lfoParams(1)).concat(lfoParams(2));
+                           .concat(lfoParams(1, "", t(1))).concat(lfoParams(2, "", t(2)));
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
@@ -318,9 +378,22 @@ export function realKeyFor(gridKey) {
  *   routing to {short, header, long} — see shared/lfo_target_label.mjs. The
  *   host owns it because it costs IPC and therefore wants caching; omitted,
  *   the target simply reads as its stored key, which is what it did before.
+ * @param {(lfoIndex:number, current:?object)=>object} [io.targetOptions]
+ *   LFO N's routings as lfoTargetOptions builds them, cached by the host. With
+ *   io.commitTarget, Target becomes a knob — see lfoTargetBridge. `current` is
+ *   the stored routing when the caller has just read it: a host whose cached
+ *   list lacks it must rebuild, or the knob would read None over a live route.
+ * @param {(lfoIndex:number, route:{target:string,param:string})=>void} [io.commitTarget]
+ *   write a routing, `enabled` included (an empty route turns the LFO off).
  */
 export function createSlotGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    const target = lfoTargetBridge(io,
+        (i, name) => io.readSlotParam("lfo" + (i + 1) + ":" + name));
+    const targetOf = (k) => {
+        const m = /^lfo([12]):target$/.exec(k);
+        return m ? parseInt(m[1], 10) - 1 : -1;
+    };
 
     return {
         getParam(fullKey) {
@@ -331,8 +404,14 @@ export function createSlotGridIo(io) {
                     io.hasSplitVoices ? !!io.hasSplitVoices() : false,
                     io.clipLabel ? io.clipLabel() : ""));
             }
-            if (k === "chain_params") return JSON.stringify(allSlotGridParams());
+            if (k === "chain_params") {
+                return JSON.stringify(allSlotGridParams((n) => target.targetsFor(n)));
+            }
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
+            if (targetOf(k) >= 0) {
+                const v = target.read(targetOf(k));
+                if (v !== null) return v;
+            }
             if (k === "forward_channel") {
                 const raw = parseInt(io.readSlotParam("slot:forward_channel"), 10);
                 /* Default to AUTO (-1) rather than 0, which is channel 1: an
@@ -391,6 +470,10 @@ export function createSlotGridIo(io) {
          */
         formatValue(fullKey, raw, surface) {
             const k = bare(fullKey);
+            if (targetOf(k) >= 0) {
+                const v = target.format(targetOf(k), raw, surface);
+                if (v !== null) return v;
+            }
             const m = /^lfo([12]):target$/.exec(k);
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
@@ -413,6 +496,7 @@ export function createSlotGridIo(io) {
                 const v = Number.isFinite(idx) ? idx : FWD_OFFSET;
                 return io.writeSlotParam("slot:forward_channel", String(v - FWD_OFFSET));
             }
+            if (targetOf(k) >= 0 && target.write(targetOf(k), value)) return;
             const real = realKeyFor(k);
             if (real) io.writeSlotParam(real, String(value));
         },
@@ -548,11 +632,13 @@ export function masterGridHierarchy(hasPreset) {
     return { modes: null, levels };
 }
 
-/** Every declared param across the root page and both LFO pages. */
-export function allMasterGridParams() {
+/** Every declared param across the root page and both LFO pages.
+ *  @param {(lfoIndex:number)=>object} [targetsFor]  see allSlotGridParams */
+export function allMasterGridParams(targetsFor) {
+    const t = (n) => ({ targets: targetsFor ? targetsFor(n) : null });
     return MASTER_GRID_PARAMS
-        .concat(lfoParams(1, MASTER_KEY_PREFIX))
-        .concat(lfoParams(2, MASTER_KEY_PREFIX));
+        .concat(lfoParams(1, MASTER_KEY_PREFIX, t(1)))
+        .concat(lfoParams(2, MASTER_KEY_PREFIX, t(2)));
 }
 
 const MASTER_LFO_KEY = new RegExp("^" + MASTER_KEY_PREFIX + "lfo[12]:");
@@ -577,16 +663,30 @@ const MASTER_LFO_TARGET = new RegExp("^" + MASTER_KEY_PREFIX + "lfo([12]):target
  *   runSlotAction, which takes the IPC SLOT — and Master FX's IPC slot is 0,
  *   so "save" from here would have saved instrument slot 1's patch.
  * @param {(lfoIndex:number)=>object}  [io.describeTarget]  see createSlotGridIo
+ * @param {Function} [io.targetOptions]  see createSlotGridIo
+ * @param {Function} [io.commitTarget]   see createSlotGridIo
  * @param {(realKey:string)=>boolean}  [io.isModulated]
  */
 export function createMasterGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    const target = lfoTargetBridge(io,
+        (i, name) => io.readParam(MASTER_KEY_PREFIX + "lfo" + (i + 1) + ":" + name));
+    const targetOf = (k) => {
+        const m = MASTER_LFO_TARGET.exec(k);
+        return m ? parseInt(m[1], 10) - 1 : -1;
+    };
 
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
-            if (k === "chain_params") return JSON.stringify(allMasterGridParams());
+            if (k === "chain_params") {
+                return JSON.stringify(allMasterGridParams((n) => target.targetsFor(n)));
+            }
+            if (targetOf(k) >= 0) {
+                const v = target.read(targetOf(k));
+                if (v !== null) return v;
+            }
             /* Wire -> option index. A failed read must stay a failed read: the
              * grid distinguishes null from "", and turning either into index 0
              * would silently assert "All" for a channel we never saw. */
@@ -616,6 +716,11 @@ export function createMasterGridIo(io) {
         },
 
         formatValue(fullKey, raw, surface) {
+            const tk = targetOf(bare(fullKey));
+            if (tk >= 0) {
+                const v = target.format(tk, raw, surface);
+                if (v !== null) return v;
+            }
             const m = MASTER_LFO_TARGET.exec(bare(fullKey));
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
@@ -630,6 +735,7 @@ export function createMasterGridIo(io) {
                 io.writeParam(k, String(mfxMidiChannelFromIndex(value)));
                 return;
             }
+            if (targetOf(k) >= 0 && target.write(targetOf(k), value)) return;
             io.writeParam(k, String(value));
         },
 

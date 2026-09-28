@@ -718,6 +718,32 @@ channel value separates them. Parsed by the shim at init
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
 
+### On the knob grid, an LFO's Target is a KNOB and its Enabled is gone
+
+The grid's LFO page (`shared/param_pages/lfo_page.mjs`) is eight cells:
+Target, Mode, Sync, Retrigger / Shape, Depth, Phase, Rate. Seven on Master FX,
+which has no Retrigger key — Rate closes row one there so the wave keeps row two.
+
+- **Target is turned, not opened.** `lfoTargetOptions` flattens the picker's
+  own two halves (`getTargetComponents` × `getTargetParams`) into one enum,
+  None first; `createSlotGridIo` / `createMasterGridIo` translate index ↔
+  stored pair at the io boundary. The list costs a `chain_params` read per
+  component, so it is cached per scope until `resetLfoTargetLabels` (a module
+  change) — the controller re-reads `chain_params` every contract poll. A stored
+  routing the list lacks is APPENDED, never read as None: the next detent would
+  otherwise replace a routing nobody chose to remove. `commit: "release"`, so a
+  scroll does not re-route through every param in between.
+- **No Enabled cell: a target IS the LFO switched on**, None is off.
+  `commitLfoTargetFromGrid` writes `enabled` WITH the routing — and FIRST on the
+  way on, because the chain gives a fresh LFO full depth only when it is enabled
+  with no routing yet; enabling after the target left a routed LFO at 0%. The
+  LIST editor keeps its Enabled row and its picker is untouched; only the
+  grid's commits (including the picker when opened from the grid) do this.
+- **Rate is its own cell, last, outside the wave** (`span: false`), so a synced
+  division reads as `1/4` rather than as a density. The wave still reads it,
+  and draws a division at the rate it plays (`lfoRateFrac`, nominal 120 BPM).
+- Mode and Sync declare `peek: false`.
+
 ### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
 
 An LFO's target was chosen from ONE flat list — every modulatable key the
