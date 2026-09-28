@@ -92,6 +92,15 @@ typedef struct {
     uint8_t  step_triplet;    /* triplet grid: 12 steps per page, every 4th button dead */
     int      selected_track; /* 0..3, or -1 */
     mm_track_t track[MM_TRACKS];
+    /* MOVE'S UNDO STACK -- flip's History<HistoryStoreMemory>, read in place.
+     * A step is its list node (nodes never move) plus its transaction number
+     * (a squash that rewrote the top in place still changes it). 0 = none.
+     * hist_valid 0 means the stack could not be read: nothing may assume
+     * anything about Move's undo then (undo_timeline.h claims no press). */
+    int      hist_valid;
+    uint64_t hist_undo_node, hist_undo_nbr;    /* last-undo step */
+    uint64_t hist_redo_node, hist_redo_nbr;    /* first-redo step */
+    uint32_t hist_size;
 } move_model_t;
 
 /* ---- runtime ---------------------------------------------------------- */
@@ -161,3 +170,18 @@ int mm_sso_string(mm_read_fn rd, void *ctx, const uint8_t raw[24], char *out, si
  * wrapper's vtable. Returns the count, or -1 on a malformed tree. */
 int mm_tree_elems(mm_read_fn rd, void *ctx, uint64_t hdr, uint64_t img_lo, uint64_t img_hi,
                   uint64_t *out, int max);
+
+/* flip::History<HistoryStoreMemory> at `obj`, as libc++ lays it out:
+ *   +0x00 vptr (History)          +0x08 DocumentBase &
+ *   +0x10 vptr (HistoryStoreMemory) +0x18 max_size
+ *   +0x20 std::list<Transaction> sentinel {prev, next}, +0x30 size
+ *   +0x38 _it_redo (a node; == the sentinel when nothing is redoable)
+ * and a node is {prev, next, Transaction{vptr, TxId{vptr, user, actor, nbr}}},
+ * so a step's number is at node+0x30. last_undo is prev(_it_redo). Every
+ * vptr is checked against the resolved sets; any mismatch is invalid. */
+typedef struct {
+    const uint64_t *hist; int nh;
+    const uint64_t *store; int ns;
+    const uint64_t *tx; int nt;
+} mm_hist_vps_t;
+int mm_history_read(mm_read_fn rd, void *ctx, uint64_t obj, const mm_hist_vps_t *vps, move_model_t *m);

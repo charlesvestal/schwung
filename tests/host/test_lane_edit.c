@@ -144,6 +144,59 @@ int main(void)
         CHECK(lane_voice_scope_init(&vs, map, "40") == 1 && vs.n == 0, "an unmapped note moves nothing");
     }
 
+    /* SCHWUNG'S OWN EDITS are journaled as whole lanes: a take that changed
+     * one lane and created another, undone and redone exactly. */
+    {
+        static lane_store_t before, now;
+        lane_store_reset(&now);
+        lane_t *a0 = lane_alloc(&now, "synth", "cutoff", 1, 0, NULL);
+        lane_write_span(a0, 0.0, 0.2f, 1, 0.25);
+        lane_t *u0 = lane_alloc(&now, "synth", "reso", 1, 0, NULL);   /* untouched */
+        lane_write_span(u0, 1.0, 0.5f, 1, 0.25);
+        before = now;
+        lane_write_span(lane_find(&now, "synth", "cutoff", 1, 0), 2.0, 0.9f, 1, 0.25);
+        lane_t *nw = lane_alloc(&now, "fx1", "mix", 1, 0, NULL);
+        lane_write_span(nw, 3.0, 0.4f, 1, 0.25);
+        je.id = 0x80000001u;
+        CHECK(lane_journal_diff(&before, &now, &je) == 2, "two lanes changed (one new), reso untouched");
+        CHECK(lane_journal_apply(&now, &je, 0) == 2, "undo");
+        CHECK(!lane_find(&now, "fx1", "mix", 1, 0), "the lane the take created is FREED by its undo");
+        lane_t *c = lane_find(&now, "synth", "cutoff", 1, 0);
+        CHECK(c && c->n == 1 && value_at(c, 0.0) == 0.2f, "cutoff back to one point");
+        CHECK(lane_journal_apply(&now, &je, 1) == 2, "redo");
+        CHECK(lane_find(&now, "fx1", "mix", 1, 0) && value_at(lane_find(&now, "fx1", "mix", 1, 0), 3.0) == 0.4f,
+              "the created lane is back");
+        CHECK(value_at(lane_find(&now, "synth", "cutoff", 1, 0), 2.0) == 0.9f, "and the new point");
+
+        /* A clear that freed a lane: undo re-creates it WITH its fingerprint. */
+        lane_store_reset(&now);
+        lane_fingerprint_t fp = { 0.0, 8.0, 3, 60 };
+        lane_t *f = lane_alloc(&now, "synth", "cutoff", 1, 2, &fp);
+        lane_write_span(f, 1.0, 0.7f, 1, 0.25);
+        before = now;
+        lane_clear_one(lane_find(&now, "synth", "cutoff", 1, 2));
+        je.id = 0x80000002u;
+        CHECK(lane_journal_diff(&before, &now, &je) == 1, "a clear is one record");
+        lane_journal_apply(&now, &je, 0);
+        lane_t *g = lane_find(&now, "synth", "cutoff", 1, 2);
+        CHECK(g && value_at(g, 1.0) == 0.7f && g->fp.note_count == 3 && g->fp.first_note == 60,
+              "restored with its fingerprint");
+
+        /* Nothing changed: nothing to journal. */
+        before = now;
+        CHECK(lane_journal_diff(&before, &now, &je) == 0, "no change, no entry");
+
+        /* Too many lanes: refused whole. */
+        lane_store_reset(&before);
+        lane_store_reset(&now);
+        for (int i = 0; i < LANE_JOURNAL_LANES + 1; i++) {
+            char nm[16]; snprintf(nm, sizeof nm, "p%d", i);
+            lane_write_span(lane_alloc(&now, "synth", nm, 1, 0, NULL), 0.0, 0.1f, 1, 0.25);
+        }
+        je.id = 0x80000003u;
+        CHECK(lane_journal_diff(&before, &now, &je) == -1 && je.id == 0, "over the cap: refused whole");
+    }
+
     if (fails) { printf("test_lane_edit: %d FAILED\n", fails); return 1; }
     printf("test_lane_edit: PASS\n");
     return 0;
