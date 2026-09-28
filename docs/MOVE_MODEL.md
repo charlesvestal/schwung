@@ -498,13 +498,37 @@ straddling the unmapped gap between ELF segments, which is exactly where
 `.data.rel.ro` (the typeinfo) begins; scans now walk mapped segments, never the
 image span.
 
+## The notes blob is variable-length
+
+`MidiClipContent.mNotes`, big-endian, measured 2026-09-28 on "Lane Test"
+(16 Pitches notes, notes played with pressure): every record is a 29-byte head
+-- `i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag` -- then EITHER
+an `i64 id` (its first u32 is 0: a plain note, 37 bytes) OR
+`u32 lane_count`, `lane_count x {i32 type, u32 point_count, point_count x
+{f64 time, f64 value}}`, `u32 id`.
+
+| lane type | what | value |
+|---|---|---|
+| -2 | PITCH (16 Pitches) | semitones x 8191/48 (170.6458) -- +1 st is 170.65, +10 is 1706.46 |
+| -1 | PRESSURE (aftertouch) | 0..127, stored as STEP pairs (two points per change), time in beats from the note's start |
+
+In 16 Pitches mode `pitch` is the PAD's own note and the pitch lives only in
+the lane, which is why a fixed 37-byte stride decoded every note after the
+first such record as garbage -- including the ids paste/undo mirroring keys on.
+`mm_decode_notes_buf` walks the records, exposes `pitch_offset` (semitones at
+t=0) and the pressure lane (a point pool), and is ALL OR NOTHING: an unknown
+lane type, a list past the end, or records not landing exactly on the end is
+-1, "this clip's notes are unknown" -- never a partial list. The raw buffer is
+bounded in bytes (256 KB). `tests/host/test_move_model.c` carries the real
+1853-byte recording and sweeps every truncation of it. Paste confirmation
+compares `pitch_offset` too.
+
 ## Not yet known
 
-- **The notes blob.** `MidiClipContent.mNotes` is a flip Blob; small clips
-  decode as 40-byte big-endian records `{i32 note, pad, f64 start, f64 dur,
-  f32 vel, f32 offvel, i64 id}`, but larger ones do not — likely a different
-  (compressed or chunked) encoding. Lanes do not need notes (identity is the
-  object id), so it is left.
+- ~~The notes blob~~ -- now KNOWN, see "The notes blob is variable-length"
+  below. (The "40-byte records that fail on larger clips" note here was two
+  mistakes: records are 37 bytes, and the ones that "failed" carry expression
+  lanes.)
 - **Audio clips' content** (`AudioClipContent`) — scroll is reported as `-1`.
 - **Persistence across reloads.** Object ids are per load; a lane saved to disk
   still needs a position + fingerprint key, and the model is what makes that
