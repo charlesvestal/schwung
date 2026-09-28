@@ -26,23 +26,23 @@ ui=src/shadow/shadow_ui.js
 # THE WORD IS AUTOMATION, NOT LANES. "Lane" is this codebase's term for the
 # store and means nothing to a user reading a menu, so the on-device rows say
 # automation and only the code says lane.
-awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots" | grep -q 'Clear All Automation' \
+grep -q 'Clear All Automation' <<<"$(awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots")" \
   || fail "Clear All Automation missing from SLOT_SETTINGS ($slots)"
-awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots" | grep -q 'Clear Clip Automation' \
+grep -q 'Clear Clip Automation' <<<"$(awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots")" \
   || fail "Clear Clip Automation missing from SLOT_SETTINGS ($slots)"
 # On the GRID the same three live under their own Automation level rather than
 # among the Actions -- see slotGridHierarchy. Asserted against that level, so
 # moving them back into SLOT_GRID_ACTIONS (where the full words do not fit
 # beside the clip name) fails here.
-awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'clear_clip_lanes' \
+grep -q 'clear_clip_lanes' <<<"$(awk '/levels.automation = \{/,/^    \};/' "$grid")" \
   || fail "the grid Automation level must offer the per-clip clear ($grid)"
-awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'clear_lanes' \
+grep -q 'clear_lanes' <<<"$(awk '/levels.automation = \{/,/^    \};/' "$grid")" \
   || fail "the grid Automation level must offer the all-clips clear ($grid)"
-awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'undo_lane_edit' \
+grep -q 'undo_lane_edit' <<<"$(awk '/levels.automation = \{/,/^    \};/' "$grid")" \
   || fail "the grid Automation level must offer Undo ($grid)"
 # The third form of the same screen. A row on two of the three is the
 # asymmetry SLOT_SETTINGS' own `buses` comment calls worse than either.
-awk '/^const CHAIN_SETTINGS_ITEMS = \[/,/^\];/' "$ui" | grep -q 'Clear All Automation' \
+grep -q 'Clear All Automation' <<<"$(awk '/^const CHAIN_SETTINGS_ITEMS = \[/,/^\];/' "$ui")" \
   || fail "Clear All Automation missing from CHAIN_SETTINGS_ITEMS ($ui)"
 
 # AND THE MODULE'S OWN PAGE carries the per-module clear, because that is
