@@ -1455,6 +1455,10 @@ more here:
   the morph; a module that caches its state blob elsewhere defeats that.
 - **Keys that are not knobs should not be in `chain_params`.** Anything
   declared there can be locked by an armed scene.
+- **Your knob stays live under a scene.** A write to a parameter a scene is
+  driving is heard at once (the host anchors it at the fader), and a read of it
+  answers the knob's own value -- so a module UI that reads a key back to draw
+  it shows the knob, not the morph, exactly as under an LFO.
 
 ### Plugin API v1 (Deprecated)
 

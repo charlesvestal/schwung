@@ -440,19 +440,25 @@ has been disabled after a throw.
 The scene crossfader lives in shared memory, so these cost no IPC:
 
 ```javascript
-shadow_get_scene_state()      // { a, b, edit, flash, xfade, rev } -- a/b/edit are 0..15 or -1
-shadow_set_scene_ab(a, b)     // -1 = none
+shadow_get_scene_state()      // { a, b, edit, flash, xfade, rev, active, pcSeq }
+                              //   a/b/edit are HALVES 0..31 (A i = i, B i = 16+i) or -1
+shadow_set_scene_ab(a, b)     // the fader's two ends, as halves; -1 = none
 shadow_set_scene_xfade(x)     // 0..1; the shim slews it
-shadow_set_scene_edit(n)      // arm scene n for editing, -1 disarms
+shadow_set_scene_edit(n)      // arm half n for editing, -1 disarms
 shadow_set_scene_unlock(on)   // Delete held: an armed write unlocks instead
 shadow_clear_scene_flash()
-host_scene_pads(on)           // the Scenes screen owns the pad LEDs (Move's repaints stripped)
+shadow_set_scene_pairs(flat32, active)  // mirror the 16 pairings + active scene for the PC path
+shadow_scene_pc_channel_set(ch)         // 0 = off, 1..16 (persisted to features.json)
+shadow_scene_shift_vol_set(on)          // Shift+Volume = the fader (persisted)
+host_scene_surface(bits)      // SCENE_SURF_PADS | SCENE_SURF_STEPS: what the Scenes screen takes from Move
 ```
 
 The bank itself is reached through the param channel, per scope: a slot's
-`scenes:<verb>`, `master_fx:scenes:<verb>` and `send<N>:scenes:<verb>`
-(`lock`, `unlock`, `clear`, `copy`, `load`; reads `dump`, `count`, `locks`,
-`rev`). The CC Map / surface target `scenes:xfade` addresses the fader.
+`scenes:<verb>`, `master_fx:scenes:<verb>`, `send<N>:scenes:<verb>` and
+`host:scenes:<verb>` (slot 0) for Schwung's own settings (`lock`, `unlock`,
+`clear`, `copy`, `load`; reads `dump`, `count`, `locks`, `rev`, and the
+diagnostic `driven` -- what each driven param actually holds at the plugin or
+host). The CC Map / surface target `scenes:xfade` addresses the fader.
 
 ## Utility Functions
 
