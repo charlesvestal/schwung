@@ -231,12 +231,14 @@ static int read_build_id(char *out, size_t cap)
 
 enum {
     C_SONG, C_TRANSPORT, C_PARAMETER, C_TIMESIG, C_TRACKLIST, C_TRACK, C_CLIPS,
-    C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_COUNT
+    C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_ABSDEV,
+    C_MIXPARAMS, C_COUNT
 };
 static const char *CLASS_NAMES[C_COUNT] = {
     "live.Song", "live.Transport", "live.Parameter", "live.TimeSignature", "live.TrackList",
     "live.Track", "live.Clips", "live.PlayingState", "live.ClipSlot", "live.SessionClip",
-    "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent",
+    "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent", "live.AbstractDevice",
+    "live.AudioMixerParameters",
 };
 static uint64_t g_cls[C_COUNT];
 
@@ -266,7 +268,8 @@ enum {
     O_TS_UPPER, O_TS_LOWER, O_TL_TRACKS, O_TRACK_COMPONENTS, O_TRACK_SELECTED, O_CLIPS_SLOTS,
     O_CLIPS_PLAYSTATE, O_PS_MODE, O_PS_SLOT, O_PS_START, O_SLOT_CLIP, O_SC_CLIP, O_CLIP_REGION,
     O_CLIP_TIMESIG, O_CLIP_CONTENT, O_RG_START, O_RG_END, O_RG_LOOP, O_LOOP_START, O_LOOP_END,
-    O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_COUNT
+    O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_TRACK_MIXER, O_DEV_COMPONENTS,
+    O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_COUNT
 };
 static moff_t g_off[O_COUNT] = {
     {C_SONG, "mTransport", 0}, {C_SONG, "mTracks", 0},
@@ -281,7 +284,9 @@ static moff_t g_off[O_COUNT] = {
     {C_CLIP, "mContent", 0}, {C_REGION, "mStart", 0}, {C_REGION, "mEnd", 0},
     {C_REGION, "mLoop", 0}, {C_LOOP, "mStart", 0}, {C_LOOP, "mEnd", 0},
     {C_LOOP, "mIsEnabled", 0}, {C_MIDICONTENT, "mStepEditorScrollPosition", 0},
-    {C_SONG, "mStepEditorResolution", 0},
+    {C_SONG, "mStepEditorResolution", 0}, {C_TRACK, "mTrackMixerDevice", 0},
+    {C_ABSDEV, "mComponents", 0}, {C_MIXPARAMS, "mVolume", 0}, {C_MIXPARAMS, "mPan", 0},
+    {C_MIXPARAMS, "mSolo", 0}, {C_MIXPARAMS, "mSpeakerOn", 0},
 };
 
 /* flip basic-type value slots, measured: Type ends at +0x64 (a 4-byte
@@ -434,7 +439,7 @@ static int vp_is(const vpset_t *s, uint64_t vp)
     for (int k = 0; k < s->n; k++) if (s->v[k] == vp) return 1;
     return 0;
 }
-static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip;
+static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip, g_vp_mixparams;
 static uint64_t g_song;
 static int g_clock_pinned;
 
@@ -495,6 +500,7 @@ static int resolve_all(void)
     g_vp_clips.n       = rtti_vptrs("N7ableton10flip_model6FClipsE", g_vp_clips.v, MAXVP);
     g_vp_sessionclip.n = rtti_vptrs("N7ableton10flip_model12FSessionClipE", g_vp_sessionclip.v, MAXVP);
     g_vp_midicontent.n = rtti_vptrs("N7ableton10flip_model16FMidiClipContentE", g_vp_midicontent.v, MAXVP);
+    g_vp_mixparams.n   = rtti_vptrs("N7ableton10flip_model21FAudioMixerParametersE", g_vp_mixparams.v, MAXVP);
     if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n) {
         status("resolve: rtti unresolved song=%d clips=%d sessionclip=%d",
                g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n);
@@ -598,6 +604,11 @@ static int read_clip(uint64_t sc, mm_clip_t *c)
 
 static void derive(move_model_t *m)
 {
+    for (int t = 0; t < MM_TRACKS; t++) {
+        mm_track_t *T = &m->track[t];
+        T->muted = T->mixer_valid && T->speaker_value < 0.5;   /* speakerOn: 1 = audible */
+        T->soloed = T->mixer_valid && T->solo_value > 0.5;     /* solo-cue */
+    }
     m->selected_track = -1;
     for (int t = 0; t < MM_TRACKS; t++)
         if (m->track[t].selected) { m->selected_track = t; break; }
@@ -632,11 +643,35 @@ static int snapshot(move_model_t *m)
     }
     uint64_t tracks[8];
     int nt = walk(S + OFF(O_SONG_TRACKS) + OFF(O_TL_TRACKS) + V_WORD, tracks, 8);
-    if (nt < 0) return -1;
+    /* EXACTLY four. A set load swaps the document over ~180 ms by inserting
+     * the new tracks before removing the old -- measured 8 and then 12
+     * elements mid-swap -- and a walk that took the first four of those would
+     * publish a hybrid of two sets. */
+    if (nt != MM_TRACKS) return -1;
+    m->doc_id = 1469598103934665603ull;                      /* FNV-1a over the track ids */
+    for (int t = 0; t < nt; t++) {
+        uint64_t id = rq(tracks[t] + OBJ_ID);
+        for (int b = 0; b < 8; b++) { m->doc_id ^= (id >> (8 * b)) & 0xff; m->doc_id *= 1099511628211ull; }
+    }
     for (int t = 0; t < nt && t < MM_TRACKS; t++) {
         mm_track_t *T = &m->track[t];
         T->playing_slot = -1;
         if (f_bool(tracks[t] + OFF(O_TRACK_SELECTED), &T->selected)) return -1;
+        {   /* the mixer: Track.mTrackMixerDevice -> its AudioMixerParameters component */
+            uint64_t dcomps[8];
+            int nd = walk(tracks[t] + OFF(O_TRACK_MIXER) + OFF(O_DEV_COMPONENTS) + V_WORD, dcomps, 8);
+            if (nd < 0) return -1;
+            for (int k = 0; k < nd && k < 8; k++) {
+                if (!vp_is(&g_vp_mixparams, guard(dcomps[k]))) continue;
+                uint64_t mp = dcomps[k];
+                if (f_f64(mp + OFF(O_MIX_VOLUME) + OFF(O_PARAM_VALUE), &T->volume) ||
+                    f_f64(mp + OFF(O_MIX_PAN) + OFF(O_PARAM_VALUE), &T->pan) ||
+                    f_f64(mp + OFF(O_MIX_SOLO) + OFF(O_PARAM_VALUE), &T->solo_value) ||
+                    f_f64(mp + OFF(O_MIX_SPEAKER) + OFF(O_PARAM_VALUE), &T->speaker_value))
+                    return -1;
+                T->mixer_valid = 1;
+            }
+        }
         uint64_t comps[8];
         int nc = walk(tracks[t] + OFF(O_TRACK_COMPONENTS) + V_WORD, comps, 8);
         if (nc < 0) return -1;
@@ -748,6 +783,8 @@ static int plan_replay(const move_model_t *skel, move_model_t *m)
 /* ====================================================================== */
 
 static move_model_t g_pub;
+static move_model_listener_fn g_listener;
+void move_model_set_listener(move_model_listener_fn fn) { g_listener = fn; }
 static atomic_uint g_seq;          /* odd while writing */
 static atomic_uint g_changes;
 
@@ -779,6 +816,7 @@ static int same_shape(const move_model_t *a, const move_model_t *b)
     move_model_t x = *a, y = *b;
     x.song_beats = y.song_beats = 0;
     x.playing = y.playing = 0;
+    x.doc_gen = y.doc_gen = 0;
     return memcmp(&x, &y, sizeof x) == 0;
 }
 
@@ -793,7 +831,8 @@ static void fmt_line(const move_model_t *m, char *buf, size_t cap)
                           m->song_beats, m->tempo);
     for (int t = 0; t < MM_TRACKS && o < cap; t++) {
         const mm_track_t *T = &m->track[t];
-        o += (size_t)snprintf(buf + o, cap - o, " T%d%s m%d", t + 1, T->selected ? "<" : "", T->mode);
+        o += (size_t)snprintf(buf + o, cap - o, " T%d%s%s%s m%d", t + 1, T->selected ? "<" : "",
+                              T->muted ? " MUTE" : "", T->soloed ? " SOLO" : "", T->mode);
         if (T->playing_slot >= 0) o += (size_t)snprintf(buf + o, cap - o, " s%d@%g", T->playing_slot + 1, T->start_beats);
         for (int s = 0; s < MM_SLOTS && o < cap; s++) {
             const mm_clip_t *c = &T->slot[s];
@@ -809,16 +848,18 @@ static void write_json(const move_model_t *m)
 {
     FILE *f = fopen(DIAG_JSON ".tmp", "w");
     if (!f) return;
-    fprintf(f, "{\"valid\":%d,\"clock_valid\":%d,\"playing\":%d,\"song_beats\":%.4f,\"tempo\":%.3f,"
+    fprintf(f, "{\"valid\":%d,\"doc_gen\":%u,\"clock_valid\":%d,\"playing\":%d,\"song_beats\":%.4f,\"tempo\":%.3f,"
                "\"ts\":[%d,%d],\"step_resolution\":%d,\"step_beats\":%.5f,\"step_triplet\":%d,\"selected_track\":%d,\"tracks\":[",
-            m->valid, m->clock_valid, m->playing, m->song_beats, m->tempo, m->ts_upper, m->ts_lower,
+            m->valid, m->doc_gen, m->clock_valid, m->playing, m->song_beats, m->tempo, m->ts_upper, m->ts_lower,
             m->step_resolution, m->step_beats, m->step_triplet, m->selected_track);
     for (int t = 0; t < MM_TRACKS; t++) {
         const mm_track_t *T = &m->track[t];
         double pos = (T->playing_slot >= 0 && m->clock_valid)
                          ? mm_clip_position(&T->slot[T->playing_slot], T->start_beats, m->song_beats) : -1;
-        fprintf(f, "%s{\"selected\":%d,\"mode\":%d,\"playing_slot\":%d,\"start_beats\":%.4f,\"clip_pos\":%.4f,\"slots\":[",
-                t ? "," : "", T->selected, T->mode, T->playing_slot, T->start_beats, pos);
+        fprintf(f, "%s{\"selected\":%d,\"muted\":%d,\"soloed\":%d,\"volume\":%.4f,\"pan\":%.4f,\"mode\":%d,"
+                   "\"playing_slot\":%d,\"start_beats\":%.4f,\"clip_pos\":%.4f,\"slots\":[",
+                t ? "," : "", T->selected, T->muted, T->soloed, T->volume, T->pan, T->mode, T->playing_slot,
+                T->start_beats, pos);
         int first = 1;
         for (int s = 0; s < MM_SLOTS; s++) {
             const mm_clip_t *c = &T->slot[s];
@@ -870,6 +911,7 @@ static void *reader_main(void *arg)
     static move_model_t prev, a, b, skel;
     memset(&prev, 0, sizeof prev);
     int diag = 0, torn = 0, refinds = 0, walks = 0, have_plan = 0;
+    uint32_t doc_gen = 0;
     unsigned tick = 0;
     double t0 = now_s(), last_json = 0, cpu_t = now_s(), cpu_c = thread_cpu_s(), cpu_pct = 0;
     for (;; tick++) {
@@ -905,8 +947,11 @@ static void *reader_main(void *arg)
             skel = a;
             have_plan = !g_plan_overflow && plan_compile() == 0;
         }
+        if (b.doc_id != prev.doc_id) doc_gen++;         /* a different document: a set load */
+        b.doc_gen = doc_gen;
         int changed = !same_shape(&b, &prev) || prev.valid != b.valid || prev.playing != b.playing;
         publish(&b);
+        if (changed && g_listener) g_listener(&b, &prev);
         if (changed) atomic_fetch_add(&g_changes, 1);
         if (diag) {
             double t = now_s();

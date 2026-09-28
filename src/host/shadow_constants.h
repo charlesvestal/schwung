@@ -725,6 +725,25 @@ typedef struct shadow_control_t {
      * word, and a stale one costs one tick.
      */
     volatile uint32_t ui_midi_foreign;
+
+    /*
+     * SET ALIGNMENT, from the live song model (move_model_sync.h).
+     *
+     * move_doc_gen bumps when Move loads a different document -- a set load --
+     * seen within one 20 ms model tick. set_doc_gen is the document Schwung's
+     * per-set state (activeSlotStateDir) corresponds to. While they differ, a
+     * set change is in flight and shadow_ui must not autosave: the old ~3 s
+     * detection window is how state used to land in the outgoing set's folder.
+     *
+     * Both 0 when the model is unavailable (another firmware), which reads as
+     * aligned, so the pre-model behaviour is unchanged there. Written by the
+     * shim's model/worker threads and the SPI-side set consume; read by
+     * shadow_ui. Aligned 32-bit words: no tearing.
+     */
+    volatile uint8_t  move_model_ready;
+    volatile uint8_t  move_model_reserved[3];
+    volatile uint32_t move_doc_gen;
+    volatile uint32_t set_doc_gen;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */

@@ -19,6 +19,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"  /* for SAMPLER_SETS_DIR, sampler_read_set_tempo */
 #include "shadow_chain_mgmt.h"  /* for MASTER_FX_SLOTS */
+#include "move_model_sync.h"   /* the set-load edge and document generation */
 
 /* ============================================================================
  * Globals
@@ -412,14 +413,27 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
  * Heavy file I/O (config save/load, copy detection, mkdir) has been
  * removed and is handled by the UI thread via SHADOW_UI_FLAG_SET_CHANGED.
  * Only small writes (active_set.txt) and tempo read remain here. */
+/* The generation of the read being consumed, and of the SET_CHANGED last
+ * raised -- all on the SPI thread, which is the only caller of both. */
+static uint32_t s_consume_gen, s_published_gen;
+static int s_consume_settled;
+
 void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (!set_name || !set_name[0]) return;
 
     /* Avoid re-triggering for the same set */
     if (strcmp(sampler_current_set_name, set_name) == 0 &&
         (uuid == NULL || strcmp(sampler_current_set_uuid, uuid) == 0)) {
+        /* Same set -- including Move RELOADING it, which is a new document with
+         * the same name. Nothing for the UI to switch, so this read aligns us,
+         * but only once it is known to postdate Move's Settings.json rewrite. */
+        if (s_consume_gen && s_consume_settled && *host.shadow_control_ptr &&
+            (*host.shadow_control_ptr)->set_doc_gen != s_consume_gen &&
+            !((*host.shadow_control_ptr)->ui_flags & SHADOW_UI_FLAG_SET_CHANGED))
+            (*host.shadow_control_ptr)->set_doc_gen = s_consume_gen;
         return;
     }
+    s_published_gen = s_consume_gen;
 
     /* Update in-memory state */
     snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", set_name);
@@ -448,14 +462,20 @@ static struct {
     volatile uint32_t seq;   /* odd while the worker is writing */
     char name[128];
     char uuid[64];
+    uint32_t gen;            /* the model's document generation the read belongs to */
+    int settled;             /* the read postdates Move's Settings.json rewrite */
 } set_snapshot;
 
 static void shadow_set_pages_publish(const char *name, const char *uuid)
 {
+    uint32_t gen = move_model_sync_gen();
+    int settled = move_model_sync_settled();
     set_snapshot.seq++;            /* odd: write in progress */
     __sync_synchronize();
     snprintf(set_snapshot.name, sizeof(set_snapshot.name), "%s", name ? name : "");
     snprintf(set_snapshot.uuid, sizeof(set_snapshot.uuid), "%s", uuid ? uuid : "");
+    set_snapshot.gen = gen;
+    set_snapshot.settled = settled;
     __sync_synchronize();
     set_snapshot.seq++;            /* even: stable */
 }
@@ -471,17 +491,39 @@ void shadow_set_pages_consume(void)
     if (!set_snapshot.name[0]) return;      /* nothing published yet */
     memcpy(name, (const void *)set_snapshot.name, sizeof(name));
     memcpy(uuid, (const void *)set_snapshot.uuid, sizeof(uuid));
+    uint32_t gen = set_snapshot.gen;
+    int settled = set_snapshot.settled;
     __sync_synchronize();
     if (set_snapshot.seq != seq1) return;   /* torn read — next frame */
     name[sizeof(name) - 1] = '\0';
     uuid[sizeof(uuid) - 1] = '\0';
+    s_consume_gen = gen;
+    s_consume_settled = settled;
     shadow_handle_set_loaded(name, uuid);
+}
+
+/* shadow_ui has switched its per-set state to the set it was last told about. */
+void shadow_set_pages_ack_aligned(void)
+{
+    if (*host.shadow_control_ptr) (*host.shadow_control_ptr)->set_doc_gen = s_published_gen;
 }
 
 /* Poll Settings.json for currentSongIndex changes, then match via xattr.
  * Runs on the shim worker thread (~every 1.4 s); publishes results via the
  * snapshot above instead of calling shadow_handle_set_loaded directly. */
+/* Two callers now -- the worker's scan and the model's set-load edge -- and
+ * the body keeps static state. */
+static pthread_mutex_t poll_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void shadow_poll_current_set_locked(void);
+
 void shadow_poll_current_set(void)
+{
+    pthread_mutex_lock(&poll_mutex);
+    shadow_poll_current_set_locked();
+    pthread_mutex_unlock(&poll_mutex);
+}
+
+static void shadow_poll_current_set_locked(void)
 {
     static const char settings_path[] = "/data/UserData/settings/Settings.json";
 
@@ -506,8 +548,12 @@ void shadow_poll_current_set(void)
 
     /* Normal path: react when index changes.
      * Pending path: keep retrying the same unresolved index until a UUID appears. */
+    /* ...and, with the live model, while a document it saw is not aligned
+     * yet: a boot, or Move reloading the SAME set, changes no index, and the
+     * republish is what lets the consume align it as "same set". */
     if (song_index == sampler_last_song_index &&
-        song_index != sampler_pending_song_index) {
+        song_index != sampler_pending_song_index &&
+        !move_model_sync_misaligned()) {
         return;
     }
 
@@ -574,8 +620,15 @@ void shadow_poll_current_set(void)
     char pending_name[128];
     char pending_uuid[64];
     snprintf(pending_name, sizeof(pending_name), "New Set %d", song_index + 1);
-    snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
-             song_index, (unsigned)sampler_pending_set_seq);
+    /* The id must be unique ACROSS BOOTS, not just within one: the sequence
+     * restarts at 1 every boot, so "__pending-26-1" named a different unsaved
+     * set each session and a new one silently loaded whatever an old one had
+     * left in set_state/ (eight such folders were found on one device). The
+     * boot token is the wall clock at the first pending set of this process. */
+    static unsigned boot_token;
+    if (!boot_token) boot_token = (unsigned)time(NULL) | 1u;
+    snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%x-%u",
+             song_index, boot_token, (unsigned)sampler_pending_set_seq);
     shadow_set_pages_publish(pending_name, pending_uuid);
 }
 

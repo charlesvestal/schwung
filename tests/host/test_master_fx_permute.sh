@@ -269,6 +269,10 @@ int set_page_read_persisted(void) { return 0; }
 void shadow_batch_migrate_sets(void) {}
 int shadow_load_config_from_dir(const char *dir) { (void)dir; return 0; }
 void shadow_save_state(void) {}
+/* No live song model in a host unit test: "not active" keeps every mute/solo
+ * and set path on its pre-model behaviour (move_model_sync.h). */
+int move_model_sync_active(void) { return 0; }
+void shadow_set_pages_ack_aligned(void) {}
 int shadow_chain_midi_inject(const uint8_t *msg, int len) {
     (void)msg; (void)len; return 0;
 }
