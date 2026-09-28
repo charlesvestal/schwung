@@ -1728,14 +1728,17 @@ it (`chain_scene_get_around_state`, `shadow_scene_bus_state_begin/end`); same
 call, same thread, no audio block between. Scene-driven params only.
 
 **The Scenes screen** (Shift+Vol+Step 3, Shift+hold Step 3, or Master FX
-Settings > Scenes; `shared/scenes_screen.mjs`): jog / knob 8 fader, click snaps
-to the nearer end, knobs 1/2 pick A/B, a step TAP puts that scene on the end
-the fader is NOT at, a step HOLD arms it, Copy+two steps copies, Delete+step
-clears, Undo swaps back. **Shift+step is not available** -- the shim hands it to
-Move, where it is Move's own shortcut vocabulary and dismisses our screen --
-which is why B has its own knob. The steps are CLAIMED there (`step_claim`
-rides the p-lock withhold latch and marks every press used), so a tap never
-also toggles a note in the clip.
+Settings > Scenes; `shared/scenes_screen.mjs`) **picks scenes on the PADS**:
+the top two rows are A 1-16, the bottom two B 1-16, and the OLED draws the same
+4x8 grid. Tap to select (the selected one again: none), HOLD to arm, Copy+two
+pads copies, Delete+pad clears, Undo swaps back; jog / knob 8 is the fader.
+**The steps stay Move's, Shift+steps included** -- a first cut picked scenes
+with the steps, which took Move's sequencer and its Shift+step pages away while
+the screen was up, and that is not a trade anyone wanted. The pads are only
+taken while the screen is ON SCREEN: `pad_block` withholds the presses and
+`scene_pads` strips Move's own pad LED repaints (note and RGB sysex) from
+MIDI_OUT, restoring Move's cached colours on release; both are restated every
+tick, and a regained ownership forces a full repaint.
 
 **Persistence: `<set>/scenes.json`, and three rules from the lane-file loss.**
 Nothing is written for a set until its bank is CONFIRMED loaded (every scope's

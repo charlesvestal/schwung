@@ -385,6 +385,32 @@ int shadow_rec_arm_recording(void) { return g_rec_arm.recording; }
 int shadow_rec_arm_flashing(void)  { return g_rec_arm.flashing; }
 int shadow_rec_arm_seen(void)      { return g_rec_arm.seen; }
 
+/* Move's pad LED writes out of this frame's MIDI_OUT: note on/off on 68-99,
+ * and the 6-packet RGB sysex command whose index is a pad note (same framing
+ * the co-run strip below reads). */
+static void strip_move_pad_leds(uint8_t *midi_out) {
+    for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
+        if (((midi_out[i] >> 4) & 0x0F) != 0) continue;
+        uint8_t type = midi_out[i+1] & 0xF0;
+        uint8_t d1 = midi_out[i+2];
+        if ((type == 0x90 || type == 0x80) && d1 >= 68 && d1 <= 99) {
+            midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
+        }
+    }
+    for (int i = 8; i + 12 < HW_MIDI_OUT_SIZE; i += 4) {
+        if ((midi_out[i] & 0x0F) != 0x04) continue;
+        if (((midi_out[i] >> 4) & 0x0F) != 0) continue;
+        if (midi_out[i+1] != 0x3B) continue;
+        uint8_t idx = midi_out[i+3];
+        if (idx < 68 || idx > 99) continue;
+        int start = i - 8;
+        if ((midi_out[start] & 0x0F) != 0x04 || midi_out[start+1] != 0xF0) continue;
+        for (int z = start; z <= i + 12 && z < HW_MIDI_OUT_SIZE; z += 4) {
+            midi_out[z] = 0; midi_out[z+1] = 0; midi_out[z+2] = 0; midi_out[z+3] = 0;
+        }
+    }
+}
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -464,6 +490,27 @@ void shadow_clear_move_leds_if_overtake(void) {
     /* AFTER the scan, so the cache is this frame's, and only outside overtake,
      * which owns the whole surface and runs its own snapshot/restore. */
     if (!cur_overtake) service_knob_led_restore(ctrl);
+
+    /* THE SCENES SCREEN OWNS THE PAD LEDS (shadow_control_t.scene_pads). Move
+     * keeps repainting pads -- a playing clip, a drum hit -- and each repaint
+     * would land over the scene colours. Stripped AFTER the scan above, so the
+     * cache stays current and the release puts back what Move last drew, not
+     * what it drew before the screen opened. */
+    {
+        static int prev_scene_pads = 0;
+        const int cur_scene_pads = (!cur_overtake && ctrl && ctrl->scene_pads &&
+                                    ctrl->display_mode) ? 1 : 0;
+        if (cur_scene_pads) strip_move_pad_leds(midi_out);
+        if (prev_scene_pads && !cur_scene_pads) {
+            for (int n = 68; n <= 99; n++) {
+                shadow_queue_led(move_note_led_status[n] ? move_note_led_cin[n] : 0x09,
+                                 move_note_led_status[n] ? move_note_led_status[n] : 0x90,
+                                 (uint8_t)n, (uint8_t)(move_note_led_state[n] > 0 ? move_note_led_state[n] : 0));
+            }
+            led_queue_restore_move_sysex_leds();
+        }
+        prev_scene_pads = cur_scene_pads;
+    }
 
     /* On transition into overtake: snapshot LED state, then clear (or restore).
      * Two passes to catch any Move re-asserts between frames.

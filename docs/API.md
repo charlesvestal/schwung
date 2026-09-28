@@ -446,7 +446,7 @@ shadow_set_scene_xfade(x)     // 0..1; the shim slews it
 shadow_set_scene_edit(n)      // arm scene n for editing, -1 disarms
 shadow_set_scene_unlock(on)   // Delete held: an armed write unlocks instead
 shadow_clear_scene_flash()
-host_step_claim(on)           // with host_step_observe(1): step presses never reach Move
+host_scene_pads(on)           // the Scenes screen owns the pad LEDs (Move's repaints stripped)
 ```
 
 The bank itself is reached through the param channel, per scope: a slot's

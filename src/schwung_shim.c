@@ -4312,7 +4312,7 @@ static void init_shadow_shm(void)
         shadow_control->scene_edit = SCENE_NONE;
         shadow_control->scene_flash = SCENE_FLASH_NONE;
         shadow_control->scene_xfade_q = 0;
-        shadow_control->step_claim = 0;
+        shadow_control->scene_pads = 0;
         shadow_control->scene_unlock = 0;
     }
 
@@ -8035,10 +8035,7 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
-        /* Claimed outright (the Scenes screen picks scenes with the steps): a
-         * press is USED the moment it lands, so no tap is replayed to Move
-         * and nothing toggles a note in the clip. */
-        step_used[i] = (shadow_control && shadow_control->step_claim) ? 1 : 0;
+        step_used[i] = 0;
         shim_step_press_seen++;
         return;
     }

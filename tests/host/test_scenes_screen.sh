@@ -40,47 +40,79 @@ scr.enter();
 const cc = (d1, d2, shift = false) => scr.onMidi(0xB0, d1, d2, shift);
 const step = (n, on) => scr.onMidi(on ? 0x90 : 0x80, 16 + n, on ? 100 : 0, false);
 
-/* far-end assignment */
-step(2, 1); t += 100; step(2, 0);
-eq("tap with fader at A sets B", [state.a, state.b], [-1, 2]);
+/* the pad map: A on the top two rows, B on the bottom two, top-left = 1 */
+eq("top-left pad is A1", S.padScene(92), { end: "a", n: 0 });
+eq("second row, last pad is A16", S.padScene(91), { end: "a", n: 15 });
+eq("third row first pad is B1", S.padScene(76), { end: "b", n: 0 });
+eq("bottom-right pad is B16", S.padScene(75), { end: "b", n: 15 });
+eq("a step is not a pad", S.padScene(16), null);
+for (const end of ["a", "b"]) for (let n = 0; n < 16; n++) {
+  const p = S.padScene(S.scenePad(end, n));
+  if (!p || p.end !== end || p.n !== n) fail("scenePad/padScene round trip " + end + n);
+}
+const pad = (note, on) => scr.onMidi(on ? 0x90 : 0x80, note, on ? 100 : 0, false);
+const tapPad = (note) => { pad(note, 1); t += 100; pad(note, 0); };
+
+tapPad(S.scenePad("a", 2));
+eq("a top-row pad sets A", [state.a, state.b], [2, -1]);
+tapPad(S.scenePad("b", 9));
+eq("a bottom-row pad sets B", [state.a, state.b], [2, 9]);
+tapPad(S.scenePad("a", 2));
+eq("the selected A pad again clears A", state.a, -1);
+tapPad(S.scenePad("a", 0));
 cc(14, 32); cc(14, 32);  /* +1.0 */
 eq("jog moves the fader 1/64 per detent", state.xfade, 1);
-step(0, 1); t += 100; step(0, 0);
-eq("tap with fader at B sets A", [state.a, state.b], [0, 2]);
 cc(14, 127, true);
 eq("shift+jog is fine", Math.round(state.xfade * 256), 255);
 cc(3, 127);
 eq("click snaps to the nearer end", state.xfade, 1);
-cc(72, 127);
-eq("knob 2 steps B down", state.b, 1);
-cc(71, 127);
-eq("knob 1 steps A down to none", state.a, -1);
-cc(71, 1); cc(71, 1);
-eq("knob 1 steps A back up", state.a, 1);
 cc(78, 64 + 64 - 16);    /* -16 detents on knob 8 */
 eq("knob 8 is the fader too", state.xfade, 0.75);
+scr.onMidi(0xB0, 71, 1, false);
+eq("knob 1 no longer picks scenes", [state.a, state.b], [0, 9]);
+eq("steps are not ours", scr.onMidi(0x90, 16, 100, false), false);
 
-/* hold arms, tap on the armed step disarms */
-step(5, 1); t += 499; scr.tick();
+/* hold arms, tap on the armed pad disarms */
+pad(S.scenePad("b", 5), 1); t += 499; scr.tick();
 eq("not armed before 500 ms", state.edit, -1);
 t += 2; scr.tick();
 eq("armed at 500 ms, while still held", state.edit, 5);
-step(5, 0);
-eq("the release after a hold is not also a tap", [state.a, state.b], [1, 1]);
-step(5, 1); t += 50; step(5, 0);
-eq("a tap on the armed step disarms", state.edit, -1);
+pad(S.scenePad("b", 5), 0);
+eq("the release after a hold is not also a tap", [state.a, state.b], [0, 9]);
+tapPad(S.scenePad("a", 5));
+eq("a tap on the armed scene (either row) disarms", state.edit, -1);
 
 /* copy, clear, undo */
-cc(60, 127); step(0, 1); step(0, 0); step(3, 1); step(3, 0); cc(60, 0);
-eq("copy source then destination", applied.pop(), "copy 0 3");
-cc(119, 127); step(3, 1); step(3, 0); cc(119, 0);
-eq("delete + step clears", applied.pop(), "clear 3");
-eq("delete + step did not also arm or assign", [state.edit, state.a, state.b], [-1, 1, 1]);
+cc(60, 127); pad(S.scenePad("a", 0), 1); pad(S.scenePad("a", 0), 0);
+pad(S.scenePad("b", 3), 1); pad(S.scenePad("b", 3), 0); cc(60, 0);
+eq("copy source then destination, across rows", applied.pop(), "copy 0 3");
+cc(119, 127); pad(S.scenePad("a", 3), 1); pad(S.scenePad("a", 3), 0); cc(119, 0);
+eq("delete + pad clears", applied.pop(), "clear 3");
+eq("delete + pad did not also arm or assign", [state.edit, state.a, state.b], [-1, 0, 9]);
 const before = bank;
 cc(56, 127);
 eq("undo restores the bank as it was", bank, "copy");
 cc(56, 127);
 eq("undo again is redo", bank, before);
+
+/* LEDs: every pad painted once, then only what changed */
+{
+  const leds = new Map(); let sends = 0;
+  const io2 = { ...io, setPadLed: (n, c) => { leds.set(n, c); sends++; return true; } };
+  Object.assign(state, { a: 0, b: 15, edit: -1 });
+  const s3 = S.createScenesScreen(io2);
+  s3.enter(); s3.paintPads(true);
+  eq("all 32 pads painted", leds.size, 32);
+  eq("selected A is bright", leds.get(S.scenePad("a", 0)), S.PAD_COLORS.a.selected);
+  eq("selected B is bright", leds.get(S.scenePad("b", 15)), S.PAD_COLORS.b.selected);
+  eq("a scene with locks is dim", leds.get(S.scenePad("a", 2)), S.PAD_COLORS.a.locked);
+  eq("an empty scene is darkest", leds.get(S.scenePad("b", 1)), S.PAD_COLORS.b.empty);
+  const n0 = sends; s3.paintPads(); eq("nothing changed, nothing sent", sends, n0);
+  state.edit = 2; s3.paintPads();
+  eq("the scene being edited is white on both rows", [leds.get(S.scenePad("a", 2)), leds.get(S.scenePad("b", 2))], [120, 120]);
+  eq("...and only those two pads were sent", sends - n0, 2);
+  state.edit = -1;
+}
 
 /* ---- pictures ---- */
 function render(name, st, extra) {
