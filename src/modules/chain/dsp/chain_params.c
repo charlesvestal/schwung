@@ -1237,36 +1237,45 @@ int chain_child_key_base(const chain_child_tmpl_t *t, int n, const char *key, ch
     return 0;
 }
 
-/* A synth key naming one instance of a declared rack: the base key's
- * metadata, cached by the full key so a lane on `pad7_transpose` does not
- * re-match the template every block. */
-static chain_param_info_t *synth_child_param(chain_instance_t *inst, const char *key)
+/* A key naming one instance of a declared rack, at one position: the base
+ * key's metadata, cached by the full key so a lane on `pad7_transpose` does
+ * not re-match the template every block. */
+static chain_param_info_t *child_param(chain_child_keys_t *ck, chain_param_info_t *params,
+                                       int count, const char *key)
 {
-    for (int i = 0; i < inst->synth_param_alias_count; i++)
-        if (!strcmp(inst->synth_param_alias[i].key, key))
-            return &inst->synth_params[inst->synth_param_alias[i].idx];
-    char base[48];
-    if (!chain_child_key_base(inst->synth_child_tmpl, inst->synth_child_tmpl_count, key, base, sizeof base))
-        return NULL;
-    for (int i = 0; i < inst->synth_param_count; i++) {
-        if (strcmp(inst->synth_params[i].key, base) != 0) continue;
-        if (inst->synth_param_alias_count < CHAIN_PARAM_ALIAS_MAX && strlen(key) < 48) {
-            int a = inst->synth_param_alias_count++;
-            snprintf(inst->synth_param_alias[a].key, sizeof inst->synth_param_alias[a].key, "%s", key);
-            inst->synth_param_alias[a].idx = i;
+    if (!ck || !params || !ck->ntmpl) return NULL;
+    for (int i = 0; i < ck->nalias; i++) {
+        if (strcmp(ck->alias[i].key, key) != 0) continue;
+        const int x = ck->alias[i].idx;
+        if (x < count && !strcmp(params[x].key, ck->alias[i].base)) return &params[x];
+        ck->alias[i] = ck->alias[--ck->nalias];       /* the table moved: resolve again */
+        break;
+    }
+    char base[sizeof ck->alias[0].base];
+    if (!chain_child_key_base(ck->tmpl, ck->ntmpl, key, base, sizeof base)) return NULL;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(params[i].key, base) != 0) continue;
+        if (strlen(key) < sizeof ck->alias[0].key) {
+            int a;
+            if (ck->nalias < CHAIN_PARAM_ALIAS_MAX) a = ck->nalias++;
+            else { a = ck->next_evict; ck->next_evict = (a + 1) % CHAIN_PARAM_ALIAS_MAX; }
+            snprintf(ck->alias[a].key, sizeof ck->alias[a].key, "%s", key);
+            snprintf(ck->alias[a].base, sizeof ck->alias[a].base, "%s", base);
+            ck->alias[a].idx = i;
         }
-        return &inst->synth_params[i];
+        return &params[i];
     }
     return NULL;
 }
 
-/* At every synth load (NULL: an unload): the rack templates, and a cold
- * alias cache. */
-void chain_synth_child_keys_load(chain_instance_t *inst, const char *synth_path)
+/* At every module load (NULL path: none): the position's rack templates, and
+ * a cold alias cache. */
+void chain_child_keys_load(chain_child_keys_t *ck, const char *module_path)
 {
-    inst->synth_child_tmpl_count = synth_path
-        ? parse_child_templates(synth_path, inst->synth_child_tmpl, CHAIN_CHILD_TMPL_MAX) : 0;
-    inst->synth_param_alias_count = 0;
+    if (!ck) return;
+    ck->ntmpl = module_path ? parse_child_templates(module_path, ck->tmpl, CHAIN_CHILD_TMPL_MAX) : 0;
+    ck->nalias = 0;
+    ck->next_evict = 0;
 }
 
 /*
@@ -1281,7 +1290,8 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
                 return &inst->synth_params[i];
             }
         }
-        chain_param_info_t *child = synth_child_param(inst, key);
+        chain_param_info_t *child = child_param(&inst->synth_child_keys, inst->synth_params,
+                                                inst->synth_param_count, key);
         if (child) return child;
     } else if (strncmp(target, "fx", 2) == 0) {
         int fx_slot = atoi(target + 2) - 1;
@@ -1291,6 +1301,9 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
                     return &inst->fx_params[fx_slot][i];
                 }
             }
+            chain_param_info_t *child = child_param(&inst->fx_child_keys[fx_slot], inst->fx_params[fx_slot],
+                                                    inst->fx_param_counts[fx_slot], key);
+            if (child) return child;
         }
     } else if (strncmp(target, "midi_fx", 7) == 0) {
         int midi_fx_slot = 0;  /* Default to slot 0 */
@@ -1304,6 +1317,10 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
                     return &inst->midi_fx_params[midi_fx_slot][i];
                 }
             }
+            chain_param_info_t *child = child_param(&inst->midi_fx_child_keys[midi_fx_slot],
+                                                    inst->midi_fx_params[midi_fx_slot],
+                                                    inst->midi_fx_param_counts[midi_fx_slot], key);
+            if (child) return child;
         }
     }
 

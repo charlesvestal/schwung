@@ -165,14 +165,28 @@ typedef struct {
  * instances once (dr32: 32 pads, `pad{index}_{key}`) names each instance's
  * parameters. The same rule src/shared/param_pages/child_key.mjs resolves on
  * the UI side, so a key the grid writes is a key the chain can type. */
-#define CHAIN_CHILD_TMPL_MAX 8
+#define CHAIN_CHILD_TMPL_MAX 4
 typedef struct {
     char tmpl[48];          /* child_key_template, or "<child_prefix>{index}_{key}" */
     int  base;              /* child_index_base */
     int  count;             /* child_count */
     int  digits;            /* child_index_digits, 0 = unpadded */
 } chain_child_tmpl_t;
-#define CHAIN_PARAM_ALIAS_MAX 64
+#define CHAIN_PARAM_ALIAS_MAX 24
+/* One position's templates, plus the instance keys already resolved through
+ * them. An alias remembers its BASE key and is re-checked on every hit, so a
+ * parameter table replaced underneath it (a reload, the runtime chain_params
+ * refresh, an fx:move) can only cost a re-resolve, never a wrong answer. A
+ * VALUE type -- no pointers -- so the fx/midi_fx copies permute with their
+ * positions like fx_param_counts does, and so it must stay within
+ * CHAIN_PERM_MAX_ELEM (asserted in chain_reorder.c): a bigger element makes
+ * the permute REFUSE, i.e. every fx:move silently does nothing. */
+typedef struct {
+    chain_child_tmpl_t tmpl[CHAIN_CHILD_TMPL_MAX];
+    int ntmpl;
+    struct { char key[40]; char base[24]; int idx; } alias[CHAIN_PARAM_ALIAS_MAX];
+    int nalias, next_evict;   /* full: a ring, oldest out */
+} chain_child_keys_t;
 
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
@@ -789,14 +803,11 @@ typedef struct chain_instance {
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
-    /* The synth's child templates, and the instance keys already resolved
-     * through them (`pad7_transpose` -> synth_params index of `transpose`).
-     * The cache is what keeps a lane on a templated key from re-matching every
-     * block; both are reset at every synth load. */
-    chain_child_tmpl_t synth_child_tmpl[CHAIN_CHILD_TMPL_MAX];
-    int synth_child_tmpl_count;
-    struct { char key[48]; int idx; } synth_param_alias[CHAIN_PARAM_ALIAS_MAX];
-    int synth_param_alias_count;
+    /* A rack's per-instance keys (`pad7_transpose` -> `transpose`), per
+     * position: see chain_child_keys_t. Set at every module load. */
+    chain_child_keys_t synth_child_keys;
+    chain_child_keys_t fx_child_keys[MAX_AUDIO_FX];
+    chain_child_keys_t midi_fx_child_keys[MAX_MIDI_FX];
     /*
      * POINTERS, not inline arrays, and the reason is the reorder.
      *
@@ -1410,7 +1421,7 @@ CHAIN_INTERNAL int parse_chain_params_array_json(const char *json_array, chain_p
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);
 CHAIN_INTERNAL int parse_child_templates(const char *module_path, chain_child_tmpl_t *out, int max);
 CHAIN_INTERNAL int parse_child_templates_json(const char *json, chain_child_tmpl_t *out, int max);
-CHAIN_INTERNAL void chain_synth_child_keys_load(chain_instance_t *inst, const char *synth_path);
+CHAIN_INTERNAL void chain_child_keys_load(chain_child_keys_t *ck, const char *module_path);
 CHAIN_INTERNAL int chain_child_key_base(const chain_child_tmpl_t *t, int n, const char *key,
                                         char *base, int base_len);
 CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
