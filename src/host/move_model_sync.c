@@ -104,9 +104,14 @@ void move_model_sync_housekeep(void)
      * no set dir -- then every edit of the session would be lost on reboot.
      * After 15 s with no set change pending, align to what Move has and say
      * so; that is where the pre-model behaviour would have saved anyway. */
+    /* ...and ONLY when nothing was read since the load: a read that exists
+     * is pending (the consume waits for it to settle), and forcing alignment
+     * over it would let autosave run before the UI has switched sets. */
+    const uint64_t edge = atomic_load(&g_edge_ms);
     if (live && ctl->move_doc_gen != ctl->set_doc_gen &&
         !(ctl->ui_flags & SHADOW_UI_FLAG_SET_CHANGED) &&
-        now_ms() - atomic_load(&g_edge_ms) > MISALIGN_GIVEUP_MS) {
+        shadow_set_pages_last_publish_ms() < edge &&
+        now_ms() - edge > MISALIGN_GIVEUP_MS) {
         ctl->set_doc_gen = ctl->move_doc_gen;
         shadow_log("move_model: set alignment gave up after 15 s (no set read); autosave resumes");
     }

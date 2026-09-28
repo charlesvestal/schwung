@@ -29,6 +29,7 @@ int move_model_get(move_model_t *out) { memset(out, 0, sizeof *out); return 0; }
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
 { (void)previous; if (notes) *notes = NULL; if (ref) memset(ref, 0, sizeof *ref); return -1; }
 void shadow_log(const char *m) { (void)m; }
+uint64_t shadow_set_pages_last_publish_ms(void) { return 0; }
 /* The reader's liveness: "just published" unless a test says otherwise. */
 #include <time.h>
 static long long fake_pub_age_ms = 0;   /* -1: never published */
