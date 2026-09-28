@@ -217,6 +217,91 @@ Measured on hardware (hank on Set 5, T2, 117 BPM):
 `move_model_on` also writes `phase_model.log`: one line per step-playhead LED
 with the model's position and the offset `d` from the lit step's start.
 
+## Automation follows Move's edits
+
+The rule: Schwung automation behaves as part of Move's clips, pages and steps.
+Whatever Move does to one of those, the automation on it does too -- and it
+must never be possible to see the two disagree.
+
+### What Move does to its OWN automation (the oracle)
+
+Move's per-step automation lives in the document too
+(`SessionClip.mClipEnvelopes` → `ClipEnvelope.mAutomation{mpParameter,
+mBreakpoints}`, breakpoints a blob of big-endian `(time, value)` doubles). So
+every rule below was measured by driving the gesture and watching what Move did
+to its OWN envelopes and notes (with per-note ids, see "The notes blob"):
+
+| Move edit | notes | Move's automation → ours |
+|---|---|---|
+| step paste (Copy, A, B) | per PITCH: a source note replaces a same-pitch note, else is added (melodic); drum tracks copy only the SELECTED voice | the destination step's automation is **replaced** by the source step's -- every parameter, including ones only the destination had |
+| page paste (Loop + Copy, pages) | same, per page | same, per page |
+| a source step with no notes | nothing | nothing -- automation-only steps count as empty |
+| Delete + step | removed | **kept** |
+| Double Loop (Shift + step 15) | duplicated (new ids) | duplicated |
+| Undo / Redo | exact previous note ids | exact previous automation |
+| clip delete / Undo | the SAME clip object returns | ours comes back with it |
+| clip duplicate (Copy in Note view) | new clip, same content | copied |
+
+Move's own step lock is a one-step RECTANGLE when pasted (the original can span
+to the next note: `(0,36)(0,41)(1,41)(1,36)`), the same shape as a Schwung
+p-lock.
+
+### How it is mirrored -- intent from the buttons, proof from the model
+
+`edit_gesture.c` (RT) reads Copy / Loop / Shift / step / Undo off the hardware
+buffer and reports INTENT -- pairing presses exactly as Move does (the source
+survives releasing Copy; Shift + Undo is Redo; Shift + step 15 is Double Loop)
+-- with positions taken at the moment of each press, from the model: a step is
+`scroll + step × grid`, a page is `page × 16 × grid` (12 on a triplet grid).
+
+`edit_follow.c` (model thread) issues a lane verb only when the MODEL confirms
+Move made that edit:
+- a **paste** when the notes that appeared in the destination span (ids new
+  since the clip's previous state) are exact copies of source-span notes --
+  pitch, relative start, length, velocity. Anything else is declined: Move
+  refusing an "empty" source, a range selection, an armed source Move had
+  cleared, a note the user played. The gesture model's unmeasured corners can
+  therefore only produce an intent that is not confirmed -- a no-op;
+- a **Double Loop** when the loop really doubled (geometry, since Move doubles a
+  clip with no notes too);
+- **Undo/Redo** when the clip returns EXACTLY to its state (`mm_clip_state_hash`:
+  notes + Move's envelopes + loop geometry) before/after a mirrored edit;
+- clip **delete → stash** under its id, **same id back → unstash**, **new id with
+  a sibling's content → copy** -- from identity alone, no intent needed.
+
+The chain verbs (`lanes:paste_span`, `lanes:journal undo|redo`, `lanes:stash`,
+`lanes:unstash`, `host/lane_edit.c`) journal what they replace, so undo and redo
+restore it exactly. Commands cross to the SPI callback through a lock-free ring.
+
+The edited clip is probed EVERY tick (its notes and envelope blobs re-hashed,
+a few hundred bytes): a paste onto an occupied step replaces a note without
+resizing Move's notes vector, so no structural guard moves.
+
+### Verified on hardware (Set 5, hank on T2, a throwaway clip)
+
+step paste to an empty step, onto a step holding only a Schwung lock (cleared,
+as Move does), Undo, Redo; Double Loop + Undo + Redo; page paste on a
+three-page clip + Undo; clip delete (stashed, nothing orphaned) + Undo (the same
+clip id, both lanes back); duplicate (both lanes copied); a paste Move declined
+(nothing changed). Every one matched Move's notes, and nothing was mirrored that
+Move did not do.
+
+### Known limits
+
+- **Drum tracks**: Move pastes only the selected voice's notes, while Schwung's
+  automation belongs to the slot, not a voice -- a paste copies the step's
+  whole automation. Voice-scoped mirroring needs a module's voice → parameter
+  map on the host side.
+- **Schwung-only edits are not in Move's undo history.** Move's Undo undoes
+  Move's last edit; a p-lock made in Schwung is not one. Undo/Redo across a
+  mirrored edit restore that span to exactly how it was around that edit.
+- **Cross-track clip copies** are not mirrored (a different slot, usually a
+  different module).
+- **Move's page copy does nothing on a two-page clip** (measured, three
+  attempts); ours follows it and does nothing too.
+- Injected test presses reach Schwung's decoders only with
+  `inject_as_hardware` set (offset 108) -- see `docs/DIAGNOSTICS.md`.
+
 ## Not RT, and cheap
 
 The reader is its own SCHED_OTHER thread on cores 0–2, created from shim init.

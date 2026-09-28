@@ -48,6 +48,7 @@
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
 #include "host/lane_store.h"
+#include "host/lane_edit.h"
 #include "host/lane_serial.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
@@ -962,6 +963,15 @@ typedef struct chain_instance {
     int    lanes_last_doubled;
     /* Lanes carried onto a duplicated clip by the last `lanes:copy_clip`. */
     int    lanes_last_copied;
+    /* AUTOMATION FOLLOWS MOVE'S EDITS (host/lane_edit.h): the journal of
+     * mirrored step/page pastes, for Move's Undo/Redo, and the lanes of
+     * clips Move deleted, for its Undo. Rings, by id; in memory only --
+     * Move's own undo history does not survive a reload either. */
+    lane_journal_entry_t lanes_journal[LANE_JOURNAL_DEPTH];
+    lane_stash_t lanes_stash[LANE_STASH_DEPTH];
+    int    lanes_last_pasted;      /* lanes changed by the last paste_span, -1 refused */
+    int    lanes_last_journaled;   /* lanes restored by the last journal undo/redo */
+    int    lanes_last_stashed, lanes_last_unstashed;
     /* How many times an adopting lane DISPLACED a lane already holding its
      * key. Counted rather than done silently, for the reason every other
      * destructive step here is counted: it drops somebody's points, and "my
