@@ -1,6 +1,7 @@
 /* move_model_sync.c driven by synthetic model snapshots: LEVELS on a new
  * document, EDGES within one, the set poll on the edge, and the generation
  * handshake that gates autosave. The mutators are recording stubs. */
+#define _GNU_SOURCE   /* CLOCK_MONOTONIC under -std=c11 on Linux */
 #include <stdio.h>
 #include <string.h>
 #include "move_model.h"
