@@ -269,7 +269,7 @@ enum {
     O_CLIPS_PLAYSTATE, O_PS_MODE, O_PS_SLOT, O_PS_START, O_SLOT_CLIP, O_SC_CLIP, O_CLIP_REGION,
     O_CLIP_TIMESIG, O_CLIP_CONTENT, O_RG_START, O_RG_END, O_RG_LOOP, O_LOOP_START, O_LOOP_END,
     O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_TRACK_MIXER, O_DEV_COMPONENTS,
-    O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_COUNT
+    O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_MC_NOTES, O_COUNT
 };
 static moff_t g_off[O_COUNT] = {
     {C_SONG, "mTransport", 0}, {C_SONG, "mTracks", 0},
@@ -286,7 +286,7 @@ static moff_t g_off[O_COUNT] = {
     {C_LOOP, "mIsEnabled", 0}, {C_MIDICONTENT, "mStepEditorScrollPosition", 0},
     {C_SONG, "mStepEditorResolution", 0}, {C_TRACK, "mTrackMixerDevice", 0},
     {C_ABSDEV, "mComponents", 0}, {C_MIXPARAMS, "mVolume", 0}, {C_MIXPARAMS, "mPan", 0},
-    {C_MIXPARAMS, "mSolo", 0}, {C_MIXPARAMS, "mSpeakerOn", 0},
+    {C_MIXPARAMS, "mSolo", 0}, {C_MIXPARAMS, "mSpeakerOn", 0}, {C_MIDICONTENT, "mNotes", 0},
 };
 
 /* flip basic-type value slots, measured: Type ends at +0x64 (a 4-byte
@@ -596,9 +596,26 @@ static int read_clip(uint64_t sc, mm_clip_t *c)
     uint64_t content[4];
     int nc = walk(clip + OFF(O_CLIP_CONTENT) + V_WORD, content, 4);
     if (nc < 0) return -1;
-    for (int k = 0; k < nc && k < 4; k++)
-        if (vp_is(&g_vp_midicontent, guard(content[k])))
-            if (f_f64(content[k] + OFF(O_MC_SCROLL), &c->scroll)) return -1;
+    for (int k = 0; k < nc && k < 4; k++) {
+        if (!vp_is(&g_vp_midicontent, guard(content[k]))) continue;
+        if (f_f64(content[k] + OFF(O_MC_SCROLL), &c->scroll)) return -1;
+        /* The notes, as a CONTENT fingerprint: the Blob's bytes hashed. Its
+         * vector {begin, end} is guarded, so an edit that reallocates it
+         * re-walks at once; an in-place edit is picked up by the periodic
+         * full walk. Decoding the notes is not needed -- equality is. */
+        uint64_t nb = content[k] + OFF(O_MC_NOTES) + V_WORD;
+        uint64_t b = guard(nb), e = guard(nb + 8);
+        if (e < b || e - b > (1u << 20)) return -1;
+        c->notes_len = (uint32_t)(e - b);
+        uint32_t h = 2166136261u;
+        uint8_t buf[4096];
+        for (uint64_t at = b; at < e; at += sizeof buf) {
+            size_t n = (e - at < sizeof buf) ? (size_t)(e - at) : sizeof buf;
+            if (RD(at, buf, n)) return -1;
+            for (size_t i = 0; i < n; i++) { h ^= buf[i]; h *= 16777619u; }
+        }
+        c->notes_hash = h;
+    }
     return 0;
 }
 

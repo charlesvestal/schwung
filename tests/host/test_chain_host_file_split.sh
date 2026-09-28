@@ -33,10 +33,15 @@ for f in "${!expect_fn[@]}"; do
   fi
 done
 
-# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2900 lines).
+# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2940 lines).
+#    2900 until the automation lanes returned: main had grown the file to 2899
+#    meanwhile, and the lanes add ~21 lines that are exactly params-entry and
+#    render (one "lanes:" dispatch each way, lane_tick beside lfo_tick, and the
+#    record hook at the three component writes) -- everything else of theirs
+#    lives in chain_lanes.c. A split regression is a jump of hundreds.
 lines=$(wc -l < "$dsp/chain_host.c")
-if [ "$lines" -ge 2900 ]; then
-  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2900)" >&2
+if [ "$lines" -ge 2940 ]; then
+  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2940)" >&2
   exit 1
 fi
 

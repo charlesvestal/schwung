@@ -36,6 +36,8 @@
 #include "unified_log.h"
 #include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
 #include "move_model_sync.h"
+#include "move_model.h"
+#include "shadow_transport.h"   /* shadow_transport_beat_position */
 
 
 /* Weak no-op for the RT-thread audit's module attribution.
@@ -124,406 +126,69 @@ static int shadow_chain_slot_recv_channel(void *instance) {
  * a slot as move_track[s] + synth[s], so the four slot stems ARE the four
  * tracks.
  *
- * Returns 1 with *phase_beats and *loop_len filled, else 0 for "phase
- * UNKNOWN" -- which is NOT phase 0 and must never be substituted for one.
+ * Returns 1 with *phase_beats (CLIP time, beats) and *loop_len filled, else 0
+ * for "phase UNKNOWN" -- which is NOT phase 0 and must never be substituted
+ * for one. *clip_slot and *fp_valid/fp answer IDENTITY and are filled even
+ * when the function returns 0 (stopped, say), because a p-lock is written with
+ * the transport stopped and must still know the clip.
  *
- * *clip_slot and *fp_valid answer IDENTITY and are filled even when the
- * function returns 0. Identity and anchor are separately valid (clip_state.h):
- * entering Session view refreshes the grid and gives identity with no anchor,
- * and collapsing the two is how a lane binds to the right clip at the wrong
- * phase.
+ * FROM MOVE'S LIVE SONG MODEL (move_model.h), not inferred. What this used to
+ * reconstruct from session-pad LEDs, step-strip pixels, a playhead anchor and
+ * a Song.abl ~10 s stale -- ~365 lines, still wrong for a brand-new clip -- is
+ * read: the track's current clip (PlayingState: the PLAYING clip, or with the
+ * transport stopped the SELECTED one, exactly what Move's step editor shows,
+ * including through a launch's queue window), its region and loop, and the
+ * transport beat it launched on (the quantised boundary itself).
  *
- * RT: SPI callback. Table reads only -- clip_state and clip_regions are both
- * plain structs, and a torn read costs one block of phase. */
+ * "Now" is the shim's own interpolated MIDI-clock position rather than the
+ * model's beat clock: the model's is refreshed by Move's UI thread about every
+ * 20 ms, far too coarse to drive a parameter per 2.9 ms block, while the
+ * clock is interpolated per block. Both restart at 0 on every Play.
+ *
+ * The fingerprint is {loop_start, loop_len, notes_len, notes_hash}: the
+ * content half is a hash of Move's own notes blob, so it is current to the
+ * edit too, and always valid -- there is no "provisional" take any more.
+ *
+ * RT: SPI callback. move_model_get() is a seqlock copy, no syscalls. */
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp /* [4] */) {
     if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
         !clip_slot || !fp_valid || !fp) return 0;
     *clip_slot = -1;
     *fp_valid = 0;
-    /* Cleared HERE, at the top, with the other outputs -- not left to the
-     * caller. Every failure path below returns 0 without touching these, and
-     * the one caller happens to use fresh locals per loop iteration; hoisting
-     * those buffers out of the loop for cost would silently hand an unknown
-     * block the PREVIOUS block's phase. NaN so that a caller which also misses
-     * the return value gets no usable number rather than a plausible one. */
+    /* Cleared HERE, at the top: every failure path below returns 0 without
+     * touching these, and NaN gives a caller that also misses the return
+     * value no usable number rather than a plausible one. */
     *phase_beats = NAN;
     *loop_len = NAN;
-    const clip_state_t *cs = clip_state_current();
-    if (!cs) return 0;
-    const clip_track_state_t *tr = &cs->tracks[slot];
-    const clip_regions_t *rg = shadow_clip_regions();
-    int cslot = (tr->identity_valid && tr->clip_slot >= 0 &&
-                 tr->clip_slot < CLIP_SLOTS) ? tr->clip_slot : -1;
-    /* A CLIP THAT HAS NEVER PLAYED STILL HAS AN IDENTITY, and it is the one
-     * on screen.
-     *
-     * `identity_valid` is set by a ch-9 ON -- a clip PLAYING. A clip you just
-     * made has never played, so it has none, and the chain was told
-     * `lane_clip_slot = -1`: every p-lock on it was refused with "no clip on
-     * this track" while the user was plainly looking at one. Reported from
-     * the device in those words, and it is the whole "new clip, add steps,
-     * p-lock them" flow.
-     *
-     * The WRITE path already resolved this the other way -- "a p-lock edits
-     * the clip on SCREEN, which is the SELECTED clip, not the playing one;
-     * step editing is mostly done stopped" -- so the two halves of the same
-     * gesture disagreed about which clip was being edited, and the half that
-     * refuses won. Same fallback, same gate: only when nothing is playing, so
-     * a playing track keeps the live answer and never the file's older one.
-     *
-     * Identity only. The PHASE still comes from a played clip's anchor, and
-     * "selected but never played" has no phase -- which is correct and is
-     * what the tri-state below already reports. */
-    /* The screen says a clip is selected that the FILE does not have: a clip
-     * made in the last few seconds. Raised below and consumed by the blind
-     * branch, which is the one honest answer for it. */
-    int screen_says_new_clip = 0;
-
-    /* A CLIP IS PLAYING AND A DIFFERENT ONE MAY BE UNDER EDIT.
-     *
-     * `cslot` at this point is the PLAYING clip. Move's bar strip says a clip
-     * is being edited, and the pad decode cannot confirm the two are the same
-     * — so a WRITE must not take this row. Measured: with a clip playing on
-     * row 7, p-locks aimed at a brand-new clip were keyed to row 7.
-     *
-     * Playback is untouched: it still gets the playing row, which is the
-     * question it is asking. */
-    /* NO `edit_unconfirmed`, and it is removed rather than tuned.
-     *
-     * It withheld the row from a WRITE when the screen said a different clip
-     * was being edited, to stop a p-lock landing on the playing clip. The
-     * signal cannot support it: clip_state decodes the selection from SESSION
-     * pad LEDs, and Move paints none in NOTE view — which is the only view a
-     * p-lock happens in. So the answer is always a LATCH from whenever the
-     * user was last in Session view, and acting on it withheld the row from
-     * gestures aimed squarely at the playing clip. Measured: `write_row=-2
-     * unconf=1` with the lane plainly on row 0, and `clear_param` reporting
-     * success having removed nothing.
-     *
-     * A rule that can only ever fire on stale data is not a rule. The
-     * new-clip case it was meant to serve is covered where it belongs: when
-     * the clip is not in the file the resolver answers with the PENDING
-     * placeholder and the write keys to that, with no guess about selection
-     * involved. */
-
-    if (cslot < 0) {
-        /* THE FILE'S ANSWER IS ONLY USABLE WHEN IT CANNOT BE AMBIGUOUS.
-         *
-         * `clip_regions_selected_slot` returns Song.abl's `isPlaying`, a
-         * RESTORED SELECTION written up to ~10 s ago. It does not know the user
-         * has since moved to a different clip on the same track, and trusting
-         * it over Move's live "nothing is playing" is how clip A's automation
-         * ended up running on a brand-new clip B.
-         *
-         * Reproduced on hardware 2026-09-15: select an empty slot on a track
-         * that already has clips, add one note, and `lanes:clip` still read
-         * `0 1` while a 20-point lane keyed to row 1 played against the clip on
-         * screen. clip_state was telling the truth the whole time -- `T1 -`,
-         * identity valid, nothing playing -- and this line overrode it.
-         *
-         * With ONE clip on the track there is nothing to be wrong about: the
-         * file's answer and the clip on screen are the same clip, which is the
-         * case the fallback was written for ("step editing is mostly done
-         * stopped"). With several we cannot tell which is selected from
-         * anything we read -- Move emits no session pad LED in Note view -- so
-         * we say so rather than guess. A refused p-lock names its reason; a
-         * p-lock on the wrong clip is silent, wrong, and contaminates a clip
-         * the user never touched. */
-        /* ASK THE SCREEN FIRST. Move paints the selected clip in a colour no
-         * other pad on that track has, and clip_state decodes it relatively
-         * (clip_state_selected_slot). That is POSITIVE EVIDENCE of the clip
-         * being edited, and it is exactly what the file cannot supply for a
-         * clip made seconds ago.
-         *
-         * Without it this fell through to the file's stale `isPlaying`, and
-         * the ambiguity gate below counts clips IN THE FILE -- which cannot
-         * see a new clip at all. So one old clip plus one brand-new one
-         * counted as "one clip, nothing to be wrong about" and every p-lock
-         * aimed at the new clip was keyed to the OLD one. Measured
-         * 2026-09-17: four of five new-clip permutations wrote to another
-         * clip's row, silently.
-         *
-         * A selected row the file does not know is a NEW clip, which is
-         * precisely what the PENDING placeholder is for -- so say so, instead
-         * of naming somebody else's row. */
-        /* THE FILE CAUGHT UP — ASKED FIRST, and the order is the bug this
-         * replaces. This test used to sit AFTER the selection branch, which
-         * had already raised `screen_says_new_clip`, so the exit never ran:
-         * the row stayed the placeholder for good and the pending lane never
-         * adopted. Caught by tests/host, not on the device.
-         *
-         * Once the worker says a row newly appeared and the file has it, that
-         * row IS the answer — there is nothing blind left to be honest about. */
-        const int made = shadow_clip_new_slot((int)slot);
-        if (made >= 0 && rg && rg->valid && rg->slots[slot][made].exists)
-            cslot = made;
-
-        /* NO SELECTION DECODE HERE, and it was removed rather than left
-         * looking load-bearing.
-         *
-         * A decode of the pads' base colour sat here — first NAMING a row,
-         * then (after that put the contamination back through another door)
-         * used only negatively, then special-casing an empty slot. Every one
-         * of those reduced to the SAME answer as the rule below: if Move's
-         * strip says a clip is being edited and the file cannot identify it,
-         * the honest row is the placeholder. Proven by removing the whole
-         * block with every test still green.
-         *
-         * THE DECODE IS A DIAGNOSTIC NOW, AND NOTHING HERE MAY READ IT.
-         *
-         * This used to say it was kept "because `g_edit_unconfirmed` above
-         * genuinely needs it" -- and g_edit_unconfirmed was deleted by the
-         * same change that wrote those words, sixty lines further up. The
-         * decode survives only as the 1 Hz clip_state readout and the
-         * manager's /clip-state, which is the same posture step_strip has:
-         * measured, reportable, depended on by nothing.
-         *
-         * It is not merely unused, it is QUARANTINED. Its output has twice
-         * re-introduced wrong-clip contamination the moment something
-         * consumed it, and it only updates in SESSION view while p-locks are
-         * made in NOTE view -- so its answer is stale exactly when a writer
-         * would want it. The rule any future reader has to beat: a clip the
-         * file cannot identify is the PLACEHOLDER, never a guess at which row
-         * it is. Pinned by tests/host/test_selection_decode_not_navigated.sh,
-         * for the same reason `synth:last_note` needed a test asserting it is
-         * never read -- an available, tempting answer gets navigated on
-         * eventually, and the defect then looks like this feature being
-         * broken rather than like a lookup nobody should have made. */
-        if (cslot < 0 && !screen_says_new_clip) {
-            /* NO POSITIVE IDENTIFICATION. Two ways out, and the order matters.
-             *
-             * If Move's bar strip says a clip is being EDITED, then a clip
-             * exists on this track that we cannot name -- which is exactly
-             * what the PENDING placeholder means. Naming a DIFFERENT clip
-             * here is the failure this whole area has been chasing: measured
-             * 2026-09-17, four of five new-clip permutations wrote their
-             * p-locks onto another clip's row, silently, because the file's
-             * answer was taken when the file could not see the clip in front
-             * of the user.
-             *
-             * PENDING is strictly better than that. It is honest, it plays
-             * during the window, and lane_adopt_slot binds it to the real row
-             * the moment Song.abl names one. The cost is that identity waits
-             * for the file; the alternative is being confidently wrong about
-             * somebody else's clip, which is silent and permanent.
-             *
-             * The file's answer is still used when there is nothing on screen
-             * to contradict it -- no strip, so no clip being edited -- and
-             * only when it cannot be ambiguous. */
-            if (step_strip_segments_for_track((int)slot) > 0) {
-                screen_says_new_clip = 1;
-            } else {
-                int clips_on_track = 0;
-                if (rg && rg->valid) {
-                    for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
-                        if (rg->slots[slot][cs2].exists) clips_on_track++;
-                }
-                if (clips_on_track == 1) {
-                    cslot = clip_regions_selected_slot(rg, (int)slot);
-                } else {
-                    /* AMBIGUOUS, and that is not the same as "no clip". Say
-                     * which, once a second, or a p-lock that does nothing on
-                     * a multi-clip track is indistinguishable from one on an
-                     * empty slot. */
-                    g_row_unknown_clips = clips_on_track;
-                    g_row_unknown_strip = 0;
-                    g_row_unknown_seen = 1;
-                }
-            }
-        }
-    }
-    /* NEITHER SOURCE KNOWS THE ROW, AND THE SCREEN DOES.
-     *
-     * The clip row comes from a session pad LED (Session view only) or from
-     * Song.abl, and a clip just made has neither -- measured 8-12 s, ending
-     * the second the file lands. Refusing here is what reached the user as
-     * "no clip on this track" while they were looking straight at one, and it
-     * refused the RECORDING path too, since clip_phase_valid is derived from
-     * this answer.
-     *
-     * Move's bar strip names the track it is step-editing, so a clip exists;
-     * only its row is unreadable. Report it as PENDING and let the lane be
-     * keyed to that, to be re-keyed when the file names the real row
-     * (lane_adopt_slot). The length below comes off the same strip, and it is
-     * what stops a clip remade inside the window inheriting the take. */
-    /* ONLY WHEN THE CLIP IS GENUINELY UNKNOWN, which is narrower than "no row
-     * right now" and the difference cost playback.
-     *
-     * `clip_regions_selected_slot` answers the file's isPlaying, so a track
-     * whose clip is simply not marked playing -- the ordinary state with the
-     * transport stopped, and after a boot where nothing has been launched from
-     * Session view -- also lands here with cslot < 0. Reporting PENDING there
-     * hijacks the normal path: `lanes:clip` read `0 -2` while every lane was
-     * keyed to row 0, so nothing matched the position check and NO LANE DROVE
-     * AT ALL. Measured on hardware with the transport running.
-     *
-     * The blind window is the case where the file knows of no clip on this
-     * track whatsoever. If it knows of one, we are not blind -- we are merely
-     * unsure which, and inventing a row is worse than saying so. */
-    int track_has_clip_in_file = 0;
-    if (rg && rg->valid) {
-        for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
-            if (rg->slots[slot][cs2].exists) { track_has_clip_in_file = 1; break; }
-    }
-    /* `screen_says_new_clip` widens this to a POPULATED track, and only on
-     * positive evidence: Move painted a selection on a row the file does not
-     * have. Without it the blind branch was reachable only for a track with
-     * no clips at all, so every new clip on a track that already had one fell
-     * through to another clip's row. */
-    if (cslot < 0 && (!track_has_clip_in_file || screen_says_new_clip) &&
-        step_strip_segments_for_track((int)slot) > 0) {
-        int segs = step_strip_segments_for_track((int)slot);
-        double qpb = clip_regions_quarters_per_bar(rg, (int)slot, -1);
-        double len = (double)segs * qpb;
-        if (len > 0.0) {
-            *clip_slot = LANE_SLOT_PENDING;
-            *loop_len = len;
-            /* AND MOVE IS ALREADY TELLING US WHERE IT IS.
-             *
-             * The row being unknown does not make the position unknown: Move
-             * lights the step playhead in Note view, which is exactly where a
-             * clip gets made. clip_state has been recording it all along as a
-             * CHECK on our phase; here it IS the phase. See playhead_anchor.h
-             * -- single page only, because the index is mod 16 and a longer
-             * clip cannot be placed honestly.
-             *
-             * Without this the whole blind window is silent: the lock lands
-             * and waits for Song.abl. Measured at 7.1 s on hardware.
-             *
-             * fp_valid stays 0 -- we still cannot identify the clip, and that
-             * is what marks the phase provisional across the dlsym'd seam. */
-            uint8_t ph_idx = 0; uint32_t ph_pulse = 0;
-            double ph_now = 0.0;
-            const int have_ph = clip_playhead_last(&ph_idx, &ph_pulse);
-            const double res = (rg && rg->step_resolution > 0.0)
-                             ? rg->step_resolution : 0.25;
-            const int got = have_ph &&
-                playhead_phase_now(ph_idx, ph_pulse,
-                                   (uint32_t)shadow_transport_pulses,
-                                   res, len, segs, &ph_now);
-            if (got) *phase_beats = ph_now;
-            /* WHY IT DID OR DID NOT ANCHOR. Recorded for the worker's 1 Hz
-             * readout: from outside, "no playhead", "playhead too old",
-             * "multi-page" and "the branch never ran" are one silence, and
-             * this window is exactly where the feature is judged. */
-            g_blind_seen        = 1;
-            g_blind_have_ph     = have_ph ? 1 : 0;
-            g_blind_idx         = ph_idx;
-            g_blind_age         = have_ph
-                                ? (int)((uint32_t)shadow_transport_pulses - ph_pulse)
-                                : -1;
-            g_blind_segs        = segs;
-            g_blind_len_x100    = (int)(len * 100.0);
-            g_blind_res_x100    = (int)(res * 100.0);
-            g_blind_got         = got ? 1 : 0;
-            return 1;
-        }
-    }
-    if (cslot < 0 || cslot >= CLIP_SLOTS) return 0;
-    *clip_slot = cslot;
-    if (!rg || !rg->valid) return 0;
-    const clip_region_t *r = &rg->slots[slot][cslot];
-
-    /* AND WHETHER A WRITE MAY USE IT -- see g_write_unconfirmed above.
-     *
-     * Cleared first: this runs every frame for every slot, and a stale 1 from
-     * a moment when a different clip was on screen would withhold the row
-     * from a gesture aimed at the playing clip, which is the failure the old
-     * flag was removed for. */
     if (slot < SHADOW_CHAIN_INSTANCES) {
         g_write_unconfirmed[slot] = 0;
         g_write_edit_len_x100[slot] = 0;
-        const int segs = step_strip_segments_for_track((int)slot);
-        if (segs > 0) {
-            const double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
-            const double ext = r->loop_start + r->loop_len;
-            /* Rounded UP, because that is how the strip draws it: a segment
-             * is a BAR and a part-bar still gets one. Compared as BARS and
-             * never as quarters -- the strip cannot answer finer than a bar,
-             * so comparing quarters would call every clip different. */
-            const int row_bars = (qpb > 0.0 && ext > 0.0)
-                               ? (int)ceil(ext / qpb - 1e-9) : 0;
-            if (row_bars > 0 && segs != row_bars) {
-                g_write_unconfirmed[slot] = 1;
-                g_write_edit_len_x100[slot] = (int)((double)segs * qpb * 100.0);
-            }
-        }
-    }
-    /* !(x > 0.0), not x <= 0.0: the second is FALSE for a NaN, so a torn read
-     * of the regions table would reach clip_phase_beats() as a live length.
-     * clip_phase_beats() spells it this way; both sites must mean the same
-     * thing or only one of them is guarding. */
-    if (!r->exists || !(r->loop_len > 0.0)) {
-        /* THE CLIP MOVE HAS NOT SAVED YET -- the ~10 s hole that made
-         * "record automation on a clip I just made" refuse outright. There is
-         * no file entry, so no length, so no phase, so nothing records.
-         *
-         * Move's own step editor draws the length: its bar strip, read off the
-         * screen (step_strip.h). The answer is BAR RESOLUTION and the origin
-         * is ASSUMED ZERO -- the strip does not show where a loop begins --
-         * and both are honest for a clip just made, whose loop is a whole
-         * number of bars starting at bar 1. When the clip lands in the file,
-         * the lane is re-origined and identified from the same parse
-         * (lane_adopt_fingerprint), so the assumption is corrected with the
-         * real number rather than lived with.
-         *
-         * `fp_valid` stays 0, and that IS the provisional signal across the
-         * dlsym'd seam: a valid phase with no fingerprint is a state that
-         * cannot otherwise occur, because the fingerprint is filled in before
-         * the anchor is even checked. No new argument, which that seam cannot
-         * safely take. */
-        int segs = step_strip_segments_for_track(slot);
-        if (segs <= 0 || !tr->anchor_valid) return 0;
-        double qpb = clip_regions_quarters_per_bar(rg, slot, cslot);
-        double len = (double)segs * qpb;
-        if (!(len > 0.0)) return 0;
-        double ph = 0.0;
-        if (!clip_phase_beats(tr, (uint32_t)shadow_transport_pulses,
-                              0.0, len, &ph)) return 0;
-        *phase_beats = ph;
-        *loop_len = len;
-        return 1;
     }
 
-    /* The fingerprint is valid as soon as the CLIP is known, independently of
-     * whether the phase is: a lane still needs to know whether it is bound to
-     * the right clip while it waits for an anchor. */
-    fp[0] = r->loop_start;
-    fp[1] = r->loop_len;
-    /* The content half, straight out of the parse. It crosses as doubles so the
-     * shim never has to agree with lane_store.h's layout; the chain casts them
-     * back to int.
-     *
-     * A clip with no notes lands here as {0, -1} -- the same bytes as "nothing
-     * is known", which lane_fingerprint_matches refuses outright. Deliberate:
-     * of the two readings of those bytes only the refusal cannot be
-     * confidently wrong, and a note-free clip is not what anyone automates. */
-    fp[2] = (double)r->note_count;
-    fp[3] = (double)r->first_note;
+    static move_model_t m;          /* 2.5 KB: static, off the callback's stack */
+    if (!move_model_get(&m) || slot >= MM_TRACKS) return 0;
+    const mm_track_t *T = &m.track[slot];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || cs >= CLIP_SLOTS || !T->slot[cs].exists) return 0;
+    const mm_clip_t *c = &T->slot[cs];
+    const double ls = c->loop_on ? c->loop_start : c->region_start;
+    const double le = c->loop_on ? c->loop_end : c->region_end;
+    if (!(le - ls > 0.0)) return 0;
+
+    *clip_slot = cs;
+    fp[0] = ls;
+    fp[1] = le - ls;
+    fp[2] = (double)c->notes_len;
+    fp[3] = (double)(c->notes_hash & 0x7fffffffu);   /* the lane stores it as an int */
     *fp_valid = 1;
 
-    if (!tr->anchor_valid) return 0;   /* clip known, phase UNKNOWN */
-    double ph = 0.0;
-    if (!clip_phase_beats(tr, (uint32_t)shadow_transport_pulses,
-                          r->loop_start, r->loop_len, &ph)) return 0;
-    /* CLIP TIME, NOT LOOP TIME. clip_phase_beats() adds loop_start back on, so
-     * what it returns is already the coordinate Move's own notes are in --
-     * measured 2026-09-12: a clip whose loop is 8..20 carries notes at
-     * startTime 0.0, 9.5 and 16.5, absolute from the clip's start, with the
-     * loop a window over them.
-     *
-     * This line used to subtract loop_start to hand the lane 0..loop_len, and
-     * that is the defect: a sweep recorded one beat into a bars-3-to-5 loop
-     * was stored as 1.0 instead of 9.0, so opening the loop out to the whole
-     * clip replayed it at beat 1 -- two bars early, on the wrong notes. A step
-     * p-lock has the same problem in reverse: "bar 3, step 5" cannot be turned
-     * into a loop-relative phase at all without knowing where the loop starts.
-     *
-     * The window travels with it (fp[0] is loop_start, pushed in the same
-     * call), so the lane knows which part of itself is audible. */
-    *phase_beats = ph;
-    *loop_len = r->loop_len;
+    const double now = shadow_transport_beat_position();
+    if (now < 0.0 || !m.clock_valid || !m.playing) return 0;   /* stopped: no phase */
+    const double pos = mm_clip_position(c, T->start_beats, now);
+    if (!(pos >= 0.0)) return 0;                                /* a one-shot that ended */
+    *phase_beats = pos;
+    *loop_len = le - ls;
     return 1;
 }
 
@@ -3689,134 +3354,41 @@ const char *shadow_lanes_plock_reason_name(int rc) {
 static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
                                    double *out_clip_len, double *out_step_len)
 {
-    double phase = 0.0;
-    int rc;
+    /* A HELD STEP'S CLIP TIME, from the live model: the page's left edge
+     * (the clip's own step-editor scroll) plus the button, at the song's step
+     * grid. The strip decode, the bar/page arithmetic and the file's aged
+     * scroll it replaces each failed somewhere -- a one-bar clip draws no
+     * thickening, a new clip is in no file, 11/8 has no whole bar per page.
+     *
+     * The clip is the one Move's step editor shows: the track's PlayingState
+     * clip (the selected one while stopped). The button stays a BUTTON read --
+     * it is the user's finger, not an inference. */
     if (!out_phase) return STEP_PLOCK_BAD_INDEX;
-    step_strip_t ss;
-    int strip_track = -1;
-    step_strip_latest(&ss, &strip_track);
-    const int bar_strip_len_valid = (ss.valid && strip_track == (int)slot &&
-                                     ss.segments > 0);
-    const clip_state_t *cs = clip_state_current();
-    int cslot = (cs && slot < CLIP_TRACKS && cs->tracks[slot].identity_valid)
-              ? cs->tracks[slot].clip_slot : -1;
-    const clip_regions_t *rg = shadow_clip_regions();
-    /* A P-LOCK EDITS THE CLIP ON SCREEN, which is the SELECTED clip, not the
-     * playing one. The live identity above answers playback and says -1 for a
-     * track playing nothing -- correct for a lane's position gate and wrong
-     * here, because step editing is mostly done stopped. Fall back to Move's
-     * own selection only when nothing is playing, so a playing track keeps the
-     * live answer and never the file's older one. */
-    if (cslot < 0)
-        cslot = clip_regions_selected_slot(rg, (int)slot);
-    double res = (rg && rg->step_resolution > 0.0) ? rg->step_resolution : 0.25;
-    double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
-    double clip_len = 0.0;
-    if (rg && rg->valid && cslot >= 0 && cslot < CLIP_SLOTS &&
-        rg->slots[slot][cslot].exists)
-        clip_len = rg->slots[slot][cslot].loop_start +
-                   rg->slots[slot][cslot].loop_len;
-    /* A CLIP MOVE HAS NOT SAVED STILL HAS A LENGTH, AND THE SCREEN IS SHOWING
-     * IT. Move does not write a clip to Song.abl until it has notes -- a clip
-     * created with Shift+Step 14 is selected and playable and simply absent
-     * from the file -- so the branch above leaves 0, and 0 does not mean
-     * "zero length", it disables the OUTSIDE_CLIP check entirely. A p-lock
-     * past the end of a brand-new clip was therefore accepted unbounded, at
-     * exactly the moment the user is most likely to be filling one in.
-     *
-     * The strip names the bar count and the loop starts at 0 for a new clip,
-     * so the length is segments * quarters_per_bar -- the same conversion the
-     * worker already measured (step_strip.h). It is the UPPER end of a range,
-     * which is the right end to bound with: a whole-bar clip (what Move
-     * creates) makes it exact, and erring long refuses nothing legitimate,
-     * where erring short would refuse real steps in the final bar. */
-    /* ...AND THE SAME IS TRUE OF A CLIP THAT WAS JUST EXTENDED. This was
-     * gated on the file being ABSENT, which is the same staleness observed a
-     * few seconds earlier: with a stale entry present, the old length won and
-     * a step in the new bars was refused as past the end of a clip the user
-     * had already lengthened. step_plock_clip_len takes the longer of the two
-     * and says why. */
-    clip_len = step_plock_clip_len(clip_len, bar_strip_len_valid,
-                                   (double)ss.segments * qpb);
-    /* AND IF WE STILL CANNOT SIZE IT, SAY WHICH FACT IS MISSING.
-     *
-     * With no row from either source, the strip is the only thing that knows
-     * how long the clip is -- and a step's phase cannot be bounded without a
-     * length. This is NOT the ordinary blind window any more: the lane is
-     * keyed to LANE_SLOT_PENDING and the gesture lands (see
-     * shadow_slot_clip_phase). It is the narrower case where the strip is
-     * there but unreadable, and "no clip on this track" was the wrong thing to
-     * tell someone looking straight at one. */
-    if (cslot < 0 && !(clip_len > 0.0)) return STEP_PLOCK_CLIP_PENDING;
-    /* The bar must come from a CURRENT reading of THIS track's editor -- a
-     * stale bold segment, or one belonging to another track, would place the
-     * p-lock on a bar the user is not looking at -- and a ONE-BAR loop names
-     * its bar by drawing no thickening at all. Both live in
-     * step_strip_displayed_bar(). */
-    int bar = step_strip_displayed_bar(&ss, strip_track, (int)slot);
-
-    /* MOVE NAMES THE DISPLAYED PAGE ITSELF, so prefer it and reconstruct only
-     * when it is missing or stale. `stepEditorScrollPosition` is the origin of
-     * the 16 buttons in quarters, per clip, which needs no signature and no
-     * page count -- 11/8 and 4/4 take the same path and a bar spanning two
-     * pages has each named directly.
-     *
-     * THE LIVE STRIP IS THE CROSS-CHECK, because the scroll comes from a file
-     * Move writes lazily: page and immediately p-lock and it still reads the
-     * previous page. Where the strip names a bar, the scroll must land inside
-     * that bar; where they disagree the LIVE reading wins, since a stale
-     * scroll places the p-lock on a bar the user has already left. */
-    int scroll_ok = 0;
-    double scroll = 0.0;
-    if (rg && rg->valid && cslot >= 0 && cslot < CLIP_SLOTS &&
-        rg->slots[slot][cslot].exists && rg->slots[slot][cslot].have_scroll) {
-        scroll = rg->slots[slot][cslot].scroll_beats;
-        scroll_ok = 1;
-        if (bar >= 1 && isfinite(qpb) && qpb > 0.0) {
-            const double bar_lo = (double)(bar - 1) * qpb;
-            /* A half-step of slack: the two are measured independently and an
-             * exact-equality test on doubles would reject a correct pair. */
-            if (scroll < bar_lo - res * 0.5 ||
-                scroll >= bar_lo + qpb - res * 0.5)
-                scroll_ok = 0;
-        }
-    }
-
-    if (scroll_ok)
-        rc = step_plock_phase_from_scroll(scroll, step, res,
-                                          rg ? rg->step_grid_triplet : 0,
-                                          clip_len, &phase);
-    else
-        rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
-    if (scroll_ok)
-        rc = step_plock_phase_from_scroll(scroll, step, res,
-                                          rg ? rg->step_grid_triplet : 0,
-                                          clip_len, &phase);
-    else
-        rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
-    /* The clip's extent, for a caller that needs to evaluate a lane at that
-     * phase: it is computed here anyway (the OUTSIDE_CLIP bound), and it is
-     * the one window that does not vanish when the transport stops. */
+    *out_phase = NAN;
+    static move_model_t m;
+    if (!move_model_get(&m) || slot >= MM_TRACKS) return STEP_PLOCK_CLIP_PENDING;
+    const mm_track_t *T = &m.track[slot];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return STEP_PLOCK_CLIP_PENDING;
+    const mm_clip_t *c = &T->slot[cs];
+    if (!(m.step_beats > 0.0)) return STEP_PLOCK_NO_GRID;
+    if (!(c->scroll >= 0.0)) return STEP_PLOCK_NO_BAR;          /* not a MIDI clip */
+    const double clip_len = c->loop_on ? c->loop_end : c->region_end;
+    double phase = 0.0;
+    const int rc = step_plock_phase_from_scroll(c->scroll, step, m.step_beats,
+                                                m.step_triplet, clip_len, &phase);
     if (out_clip_len) *out_clip_len = clip_len;
-    /* HOW LONG A STEP IS, so a p-lock can end at the end of its own step
-     * instead of standing until the next point. The grid resolution lives
-     * here and nowhere else -- the chain is told, never asked to work it out,
-     * the same split as the phase itself. */
-    if (out_step_len) *out_step_len = res;
+    if (out_step_len) *out_step_len = m.step_beats;
     if (rc == STEP_PLOCK_OK) *out_phase = phase;
     else if (slot < SHADOW_CHAIN_INSTANCES) {
-        char msg[144];
-        snprintf(msg, sizeof(msg),
-                 "lanes: step %d has no phase (reason %d, bar %d qpb %.2f "
-                 "res %.3f strip_track %d slot %d)",
-                 step, rc, bar, qpb, res, strip_track, (int)slot);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "lanes: step %d has no phase (reason %d, scroll %.3f grid %.4f%s len %.3f)",
+                 step, rc, c->scroll, m.step_beats, m.step_triplet ? "t" : "", clip_len);
         shadow_log(msg);
     }
     return rc;
 }
 
-/* Weak for the same reason: the tests/host units that compile this file
- * without the shim must still link. */
 void shim_step_mark_used(int step);
 __attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
 
