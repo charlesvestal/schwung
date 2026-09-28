@@ -73,18 +73,18 @@ static uint32_t st(uint32_t content) { move_model_t m = model(content); return m
 static void follow_tests(void)
 {
     /* Melodic: step 1 (60) pasted onto step 5 which holds 29 and 31 -- Move ADDS 60 there. */
-    mm_note_t pre[] = { {60, 0.0, 0.25, 100, 1}, {29, 1.0, 0.25, 100, 2}, {31, 1.0, 0.25, 100, 3} };
-    mm_note_t post[] = { {60, 0.0, 0.25, 100, 1}, {29, 1.0, 0.25, 100, 2}, {31, 1.0, 0.25, 100, 3}, {60, 1.0, 0.25, 100, 4} };
+    mm_note_t pre[] = { {60, 0.0, 0.25, 100, 1, 0, -1, 0}, {29, 1.0, 0.25, 100, 2, 0, -1, 0}, {31, 1.0, 0.25, 100, 3, 0, -1, 0} };
+    mm_note_t post[] = { {60, 0.0, 0.25, 100, 1, 0, -1, 0}, {29, 1.0, 0.25, 100, 2, 0, -1, 0}, {31, 1.0, 0.25, 100, 3, 0, -1, 0}, {60, 1.0, 0.25, 100, 4, 0, -1, 0} };
     ef_notes_t P = notes(pre, 3, 0xA), Q = notes(post, 4, 0xB);
     CHECK(edit_follow_is_paste(&P, &Q, 0.0, 1.0, 0.25) == 1, "a real paste is confirmed");
     CHECK(edit_follow_is_paste(&P, &P, 0.0, 1.0, 0.25) == -1, "nothing new yet");
     CHECK(edit_follow_is_paste(&P, &Q, 0.0, 2.0, 0.25) == 0, "new note outside the destination: not this paste");
-    mm_note_t odd[] = { {60, 0.0, 0.25, 100, 1}, {29, 1.0, 0.25, 100, 2}, {31, 1.0, 0.25, 100, 3}, {61, 1.0, 0.25, 100, 4} };
+    mm_note_t odd[] = { {60, 0.0, 0.25, 100, 1, 0, -1, 0}, {29, 1.0, 0.25, 100, 2, 0, -1, 0}, {31, 1.0, 0.25, 100, 3, 0, -1, 0}, {61, 1.0, 0.25, 100, 4, 0, -1, 0} };
     ef_notes_t O = notes(odd, 4, 0xB);
     CHECK(edit_follow_is_paste(&P, &O, 0.0, 1.0, 0.25) == 0, "a different pitch is not a copy (the user played it)");
     /* Paste onto an occupied step REPLACES a same-pitch note: old id gone, new id -- still confirmed. */
-    mm_note_t pre2[] = { {36, 0.0, 0.25, 100, 1}, {36, 1.0, 0.25, 100, 2} };
-    mm_note_t post2[] = { {36, 0.0, 0.25, 100, 1}, {36, 1.0, 0.25, 100, 4} };
+    mm_note_t pre2[] = { {36, 0.0, 0.25, 100, 1, 0, -1, 0}, {36, 1.0, 0.25, 100, 2, 0, -1, 0} };
+    mm_note_t post2[] = { {36, 0.0, 0.25, 100, 1, 0, -1, 0}, {36, 1.0, 0.25, 100, 4, 0, -1, 0} };
     ef_notes_t P2 = notes(pre2, 2, 0xA), Q2 = notes(post2, 2, 0xB);
     CHECK(edit_follow_is_paste(&P2, &Q2, 0.0, 1.0, 0.25) == 1, "replace-by-pitch is a paste");
 

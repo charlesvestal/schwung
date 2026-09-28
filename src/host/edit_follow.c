@@ -77,9 +77,12 @@ int edit_follow_is_paste(const ef_notes_t *pre, const ef_notes_t *post, double s
         int matched = 0;
         for (int j = 0; j < pre->n && !matched; j++) {
             const mm_note_t *s = &pre->notes[j];
+            /* pitch_offset too: in 16 Pitches mode every note sits on the
+             * pad's own note and the pitch lives only in its expression. */
             matched = s->pitch == a->pitch && in_span(s->start, src, len) &&
                       fabs((s->start - src) - (a->start - dst)) < 1e-6 &&
-                      fabs(s->dur - a->dur) < 1e-6 && fabs(s->vel - a->vel) < 1e-3;
+                      fabs(s->dur - a->dur) < 1e-6 && fabs(s->vel - a->vel) < 1e-3 &&
+                      fabs(s->pitch_offset - a->pitch_offset) < 1e-6;
         }
         if (!matched) return 0;
         appeared++;
