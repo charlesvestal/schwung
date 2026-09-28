@@ -93,6 +93,7 @@ int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
                 p += 8;
                 if (cnt > MM_POINTS_MAX || (size_t)cnt * 16u > len - p) return -1;
                 if (type == MM_LANE_PITCH) {
+                    nt.has_pitch = cnt > 0;
                     /* The pitch at the note's start: the point at t=0, else the first. */
                     for (uint32_t k = 0; k < cnt; k++) {
                         const uint8_t *pt = raw + p + 16u * k;
@@ -1197,7 +1198,8 @@ static void playing_clips_update(const move_model_t *m)
         d->n = d->valid ? n : 0;
         for (int i = 0; i < d->n; i++)
             d->note[i] = (mm_play_note_t){ scratch[i].pitch, (float)scratch[i].pitch_offset,
-                                           scratch[i].vel, scratch[i].start, scratch[i].dur };
+                                           scratch[i].has_pitch, scratch[i].vel, scratch[i].start,
+                                           scratch[i].dur };
         play_flip(t, now);
     }
 }

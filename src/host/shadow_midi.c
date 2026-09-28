@@ -316,7 +316,25 @@ static int shadow_chain_apply_transpose(int slot, uint8_t *msg)
 /* Dispatch MIDI to all matching slots (supports recv=All broadcasting).
  * When skip_direct is 1, slots with receive=All and forward=THRU are skipped
  * because they receive MIDI via the direct MIDI_IN path instead. */
+static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct,
+                          int only_all);
+
 void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct)
+{
+    dispatch_impl(pkt, log_on, midi_log_count, skip_direct, 0);
+}
+
+/* Drum lanes (drum_lanes.h): a Move drum track's pads as MPE -- one channel
+ * per pad -- through exactly this routing, but only into slots listening on
+ * All. MPE uses every channel, so a slot on channel N would otherwise catch
+ * pad N's lane by accident. */
+void shadow_chain_dispatch_lane_midi(const uint8_t *pkt)
+{
+    dispatch_impl(pkt, 0, NULL, 0, 1);
+}
+
+static void dispatch_impl(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct,
+                          int only_all)
 {
     const plugin_api_v2_t *pv2 = *host_plugin_v2;
     uint8_t status_usb = pkt[1];
@@ -343,6 +361,8 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
 
         /* Check channel match: slot receives this channel, or slot is set to All (-1) */
         if (host_chain_slots[i].channel != (int)midi_ch && host_chain_slots[i].channel != -1)
+            continue;
+        if (only_all && host_chain_slots[i].channel != -1)
             continue;
 
         /* Lazy activation check — any loaded component (synth, audio FX,
@@ -434,7 +454,7 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             host_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
     }
 
-    if (log_on && type == 0x90 && pkt[3] > 0 && *midi_log_count < 100) {
+    if (log_on && midi_log_count && type == 0x90 && pkt[3] > 0 && *midi_log_count < 100) {
         char dbg[256];
         snprintf(dbg, sizeof(dbg),
             "midi_out: note=%u vel=%u ch=%u dispatched=%d",
