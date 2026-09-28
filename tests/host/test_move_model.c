@@ -127,8 +127,59 @@ static void test_resolution(void)
     CHECK(mm_parse_resolution("Free", &b, &t) == -1);
 }
 
+/* flip's History<HistoryStoreMemory> laid out as libc++ does it, with three
+ * transactions, walked through the undo/redo positions Move can be in. */
+static void test_history(void)
+{
+    const uint64_t VH = IMG_LO + 0x10, VS = IMG_LO + 0x20, VT = IMG_LO + 0x30, VI = IMG_LO + 0x40;
+    const uint64_t vh[] = { VH }, vs[] = { VS }, vt[] = { VT };
+    mm_hist_vps_t v = { vh, 1, vs, 1, vt, 1 };
+    const uint64_t obj = FAKE_BASE + 0x2000, sent = obj + 0x20;
+    const uint64_t n1 = FAKE_BASE + 0x3000, n2 = FAKE_BASE + 0x3100, n3 = FAKE_BASE + 0x3200;
+    memset(mem + 0x2000, 0, 0x1400);
+    put(obj, VH); put(obj + 0x10, VS);
+    /* sentinel <-> n1 <-> n2 <-> n3 <-> sentinel */
+    put(sent, n3); put(sent + 8, n1); put(obj + 0x30, 3);
+    const uint64_t nodes[3] = { n1, n2, n3 };
+    for (int i = 0; i < 3; i++) {
+        uint64_t nd = nodes[i];
+        put(nd, i ? nodes[i - 1] : sent);
+        put(nd + 8, i < 2 ? nodes[i + 1] : sent);
+        put(nd + 0x10, VT); put(nd + 0x18, VI);
+        put(nd + 0x30, 100 + (uint64_t)i);                 /* nbr_id */
+    }
+    move_model_t m;
+
+    put(obj + 0x38, sent);                                 /* nothing undone */
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == 0 && m.hist_valid && m.hist_size == 3);
+    CHECK(m.hist_undo_node == n3 && m.hist_undo_nbr == 102 && m.hist_redo_node == 0);
+
+    put(obj + 0x38, n3);                                   /* one undo */
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == 0);
+    CHECK(m.hist_undo_node == n2 && m.hist_undo_nbr == 101 && m.hist_redo_node == n3 && m.hist_redo_nbr == 102);
+
+    put(obj + 0x38, n1);                                   /* everything undone */
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == 0);
+    CHECK(m.hist_undo_node == 0 && m.hist_redo_node == n1);
+
+    /* Empty. */
+    put(sent, sent); put(sent + 8, sent); put(obj + 0x30, 0); put(obj + 0x38, sent);
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == 0 && m.hist_valid && !m.hist_undo_node && !m.hist_redo_node);
+
+    /* Any vptr that is not the resolved one is NOT a history: invalid. */
+    put(sent, n3); put(sent + 8, n1); put(obj + 0x30, 3); put(obj + 0x38, sent);
+    put(n3 + 0x10, VT + 8);
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == -1 && !m.hist_valid);
+    put(n3 + 0x10, VT);
+    put(obj + 0x10, VS + 8);
+    CHECK(mm_history_read(fake_read, NULL, obj, &v, &m) == -1 && !m.hist_valid);
+    put(obj + 0x10, VS);
+    CHECK(mm_history_read(fake_read, NULL, 0, &v, &m) == -1);
+}
+
 int main(void)
 {
+    test_history();
     test_resolution();
     test_stub();
     test_sso();

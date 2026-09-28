@@ -31,6 +31,7 @@ typedef struct {
     char target[16];
     char param[32];
     int  track, slot;
+    lane_fingerprint_t fp;         /* for re-creating a lane a clear freed */
     int  nb, na;
     lane_point_t before[LANE_POINTS_MAX];   /* the destination span, before */
     lane_point_t after[LANE_POINTS_MAX];    /* ...and after the paste */
@@ -88,6 +89,19 @@ int lane_voice_scope(const lane_t *ln, void *vs);
  * `after` (1, a redo). A lane that was since cleared is re-created. Returns
  * the lanes restored. */
 int lane_journal_apply(lane_store_t *st, const lane_journal_entry_t *je, int to_after);
+
+/* SCHWUNG'S OWN EDITS -- a take, a p-lock, a clear -- journaled for the
+ * unified Undo (undo_timeline.h). Recorded as whole lanes, before and after:
+ * `before` is the store when the edit began (a take: when Record armed),
+ * `after` the store now. A lane that did not change is not recorded. The
+ * entry's span is the whole timeline, so lane_journal_apply puts back the
+ * whole lane. Returns the lanes recorded, or -1 when more than
+ * LANE_JOURNAL_LANES changed -- refused whole, and then the edit is simply
+ * not undoable from the button (Slot Settings' Undo still is). */
+#define LANE_EDIT_WHOLE_LO  (-1.0e12)
+#define LANE_EDIT_WHOLE_LEN ( 2.0e12)
+enum { LANE_EDIT_PLOCK = 1, LANE_EDIT_TAKE, LANE_EDIT_CLEAR, LANE_EDIT_OTHER };
+int lane_journal_diff(const lane_store_t *before, const lane_store_t *after, lane_journal_entry_t *je);
 
 /* Move every lane of (track, slot) into `sh` and out of the store. */
 int lane_stash_row(lane_store_t *st, int track, int slot, lane_stash_t *sh);

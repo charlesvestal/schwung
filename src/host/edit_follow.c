@@ -99,7 +99,7 @@ static void appeared_pitches(const ef_notes_t *pre, const ef_notes_t *post, char
         if (known || a->pitch < 0 || a->pitch > 127 || seen[a->pitch]) continue;
         seen[a->pitch] = 1;
         int k = snprintf(out + w, cap - w, "%s%d", n ? "," : " v=", a->pitch);
-        if (k < 0 || (size_t)k >= cap - w) { out[w] = '\0'; break; }
+        if (k < 0 || (size_t)k >= cap - w) { out[0] = '\0'; return; }   /* all or nothing */
         w += (size_t)k;
         n++;
     }
@@ -174,7 +174,7 @@ static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_n
             if (verdict < 0) continue;                 /* only the automation moved so far */
             if (verdict > 0) {
                 uint32_t jid = g_next_jid++;
-                char voices[80];
+                char voices[96];   /* + ~40 of span fields < MMS_CMD_VAL; a list that overflows is dropped whole (unscoped) */
                 appeared_pitches(pn, nn, voices, sizeof voices);
                 snprintf(v, sizeof v, "%d %d %.9g %.9g %.9g %u%s", in->track, in->slot,
                          in->src, in->dst, in->len, jid, voices);
