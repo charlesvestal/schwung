@@ -2090,20 +2090,21 @@ static uint32_t spi_slot_probe_burst_max;
  * but allowing Move to process pad events faster after ioctl returns.
  */
 /* === DRUM LANES (prototype, drum_lanes.h) ===
- * A Move drum track's pads, sequenced and live, sent on as that track's MIDI in
+ * A Move drum track's pads, sequenced and live, sent on as THAT TRACK's MIDI in
  * MPE form (one channel per pad, pitch as per-note bend, CC 3 = 16 Pitches)
- * through the slots' own dispatch -- receive/forward channel, transpose and
- * MIDI FX apply -- into slots set to Receive All. Off unless drum_lanes.conf
- * names the track. Runs on the SPI callback before the slots render this
- * block, so a note delivered here sounds in it. */
+ * through the slots' own dispatch: the slot listening to the track (slot N for
+ * track N by default) gets them, pad channels intact, with transpose and MIDI
+ * FX applied. Off unless drum_lanes.conf names the track. Runs on the SPI
+ * callback before the slots render this block, so a note sounds in it.
+ * ctx = the source track index. */
 static void drum_lanes_emit(void *ctx, uint8_t status, uint8_t d1, uint8_t d2) {
-    (void)ctx;
     const uint8_t pkt[4] = { (uint8_t)(status >> 4), status, d1, d2 };   /* cable 0, CIN = type */
-    shadow_chain_dispatch_lane_midi(pkt);
+    shadow_chain_dispatch_lane_midi(pkt, (int)(intptr_t)ctx);
 }
 
 static void drum_lanes_render_tick(void) {
     static dl_live_t live;                 /* the selected track's pads, played now */
+    static int live_track = 0;             /* the track live notes were last routed from */
     static mm_live_rec_t live_recs[16];
     static dl_track_t st[MM_TRACKS];
     static int was_on[MM_TRACKS];
@@ -2111,14 +2112,14 @@ static void drum_lanes_render_tick(void) {
     int on[MM_TRACKS], any = 0;
     for (int t = 0; t < MM_TRACKS; t++) {
         on[t] = __atomic_load_n(&dl_cfg_on[t], __ATOMIC_ACQUIRE);
-        if (!on[t] && was_on[t]) dl_all_off(&st[t], drum_lanes_emit, NULL);   /* switched off */
+        if (!on[t] && was_on[t]) dl_all_off(&st[t], drum_lanes_emit, (void *)(intptr_t)t);   /* switched off */
         was_on[t] = on[t];
         any |= on[t];
     }
     if (!any) {
         /* Off: re-prime on the way back, so notes played meanwhile are
          * history rather than a burst replayed from the persisting records. */
-        dl_live_all_off(&live, drum_lanes_emit, NULL);
+        dl_live_all_off(&live, drum_lanes_emit, (void *)(intptr_t)live_track);
         live.primed = 0;
         return;
     }
@@ -2149,7 +2150,7 @@ static void drum_lanes_render_tick(void) {
             w.ls = c->loop_on ? c->loop_start : c->region_start;
             w.le = c->loop_on ? c->loop_end : c->region_end;
         }
-        dl_block(&st[t], clip, w, pos0, blk, drum_lanes_emit, NULL);
+        dl_block(&st[t], clip, w, pos0, blk, drum_lanes_emit, (void *)(intptr_t)t);
     }
 
     /* LIVE: the pads being played now, as Move's engine carries them -- the
@@ -2157,7 +2158,14 @@ static void drum_lanes_render_tick(void) {
     const int n = move_model_live_read(live_recs, 16);
     if (n > 0) {
         const int t = (model_live && m.selected_track >= 0 && m.selected_track < MM_TRACKS) ? m.selected_track : -1;
-        dl_live_ingest(&live, live_recs, n, t >= 0 && on[t], drum_lanes_emit, NULL);
+        /* A note-off follows its note to the track it came from: the ingester
+         * only emits offs for lanes it started, and the source is kept while
+         * any live lane still sounds. */
+        int sounding = 0;
+        for (int k = 0; k < DL_LANES; k++) sounding |= (live.id[k] != 0);
+        if (!sounding && t >= 0) live_track = t;
+        dl_live_ingest(&live, live_recs, n, t >= 0 && on[t] && t == live_track, drum_lanes_emit,
+                       (void *)(intptr_t)live_track);
     }
 }
 
