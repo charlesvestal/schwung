@@ -573,6 +573,9 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   did it; nothing is mirrored Move did not do. Rules were measured against
   Move's OWN automation envelopes -- a paste REPLACES the destination step's
   automation, Delete+step KEEPS it. See `docs/MOVE_MODEL.md`.
+  **A drum paste is VOICE-scoped**: the pitches that appeared name the voices,
+  the module's declared hierarchy names their keys (`lane_voice_map.mjs`,
+  keyed to the synth by NAME in the chain), and no map means whole-step.
 - **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
   Clip, loop, launch beat, step page and grid are READ; deletions and copies
   are diffs of it. Several bullets below describe the LED / step-strip /

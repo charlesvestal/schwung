@@ -2,6 +2,7 @@
 #include "lane_edit.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int span_points(const lane_t *ln, double lo, double len, lane_point_t *out)
@@ -30,7 +31,7 @@ static void replace_span(lane_t *ln, double lo, double len, const lane_point_t *
 }
 
 int lane_paste_span(lane_store_t *st, int track, int slot, double src, double dst,
-                    double len, lane_journal_entry_t *je)
+                    double len, lane_journal_entry_t *je, lane_scope_fn scope, void *scope_ctx)
 {
     if (!st || !je || !(len > 0.0)) return 0;
     uint32_t id = je->id;
@@ -44,6 +45,7 @@ int lane_paste_span(lane_store_t *st, int track, int slot, double src, double ds
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &st->lanes[i];
         if (!lane_is_for_clip(ln, track, slot)) continue;
+        if (scope && !scope(ln, scope_ctx)) continue;
         lane_point_t s[LANE_POINTS_MAX], d[LANE_POINTS_MAX];
         int ns = span_points(ln, src, len, s), nd = span_points(ln, dst, len, d);
         if (!ns && !nd) continue;
@@ -55,6 +57,7 @@ int lane_paste_span(lane_store_t *st, int track, int slot, double src, double ds
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &st->lanes[i];
         if (!lane_is_for_clip(ln, track, slot)) continue;
+        if (scope && !scope(ln, scope_ctx)) continue;
         lane_point_t s[LANE_POINTS_MAX];
         lane_span_rec_t *r = &je->rec[je->nrec];
         int ns = span_points(ln, src, len, s);
@@ -130,4 +133,51 @@ int lane_unstash_row(lane_store_t *st, lane_stash_t *sh, int track, int slot)
     }
     memset(sh, 0, sizeof *sh);
     return done;
+}
+
+int lane_voice_scope_init(lane_voice_scope_t *vs, const char *map, const char *notes)
+{
+    if (!vs) return 0;
+    memset(vs, 0, sizeof *vs);
+    if (!map || !*map || !notes || !*notes) return 0;
+    int any = 0;
+    for (const char *p = notes; *p;) {
+        char *end;
+        long note = strtol(p, &end, 10);
+        if (end == p) break;
+        any = 1;
+        /* Find "<note>:" at the start of a segment. */
+        for (const char *seg = map; seg && *seg && vs->n < LANE_VOICE_SCOPE_NOTES;) {
+            char *colon;
+            long n = strtol(seg, &colon, 10);
+            const char *next = strchr(seg, ';');
+            if (colon != seg && *colon == ':' && n == note) {
+                vs->lo[vs->n] = colon + 1;
+                vs->hi[vs->n] = next ? next : colon + 1 + strlen(colon + 1);
+                vs->n++;
+                break;
+            }
+            seg = next ? next + 1 : NULL;
+        }
+        p = (*end == ',') ? end + 1 : end;
+        if (*end && *end != ',') break;
+    }
+    return any;
+}
+
+int lane_voice_scope(const lane_t *ln, void *ctx)
+{
+    const lane_voice_scope_t *vs = ctx;
+    if (!ln || !vs || strcmp(ln->target, "synth") != 0) return 0;
+    const size_t pl = strlen(ln->param);
+    if (!pl) return 0;
+    for (int i = 0; i < vs->n; i++) {
+        for (const char *k = vs->lo[i]; k < vs->hi[i];) {
+            const char *e = k;
+            while (e < vs->hi[i] && *e != ',') e++;
+            if ((size_t)(e - k) == pl && memcmp(k, ln->param, pl) == 0) return 1;
+            k = e + 1;
+        }
+    }
+    return 0;
 }

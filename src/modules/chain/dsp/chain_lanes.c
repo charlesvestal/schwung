@@ -1588,15 +1588,44 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         double src = 0, dst = 0, len = 0;
         unsigned id = 0;
         inst->lanes_last_pasted = 0;
-        if (!val || sscanf(val, "%d %d %lf %lf %lf %u", &track, &slot, &src, &dst, &len, &id) != 6 ||
+        int used = 0;
+        inst->lanes_last_paste_scoped = 0;
+        if (!val || sscanf(val, "%d %d %lf %lf %lf %u%n", &track, &slot, &src, &dst, &len, &id, &used) != 6 ||
             !id || !lane_key_in_range(track, slot))
             return;
+        /* An optional " v=<note>,<note>" names the voices whose notes Move
+         * pasted. It scopes the paste only against a map built for the synth
+         * loaded NOW; otherwise the paste is whole-step, which is what a
+         * melodic track wants and the safe answer when the rack is unknown. */
+        static lane_voice_scope_t vs;          /* ~260 bytes; static keeps it off the callback's stack */
+        const char *v = strstr(val + used, "v=");
+        const int scoped = v && inst->lanes_voice_map_for[0] &&
+                           strcmp(inst->lanes_voice_map_for, inst->current_synth_module) == 0 &&
+                           lane_voice_scope_init(&vs, inst->lanes_voice_map, v + 2);
         lane_release_clip(inst, track, slot);
         lane_journal_entry_t *je = &inst->lanes_journal[id % LANE_JOURNAL_DEPTH];
         je->id = id;
-        int rc = lane_paste_span(&inst->lanes, track, slot, src, dst, len, je);
+        int rc = lane_paste_span(&inst->lanes, track, slot, src, dst, len, je,
+                                 scoped ? lane_voice_scope : NULL, scoped ? &vs : NULL);
+        inst->lanes_last_paste_scoped = scoped;
         if (rc < 0) je->id = 0;               /* refused whole: nothing to undo */
         inst->lanes_last_pasted = rc;
+        return;
+    }
+    /* "<module> <map>" -- the map for the named synth, or just "<module>"
+     * for one that is not a rack. Naming the module is what lets a stale push
+     * (the UI read the hierarchy, then the synth changed) be refused. */
+    if (strcmp(sub, "voice_map") == 0) {
+        if (!val) return;
+        const char *sp = strchr(val, ' ');
+        const size_t nl = sp ? (size_t)(sp - val) : strlen(val);
+        if (!nl || nl >= MAX_NAME_LEN || strncmp(val, inst->current_synth_module, nl) != 0 ||
+            inst->current_synth_module[nl] != '\0')
+            return;
+        const char *map = sp ? sp + 1 : "";
+        if (strlen(map) >= sizeof inst->lanes_voice_map) map = "";   /* never a truncated map */
+        snprintf(inst->lanes_voice_map, sizeof inst->lanes_voice_map, "%s", map);
+        snprintf(inst->lanes_voice_map_for, sizeof inst->lanes_voice_map_for, "%.*s", (int)nl, val);
         return;
     }
     if (strcmp(sub, "journal") == 0) {
@@ -1780,6 +1809,20 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * BEFORE taking one so the snapshot itself can report it. */
     if (strcmp(sub, "pasted") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_pasted);
+    if (strcmp(sub, "paste_scoped") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_paste_scoped);
+    /* The synth a voice map is NEEDED for: the loaded synth's name when the
+     * map was built for a different one (or none), "" when it is current or
+     * no synth is loaded. One read answers the UI's whole question, so the
+     * hierarchy -- a big read -- is fetched once per synth load, not polled. */
+    if (strcmp(sub, "voice_map_need") == 0) {
+        if (!inst->current_synth_module[0] ||
+            strcmp(inst->lanes_voice_map_for, inst->current_synth_module) == 0)
+            return snprintf(buf, buf_len, "%s", "");
+        return snprintf(buf, buf_len, "%s", inst->current_synth_module);
+    }
+    if (strcmp(sub, "voice_map_for") == 0)
+        return snprintf(buf, buf_len, "%s", inst->lanes_voice_map_for);
     if (strcmp(sub, "journaled") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_journaled);
     if (strcmp(sub, "stashed") == 0)
