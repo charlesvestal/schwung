@@ -2160,9 +2160,11 @@ static void drum_lanes_render_tick(void) {
         dl_window_t w = { 0.0, 0.0, 0 };
         /* The decoded notes must be THIS clip's: a launch is decoded a reader
          * tick (~20 ms) after the model says so, and silence beats the old clip. */
-        if (c && clip->valid && clip->clip_id == c->clip_id && now >= 0.0 &&
+        /* Behind the clock by DL_SEQ_LAG_MS, so it lands with Move's audio. */
+        const double lagged = now - (bpm > 0.0f ? DL_SEQ_LAG_MS * bpm / 60000.0 : 0.0);
+        if (c && clip->valid && clip->clip_id == c->clip_id && now >= 0.0 && lagged >= 0.0 &&
             !(m.clock_valid && !m.playing)) {
-            pos0 = mm_clip_position(c, T->start_beats, now);
+            pos0 = mm_clip_position(c, T->start_beats, lagged);
             w.loop = c->loop_on;
             w.ls = c->loop_on ? c->loop_start : c->region_start;
             w.le = c->loop_on ? c->loop_end : c->region_end;
