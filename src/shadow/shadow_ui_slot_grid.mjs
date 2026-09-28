@@ -129,6 +129,16 @@ export const SLOT_SEND_PARAMS = [
 ];
 
 /*
+ * DRUM RACK MPE (drum_lanes.h): the 16 Pitches notes Move never sends, added
+ * to every Move drum track this slot hears. Its own page because the values
+ * page is eight params against eight knobs.
+ */
+export const SLOT_DRUM_PARAMS = [
+    { key: "drum_mpe", name: "Drum MPE", short_name: "DrMPE", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 0 },
+];
+
+/*
  * The two slot LFOs, each its own page.
  *
  * They earn a grid rather than a menu: eight of the nine things an LFO has are
@@ -363,7 +373,7 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
                         ? { label: a.label, action: a.action, value: clipLabel }
                         : { label: a.label, action: a.action }));
     /*
-     * Page order is Main, Sends, LFO 1, LFO 2, Actions.
+     * Page order is Main, Sends, Drum Rack, LFO 1, LFO 2, Actions.
      *
      * The menu therefore lives on its OWN level rather than on root: a level
      * emits its menu straight after its own grids, before any level it
@@ -377,6 +387,7 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
             knobs: SLOT_GRID_PARAMS.map((p) => p.key),
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
                 .concat([{ level: "sends", label: "Sends" },
+                         { level: "drums", label: "Drum Rack" },
                          { level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
                          { level: "automation", label: "Automation" },
@@ -388,6 +399,11 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
             label: "Sends",
             knobs: SLOT_SEND_PARAMS.map((p) => p.key),
             params: SLOT_SEND_PARAMS.map((p) => ({ key: p.key })),
+        },
+        drums: {
+            label: "Drum Rack",
+            knobs: SLOT_DRUM_PARAMS.map((p) => p.key),
+            params: SLOT_DRUM_PARAMS.map((p) => ({ key: p.key })),
         },
     };
     Object.assign(levels, lfoLevels([1, 2]));
@@ -424,7 +440,7 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
 
 /** Every declared param across the slot page and both LFO pages. */
 export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
+    return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS).concat(SLOT_DRUM_PARAMS)
                            .concat(lfoParams(1)).concat(lfoParams(2));
 }
 

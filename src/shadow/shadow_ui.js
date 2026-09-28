@@ -5777,6 +5777,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },  // 0 = Post (slot synth only), 1 = Pre (also inject to Move native)
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:drum_mpe", label: "Drum MPE", type: "int", min: 0, max: 1, step: 1 },  // 16 Pitches notes from the drum tracks this slot hears
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     /* Automation lanes: the only gesture that undoes a recorded knob move. No
@@ -9697,11 +9698,12 @@ function saveChainConfigToDir(dir) {
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
             const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            const drumMpe = parseInt(getSlotParam(i, "slot:drum_mpe") || "0", 10) ? 1 : 0;
             /* The sends the shim keeps for a slot with no module (a slot with
              * one saves its sends in its own state). */
             const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
                                 parseInt(getSlotParam(i, "slot:empty_send2") || "0", 10) || 0];
-            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, empty_sends: emptySends, forward_channel: fwd, muted: muted, soloed: soloed });
+            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, pan: pan, empty_sends: emptySends, forward_channel: fwd, muted: muted, soloed: soloed, drum_mpe: drumMpe });
         }
         host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
     } catch (e) {
@@ -9934,6 +9936,9 @@ function loadChainConfigFromDir(dir) {
             const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
             setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
+            /* Always written: absent (an older set) means off, and skipping it
+             * would carry the previous set's value into this one. */
+            setSlotParamWithTimeout(i, "slot:drum_mpe", s.drum_mpe ? "1" : "0", 500);
             if (!ownsMix && typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
             if (!ownsMix && typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
         }

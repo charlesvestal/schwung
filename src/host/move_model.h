@@ -74,6 +74,7 @@ typedef struct {
     double    speaker_value, solo_value;
     int       mode;
     int       playing_slot;  /* 0..7, or -1 */
+    int       midi_out_ep;   /* Move's MIDI output endpoint: channel ep + 1; -1 = off */
     double    start_beats;   /* transport beat the current clip started on */
     mm_clip_t slot[MM_SLOTS];
 } mm_track_t;

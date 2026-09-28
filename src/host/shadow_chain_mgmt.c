@@ -3183,6 +3183,10 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         }
         return 1;
     }
+    if (strcmp(key, "slot:drum_mpe") == 0) {
+        shadow_chain_slots[slot].drum_mpe = atoi(value) ? 1 : 0;
+        return 1;
+    }
     if (strcmp(key, "slot:transpose") == 0) {
         int t = atoi(value);
         if (t < -12) t = -12;
@@ -3222,6 +3226,9 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = shadow_chain_slots[slot].channel;
         return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);
+    }
+    if (strcmp(key, "slot:drum_mpe") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].drum_mpe);
     }
     if (strcmp(key, "slot:transpose") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].transpose);

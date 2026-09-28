@@ -54,6 +54,7 @@ export const SLOT_SETTINGS = [
     { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:drum_mpe", label: "Drum MPE", type: "int", min: 0, max: 1, step: 1 },  // 16 Pitches notes from the drum tracks this slot hears
     /* Automation lanes. The third form of this screen (CHAIN_SETTINGS_ITEMS)
      * and the knob grid's Actions menu carry the same row and reach the same
      * implementation -- a row on two of the three is the asymmetry the `buses`

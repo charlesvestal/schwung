@@ -78,7 +78,7 @@ function makeSlot(over) {
    * for the same one flip. The assertion below is therefore on the NAME, and
    * seeing "Main - 2" here means somebody moved them back onto root.
    */
-  if (grids.length !== 4) fail("expected 4 grid pages (Main + Sends + two LFOs), got " + grids.length);
+  if (grids.length !== 5) fail("expected 5 grid pages (Main + Sends + Drum Rack + two LFOs), got " + grids.length);
   /* TWO menus now: Automation and Actions.
    *
    * Automation is its own section rather than three rows among the Actions
@@ -94,7 +94,7 @@ function makeSlot(over) {
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "Sends", "LFO 1", "LFO 2", "Automation", "Actions"];
+  const order = ["Main", "Sends", "Drum Rack", "LFO 1", "LFO 2", "Automation", "Actions"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }
@@ -102,7 +102,8 @@ function makeSlot(over) {
      count derived from the declaration rather than a literal, so adding a third
      send moves this without editing it. */
   for (const g of grids) {
-    const want = g.name === "Sends" ? SG.SLOT_SEND_PARAMS.length : 8;
+    const want = g.name === "Sends" ? SG.SLOT_SEND_PARAMS.length
+               : g.name === "Drum Rack" ? SG.SLOT_DRUM_PARAMS.length : 8;
     if ((g.keys || []).length !== want) {
       fail("page " + JSON.stringify(g.name) + " should hold " + want +
            " knobs, got " + (g.keys || []).length);
@@ -829,7 +830,7 @@ function makeMaster(over) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: slot grid contract — Main + Sends + LFO 1 + LFO 2 + Actions in that order, " +
+console.log("PASS: slot grid contract — Main + Sends + Drum Rack + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all four storage conventions, " +
             "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered, " +
             "LFO targets resolved per surface. Master FX: the same four pages, " +

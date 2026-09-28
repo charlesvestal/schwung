@@ -2090,16 +2090,16 @@ static uint32_t spi_slot_probe_burst_max;
  * but allowing Move to process pad events faster after ioctl returns.
  */
 /* === DRUM LANES (prototype, drum_lanes.h) ===
- * A Move drum track's pads, sequenced and live, sent on as THAT TRACK's MIDI in
- * MPE form (one channel per pad, pitch as per-note bend, CC 3 = 16 Pitches)
- * through the slots' own dispatch: the slot listening to the track (slot N for
- * track N by default) gets them, pad channels intact, with transpose and MIDI
- * FX applied. Off unless drum_lanes.conf names the track. Runs on the SPI
- * callback before the slots render this block, so a note sounds in it.
- * ctx = the source track index. */
+ * The 16 Pitches notes Move never sends, added to a drum track's own MIDI
+ * output: on the track's output channel, through the same dispatch as Move's
+ * MIDI_OUT echo, so slot routing (receive channel, forward, transpose, MIDI FX)
+ * treats them as Move's. A track whose output is off gets its plain hits sent
+ * too, on channel track+1. Off unless drum_lanes.conf names the track. Runs on
+ * the SPI callback before the slots render this block, so a note sounds in it. */
 static void drum_lanes_emit(void *ctx, uint8_t status, uint8_t d1, uint8_t d2) {
-    const uint8_t pkt[4] = { (uint8_t)(status >> 4), status, d1, d2 };   /* cable 0, CIN = type */
-    shadow_chain_dispatch_lane_midi(pkt, (int)(intptr_t)ctx);
+    (void)ctx;
+    const uint8_t pkt[4] = { (uint8_t)(0x20 | (status >> 4)), status, d1, d2 };  /* cable 2, as Move's */
+    shadow_chain_dispatch_midi_to_slots(pkt, 0, NULL, 0);
 }
 
 static void drum_lanes_render_tick(void) {
@@ -2109,22 +2109,35 @@ static void drum_lanes_render_tick(void) {
     static dl_track_t st[MM_TRACKS];
     static int was_on[MM_TRACKS];
     static move_model_t m;                 /* 2.5 KB: static, off the callback's stack */
-    int on[MM_TRACKS], any = 0;
+    int on[MM_TRACKS] = { 0 }, any = 0;
+    int rx[SHADOW_CHAIN_INSTANCES], want[SHADOW_CHAIN_INSTANCES];
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        rx[i] = shadow_chain_slots[i].channel;
+        want[i] = shadow_chain_slots[i].drum_mpe;
+        any |= want[i];
+    }
+    if (any) {
+        move_model_get(&m);                /* torn: the last good snapshot */
+        const int live_model = m.valid && move_model_sync_active();
+        int ch[MM_TRACKS];
+        for (int t = 0; t < MM_TRACKS; t++)
+            ch[t] = dl_out_for(t, live_model ? m.track[t].midi_out_ep : -1).ch;
+        dl_tracks_wanted(SHADOW_CHAIN_INSTANCES, rx, want, ch, on);
+        any = 0;
+    }
     for (int t = 0; t < MM_TRACKS; t++) {
-        on[t] = __atomic_load_n(&dl_cfg_on[t], __ATOMIC_ACQUIRE);
-        if (!on[t] && was_on[t]) dl_all_off(&st[t], drum_lanes_emit, (void *)(intptr_t)t);   /* switched off */
+        if (!on[t] && was_on[t]) dl_all_off(&st[t], drum_lanes_emit, NULL);   /* switched off */
         was_on[t] = on[t];
         any |= on[t];
     }
     if (!any) {
         /* Off: re-prime on the way back, so notes played meanwhile are
          * history rather than a burst replayed from the persisting records. */
-        dl_live_all_off(&live, drum_lanes_emit, (void *)(intptr_t)live_track);
+        dl_live_all_off(&live, drum_lanes_emit, NULL);
         live.primed = 0;
         return;
     }
 
-    move_model_get(&m);                    /* torn: the last good snapshot */
     const int model_live = m.valid && move_model_sync_active();
     const double now = shadow_transport_beat_position();
     float bpm = shadow_transport_bpm();
@@ -2150,7 +2163,8 @@ static void drum_lanes_render_tick(void) {
             w.ls = c->loop_on ? c->loop_start : c->region_start;
             w.le = c->loop_on ? c->loop_end : c->region_end;
         }
-        dl_block(&st[t], clip, w, pos0, blk, drum_lanes_emit, (void *)(intptr_t)t);
+        const dl_out_t out = dl_out_for(t, model_live ? T->midi_out_ep : -1);
+        dl_block(&st[t], clip, w, pos0, blk, out, drum_lanes_emit, NULL);
     }
 
     /* LIVE: the pads being played now, as Move's engine carries them -- the
@@ -2164,8 +2178,8 @@ static void drum_lanes_render_tick(void) {
         int sounding = 0;
         for (int k = 0; k < DL_LANES; k++) sounding |= (live.id[k] != 0);
         if (!sounding && t >= 0) live_track = t;
-        dl_live_ingest(&live, live_recs, n, t >= 0 && on[t] && t == live_track, drum_lanes_emit,
-                       (void *)(intptr_t)live_track);
+        const dl_out_t out = dl_out_for(live_track, model_live ? m.track[live_track].midi_out_ep : -1);
+        dl_live_ingest(&live, live_recs, n, t >= 0 && on[t] && t == live_track, out, drum_lanes_emit, NULL);
     }
 }
 

@@ -49,6 +49,9 @@ typedef struct shadow_chain_slot_t {
      * shadow_chain_remap_channel -- that runs per MIDI event. */
     int default_forward_channel;
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
+    /* 1 = Drum Rack MPE (drum_lanes.h): every Move drum track this slot hears
+     * also sends its 16 Pitches notes. Per set; the UI owns persistence. */
+    int drum_mpe;
     /* 1 = some component in this slot declared capabilities.wants_sysex, so
      * cable-2 SysEx fragments are delivered to it. Read from the chain host at
      * load; slots that did not ask see no SysEx at all, which is the behaviour
