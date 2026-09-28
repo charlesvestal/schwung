@@ -2271,6 +2271,21 @@
       "min_host_version": "1.4.0"
     },
     {
+      "id": "drums-practice",
+      "name": "Drums Practice",
+      "description": "Scrolling rhythm trainer: read the chart, play the kit on the pads, see your timing. Fourteen grooves and sixteen rudiments, plus drills that name a drum by ear or by sight, scored as correct answers per minute. Brings its own drum synth, so no Move track is needed.",
+      "author": "graebe",
+      "component_type": "tool",
+      "subcategory": "tuner-analysis",
+      "tags": [
+        "drums"
+      ],
+      "github_repo": "graebe/schwung-drums-practice",
+      "default_branch": "main",
+      "asset_name": "drums-practice-module.tar.gz",
+      "min_host_version": "1.4.0"
+    },
+    {
       "id": "scratch",
       "name": "Scratch",
       "description": "Scratch digital samples with Serato control vinyl, Move's jog wheel or an encoder. Includes waveform and DVS-monitor views, pad-controlled crossfader cuts, MIDI fader support, looping and a low-cut filter.",
