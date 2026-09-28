@@ -972,6 +972,15 @@ typedef struct chain_instance {
     int    lanes_last_pasted;      /* lanes changed by the last paste_span, -1 refused */
     int    lanes_last_journaled;   /* lanes restored by the last journal undo/redo */
     int    lanes_last_stashed, lanes_last_unstashed;
+    /* WHICH PARAMETERS ARE WHICH VOICE'S, for a drum paste (Move copies only
+     * the selected voice's notes, so only that voice's automation may follow).
+     * Built in JS from the module's declared hierarchy (lane_voice_map.mjs),
+     * pushed here, and valid only for the synth it was built for -- a new
+     * synth invalidates it by name, so it can never scope a paste by another
+     * module's keys. "" with the name set means "known, not a rack". */
+    char   lanes_voice_map[16384];
+    char   lanes_voice_map_for[MAX_NAME_LEN];
+    int    lanes_last_paste_scoped;   /* 1 when the last paste_span was voice-scoped */
     /* How many times an adopting lane DISPLACED a lane already holding its
      * key. Counted rather than done silently, for the reason every other
      * destructive step here is counted: it drops somebody's points, and "my

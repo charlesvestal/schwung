@@ -83,6 +83,28 @@ int edit_follow_is_paste(const ef_notes_t *pre, const ef_notes_t *post, double s
     return appeared > 0 ? 1 : -1;                    /* -1: nothing new yet */
 }
 
+/* " v=36,38": the distinct pitches of the notes that APPEARED -- which, on a
+ * drum rack, are the voices Move pasted (it copies only the selected one's).
+ * The chain decides whether that scopes anything; on a melodic track it does
+ * not, and the paste stays whole-step. Empty when nothing appeared. */
+static void appeared_pitches(const ef_notes_t *pre, const ef_notes_t *post, char *out, size_t cap)
+{
+    int seen[128] = {0}, n = 0;
+    size_t w = 0;
+    out[0] = '\0';
+    for (int i = 0; post && pre && i < post->n; i++) {
+        const mm_note_t *a = &post->notes[i];
+        int known = 0;
+        for (int j = 0; j < pre->n && !known; j++) known = (pre->notes[j].id == a->id);
+        if (known || a->pitch < 0 || a->pitch > 127 || seen[a->pitch]) continue;
+        seen[a->pitch] = 1;
+        int k = snprintf(out + w, cap - w, "%s%d", n ? "," : " v=", a->pitch);
+        if (k < 0 || (size_t)k >= cap - w) { out[w] = '\0'; break; }
+        w += (size_t)k;
+        n++;
+    }
+}
+
 static const mm_clip_t *clip_of(const move_model_t *m, int t, int s)
 {
     if (t < 0 || t >= MM_TRACKS || s < 0 || s >= MM_SLOTS) return NULL;
@@ -121,7 +143,7 @@ static jrn_t *journal_pick(uint64_t clip_id, int for_redo)
 static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_notes_t *pn,
                        ef_cmd_fn cmd, void *ctx)
 {
-    char v[128];
+    char v[192];
     for (int i = 0; i < EF_PENDING; i++) {
         pend_t *p = &g_pend[i];
         if (!p->used) continue;
@@ -152,8 +174,10 @@ static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_n
             if (verdict < 0) continue;                 /* only the automation moved so far */
             if (verdict > 0) {
                 uint32_t jid = g_next_jid++;
-                snprintf(v, sizeof v, "%d %d %.9g %.9g %.9g %u", in->track, in->slot,
-                         in->src, in->dst, in->len, jid);
+                char voices[80];
+                appeared_pitches(pn, nn, voices, sizeof voices);
+                snprintf(v, sizeof v, "%d %d %.9g %.9g %.9g %u%s", in->track, in->slot,
+                         in->src, in->dst, in->len, jid, voices);
                 cmd(ctx, in->track, "lanes:paste_span", v);
                 journal_add(in, jid, state);
                 g_stats.pasted++;

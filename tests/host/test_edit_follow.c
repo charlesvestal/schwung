@@ -95,7 +95,7 @@ static void follow_tests(void)
     in.t_ms = 1000;
     edit_follow_intent(&in);
     edit_follow_on_change(&m1, &m0, &Q, &P, 1010, cmd, NULL);
-    CHECK(nlog == 1 && logged("1 lanes:paste_span 1 0 0 1 0.25 1"), "paste mirrored: %s", nlog ? log_[0] : "(none)");
+    CHECK(nlog == 1 && logged("1 lanes:paste_span 1 0 0 1 0.25 1 v=60"), "paste mirrored, naming the pasted voice: %s", nlog ? log_[0] : "(none)");
 
     /* Move's Undo: the clip returns EXACTLY to 0xA -> journal undo. */
     nlog = 0;

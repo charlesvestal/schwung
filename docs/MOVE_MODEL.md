@@ -286,19 +286,44 @@ clip id, both lanes back); duplicate (both lanes copied); a paste Move declined
 (nothing changed). Every one matched Move's notes, and nothing was mirrored that
 Move did not do.
 
+### A drum paste is VOICE-scoped
+
+Move pastes only the selected voice's notes on a drum track, so only that
+voice's automation may follow -- copying the whole step would put a snare's
+lock on a step that received only a kick, and overwrite the destination's own
+snare lock with it.
+
+- **The voices come from the notes, not the buttons.** `edit_follow` appends the
+  distinct pitches of the notes that APPEARED to the command
+  (`lanes:paste_span ... v=36`). It does not need to know which voice is
+  selected, and on a melodic track it names pitches the chain simply ignores.
+- **Which parameter is whose comes from the module's declaration**, through
+  `voices.mjs` and `child_key.mjs` (`src/shared/lane_voice_map.mjs`), never a
+  C copy. A pad spread over several child levels (dr32: Sample, Shape, Mix,
+  where only Sample declares notes) is merged by the shared
+  `child_index_param`. A key EVERY voice lists (`ui_current_pad`, `link`) is
+  the track's, and a voice paste leaves it -- and every lane on a non-voice
+  parameter or an FX -- where it is.
+- **The map is keyed to the synth by NAME on the chain side.** The UI asks
+  `lanes:voice_map_need` (one read per ~45 ticks, one slot per pass) and reads
+  the hierarchy only when a synth has no map -- once per load. A push naming a
+  synth that is no longer loaded is refused, a stale map never scopes, and a
+  failed hierarchy read pushes nothing rather than "not a rack".
+- No map, an empty map, or a map too big to carry (>16 KB, whole or not at
+  all) is a **whole-step** paste. Double Loop is always whole.
+- `lanes:paste_scoped` reports whether the last paste was scoped.
+
 ### Known limits
 
-- **Drum tracks**: Move pastes only the selected voice's notes, while Schwung's
-  automation belongs to the slot, not a voice -- a paste copies the step's
-  whole automation. Voice-scoped mirroring needs a module's voice → parameter
-  map on the host side.
 - **Schwung-only edits are not in Move's undo history.** Move's Undo undoes
   Move's last edit; a p-lock made in Schwung is not one. Undo/Redo across a
   mirrored edit restore that span to exactly how it was around that edit.
 - **Cross-track clip copies** are not mirrored (a different slot, usually a
   different module).
-- **Move's page copy does nothing on a two-page clip** (measured, three
-  attempts); ours follows it and does nothing too.
+- **Page copy** is Loop held + Copy + page, then RELEASE Copy before touching
+  the destination page. Holding Copy through both presses is not the gesture
+  (an earlier note here called page copy a no-op on two pages from exactly
+  that mistake).
 - Injected test presses reach Schwung's decoders only with
   `inject_as_hardware` set (offset 108) -- see `docs/DIAGNOSTICS.md`.
 

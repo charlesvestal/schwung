@@ -198,6 +198,7 @@ import {
  * store module from it.
  */
 import { getHostVersion } from '/data/UserData/schwung/shared/store_utils.mjs';
+import { laneVoiceMap } from '/data/UserData/schwung/shared/lane_voice_map.mjs';
 
 import {
     drawConnectBody
@@ -10338,6 +10339,37 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
  * to a file. It rides in the autosave pass so it inherits the preview guard
  * and the write cache rather than re-deriving them.
  */
+/*
+ * THE VOICE MAP, for a drum paste that follows Move's (lane_voice_map.mjs).
+ *
+ * One slot per pass, one read per pass: `lanes:voice_map_need` names the synth
+ * the chain has no map for, and only then is the hierarchy read -- once per
+ * synth load, since the map is keyed to the module's name on the chain side
+ * and a push naming a synth no longer loaded is refused there. A failed
+ * hierarchy read pushes NOTHING and is asked again next pass: a `null` must
+ * never become "not a rack", which would un-scope every paste on that slot
+ * until the synth changed.
+ */
+const VOICE_MAP_INTERVAL_TICKS = 45;
+let _voiceMapTick = 0;
+let _voiceMapSlot = 0;
+function reconcileLaneVoiceMaps() {
+    if (++_voiceMapTick < VOICE_MAP_INTERVAL_TICKS) return;
+    _voiceMapTick = 0;
+    const s = _voiceMapSlot;
+    _voiceMapSlot = (_voiceMapSlot + 1) % SHADOW_UI_SLOTS;
+    const need = getSlotParam(s, "lanes:voice_map_need");
+    if (!need) return;                        /* current, no synth, or no answer */
+    const raw = getSlotParam(s, "synth:ui_hierarchy");
+    if (raw === null) return;                 /* no answer: ask again later */
+    let map = "";
+    if (raw) {
+        try { map = laneVoiceMap(JSON.parse(raw)); }
+        catch (e) { debugLog("lanes: voice map for " + need + ": " + e); map = ""; }
+    }
+    setSlotParam(s, "lanes:voice_map", map ? need + " " + map : need);
+}
+
 function lanePathForSlot(i) {
     return activeSlotStateDir + "/lanes_" + i + ".json";
 }
@@ -27241,6 +27273,8 @@ globalThis.tick = function() {
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }
+
+    try { reconcileLaneVoiceMaps(); } catch (e) { debugLog("reconcileLaneVoiceMaps error: " + e); }
 
     /*
      * The LIST editor follows the focused voice — the grid's behaviour, for

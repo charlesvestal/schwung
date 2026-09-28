@@ -49,14 +49,40 @@ typedef struct {
     lane_t   lanes[LANE_MAX];
 } lane_stash_t;
 
-/* Replace [dst, dst+len) of every lane on (track, slot) with the points of
+/* Which lanes a paste moves. NULL means all of the clip's -- a melodic paste,
+ * where Move copies every note on the step. On a drum rack Move copies only
+ * the SELECTED voice's notes, so the chain passes a scope admitting only that
+ * voice's parameters (lane_voice_scope below). */
+typedef int (*lane_scope_fn)(const lane_t *ln, void *ctx);
+
+/* Replace [dst, dst+len) of every in-scope lane on (track, slot) with the points of
  * [src, src+len), shifted. A lane with nothing in either span is untouched.
  * The spans may overlap. Records before/after into `je` (id set by caller) so
  * lane_journal_apply can undo and redo it. Returns the lanes changed, or -1
  * if more than LANE_JOURNAL_LANES would be (refused whole, never partially:
  * a half-applied paste is exactly the desync this exists to prevent). */
 int lane_paste_span(lane_store_t *st, int track, int slot, double src, double dst,
-                    double len, lane_journal_entry_t *je);
+                    double len, lane_journal_entry_t *je, lane_scope_fn scope, void *scope_ctx);
+
+/* A voice scope over the wire map lane_voice_map.mjs builds:
+ *     "<note>:<key>,<key>,...;<note>:..."
+ * Parsed once per paste (the map is ~10 KB for a 32-pad rack; only the
+ * pasted notes' segments are kept), then asked once per lane. A lane is in
+ * scope when its target is "synth" and its param is listed under one of the
+ * notes. Keys under no voice -- the track's -- are out of scope: a voice paste
+ * leaves them where they are, as it leaves every other voice's notes. */
+#define LANE_VOICE_SCOPE_NOTES 16
+typedef struct {
+    int n;
+    const char *lo[LANE_VOICE_SCOPE_NOTES], *hi[LANE_VOICE_SCOPE_NOTES];
+} lane_voice_scope_t;
+
+/* Fill `vs` from `map` for the notes in `notes` ("36,38"). Returns 1 if the
+ * scope applies (a map, and at least one note parsed), 0 if the paste should
+ * be whole-step -- no map, i.e. not a rack. A note the map does not list
+ * contributes nothing, so a paste of only that voice moves no lanes. */
+int lane_voice_scope_init(lane_voice_scope_t *vs, const char *map, const char *notes);
+int lane_voice_scope(const lane_t *ln, void *vs);
 
 /* Put each recorded lane's span back to `before` (to_after = 0, an undo) or
  * `after` (1, a redo). A lane that was since cleared is re-created. Returns

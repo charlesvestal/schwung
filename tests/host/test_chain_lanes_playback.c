@@ -1094,6 +1094,64 @@ int main(void) {
         }
     }
 
+    /* ========== A DRUM PASTE MOVES ONLY THE PASTED VOICE'S LOCKS ======
+     *
+     * Move copies only the selected voice's notes on a drum track. The host
+     * names the voices it saw appear (" v=36"); the chain scopes the paste by
+     * the map the UI pushed for the synth loaded NOW -- and a map for another
+     * synth, or none, leaves the paste whole-step.
+     */
+    {
+        chain_instance_t *vp = calloc(1, sizeof(*vp));
+        CHECK(vp != NULL, "calloc for the voice-paste instance");
+        if (vp) {
+            vp->lanes_enabled = 1;
+            setup_fake_synth(vp);
+            snprintf(vp->current_synth_module, sizeof vp->current_synth_module, "dr32");
+            lane_t *k = lane_alloc(&vp->lanes, "synth", "pad1_tune", 0, 1, NULL);
+            lane_t *sn = lane_alloc(&vp->lanes, "synth", "pad2_tune", 0, 1, NULL);
+            CHECK(k && sn, "voice lanes alloc");
+            if (k && sn) {
+                lane_write_span(k, 0.0, 0.3f, 1, 0.25);
+                lane_write_span(sn, 0.0, 0.6f, 1, 0.25);
+
+                CHECK(strcmp(lane_get(vp, "voice_map_need"), "dr32") == 0,
+                      "no map yet: the chain asks for one for dr32 (%s)", lane_get(vp, "voice_map_need"));
+                lane_param_set(vp, "voice_map", "other 36:pad1_tune;37:pad2_tune");
+                CHECK(strcmp(lane_get(vp, "voice_map_need"), "dr32") == 0,
+                      "a map for a synth that is not loaded is refused");
+                lane_param_set(vp, "voice_map", "dr32 36:pad1_tune;37:pad2_tune");
+                CHECK(strcmp(lane_get(vp, "voice_map_need"), "") == 0, "map accepted");
+
+                lane_param_set(vp, "paste_span", "0 1 0 2 0.25 5 v=36");
+                CHECK(strcmp(lane_get(vp, "pasted"), "1") == 0 &&
+                      strcmp(lane_get(vp, "paste_scoped"), "1") == 0,
+                      "a kick paste moved %s lane(s), scoped=%s; want 1, 1",
+                      lane_get(vp, "pasted"), lane_get(vp, "paste_scoped"));
+                int kick_at_2 = 0, snare_at_2 = 0;
+                for (int i = 0; i < k->n; i++) kick_at_2 |= fabs(k->pts[i].phase - 2.0) < 1e-9;
+                for (int i = 0; i < sn->n; i++) snare_at_2 |= fabs(sn->pts[i].phase - 2.0) < 1e-9;
+                CHECK(kick_at_2 && !snare_at_2, "kick followed (%d), snare stayed (%d)", kick_at_2, snare_at_2);
+
+                /* The synth changes: the old map no longer applies. */
+                snprintf(vp->current_synth_module, sizeof vp->current_synth_module, "simian");
+                CHECK(strcmp(lane_get(vp, "voice_map_need"), "simian") == 0, "new synth: map needed again");
+                lane_param_set(vp, "paste_span", "0 1 0 3 0.25 6 v=36");
+                CHECK(strcmp(lane_get(vp, "paste_scoped"), "0") == 0 &&
+                      strcmp(lane_get(vp, "pasted"), "2") == 0,
+                      "a stale map must not scope: pasted=%s scoped=%s",
+                      lane_get(vp, "pasted"), lane_get(vp, "paste_scoped"));
+
+                /* "Known, not a rack": the name alone. */
+                lane_param_set(vp, "voice_map", "simian");
+                CHECK(strcmp(lane_get(vp, "voice_map_need"), "") == 0, "not-a-rack is an answer too");
+                lane_param_set(vp, "paste_span", "0 1 0 1 0.25 7 v=36");
+                CHECK(strcmp(lane_get(vp, "paste_scoped"), "0") == 0, "no map: whole-step");
+            }
+            free(vp);
+        }
+    }
+
     /* ========== A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT ========
      *
      * Move's Double Loop is documented as carrying automation, and a
