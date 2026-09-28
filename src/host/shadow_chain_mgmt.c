@@ -184,8 +184,14 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     fp[3] = (double)(c->notes_hash & 0x7fffffffu);   /* the lane stores it as an int */
     *fp_valid = 1;
 
+    /* THE PHASE IS SCHWUNG'S OWN CLOCK (MIDI clock since Start), measured
+     * against Move's launch beat; the model's transport only VETOES. Its
+     * run flag sits in a message whose offsets are pinned to one firmware
+     * build, so on any other build clock_valid is 0 -- and gating on it made
+     * automation silently stop playing after a Move update. Unknown: the
+     * shim's transport (negative when stopped) is the whole answer. */
     const double now = shadow_transport_beat_position();
-    if (now < 0.0 || !m.clock_valid || !m.playing) return 0;   /* stopped: no phase */
+    if (now < 0.0 || (m.clock_valid && !m.playing)) return 0;   /* stopped: no phase */
     const double pos = mm_clip_position(c, T->start_beats, now);
     if (!(pos >= 0.0)) return 0;                                /* a one-shot that ended */
     *phase_beats = pos;

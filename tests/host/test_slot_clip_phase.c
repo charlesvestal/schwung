@@ -138,6 +138,18 @@ int main(void)
     fake_now = -1.0;
     rc = call(1, &ph, &len, &cs, &fpv, fp);
     CHECK(rc == 0 && isnan(ph) && cs == 3, "no clock rc=%d", rc);
+    /* ANOTHER FIRMWARE BUILD: the model's transport is unreadable
+     * (clock_valid 0, playing 0), and the shim's clock alone decides -- a
+     * Move update must not silence every lane. */
+    fake_model.clock_valid = 0;
+    fake_model.playing = 0;
+    fake_now = 3.0;
+    rc = call(1, &ph, &len, &cs, &fpv, fp);
+    CHECK(rc == 1 && fabs(ph - 3.0) < 1e-9, "unknown build still plays: rc=%d ph=%f", rc, ph);
+    fake_now = -1.0;
+    rc = call(1, &ph, &len, &cs, &fpv, fp);
+    CHECK(rc == 0 && isnan(ph), "and still stops with the shim's clock");
+    fake_model.clock_valid = 1;
 
     /* 5. No current clip: mode 2 (an empty slot was picked), mode 0, or the
      *    playing slot empty -> no identity at all. */
