@@ -2090,53 +2090,35 @@ static uint32_t spi_slot_probe_burst_max;
  * but allowing Move to process pad events faster after ioctl returns.
  */
 /* === DRUM LANES (prototype, drum_lanes.h) ===
- * A Move drum track's PLAYING clip, read out of Move's document, played as 16
- * monophonic pitched lanes into one slot: pad 36+k on channel k+1, at the
- * lane's base note + its 16 Pitches offset. Off unless drum_lanes.conf names
- * the track. Runs on the SPI callback, before the slots render this block, so
- * a note delivered here sounds in it. */
+ * A Move drum track's pads, sequenced and live, sent on as that track's MIDI in
+ * MPE form (one channel per pad, pitch as per-note bend, CC 3 = 16 Pitches)
+ * through the slots' own dispatch -- receive/forward channel, transpose and
+ * MIDI FX apply -- into slots set to Receive All. Off unless drum_lanes.conf
+ * names the track. Runs on the SPI callback before the slots render this
+ * block, so a note delivered here sounds in it. */
 static void drum_lanes_emit(void *ctx, uint8_t status, uint8_t d1, uint8_t d2) {
-    const int s = (int)(intptr_t)ctx;
-    if (s < 0 || s >= SHADOW_CHAIN_INSTANCES || !shadow_chain_slots[s].active ||
-        !shadow_chain_slots[s].instance || !shadow_plugin_v2 || !shadow_plugin_v2->on_midi)
-        return;
-    /* Wake it from idle, exactly as a dispatched MIDI message does. */
-    shadow_slot_idle[s] = 0;
-    shadow_slot_silence_frames[s] = 0;
-    shadow_slot_fx_idle[s] = 0;
-    shadow_slot_fx_silence_frames[s] = 0;
-    uint8_t msg[3] = { status, d1, d2 };
-    shadow_plugin_v2->on_midi(shadow_chain_slots[s].instance, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
-}
-
-static int live_ok_track(const move_model_t *m) {
-    if (!m->valid || !move_model_sync_active()) return -1;
-    return (m->selected_track >= 0 && m->selected_track < MM_TRACKS) ? m->selected_track : -1;
-}
-
-static void drum_lanes_emit_slot(int slot, uint8_t status, uint8_t d1, uint8_t d2) {
-    drum_lanes_emit((void *)(intptr_t)slot, status, d1, d2);
+    (void)ctx;
+    const uint8_t pkt[4] = { (uint8_t)(status >> 4), status, d1, d2 };   /* cable 0, CIN = type */
+    shadow_chain_dispatch_lane_midi(pkt);
 }
 
 static void drum_lanes_render_tick(void) {
     static dl_live_t live;                 /* the selected track's pads, played now */
     static mm_live_rec_t live_recs[16];
     static dl_track_t st[MM_TRACKS];
-    static int last_slot[MM_TRACKS] = { -1, -1, -1, -1 };
+    static int was_on[MM_TRACKS];
     static move_model_t m;                 /* 2.5 KB: static, off the callback's stack */
-    int any = 0;
+    int on[MM_TRACKS], any = 0;
     for (int t = 0; t < MM_TRACKS; t++) {
-        const int slot = __atomic_load_n(&dl_cfg_slot[t], __ATOMIC_ACQUIRE);
-        if (slot != last_slot[t]) {        /* re-pointed or switched off: release the old slot */
-            dl_all_off(&st[t], drum_lanes_emit, (void *)(intptr_t)last_slot[t]);
-            last_slot[t] = slot;
-        }
-        any |= (slot >= 0);
+        on[t] = __atomic_load_n(&dl_cfg_on[t], __ATOMIC_ACQUIRE);
+        if (!on[t] && was_on[t]) dl_all_off(&st[t], drum_lanes_emit, NULL);   /* switched off */
+        was_on[t] = on[t];
+        any |= on[t];
     }
     if (!any) {
         /* Off: re-prime on the way back, so notes played meanwhile are
          * history rather than a burst replayed from the persisting records. */
-        dl_live_all_off(&live, drum_lanes_emit_slot);
+        dl_live_all_off(&live, drum_lanes_emit, NULL);
         live.primed = 0;
         return;
     }
@@ -2149,19 +2131,17 @@ static void drum_lanes_render_tick(void) {
     const double blk = (bpm > 0.0f) ? (double)MOVE_FRAMES_PER_BLOCK * bpm / (60.0 * MOVE_SAMPLE_RATE) : 0.0;
 
     for (int t = 0; t < MM_TRACKS; t++) {
-        const int slot = last_slot[t];
-        if (slot < 0) continue;
-        void *ctx = (void *)(intptr_t)slot;
+        if (!on[t]) continue;
         const mm_play_clip_t *clip = move_model_playing_notes(t);
         const mm_track_t *T = &m.track[t];
         const int cs = (T->mode == 1) ? T->playing_slot : -1;
         const mm_clip_t *c = (model_live && cs >= 0 && cs < MM_SLOTS && T->slot[cs].exists) ? &T->slot[cs] : NULL;
         double pos0 = -1.0;
         dl_window_t w = { 0.0, 0.0, 0 };
-        /* The decoded notes must be THIS clip's: a launch is decoded a reader
-         * tick (~20 ms) after the model says so, and silence beats the old clip. */
         /* Behind the clock by DL_SEQ_LAG_MS, so it lands with Move's audio. */
         const double lagged = now - (bpm > 0.0f ? DL_SEQ_LAG_MS * bpm / 60000.0 : 0.0);
+        /* The decoded notes must be THIS clip's: a launch is decoded a reader
+         * tick (~20 ms) after the model says so, and silence beats the old clip. */
         if (c && clip->valid && clip->clip_id == c->clip_id && now >= 0.0 && lagged >= 0.0 &&
             !(m.clock_valid && !m.playing)) {
             pos0 = mm_clip_position(c, T->start_beats, lagged);
@@ -2169,18 +2149,15 @@ static void drum_lanes_render_tick(void) {
             w.ls = c->loop_on ? c->loop_start : c->region_start;
             w.le = c->loop_on ? c->loop_end : c->region_end;
         }
-        dl_block(&st[t], clip, w, pos0, blk,
-                 __atomic_load_n(&dl_cfg_base[t], __ATOMIC_RELAXED), drum_lanes_emit, ctx);
+        dl_block(&st[t], clip, w, pos0, blk, drum_lanes_emit, NULL);
     }
 
     /* LIVE: the pads being played now, as Move's engine carries them -- the
      * selected track's input, pitch included (move_model_live_read). */
     const int n = move_model_live_read(live_recs, 16);
     if (n > 0) {
-        const int t = live_ok_track(&m);
-        const int slot = (t >= 0) ? last_slot[t] : -1;
-        const int base = (t >= 0) ? __atomic_load_n(&dl_cfg_base[t], __ATOMIC_RELAXED) : 60;
-        dl_live_ingest(&live, live_recs, n, slot, base, drum_lanes_emit_slot);
+        const int t = (model_live && m.selected_track >= 0 && m.selected_track < MM_TRACKS) ? m.selected_track : -1;
+        dl_live_ingest(&live, live_recs, n, t >= 0 && on[t], drum_lanes_emit, NULL);
     }
 }
 

@@ -149,6 +149,7 @@ static inline uint32_t mm_clip_state_hash(const mm_clip_t *c)
 typedef struct {
     int pitch; double start, dur; float vel; int64_t id;
     double pitch_offset;
+    int has_pitch;           /* it HAS a pitch lane (16 Pitches), even one at +0 */
     int pressure_first, pressure_count;
 } mm_note_t;
 typedef struct { double time, value; } mm_expr_point_t;   /* time: beats from the note's start */
@@ -176,6 +177,7 @@ int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t
 typedef struct {
     int    pitch;            /* the note it sounds on -- on a drum track, the pad */
     float  pitch_offset;     /* semitones, the note's PITCH lane at t=0 (16 Pitches) */
+    int    has_pitch;        /* a pitch lane exists: a plain pad hit has none */
     float  vel;              /* 0..127 */
     double start, dur;       /* beats, clip time */
 } mm_play_note_t;
