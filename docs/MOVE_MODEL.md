@@ -412,8 +412,15 @@ the shape changed and the next tick walks again. A full walk also runs every
   toolchain.
 - **Pinned to one build:** the transport run flag and beat clock (a Move
   message struct, not a flip member). Gated on MoveOriginal's GNU build-id; on
-  any other build `clock_valid = 0` and phase must come from the MIDI-clock
-  pulse counter the shim already keeps.
+  any other build `clock_valid = 0`. Lanes do not need it: their phase has
+  always been Schwung's own MIDI-clock transport against Move's launch beat,
+  and the model's run flag only VETOES. Gating on it outright made every lane
+  go silent on an unknown build; now an unknown build falls back to the shim's
+  transport alone (`shadow_slot_clip_phase`, pinned in `test_slot_clip_phase`).
+- **Move 2.1.1 (checked 2026-09-28 against the decrypted image):** every one of
+  the 59 class, member and RTTI names the reader resolves is present; the binary
+  grew ~200 KB, so only the pinned transport offsets are in doubt, and those no
+  longer gate anything.
 - **Fails clean:** a missing class or member name leaves `valid = 0` and says
   which one in `move_model_status.txt`. It never reports a guessed value.
 - Checkable before installing an update: decrypt the new image with
