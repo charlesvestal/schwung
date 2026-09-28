@@ -12,7 +12,9 @@ typedef struct {
     uint64_t clip_id;
     uint32_t pre, post;           /* clip content before / after the paste */
     int      undone, dead;
+    uint64_t t_confirm;           /* post keeps settling for EF_SETTLE_MS after this */
 } jrn_t;
+#define EF_SETTLE_MS 300
 typedef struct { uint32_t sid; int track; uint64_t clip_id; } stash_t;
 
 static pend_t   g_pend[EF_PENDING];
@@ -42,7 +44,8 @@ void edit_follow_intent(const ef_intent_t *in)
 }
 
 static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_notes_t *pn,
-                       ef_cmd_fn cmd, void *ctx);
+                       uint64_t t_ms, ef_cmd_fn cmd, void *ctx);
+static void journal_settle(const move_model_t *now, uint64_t t_ms);
 
 void edit_follow_tick(const move_model_t *now, const ef_notes_t *now_notes, const ef_notes_t *prev_notes,
                       uint64_t t_ms, ef_cmd_fn cmd, void *ctx)
@@ -50,7 +53,8 @@ void edit_follow_tick(const move_model_t *now, const ef_notes_t *now_notes, cons
     /* An intent can arrive AFTER the change it describes was published (the
      * press, Move's edit and our tick race); the edited clip's previous state
      * is kept until its next change, so checking on every tick is safe. */
-    if (now && now->valid && cmd) do_intents(now, now_notes, prev_notes, cmd, ctx);
+    if (now && now->valid) journal_settle(now, t_ms);
+    if (now && now->valid && cmd) do_intents(now, now_notes, prev_notes, t_ms, cmd, ctx);
     for (int i = 0; i < EF_PENDING; i++)
         if (g_pend[i].used && t_ms - g_pend[i].in.t_ms > EF_TIMEOUT_MS) {
             g_pend[i].used = 0;
@@ -111,11 +115,12 @@ static const mm_clip_t *clip_of(const move_model_t *m, int t, int s)
     return m->track[t].slot[s].exists ? &m->track[t].slot[s] : NULL;
 }
 
-static void journal_add(const ef_intent_t *in, uint32_t jid, uint32_t post)
+static void journal_add(const ef_intent_t *in, uint32_t jid, uint32_t post, uint64_t t_ms)
 {
-    /* A new edit after undos kills the redo branch, as in Move. */
+    /* A new edit after undos kills the redo branch, as in Move -- whose
+     * history is the whole document's, not one clip's. */
     for (int i = 0; i < EF_JOURNAL; i++)
-        if (g_jrn[i].jid && g_jrn[i].clip_id == in->clip_id && g_jrn[i].undone) g_jrn[i].dead = 1;
+        if (g_jrn[i].jid && g_jrn[i].undone) g_jrn[i].dead = 1;
     jrn_t *j = &g_jrn[jid % EF_JOURNAL];
     memset(j, 0, sizeof *j);
     j->jid = jid;
@@ -124,30 +129,65 @@ static void journal_add(const ef_intent_t *in, uint32_t jid, uint32_t post)
     j->clip_id = in->clip_id;
     j->pre = in->pre_hash;
     j->post = post;
+    j->t_confirm = t_ms;
 }
 
-/* The latest live entry for the clip (Undo's candidate), or the earliest
- * undone one after it (Redo's). */
-static jrn_t *journal_pick(uint64_t clip_id, int for_redo)
+/* A journaled clip, wherever Move has it now: by identity on its track. */
+static const mm_clip_t *clip_by_id(const move_model_t *m, int t, uint64_t id)
 {
-    jrn_t *best = NULL;
+    if (t < 0 || t >= MM_TRACKS) return NULL;
+    for (int s = 0; s < MM_SLOTS; s++)
+        if (m->track[t].slot[s].exists && m->track[t].slot[s].clip_id == id) return &m->track[t].slot[s];
+    return NULL;
+}
+
+/* Move lands a paste's notes and its own envelopes a tick or two apart, so
+ * the "after" state keeps following the clip for a moment after the
+ * confirmation. */
+static void journal_settle(const move_model_t *now, uint64_t t_ms)
+{
     for (int i = 0; i < EF_JOURNAL; i++) {
         jrn_t *j = &g_jrn[i];
-        if (!j->jid || j->dead || j->clip_id != clip_id) continue;
-        if (!for_redo && !j->undone && (!best || j->jid > best->jid)) best = j;
-        if (for_redo && j->undone && (!best || j->jid < best->jid)) best = j;
+        if (!j->jid || j->undone || j->dead || t_ms - j->t_confirm > EF_SETTLE_MS) continue;
+        const mm_clip_t *c = clip_by_id(now, j->track, j->clip_id);
+        if (c) j->post = mm_clip_state_hash(c);
     }
-    return best;
 }
 
 static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_notes_t *pn,
-                       ef_cmd_fn cmd, void *ctx)
+                       uint64_t t_ms, ef_cmd_fn cmd, void *ctx)
 {
     char v[192];
     for (int i = 0; i < EF_PENDING; i++) {
         pend_t *p = &g_pend[i];
         if (!p->used) continue;
         const ef_intent_t *in = &p->in;
+        if (in->kind == EF_UNDO || in->kind == EF_REDO) {
+            /* MOVE'S UNDO IS THE WHOLE DOCUMENT'S, not the clip on screen:
+             * it can revert a paste on another track, or on a clip that is no
+             * longer the selected one. So an Undo is matched against EVERY
+             * journaled paste -- the one whose clip now sits exactly at its
+             * pre-paste state (Redo: at its post-paste state) is the one Move
+             * reverted. Nothing matching yet keeps waiting (Move may take two
+             * ticks); nothing ever matching expires, which is Move undoing
+             * something that was not a mirrored paste. */
+            const int redo = (in->kind == EF_REDO);
+            jrn_t *best = NULL;
+            for (int k = 0; k < EF_JOURNAL; k++) {
+                jrn_t *j = &g_jrn[k];
+                if (!j->jid || j->dead || j->undone != redo) continue;
+                const mm_clip_t *jc = clip_by_id(now, j->track, j->clip_id);
+                if (!jc || mm_clip_state_hash(jc) != (redo ? j->post : j->pre)) continue;
+                if (!best || (redo ? j->jid < best->jid : j->jid > best->jid)) best = j;
+            }
+            if (!best) continue;
+            best->undone = !redo;
+            snprintf(v, sizeof v, "%s %u", redo ? "redo" : "undo", best->jid);
+            cmd(ctx, best->track, "lanes:journal", v);
+            if (redo) g_stats.redone++; else g_stats.undone++;
+            p->used = 0;
+            continue;
+        }
         const mm_clip_t *c = clip_of(now, in->track, in->slot);
         if (!c || c->clip_id != in->clip_id) { p->used = 0; continue; }   /* the clip went */
         const uint32_t state = mm_clip_state_hash(c);
@@ -160,7 +200,7 @@ static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_n
             snprintf(v, sizeof v, "%d %d %.9g %.9g %.9g %u", in->track, in->slot,
                      in->src, in->dst, in->len, jid);
             cmd(ctx, in->track, "lanes:paste_span", v);
-            journal_add(in, jid, state);
+            journal_add(in, jid, state, t_ms);
             g_stats.pasted++;
         } else if (in->kind == EF_PASTE) {
             /* Judged on the note ids that APPEARED between the edited clip's
@@ -179,30 +219,10 @@ static void do_intents(const move_model_t *now, const ef_notes_t *nn, const ef_n
                 snprintf(v, sizeof v, "%d %d %.9g %.9g %.9g %u%s", in->track, in->slot,
                          in->src, in->dst, in->len, jid, voices);
                 cmd(ctx, in->track, "lanes:paste_span", v);
-                journal_add(in, jid, state);
+                journal_add(in, jid, state, t_ms);
                 g_stats.pasted++;
             } else {
                 g_stats.declined++;
-            }
-        } else {
-            /* Undo/Redo land when the clip reaches EXACTLY the state on the
-             * other side of a mirrored paste -- which may take Move two ticks
-             * (notes, then its envelopes), so a partial state keeps waiting. */
-            const int redo = (in->kind == EF_REDO);
-            jrn_t *j = journal_pick(in->clip_id, redo);
-            if (j && !redo && state == j->pre) {
-                j->post = in->pre_hash;               /* the settled post-paste state */
-                j->undone = 1;
-                snprintf(v, sizeof v, "undo %u", j->jid);
-                cmd(ctx, in->track, "lanes:journal", v);
-                g_stats.undone++;
-            } else if (j && redo && state == j->post) {
-                j->undone = 0;
-                snprintf(v, sizeof v, "redo %u", j->jid);
-                cmd(ctx, in->track, "lanes:journal", v);
-                g_stats.redone++;
-            } else {
-                continue;                             /* not (yet) this clip's undo */
             }
         }
         p->used = 0;
@@ -262,7 +282,6 @@ void edit_follow_on_change(const move_model_t *now, const move_model_t *prev,
                            const ef_notes_t *now_notes, const ef_notes_t *prev_notes,
                            uint64_t t_ms, ef_cmd_fn cmd, void *ctx)
 {
-    (void)t_ms;
     if (!now || !now->valid || !cmd) return;
     if (!prev->valid || now->doc_gen != prev->doc_gen) {
         /* A different document: Move's undo history is gone, and so is ours. */
@@ -272,5 +291,6 @@ void edit_follow_on_change(const move_model_t *now, const move_model_t *prev,
         return;
     }
     do_clips(now, prev, cmd, ctx);
-    do_intents(now, now_notes, prev_notes, cmd, ctx);
+    journal_settle(now, t_ms);
+    do_intents(now, now_notes, prev_notes, t_ms, cmd, ctx);
 }

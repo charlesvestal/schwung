@@ -43,7 +43,9 @@ typedef struct {
     ut_key_t redo;     /* Move's first-redo step, {0,0} when nothing is redoable */
 } ut_hist_t;
 
-enum { UT_PLOCK = 1, UT_TAKE, UT_CLEAR, UT_EDIT };
+enum { UT_PLOCK = 1, UT_TAKE, UT_CLEAR, UT_EDIT,
+       UT_RESET   /* the slot's whole store was replaced (a restore, the menu Undo):
+                   * every edit journaled before it is void */ };
 
 #define UT_MAX          24
 #define UT_SLOT_DEPTH   8      /* == LANE_SJOURNAL_DEPTH: the chain keeps this many per slot */

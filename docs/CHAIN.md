@@ -1504,29 +1504,31 @@ A drum module declares each pad parameter ONCE per level and names every
 instance's key through the level's template (`child_key_template`, or
 `<child_prefix>{index}_{key}` -- dr32: `pad{index}_{key}`, pads 1..32). The UI
 resolves those in `child_key.mjs`; the chain did not, so every dr32 pad
-parameter was `unknown_param` to lanes, p-locks and modulation. Two defects,
-both ours:
+parameter was `unknown_param` to lanes, p-locks and modulation. At synth load
+the chain now records each rack level's template (`parse_child_templates`), and
+`find_param_by_key` resolves an instance key through it -- `{index}` digits
+(longest first, `child_index_digits` honoured, within `child_count` from
+`child_index_base`), `{key}` the base key. An empty `child_prefix` is not a
+rack (as in JS). A fleet probe of 8,808 JS-generated keys agreed 100%.
 
-- `parse_hierarchy_params` treated a key found on several levels as FATAL and
-  returned -1, dropping every inline definition. dr32 lists `ui_current_pad`
-  and `link` on each pad level on purpose (and the C walker's unbounded
-  `"params"` strstr re-reads the next level's params for a level with none).
-  First declaration now wins. Fleet check: only magneto and genera also hit it,
-  and their hierarchy and `chain_params` metadata are identical.
-- Nothing mapped `pad7_transpose` to `transpose`. At synth load the chain now
-  records each rack level's template (`parse_child_templates`), and
-  `find_param_by_key` resolves an instance key through it -- `{index}` digits
-  (longest first, `child_index_digits` honoured, within `child_count` from
-  `child_index_base`), `{key}` the base key -- with a 64-entry alias cache so a
-  lane on a templated key does not re-match every block.
+**An earlier note here blamed the hierarchy parser's duplicate-key rule for
+dr32. That was wrong** -- dr32's real module.json never hit it; template
+resolution alone fixed dr32. The duplicate rule WAS fatal (a key on two levels
+returned -1 and dropped every inline definition) and is now first-wins; its
+real fleet effect is kr106 (0 -> 46 params), pivot, genera and magneto (whose
+enum ranges were capped at 1 by the legacy parser and are now correct).
 
-`chain_params` entries the hierarchy does not declare (dr32's `kit`, `master`)
-are now MERGED rather than skipped whenever the hierarchy has inline params.
+`chain_params` entries the hierarchy does not declare are now MERGED rather
+than skipped whenever the hierarchy has inline params -- through the
+brace-aware `parse_param_object`, and only float/int/enum: the flat legacy
+parser ended an entry at its first `}`, so dr32's `kit` (a filepath with nested
+browser hooks) came out as a float knob plus two phantom params. Entries past
+the 256-entry table are dropped with a log line (forge: 345 declared).
 
 Every position resolves this way -- synth, `fx<N>` and `midi_fx<N>` -- through
-one `chain_child_keys_t` per position (templates + a 24-entry alias ring,
-round-robin when full). An alias stores its BASE key and is re-checked on every
-hit, so a table replaced underneath it (a reload, the runtime `chain_params`
+one `chain_child_keys_t` per position (templates + a 32-entry alias cache,
+== LANE_MAX, round-robin when full, checked BEFORE the full scan). An alias
+stores a hash of its BASE key and is re-checked on every hit, so a table replaced underneath it (a reload, the runtime `chain_params`
 refresh) re-resolves instead of answering with whatever now sits at its index.
 The fx/midi_fx copies are VALUE arrays in the permutation (`chain_reorder.c`),
 so a rack's keys follow its module on `fx:move`; the struct is held under

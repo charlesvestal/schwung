@@ -22,10 +22,33 @@ static void emit(ut_entry_t *e, int redo, ut_cmd_fn cmd, void *ctx)
 /* A new edit -- of either side -- ends every undone Schwung edit's chance of
  * being redone, as a new edit does in Move. Linked takes die with their
  * Move step, which Move has just flushed from its redo list too. */
-static void kill_redo_branch(ut_t *u)
+static void kill_redo_branch(ut_t *u, int keep_linked)
 {
-    for (int i = 0; i < UT_MAX; i++)
-        if (u->e[i].used && u->e[i].undone) u->e[i].used = 0;
+    for (int i = 0; i < UT_MAX; i++) {
+        ut_entry_t *e = &u->e[i];
+        /* A take linked to a Move step lives and dies with Move's own redo
+         * list, which only a MOVE edit flushes: a Schwung edit leaves Move's
+         * redo intact, so it must leave the take's too, or Move's Redo would
+         * bring the notes back without their automation. */
+        if (e->used && e->undone && !(keep_linked && key_set(e->link))) e->used = 0;
+    }
+}
+
+/* Linked takes on one Move step, in the order their undo must run: NEWEST
+ * first (a later whole-lane snapshot undone before an earlier one), and the
+ * reverse for redo. Several share a step when a mirrored edit split a take. */
+static int linked_on(ut_t *u, ut_key_t step, int undone, ut_entry_t **out)
+{
+    int n = 0;
+    for (int i = 0; i < UT_MAX; i++) {
+        ut_entry_t *e = &u->e[i];
+        if (e->used && e->undone == undone && key_set(e->link) && key_eq(e->link, step)) out[n++] = e;
+    }
+    for (int a = 1; a < n; a++)                         /* by seq, ascending */
+        for (int b = a; b > 0 && out[b - 1]->seq > out[b]->seq; b--) {
+            ut_entry_t *t = out[b]; out[b] = out[b - 1]; out[b - 1] = t;
+        }
+    return n;
 }
 
 void ut_on_history(ut_t *u, const ut_hist_t *h, uint64_t t_ms, ut_cmd_fn cmd, void *ctx)
@@ -37,30 +60,29 @@ void ut_on_history(ut_t *u, const ut_hist_t *h, uint64_t t_ms, ut_cmd_fn cmd, vo
     if (key_eq(was.undo, h->undo) && key_eq(was.redo, h->redo)) return;
 
     if (key_set(was.undo) && key_eq(h->redo, was.undo)) {
-        /* Move undid its step `was.undo`: a take linked to it goes too. */
-        for (int i = 0; i < UT_MAX; i++) {
-            ut_entry_t *e = &u->e[i];
-            if (e->used && !e->undone && key_set(e->link) && key_eq(e->link, was.undo)) {
-                emit(e, 0, cmd, ctx);
-                e->undone = 1;
-                e->undo_seq = ++u->undo_seq;
-            }
+        /* Move undid its step `was.undo`: the takes linked to it go too,
+         * newest first. */
+        ut_entry_t *l[UT_MAX];
+        const int n = linked_on(u, was.undo, 0, l);
+        for (int k = n - 1; k >= 0; k--) {
+            emit(l[k], 0, cmd, ctx);
+            l[k]->undone = 1;
+            l[k]->undo_seq = ++u->undo_seq;
         }
         return;
     }
     if (key_set(was.redo) && key_eq(h->undo, was.redo)) {
-        for (int i = 0; i < UT_MAX; i++) {
-            ut_entry_t *e = &u->e[i];
-            if (e->used && e->undone && key_set(e->link) && key_eq(e->link, was.redo)) {
-                emit(e, 1, cmd, ctx);
-                e->undone = 0;
-            }
+        ut_entry_t *l[UT_MAX];
+        const int n = linked_on(u, was.redo, 1, l);
+        for (int k = 0; k < n; k++) {                   /* oldest first */
+            emit(l[k], 1, cmd, ctx);
+            l[k]->undone = 0;
         }
         return;
     }
 
     /* A NEW Move step. */
-    kill_redo_branch(u);
+    kill_redo_branch(u, 0);
     u->move_step = h->undo;
     u->move_step_ms = t_ms;
     /* A take still inside its window rides on it. Re-linking on every new
@@ -81,8 +103,16 @@ void ut_on_arm(ut_t *u, int armed, uint64_t t_ms)
 
 void ut_on_schwung_edit(ut_t *u, int slot, uint32_t jid, int kind, uint64_t t_ms)
 {
+    if (kind == UT_RESET) {
+        /* The chain replaced the slot's whole store: whatever it had
+         * journaled describes lanes that are no longer there, and undoing one
+         * would splice pre-restore content into the restored state. */
+        for (int i = 0; i < UT_MAX; i++)
+            if (u->e[i].used && u->e[i].slot == slot) u->e[i].used = 0;
+        return;
+    }
     if (!jid) return;
-    kill_redo_branch(u);
+    kill_redo_branch(u, 1);
     /* The chain keeps UT_SLOT_DEPTH of a slot's edits; an older one's journal
      * is gone, and an entry that cannot be undone must not claim a press. */
     for (int i = 0; i < UT_MAX; i++) {
@@ -125,7 +155,11 @@ static const ut_entry_t *latest_live(const ut_t *u)
 
 int ut_undo_target(const ut_t *u, int *slot, uint32_t *jid)
 {
-    if (!u->last.valid) return 0;
+    /* NOTHING IS CLAIMED WHILE A TAKE IS OPEN. The take is not in the
+     * timeline until Record goes out, so an Undo now would restore an earlier
+     * edit's whole-lane snapshot over the take being recorded -- erasing it,
+     * and bringing the undone edit back when the take is later undone. */
+    if (!u->last.valid || u->armed) return 0;
     const ut_entry_t *e = latest_live(u);
     if (!e || !key_eq(e->anchor, u->last.undo)) return 0;   /* Move's step is later */
     *slot = e->slot;
@@ -135,7 +169,7 @@ int ut_undo_target(const ut_t *u, int *slot, uint32_t *jid)
 
 int ut_redo_target(const ut_t *u, int *slot, uint32_t *jid)
 {
-    if (!u->last.valid) return 0;
+    if (!u->last.valid || u->armed) return 0;
     const ut_entry_t *best = NULL;
     for (int i = 0; i < UT_MAX; i++) {
         const ut_entry_t *e = &u->e[i];

@@ -360,6 +360,33 @@ not found) claims no press, so Undo is exactly Move's as before. The chain keeps
 Not hardware-verified yet -- the History candidates are logged to
 `move_model_status.txt`, and `move_model.json` carries `history`.
 
+### Review fixes to the undo and edit-follow paths (2026-09-28)
+
+- **A p-lock GESTURE is one Undo step.** The grid writes `lanes:plock_step`
+  every 20 ms while a step is held; each write was journaled on its own, so
+  Undo walked back one detent at a time and the 9th press fell through to
+  Move. Writes on the same step now fold into the open edit, which commits on
+  a different step, any other verb, a Record edge, or 300 ms of silence.
+- **A module that claimed Undo keeps it** (`claims_edit_ccs`, the grid's child
+  copy/clear/undo): the timeline is not offered that press, on either edge.
+- **Nothing is claimed while Record is armed**: the take is not in the
+  timeline until Record goes out, and undoing an earlier edit's whole-lane
+  snapshot then erased the take being recorded.
+- **Move's Undo is the document's.** A mirrored paste is undone when ITS clip
+  (found by id on its track) returns to its pre-paste state, whatever clip is
+  on screen -- the press no longer names a clip at all. The paste's "after"
+  state keeps settling for 300 ms, since Move lands notes and envelopes a
+  tick apart.
+- **Linked takes are undone newest-first** (redone oldest-first): a mirrored
+  edit splits a take into two whole-lane snapshots on one Move step.
+- **A Schwung edit leaves a linked take's redo alone**; only a Move edit (which
+  flushes Move's own redo) ends it.
+- **A restore voids the journal**: `lanes:state` (a set load, a snapshot
+  recall) and Slot Settings' swap Undo announce `RESET`, and the timeline drops
+  that slot's entries -- undoing one would splice pre-restore content in.
+- **An empty commit never touches the ring** (counted first), so it cannot
+  destroy the oldest still-claimable entry.
+
 ### Known limits
 
 - **Undo depth for Schwung's own edits is 8 per slot** (the chain's journal);

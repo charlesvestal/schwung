@@ -172,7 +172,7 @@ typedef struct {
     int  count;             /* child_count */
     int  digits;            /* child_index_digits, 0 = unpadded */
 } chain_child_tmpl_t;
-#define CHAIN_PARAM_ALIAS_MAX 24
+#define CHAIN_PARAM_ALIAS_MAX 32   /* == LANE_MAX: every lane on a templated key stays cached */
 /* One position's templates, plus the instance keys already resolved through
  * them. An alias remembers its BASE key and is re-checked on every hit, so a
  * parameter table replaced underneath it (a reload, the runtime chain_params
@@ -184,7 +184,7 @@ typedef struct {
 typedef struct {
     chain_child_tmpl_t tmpl[CHAIN_CHILD_TMPL_MAX];
     int ntmpl;
-    struct { char key[40]; char base[24]; int idx; } alias[CHAIN_PARAM_ALIAS_MAX];
+    struct { char key[40]; uint32_t base_hash; int idx; } alias[CHAIN_PARAM_ALIAS_MAX];
     int nalias, next_evict;   /* full: a ring, oldest out */
 } chain_child_keys_t;
 
@@ -1025,6 +1025,12 @@ typedef struct chain_instance {
     uint32_t lanes_sjournal_seq;
     lane_store_t lanes_edit_base;
     int    lanes_edit_open;           /* 0, or the LANE_EDIT_* kind being made */
+    /* A P-LOCK GESTURE is one step: every write on the same step while it is
+     * held (the grid sends one per 20 ms) folds into the open edit, which
+     * commits when a different step or verb arrives, Record changes, or the
+     * writes stop for LANE_PLOCK_GESTURE_MS. */
+    double   lanes_edit_plock_phase;
+    uint64_t lanes_edit_plock_ms;
     struct { uint32_t jid; int kind; } lanes_edit_ev[8];
     unsigned lanes_edit_ev_w, lanes_edit_ev_r;
     int    lanes_last_sjournaled;     /* lanes in the last own-edit entry, -1 too many */

@@ -141,6 +141,19 @@ static void rec_lane(lane_span_rec_t *r, const lane_t *key, const lane_t *b, con
     if (r->na) memcpy(r->after, a->pts, sizeof(lane_point_t) * (size_t)r->na);
 }
 
+int lane_journal_changed(const lane_store_t *before, const lane_store_t *after)
+{
+    if (!before || !after) return 0;
+    int changed = 0;
+    for (int i = 0; i < LANE_MAX; i++) {
+        const lane_t *b = &before->lanes[i];
+        if (b->used && !same_points(b, find_c(after, b))) changed++;
+        const lane_t *a = &after->lanes[i];
+        if (a->used && !find_c(before, a) && a->n) changed++;      /* a new lane */
+    }
+    return changed > LANE_JOURNAL_LANES ? -1 : changed;
+}
+
 int lane_journal_diff(const lane_store_t *before, const lane_store_t *after, lane_journal_entry_t *je)
 {
     if (!before || !after || !je) return 0;

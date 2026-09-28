@@ -10353,6 +10353,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
 const VOICE_MAP_INTERVAL_TICKS = 45;
 let _voiceMapTick = 0;
 let _voiceMapSlot = 0;
+const _voiceMapMisses = {};
 function reconcileLaneVoiceMaps() {
     if (++_voiceMapTick < VOICE_MAP_INTERVAL_TICKS) return;
     _voiceMapTick = 0;
@@ -10361,7 +10362,17 @@ function reconcileLaneVoiceMaps() {
     const need = getSlotParam(s, "lanes:voice_map_need");
     if (!need) return;                        /* current, no synth, or no answer */
     const raw = getSlotParam(s, "synth:ui_hierarchy");
-    if (raw === null) return;                 /* no answer: ask again later */
+    if (raw === null) {
+        /* No answer: ask again later -- but not forever. A synth whose DSP
+         * does not serve ui_hierarchy answers this way EVERY time (12 in the
+         * fleet), which cost two IPC reads per pass for the whole session.
+         * Three misses on the same synth and it is recorded as "not a rack";
+         * a paste on it stays whole-step, which is what no map means anyway. */
+        const k = s + ":" + need;
+        _voiceMapMisses[k] = (_voiceMapMisses[k] || 0) + 1;
+        if (_voiceMapMisses[k] >= 3) setSlotParam(s, "lanes:voice_map", need);
+        return;
+    }
     let map = "";
     if (raw) {
         try { map = laneVoiceMap(JSON.parse(raw)); }

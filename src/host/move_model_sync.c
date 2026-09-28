@@ -174,7 +174,8 @@ static edit_gesture_t g_gest = { 0, 0, 0, -1, 0 };      /* SPI thread only */
  * if it takes a press, posts which one back. A third ring carries that, the
  * chain's own-edit announcements and Record's arm edges. */
 _Static_assert(LANE_EDIT_PLOCK == UT_PLOCK && LANE_EDIT_TAKE == UT_TAKE &&
-               LANE_EDIT_CLEAR == UT_CLEAR && LANE_EDIT_OTHER == UT_EDIT,
+               LANE_EDIT_CLEAR == UT_CLEAR && LANE_EDIT_OTHER == UT_EDIT &&
+               LANE_EDIT_RESET == UT_RESET,
                "the chain's edit kinds are the timeline's");
 enum { UE_EDIT = 1, UE_ARM, UE_UNDO, UE_REDO };
 typedef struct { int type, slot, kind; uint32_t jid; uint64_t t_ms; } uev_t;
@@ -239,6 +240,9 @@ static void undo_tick(const move_model_t *now)                     /* model thre
 static int undo_claim(uint8_t d2)
 {
     if (d2 > 0) {
+        /* Every press decides afresh: a latch left by a release that never
+         * came here (overtake began mid-press) must not swallow this one's. */
+        g_undo_latch = 0;
         const int redo = g_gest.shift_held;
         uint64_t c = atomic_exchange(redo ? &g_claim_redo : &g_claim_undo, 0);
         if (!c) return 0;
@@ -332,8 +336,12 @@ int move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2)
         in.dst = le;
         in.len = le - ls;
     } else {
-        if (!button_phase(&m, 0, 1, &t, &s, &id, &content, &ph, &len)) return 0;
+        /* Undo/Redo name no clip: Move's history is the whole document's,
+         * and edit_follow matches the press against every journaled paste.
+         * So it is posted even with nothing on screen (Session view). */
         in.kind = (e.kind == EG_REDO) ? EF_REDO : EF_UNDO;
+        push_intent(&in);
+        return 0;
     }
     in.track = t;
     in.slot = s;
