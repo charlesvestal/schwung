@@ -11330,6 +11330,8 @@ const scenesScreen = createScenesScreen({
     snapshot: () => sceneSnapshotAll(),
     restore: (snap) => sceneLoadAll(snap),
     lockCounts: () => sumSceneLockCounts(SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "locks"))),
+    setPadLed: (note, color) => (typeof move_midi_internal_send === "function")
+        ? move_midi_internal_send([0x09, 0x90, note, color]) : false,
     /* The jog is a parameter write as far as LEARN is concerned, so CC Learn
      * captures the fader the same way it captures a knob. */
     noteFaderMoved: (x) => { try { controlHost.observeWrite(0, SCENE_XFADE_KEY, x); } catch (e) {} },
@@ -20933,12 +20935,8 @@ function reconcileStepObserve() {
      * looking at. */
     const onScreen = typeof shadow_get_display_mode !== "function" ||
                      shadow_get_display_mode() === 1;
-    /* The Scenes screen picks scenes with the steps, and CLAIMS them: a tap
-     * there must never also toggle a note in the clip. */
-    const scenesUp = view === VIEWS.SCENES;
-    const want = (hostGrid || !!moduleGrid || scenesUp) && onScreen;
+    const want = (hostGrid || !!moduleGrid) && onScreen;
     host_step_observe(want ? 1 : 0);
-    if (typeof host_step_claim === "function") host_step_claim(scenesUp && onScreen ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;
         stepHeldLast = -1;
@@ -20947,11 +20945,28 @@ function reconcileStepObserve() {
 
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
+    /* The Scenes screen takes the pads while it is ON SCREEN -- presses and
+     * LEDs both -- and gives them back the moment it is not. Restated every
+     * tick for the same reason as the rest of this function: the shim drops
+     * the flags on its own when the display closes. */
+    const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    const scenesOwnPads = view === VIEWS.SCENES && onScreen;
+    if (typeof host_scene_pads === "function") host_scene_pads(scenesOwnPads ? 1 : 0);
+    if (scenesOwnPads !== scenesPadsOwned) {
+        scenesPadsOwned = scenesOwnPads;
+        /* Regained: Move's colours were put back while we did not own them. */
+        if (scenesOwnPads) scenesScreen.paintPads(true);
+    }
+    if (scenesOwnPads) {
+        if (typeof host_pad_block === "function") host_pad_block(1);
+        return;
+    }
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
                            loadedModuleUi && loadedModuleUi.tick &&
                            !coRunUiActive();
     if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
 }
+let scenesPadsOwned = false;
 
 /* The shim's copy of "is a surface attached" is RESTATED, never memoised.
  *

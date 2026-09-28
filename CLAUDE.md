@@ -1465,8 +1465,9 @@ one crossfader (Shift+Vol+Step3 opens the Scenes screen).
 - **`scenes.json` is never written for a set before its bank is CONFIRMED
   loaded** (read back per scope), a save needs every scope's answer, and a
   shadow_ui restart ADOPTS the live bank rather than reloading the file.
-- **Shift+step belongs to Move**, so the Scenes screen picks B with knob 2, and
-  its steps are claimed via `step_claim` so a tap never toggles a clip note.
+- **Scenes live on the PADS, and only while the Scenes screen is up** (top two
+  rows A, bottom two B). Steps and Shift+steps stay Move's everywhere.
+  `scene_pads` strips Move's pad LED repaints and restores them on release.
 
 ### USB-C Audio-Out Source
 
