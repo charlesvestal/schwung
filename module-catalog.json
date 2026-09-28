@@ -2269,6 +2269,22 @@
       "default_branch": "main",
       "asset_name": "piano-practice-module.tar.gz",
       "min_host_version": "1.4.0"
+    },
+    {
+      "id": "scratch",
+      "name": "Scratch",
+      "description": "Scratch digital samples with Serato control vinyl, Move's jog wheel or an encoder. Includes waveform and DVS-monitor views, pad-controlled crossfader cuts, MIDI fader support, looping and a low-cut filter.",
+      "author": "mestela",
+      "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "needs-line-in",
+        "sample-based"
+      ],
+      "github_repo": "mestela/schwung-scratch",
+      "default_branch": "main",
+      "asset_name": "scratch-module.tar.gz",
+      "min_host_version": "1.5.0"
     }
   ]
 }
