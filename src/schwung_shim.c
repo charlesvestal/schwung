@@ -6925,6 +6925,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             set_poll_counter = 0;
             shadow_set_pages_consume();
         }
+        /* Move's mute/solo, posted by the model reader: applied HERE so the
+         * slot mix flags have one writer (see move_model_sync.h). Every frame --
+         * it is an empty ring check when nothing changed. */
+        move_model_sync_apply_pending();
     }
 
 

@@ -33,18 +33,83 @@ static uint64_t now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-int move_model_sync_active(void) { return atomic_load(&g_active); }
-uint32_t move_model_sync_gen(void) { return atomic_load(&g_active) ? atomic_load(&g_gen) : 0; }
+/* ACTIVE MEANS LIVE, not "worked once". The reader publishes every ~20 ms; a
+ * model that has stopped (the Song object lost and not re-found) must hand
+ * mute/solo and set detection back to the fallbacks rather than own them
+ * while following nothing. */
+#define LIVE_MS 2000
+int move_model_sync_active(void)
+{
+    if (!atomic_load(&g_active)) return 0;
+    const uint64_t last = move_model_last_publish_ms();
+    return last && now_ms() - last < LIVE_MS;
+}
+uint32_t move_model_sync_gen(void) { return move_model_sync_active() ? atomic_load(&g_gen) : 0; }
 
 int move_model_sync_settled(void)
 {
-    return atomic_load(&g_active) && now_ms() - atomic_load(&g_edge_ms) >= SETTLE_MS;
+    return move_model_sync_active() && now_ms() - atomic_load(&g_edge_ms) >= SETTLE_MS;
 }
 
 int move_model_sync_misaligned(void)
 {
     shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
-    return atomic_load(&g_active) && ctl && ctl->move_doc_gen != ctl->set_doc_gen;
+    return move_model_sync_active() && ctl && ctl->move_doc_gen != ctl->set_doc_gen;
+}
+
+/* ---- MIX CHANGES, applied on the SPI thread ------------------------------
+ *
+ * The same slot mute/solo flags are written by the SPI callback's own param
+ * handler (slot:muted, slot:soloed -- E16, CC map, Slot Settings). Applying
+ * Move's changes from this reader thread as well raced it: shadow_solo_count
+ * could disagree with the flags. So the reader only POSTS; the SPI thread,
+ * the one writer, applies (move_model_sync_apply_pending). */
+enum { MOP_LEVELS = 1, MOP_MUTE, MOP_SOLO };
+typedef struct { int op, t, v; int mu[4], so[4]; } mop_t;
+#define MQ_N 16
+static mop_t g_mq[MQ_N];
+static atomic_uint g_mq_w, g_mq_r;
+static void post_mix(const mop_t *m)                    /* reader thread */
+{
+    unsigned w = atomic_load_explicit(&g_mq_w, memory_order_relaxed);
+    if (w - atomic_load_explicit(&g_mq_r, memory_order_acquire) >= MQ_N) return;
+    g_mq[w % MQ_N] = *m;
+    atomic_store_explicit(&g_mq_w, w + 1, memory_order_release);
+}
+void move_model_sync_apply_pending(void)                /* SPI thread */
+{
+    unsigned r = atomic_load_explicit(&g_mq_r, memory_order_relaxed);
+    while (r != atomic_load_explicit(&g_mq_w, memory_order_acquire)) {
+        const mop_t *m = &g_mq[r % MQ_N];
+        if (m->op == MOP_LEVELS) shadow_apply_mix_state(m->mu, m->so);
+        else if (m->op == MOP_SOLO) shadow_apply_solo(m->t, m->v);
+        else if (m->op == MOP_MUTE) shadow_apply_mute(m->t, m->v);
+        atomic_store_explicit(&g_mq_r, ++r, memory_order_release);
+    }
+}
+
+/* ---- HOUSEKEEPING, from the shim worker every tick ----------------------- */
+#define MISALIGN_GIVEUP_MS 15000
+void move_model_sync_housekeep(void)
+{
+    shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
+    if (!ctl) return;
+    const int live = move_model_sync_active();
+    /* The UI reads readiness from here: a stalled model stops owning the mix
+     * and stops gating autosave there too. */
+    if (ctl->move_model_ready != (uint8_t)live) ctl->move_model_ready = (uint8_t)live;
+    /* A MISALIGNMENT THAT CAN NEVER RESOLVE MUST NOT GATE AUTOSAVE FOREVER.
+     * The only ways out are a consumed set read or the UI's ack, and the
+     * worker's poll publishes nothing if Settings.json is unreadable or names
+     * no set dir -- then every edit of the session would be lost on reboot.
+     * After 15 s with no set change pending, align to what Move has and say
+     * so; that is where the pre-model behaviour would have saved anyway. */
+    if (live && ctl->move_doc_gen != ctl->set_doc_gen &&
+        !(ctl->ui_flags & SHADOW_UI_FLAG_SET_CHANGED) &&
+        now_ms() - atomic_load(&g_edge_ms) > MISALIGN_GIVEUP_MS) {
+        ctl->set_doc_gen = ctl->move_doc_gen;
+        shadow_log("move_model: set alignment gave up after 15 s (no set read); autosave resumes");
+    }
 }
 
 /* ---- AUTOMATION FOLLOWS MOVE'S EDITS ------------------------------------
@@ -232,7 +297,8 @@ int move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2)
     eg_intent_t e;
     if (!edit_gesture_on_event(&g_gest, status, d1, d2, &e)) return 0;
     static move_model_t m;                               /* SPI thread only */
-    if (!move_model_get(&m)) return 0;
+    move_model_get(&m);                                  /* torn: the last good snapshot */
+    if (!m.valid) return 0;
     int t, s;
     uint64_t id;
     uint32_t content;
@@ -300,9 +366,9 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
         }
         /* A new document: take all four as levels. */
         if (mixer_complete(now)) {
-            int mu[4], so[4];
-            for (int t = 0; t < 4; t++) { mu[t] = now->track[t].muted; so[t] = now->track[t].soloed; }
-            shadow_apply_mix_state(mu, so);
+            mop_t m = { .op = MOP_LEVELS };
+            for (int t = 0; t < 4; t++) { m.mu[t] = now->track[t].muted; m.so[t] = now->track[t].soloed; }
+            post_mix(&m);
         }
         /* Name it now rather than at the next 1.4 s scan. The worker keeps
          * polling every tick until the generations agree, which covers a read
@@ -328,8 +394,8 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
     for (int t = 0; t < MM_TRACKS; t++) {
         const mm_track_t *a = &prev->track[t], *b = &now->track[t];
         if (!a->mixer_valid || !b->mixer_valid) continue;
-        if (a->soloed != b->soloed) shadow_apply_solo(t, b->soloed);
-        if (a->muted != b->muted) shadow_apply_mute(t, b->muted);
+        if (a->soloed != b->soloed) { mop_t m = { .op = MOP_SOLO, .t = t, .v = b->soloed }; post_mix(&m); }
+        if (a->muted != b->muted) { mop_t m = { .op = MOP_MUTE, .t = t, .v = b->muted }; post_mix(&m); }
     }
 }
 
