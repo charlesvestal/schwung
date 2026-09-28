@@ -291,6 +291,68 @@ Promise.all([
     console.log("  ok  a per-pad gate is read for the pad on screen, not as its bare template");
   }
 
+  /* ---- 4d: A MODULE-WIDE GATE ON A CHILD LEVEL IS READ BARE --------------
+   *
+   * The DR32 shape: every engine page is a child level gated on `ui_engine`
+   * (the FOCUSED pad\x27s engine), which no level lists and the module declares
+   * and serves only bare. Resolved like 4c it was read as `pad0_ui_engine`,
+   * nothing serves that, "" was cached, and the engine pages vanished on the
+   * first pad press and never came back. And with the gated levels at
+   * different child indexes the key was "ambiguous" and skipped outright. */
+  {
+    const child = (name, extra) => Object.assign({ name, child_prefix: "pad", child_count: 4,
+      child_index_param: "cur" }, extra);
+    const hm = { focus_press_param: "live_press", levels: {
+      root: { name: "R", knobs: [], params: [
+        { level: "pads", label: "Pad" }, { level: "tone", label: "Tone" }, { level: "shell", label: "Shell" }] },
+      pads:  child("Pad",   { knobs: ["cur", "vol"] }),
+      tone:  child("Tone",  { knobs: ["pitch"], visible_if: { param: "ui_engine", equals: 1 } }),
+      shell: child("Shell", { knobs: ["ring"],  visible_if: { param: "ui_engine", equals: 2 } }),
+    } };
+    const cpm = ["cur", "ui_engine", "live_press"].map((k) => ({ key: k, name: k, type: "int", min: 0, max: 3 }));
+    for (const i of [0, 1, 2, 3]) for (const k of ["vol", "pitch", "ring"])
+      cpm.push({ key: "pad" + i + "_" + k, name: k, type: "int", min: 0, max: 100 });
+    const engineOf = ["1", "2", "0", "0"];
+    let cur = 0;
+    const rm = [];
+    const smod = (k) => {
+      const b = k.slice(k.indexOf(":") + 1);
+      if (b === "ui_hierarchy") return JSON.stringify(hm);
+      if (b === "chain_params") return JSON.stringify(cpm);
+      rm.push(b);
+      if (b === "cur") return String(cur);
+      if (b === "ui_engine") return engineOf[cur];
+      if (/^pad\d_(vol|pitch|ring)$/.test(b)) return "5";
+      return "";              /* what the chain host serves for an unknown key */
+    };
+    const lm = { c: null };
+    const vism = (cond) => {           /* cache first, then a bare read */
+      const held = lm.c && lm.c.state.values[cond.param];
+      return String(held !== undefined ? held : smod("synth:" + cond.param)) === String(cond.equals);
+    };
+    const cm = C.createController({ getParam: smod, setParam: () => {}, visible: vism });
+    lm.c = cm;
+    cm.load({ slot: 0, component: "synth", prefix: "synth", visible: vism });
+    for (let i = 0; i < 20; i++) cm.tick();
+    const pm = () => cm.state.pages.map((p) => p.name).join(" ");
+    if (!/Tone/.test(pm()) || /Shell/.test(pm())) fail("setup: pad 0 should show Tone only, got: " + pm());
+
+    for (const [pad, want, not] of [[1, "Shell", "Tone"], [2, null, null], [0, "Tone", "Shell"]]) {
+      cur = pad;
+      rm.length = 0;
+      cm.vouchLivePress();
+      for (let i = 0; i < 40; i++) cm.tick();
+      if (rm.some((k) => /^pad\d_ui_engine$/.test(k)))
+        fail("the gate lane expanded a module-wide gate it was never told is per-pad: " + rm.join(","));
+      const got = pm();
+      if (want && (!new RegExp(want).test(got) || new RegExp(not).test(got)))
+        fail("after pad " + pad + " the pages should show " + want + " and not " + not + ", got: " + got);
+      if (!want && (/Tone/.test(got) || /Shell/.test(got)))
+        fail("after pad " + pad + " (no engine) neither engine page should show, got: " + got);
+    }
+    console.log("  ok  a module-wide gate on a child level is read bare, and the pages follow every pad");
+  }
+
   /* The NEIGHBOUR LANE note was replaced rather than joined in the first cut
      of this change; it records why that lane is conditional and bounded. */
   if (!/THE NEIGHBOUR LANE/.test(src)) fail("the neighbour-lane note was deleted");
