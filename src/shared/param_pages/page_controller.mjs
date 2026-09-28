@@ -1010,6 +1010,17 @@ export function createController(io = {}) {
      * A key declared by two levels that resolve it DIFFERENTLY has no single
      * answer; null, and the lane skips it rather than pick one. The evaluator
      * still reads it on demand, which is what it did before the lane existed.
+     *
+     * ⚠ A GATE IS PER-INSTANCE ONLY WHEN SOMETHING SAYS SO: the level lists
+     * the key (the evaluator's own rule, shadow_ui.js hierChildKeyFor), or the
+     * module declares the concrete key (`pad0_type` in its chain_params). A
+     * child level may gate on a MODULE-WIDE key too: DR32's
+     * `ui_engine` says which engine the focused pad runs, sits on no level and
+     * is served bare. Expanded, it was read as `synth:pad1_ui_engine`, which
+     * nothing serves; "" was cached, the evaluator trusted it, and every
+     * engine page vanished on the first pad switch and never came back. With
+     * several gated levels at different child indexes it was also "ambiguous"
+     * and skipped, so a real change never re-planned either.
      */
     const gateLevelsOf = (key) => {
         const out = [];
@@ -1029,8 +1040,15 @@ export function createController(io = {}) {
     const gateWireKey = (key) => {
         const levels = (s.hierarchy && s.hierarchy.levels) || {};
         let wire = null;
+        const lists = (lvl) => {
+            const listed = (k) => (typeof k === "string" ? k : (k && k.key)) === key;
+            return (lvl.knobs || []).some(listed) || (lvl.params || []).some(listed);
+        };
+        const declared = (k) => !!(s.metaIndex && s.metaIndex.keys.indexOf(k) >= 0);
         for (const name of gateLevelsOf(key)) {
-            const w = resolveChildKey(levels[name], childIndexFor(name), key) || key;
+            const lvl = levels[name];
+            const concrete = resolveChildKey(lvl, childIndexFor(name), key);
+            const w = (concrete && (lists(lvl) || declared(concrete))) ? concrete : key;
             if (wire !== null && wire !== w) return null;
             wire = w;
         }
@@ -1959,7 +1977,13 @@ export function createController(io = {}) {
          * the loop above never sees them. The gate lane caches them under the
          * generic key the evaluator asks for; left in place, the pad we just
          * left would go on deciding what the new pad's pages are. Marked due
-         * so the new instance's answer is read rather than waited for. */
+         * so the new instance's answer is read rather than waited for.
+         * Deliberately wider than gateWireKey's per-instance test: a
+         * module-wide gate on this level (DR32's `ui_engine`) can move with
+         * the focus too, so it is dropped and marked due with the rest. Only
+         * reached when a GATED level's own index moves (an instance pick);
+         * a module-driven focus change is marked due by
+         * syncChildIndexFromModule regardless. */
         const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
         if (lvlDef && s.conditionKeys) {
             for (const k of s.conditionKeys) {
@@ -2506,7 +2530,15 @@ export function createController(io = {}) {
                 if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
                 const gv = getParam(gateWireKey(k));
                 const before = s.values[k];
-                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                /* "" is a MISS for anything but an opaque key -- the chain
+                 * host's answer for a key nobody serves (acceptValue's rule).
+                 * Storing it is how a wrongly resolved gate used to become a
+                 * cached verdict the evaluator then trusted for good; a miss
+                 * leaves the evaluator to read the key itself. */
+                const meta = s.metaIndex ? s.metaIndex.getOrGuess(k) : null;
+                const miss = gv === "" && !(meta && meta.kind === KIND_OPAQUE);
+                if (miss) delete s.values[k];
+                else if (gv !== null && gv !== undefined) s.values[k] = gv;
                 if (s.values[k] !== before) replanIfCondition(k);
                 return null;
             }
