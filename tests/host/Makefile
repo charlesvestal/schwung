@@ -52,6 +52,7 @@ BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_move_model \
+	$(BUILD_DIR)/test_drum_lanes \
 	$(BUILD_DIR)/test_lane_edit \
 	$(BUILD_DIR)/test_undo_timeline \
 	$(BUILD_DIR)/test_edit_follow \
@@ -295,6 +296,9 @@ clean:
 # fixtures are not synthetic.
 $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_state.c ../../src/host/clip_state.c
+
+$(BUILD_DIR)/test_drum_lanes: test_drum_lanes.c ../../src/host/drum_lanes.c ../../src/host/move_model.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_drum_lanes.c ../../src/host/drum_lanes.c ../../src/host/move_model.c -lm
 
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm

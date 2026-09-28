@@ -159,6 +159,69 @@ typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash
  * count, or -1 when unknown. The pointer stays valid until the next change. */
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref);
 
+/* ---- every track's PLAYING clip, decoded, for the audio thread ---------
+ *
+ * The edited-clip decode above follows the SELECTED track only. A player needs
+ * the clip each track is playing, on the SPI callback. The reader decodes it
+ * when {clip_id, notes_hash} moves and publishes through a per-track double
+ * buffer: the RT side loads the current index once per block and reads that
+ * buffer; the writer only ever fills the OTHER one, and waits a grace period
+ * (MM_PLAY_REUSE_MS, many blocks) before refilling a buffer it just retired,
+ * so a block that loaded the old index is long finished with it.
+ *
+ * `valid` 0 = this clip's notes are unknown (no clip, not MIDI, or the blob did
+ * not decode) -- a player must treat that as silence, never as "empty". */
+#define MM_PLAY_NOTES_MAX 512
+#define MM_PLAY_REUSE_MS  50
+typedef struct {
+    int    pitch;            /* the note it sounds on -- on a drum track, the pad */
+    float  pitch_offset;     /* semitones, the note's PITCH lane at t=0 (16 Pitches) */
+    float  vel;              /* 0..127 */
+    double start, dur;       /* beats, clip time */
+} mm_play_note_t;
+typedef struct {
+    int      valid;
+    int      slot;           /* clip slot 0..7 */
+    uint64_t clip_id;
+    uint32_t notes_hash;
+    int      n;
+    mm_play_note_t note[MM_PLAY_NOTES_MAX];
+} mm_play_clip_t;
+/* RT-safe (an atomic load). Never NULL for 0 <= track < MM_TRACKS. */
+const mm_play_clip_t *move_model_playing_notes(int track);
+
+/* ---- LIVE notes: Move's engine MIDI, read out of its own EventBuffers ---
+ *
+ * A live pad press never reaches the document or MIDI out: Move's engine
+ * carries it in `ableton::engine::EventBuffer<midi::EndpointedMidiMessage,
+ * Distance<frames>>` -- per-block buffers of 40-byte records. A 16 Pitches
+ * press is a NoteOn for the PAD's note plus a PerNoteControlChange (cc -2,
+ * pitch, semitones x 8191/48) sharing its note id. The buffers holding the
+ * SELECTED track's live input carry endpoint 127 (measured on hardware,
+ * 2026-09-28: the same records appear in the same frame the pad reaches
+ * MIDI_IN). The reader finds them by their RTTI name and publishes one; the
+ * RT side copies its head each block. Move ends a sounding note on a pad
+ * before starting the next on the same pad, so a pad is monophonic by
+ * Move's own doing. */
+typedef struct {
+    double   frame;          /* frame offset inside the 128-frame block */
+    uint32_t ep;             /* endpoint: 127 = live input of the selected track */
+    int32_t  a;              /* NoteOn/Off: note; PerNoteCC: cc (-2 pitch, -1 pressure) */
+    float    b;              /* NoteOn: velocity; PerNoteCC: value */
+    int64_t  id;             /* note id: pairs a NoteOn with its expression */
+    uint32_t kind;           /* variant index: 0 NoteOn, 1 NoteOff, 2 CC, 3 PerNoteCC */
+} mm_live_rec_t;
+#define MM_LIVE_REC_BYTES 40
+#define MM_LIVE_KIND_ON   0
+#define MM_LIVE_KIND_OFF  1
+#define MM_LIVE_KIND_PNCC 3
+#define MM_LIVE_EP_INPUT  127
+/* Decode `n` little-endian 40-byte records (pure; tests/host). */
+void mm_decode_live_recs(const uint8_t *raw, int n, mm_live_rec_t *out);
+/* RT-safe: copy the head of the published live-input buffer (fault-safe read,
+ * one syscall). Returns the record count, or -1 when no buffer is published. */
+int move_model_live_read(mm_live_rec_t *out, int max);
+
 /* ---- pure pieces, exported for tests/host ---------------------------- */
 
 /* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:

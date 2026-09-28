@@ -60,6 +60,7 @@
 #include "host/shim_worker.h"
 #include "host/move_model.h"
 #include "host/move_model_sync.h"
+#include "host/drum_lanes.h"
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
@@ -2088,12 +2089,106 @@ static uint32_t spi_slot_probe_burst_max;
  * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
  * but allowing Move to process pad events faster after ioctl returns.
  */
+/* === DRUM LANES (prototype, drum_lanes.h) ===
+ * A Move drum track's PLAYING clip, read out of Move's document, played as 16
+ * monophonic pitched lanes into one slot: pad 36+k on channel k+1, at the
+ * lane's base note + its 16 Pitches offset. Off unless drum_lanes.conf names
+ * the track. Runs on the SPI callback, before the slots render this block, so
+ * a note delivered here sounds in it. */
+static void drum_lanes_emit(void *ctx, uint8_t status, uint8_t d1, uint8_t d2) {
+    const int s = (int)(intptr_t)ctx;
+    if (s < 0 || s >= SHADOW_CHAIN_INSTANCES || !shadow_chain_slots[s].active ||
+        !shadow_chain_slots[s].instance || !shadow_plugin_v2 || !shadow_plugin_v2->on_midi)
+        return;
+    /* Wake it from idle, exactly as a dispatched MIDI message does. */
+    shadow_slot_idle[s] = 0;
+    shadow_slot_silence_frames[s] = 0;
+    shadow_slot_fx_idle[s] = 0;
+    shadow_slot_fx_silence_frames[s] = 0;
+    uint8_t msg[3] = { status, d1, d2 };
+    shadow_plugin_v2->on_midi(shadow_chain_slots[s].instance, msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+}
+
+static int live_ok_track(const move_model_t *m) {
+    if (!m->valid || !move_model_sync_active()) return -1;
+    return (m->selected_track >= 0 && m->selected_track < MM_TRACKS) ? m->selected_track : -1;
+}
+
+static void drum_lanes_emit_slot(int slot, uint8_t status, uint8_t d1, uint8_t d2) {
+    drum_lanes_emit((void *)(intptr_t)slot, status, d1, d2);
+}
+
+static void drum_lanes_render_tick(void) {
+    static dl_live_t live;                 /* the selected track's pads, played now */
+    static mm_live_rec_t live_recs[16];
+    static dl_track_t st[MM_TRACKS];
+    static int last_slot[MM_TRACKS] = { -1, -1, -1, -1 };
+    static move_model_t m;                 /* 2.5 KB: static, off the callback's stack */
+    int any = 0;
+    for (int t = 0; t < MM_TRACKS; t++) {
+        const int slot = __atomic_load_n(&dl_cfg_slot[t], __ATOMIC_ACQUIRE);
+        if (slot != last_slot[t]) {        /* re-pointed or switched off: release the old slot */
+            dl_all_off(&st[t], drum_lanes_emit, (void *)(intptr_t)last_slot[t]);
+            last_slot[t] = slot;
+        }
+        any |= (slot >= 0);
+    }
+    if (!any) {
+        /* Off: re-prime on the way back, so notes played meanwhile are
+         * history rather than a burst replayed from the persisting records. */
+        dl_live_all_off(&live, drum_lanes_emit_slot);
+        live.primed = 0;
+        return;
+    }
+
+    move_model_get(&m);                    /* torn: the last good snapshot */
+    const int model_live = m.valid && move_model_sync_active();
+    const double now = shadow_transport_beat_position();
+    float bpm = shadow_transport_bpm();
+    if (!(bpm > 0.0f)) bpm = (float)m.tempo;
+    const double blk = (bpm > 0.0f) ? (double)MOVE_FRAMES_PER_BLOCK * bpm / (60.0 * MOVE_SAMPLE_RATE) : 0.0;
+
+    for (int t = 0; t < MM_TRACKS; t++) {
+        const int slot = last_slot[t];
+        if (slot < 0) continue;
+        void *ctx = (void *)(intptr_t)slot;
+        const mm_play_clip_t *clip = move_model_playing_notes(t);
+        const mm_track_t *T = &m.track[t];
+        const int cs = (T->mode == 1) ? T->playing_slot : -1;
+        const mm_clip_t *c = (model_live && cs >= 0 && cs < MM_SLOTS && T->slot[cs].exists) ? &T->slot[cs] : NULL;
+        double pos0 = -1.0;
+        dl_window_t w = { 0.0, 0.0, 0 };
+        /* The decoded notes must be THIS clip's: a launch is decoded a reader
+         * tick (~20 ms) after the model says so, and silence beats the old clip. */
+        if (c && clip->valid && clip->clip_id == c->clip_id && now >= 0.0 &&
+            !(m.clock_valid && !m.playing)) {
+            pos0 = mm_clip_position(c, T->start_beats, now);
+            w.loop = c->loop_on;
+            w.ls = c->loop_on ? c->loop_start : c->region_start;
+            w.le = c->loop_on ? c->loop_end : c->region_end;
+        }
+        dl_block(&st[t], clip, w, pos0, blk,
+                 __atomic_load_n(&dl_cfg_base[t], __ATOMIC_RELAXED), drum_lanes_emit, ctx);
+    }
+
+    /* LIVE: the pads being played now, as Move's engine carries them -- the
+     * selected track's input, pitch included (move_model_live_read). */
+    const int n = move_model_live_read(live_recs, 16);
+    if (n > 0) {
+        const int t = live_ok_track(&m);
+        const int slot = (t >= 0) ? last_slot[t] : -1;
+        const int base = (t >= 0) ? __atomic_load_n(&dl_cfg_base[t], __ATOMIC_RELAXED) : 60;
+        dl_live_ingest(&live, live_recs, n, slot, base, drum_lanes_emit_slot);
+    }
+}
+
 static void shadow_inprocess_render_to_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
     /* Advance the transport clock before slot/master LFOs render below, so
      * they read a beat position interpolated to this block. */
     shadow_transport_advance_block(MOVE_FRAMES_PER_BLOCK);
+    drum_lanes_render_tick();
 
     /* Clear the deferred buffer (used for overtake DSP) */
     memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
