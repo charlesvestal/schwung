@@ -233,6 +233,14 @@ export const GLOBAL_ROUTING = {
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
+    /* persist: "own" -- the surface is a JS-side feature, so the toggle is
+     * saved beside pad_typing in shadow_config.json by the writer itself. The
+     * shared sink (saveMasterFxChainConfig) does not know this key. */
+    external_surface:       { read: "js.externalSurfaceMode",   write: "js.setExternalSurfaceMode", persist: "own", cache: "externalSurfaceMode", modal: null },
+    /* persist: "own" for the same reason as the row above -- the pair lives in
+     * shadow_config.json and is written by its own saver. */
+    follow_focus:           { read: "js.externalSurfaceFollow", write: "js.setExternalSurfaceFollow", persist: "own", cache: "externalSurfaceFollow", modal: null },
+    surface_nav:            { read: "js.surfaceNavIndex",       write: "js.setSurfaceNav",           persist: "own", cache: "externalSurfaceNav",    modal: null },
 
     /*
      * TRIGGERS, whose "backend" is an ACTION.
@@ -248,6 +256,7 @@ export const GLOBAL_ROUTING = {
      * report on a control that is working.
      */
     connect:                { read: "js.stateless",           write: "action.connect",           persist: null,   cache: null,                     modal: null },
+    ec4_setup:              { read: "js.stateless",           write: "action.ec4_setup",         persist: null,   cache: null,                     modal: null },
     help:                   { read: "js.stateless",           write: "action.help",              persist: null,   cache: null,                     modal: null },
 };
 
@@ -589,6 +598,91 @@ export const SHORTCUTS_PARAMS = [
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
+/*
+ * CONTROL SURFACES, a section of their own: the device, whether it follows
+ * Move's screen, how its knobs navigate, and the EC4's setup door -- and the
+ * place per-set layout mapping will go. They were rows at the foot of System,
+ * where four settings about one device sat between Analytics and Help.
+ */
+/* A row that only means something with a remote surface (E16, EC4) chosen. */
+const SURFACE_ON = { param: "external_surface", not_equals: "0" };
+
+export const SURFACES_PARAMS = [
+    /*
+     * An external control surface, driven over its own remote protocol.
+     * `docs/E16_REMOTE.md` is the only one so far; the enum names the DEVICE
+     * rather than saying "on", because the message set is per-device and a
+     * second one is a third option here, not a second setting.
+     *
+     * A PLAIN ENUM ROW, NOT A MENU. A level carrying a `menu` alongside its
+     * knobs plans a SECOND page (page_plan.mjs, "Menu LAST"), which is the
+     * one-section-one-page property this whole screen is built on.
+     *
+     * "Ext Surface", not "External Surface": the honest name needs 93px in a
+     * row that has 85px beside its widest value, and the width pin in
+     * tests/host/test_global_settings_contract.sh catches it. The same 8px
+     * that made "Stay in Schwung" into "Keep Schwung".
+     *
+     * ON does not mean a device is attached, and nothing here can ask: gear on
+     * Move's USB-A never enumerates in Linux (docs/SYSEX.md, issue #358). It
+     * means the surface may SEEK -- see createLifecycle in e16_surface.mjs.
+     */
+    /* Both options already fit the enum square, so there is no short form to
+     * declare -- a second list to keep in step for nothing. */
+    /*
+     * "CC Only", not "Off": with no remote surface, a controller -- an E16 in
+     * its own non-remote mode included -- is a plain CC controller, and the
+     * CC map (Master FX Settings) is what drives parameters from it. The
+     * stored value is unchanged (0), so no config migrates.
+     */
+    /* "Surface", not "Ext Surface": the row lives on the Surfaces page, so
+     * "Ext" said nothing -- and it cost the 2px "CC Only" needs. */
+    { key: "external_surface", name: "Surface", type: "enum",
+      options: ["CC Only", "E16", "EC4"], short_options: ["CC", "E16", "EC4"], default: 0 },
+    /*
+     * Does the surface mirror Move's screen, or hold its own focus?
+     *
+     * IMMEDIATELY AFTER the row above, because the two are one question asked
+     * twice and a row between them makes them read as unrelated settings.
+     *
+     * The honest name FITS here -- 67px against the 85px a two-option Off/On
+     * row leaves -- unlike "External Surface" beside it, which needed 93px and
+     * became "Ext Surface". Measured through tools/param-pages/measure_labels
+     * with the real device font, not estimated; the width pin in
+     * tests/host/test_global_settings_contract.sh is what would have caught it.
+     *
+     * A PLAIN ENUM ROW, NOT A MENU, for the same reason as everything else on
+     * this screen: a level carrying a `menu` alongside its knobs plans a SECOND
+     * page, and one section / one page is what makes sections-as-levels work.
+     *
+     * While it is on, the E16's own map is DISABLED and follow is ONE-WAY --
+     * navigating on the E16 never moves Move's screen. See createNav in
+     * src/shared/e16_surface.mjs for why there is no mode where both navigate.
+     */
+    /* Only for a surface with a screen: under CC Only there is nothing to
+     * follow with. */
+    Object.assign(bool("follow_focus", "Follow Focus", 0), { visible_if: SURFACE_ON }),
+    /*
+     * HOW THE SURFACE'S KNOBS NAVIGATE (layout_common.mjs): MAP -- sixteen
+     * parameters, hold Shift for the slot map -- or KNOBS -- eight parameters
+     * and eight labelled navigation knobs. Every surface runs either; the
+     * row edits the device Ext Surface names, and each device keeps its own
+     * (the E16 starts on Map, the EC4 on Knobs, as each was designed).
+     */
+    { key: "surface_nav", name: "Surface Nav", type: "enum",
+      options: ["Map", "Knobs", "Custom"], short_options: ["MAP", "KNB", "CUS"], default: 0,
+      visible_if: SURFACE_ON },
+    /*
+     * INSTALLS SCHWUNG'S SETUP ONTO AN EC4 plugged into Move -- a door, like
+     * Web Manager and Help, so a write-only two-option enum: a click opens the
+     * screen and a knob cannot. Beside Ext Surface because it is the second
+     * half of choosing EC4 there: the EC4 has no remote mode, and only a
+     * setup carrying Schwung's map makes it a surface (ec4_surface.mjs).
+     */
+    { key: "ec4_setup", name: "EC4 Setup", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
+];
+
 export const SYSTEM_PARAMS = [
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
@@ -706,6 +800,7 @@ export const GLOBAL_SECTIONS = [
     { id: "accessibility", label: "Screen Reader", params: ACCESSIBILITY_PARAMS },
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
+    { id: "surfaces", label: "Surfaces", params: SURFACES_PARAMS },
     { id: "system", label: "System", params: SYSTEM_PARAMS },
 ];
 
@@ -750,7 +845,8 @@ export function buildGlobalSettingsContract(io) {
         const level = {
             label: s.label,
             knobs: s.params.map((p) => p.key),
-            params: s.params.map((p) => ({ key: p.key })),
+            /* visible_if travels on the LEVEL param, where the planner reads it. */
+            params: s.params.map((p) => (p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key })),
         };
         if (s.menu) {
             level.menu = s.menu.map((m) => ({ label: m.label, action: m.action }));
@@ -830,6 +926,27 @@ export function createGlobalGridIo(io) {
     };
 
     return {
+        /*
+         * visible_if, answered from THESE settings. Without it the grid falls
+         * back to the host's evaluator, which reads the condition key through
+         * the param channel -- where no Global Setting lives -- and fails open.
+         * A read that did not answer is visible (fail-open), as everywhere.
+         */
+        visible(condition) {
+            if (!condition || typeof condition !== "object") return true;
+            const key = condition.param || condition.key;
+            if (!key || !GLOBAL_ROUTING[key]) return true;
+            /* CACHE-FIRST, as the host's own evaluator is: the grid's value
+             * carries a turn whose write may still be debounced. Defensive --
+             * the host test passes either way -- and it costs nothing. */
+            const held = typeof io.cachedValue === "function" ? io.cachedValue(key) : undefined;
+            const v = held !== undefined ? held : readGlobalParam(io, key);
+            if (v === null || v === undefined) return true;
+            if (condition.equals !== undefined) return String(v) === String(condition.equals);
+            if (condition.not_equals !== undefined) return String(v) !== String(condition.not_equals);
+            return true;
+        },
+
         getParam(fullKey) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(contract.hierarchy);

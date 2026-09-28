@@ -1,0 +1,871 @@
+/*
+ * e16_view.mjs -- the PARAMETERS view: two authored grid pages under sixteen
+ * encoders.
+ *
+ * PURE AND INJECTED, like every other e16_* module on this branch. It takes a
+ * page plan (whatever `planPages()` produced) plus two lookup functions and
+ * returns a view model; it never reads a param, never sends a byte, and never
+ * writes a value. tests/host drives all of it with no device and no shim.
+ *
+ * ------------------------------------------------------------------------
+ * WHY TWO AUTHORED PAGES AND NOT ONE RE-PLANNED 16-CELL PAGE
+ *
+ * The obvious thing to do with sixteen encoders is to re-chunk the module's
+ * params sixteen at a time. docs/PARAM_PAGES.md forbids exactly that: a
+ * module's page groupings are AUTHORED, and the planner's `paginate` flag
+ * exists because "eight" is the number of physical knobs on MOVE, not a
+ * property of the contract. A deliberate six-param Filter page re-cut into a
+ * sixteen-cell page carrying half of Filter and half of Envelope is not a
+ * denser view of the same module, it is a different module's layout.
+ *
+ * So: top 2x4 is page N, bottom 2x4 is page N+1, both untouched. A page with
+ * six keys leaves cells 6 and 7 EMPTY rather than pulling the next page's
+ * first two knobs forward -- see buildView(). That is the same rule stated at
+ * the cell level, and it is the one a "helpful" compaction would break first.
+ *
+ * WHY A TURN GOES BACK THROUGH THE CONTROLLER
+ *
+ * applyTurn() calls the grid's own `onKnobTurn`. It is load-bearing rather
+ * than tidy: enum quantization, read-only refusal, momentary latching, the
+ * fine-adjust step and `visible_if` gating all live behind that one call, and
+ * every one of them would have to be re-derived -- and would drift -- in a
+ * second value-application path. This module therefore knows nothing about any
+ * module. `readOnly` is reported in the cell for DRAWING only; the refusal
+ * itself is the controller's, and must stay there.
+ * ------------------------------------------------------------------------
+ */
+
+import { KNOBS_PER_PAGE, PAGE_KNOBS, pageSlotKeys } from "./param_pages/page_plan.mjs";
+
+/* Sixteen encoders, 4x4, row-major: enc 0-3 is the top row. Encoders 0-7 are
+ * the top half (page N), 8-15 the bottom (page N+1). The halves are two rows
+ * each because that is what a 2x4 authored page IS -- any other split would
+ * put one page's knobs on both sides of the screen. */
+export const ENCODERS = 16;
+export const COLS = 4;
+export const HALVES = 2;
+
+/* Screen geometry, 128x64. A half is 32 px: an 8 px header bar and two 12 px
+ * cell rows (8 + 12 + 12 = 32). Exported because the encoder-to-cell mapping
+ * and the drawn layout have to be THE SAME FACT -- a surface where knob 5 is
+ * under the cell knob 6 draws in is not a bug you find by reading code.
+ *
+ * `HEADER_BAR_H` rather than `HEADER_H`: that name is one of twelve list-chrome
+ * constants `tests/host/test_list_behavior.sh` requires to have EXACTLY ONE
+ * definition in src/, because a forked copy of the list geometry once left the
+ * whole movy re-skin inert on the device while the test stayed green. This is a
+ * different screen with its own geometry, so it takes its own name rather than
+ * a second definition of theirs. */
+export const WIDTH = 128;
+export const HALF_H = 32;
+export const HEADER_BAR_H = 8;
+export const CELL_W = WIDTH / COLS;             /* 32 */
+export const CELL_H = (HALF_H - HEADER_BAR_H) / 2;  /* 12 */
+
+/* The header names its page in the LEFT half of the bar and leaves the right
+ * half for the page position. 64 px of font4x5 is about fifteen characters,
+ * which is most page names; anything longer is truncated with a trailing dot
+ * rather than allowed to run under the position text. */
+export const HEADER_TEXT_W = WIDTH / 2;
+
+/*
+ * Ring colours. A ring's JOB is to show a value; its HUE says WHOSE value.
+ *
+ * On the slot map the four slot knobs are green and each module knob wears
+ * its own colour; in the knob view every knob wears the colour of the module
+ * being edited, so the knob pressed on the map and the knobs it opens match.
+ * The colour follows the module's ORDER IN ITS SLOT (the order the map lists
+ * them): module 1 is always the first colour, module 2 the second, and no two
+ * modules of one slot share one. (Keying it by kind -- synth, fx1 -- gave two
+ * slots' different modules the same colour and every MIDI FX one colour.)
+ * Green is reserved for slots. A read-only cell is the dim version. Tuned by
+ * eye on hardware: change them HERE, in one table.
+ */
+export const RING_RGB = { r: 0, g: 40, b: 40 };          /* no known module */
+export const RING_RGB_READONLY = { r: 0, g: 8, b: 8 };
+export const RING_DARK = { r: 0, g: 0, b: 0 };
+export const SLOT_RGB = { r: 0, g: 90, b: 0 };           /* the current slot */
+export const SLOT_RGB_OTHER = { r: 0, g: 18, b: 0 };
+/*
+ * Every module in the SET gets its own colour: the n-th module of the set
+ * (numbered slot by slot, see setOrdinal) takes hue n x 137.5 degrees -- the
+ * golden angle, so consecutive modules land far apart on the wheel and no hue
+ * ever repeats -- skipping the band around green, which is the slots'.
+ * Stable while the set's chains are; brightness kept near the old rings'.
+ */
+const GOLDEN_DEG = 137.50776;
+const GREEN_DEG = 120, GREEN_BAND = 50, MODULE_V = 100;
+/* Rotates the sequence so the FIRST module is orange (hue ~20). */
+const FIRST_OFFSET = 290.8;
+function hsvRgb(h, v) {
+    const c = v, x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+                    : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+}
+/** The colour of the set's `ordinal`-th module (-1: no module -> default). */
+export function moduleRgb(ordinal) {
+    const i = ordinal | 0;
+    if (i < 0) return RING_RGB;
+    /* Map the wheel minus the green band onto 0..360, then place by the
+     * golden angle, so the band is skipped without bunching two hues. */
+    const span = 360 - 2 * GREEN_BAND;
+    const t = (i * GOLDEN_DEG + FIRST_OFFSET) % 360 / 360 * span;
+    const h = (GREEN_DEG + GREEN_BAND + t) % 360;
+    return hsvRgb(h, MODULE_V);
+}
+
+/* A read-only cell's colour: the same hue, a fifth as bright. */
+function dimRgb(rgb) {
+    return { r: Math.round(rgb.r / 5), g: Math.round(rgb.g / 5), b: Math.round(rgb.b / 5) };
+}
+
+/* An unlit ring. Sent, not omitted: the E16 keeps whatever a ring last
+ * showed, so a knob with nothing to drive must be TOLD to go dark or it keeps
+ * the previous page's (or the other view's) value. */
+export function darkRing(enc) {
+    return { enc, r: 0, g: 0, b: 0, amount: 0, bipolar: false };
+}
+
+/* The E16 ring position is 14-bit. */
+export const RING_MAX = 16383;
+
+/* Protocol cap on one relative-CC turn (docs/E16_REMOTE.md: relative with
+ * acceleration, decoded by e16_input across the full 7-bit two's complement
+ * range). A cap here is belt and braces against a garbled CC turning into a
+ * thousand writes on the param channel. */
+export const MAX_TICKS_PER_TURN = 63;
+
+/**
+ * Which half of the screen an encoder belongs to, and which slot of that
+ * half's page it drives. The single definition of the mapping; everything
+ * else -- the rects, the cells, the turn routing -- is derived from it, so
+ * "the mapping matches the drawn layout" is true by construction.
+ */
+export function encHalf(enc) { return Math.floor(enc / KNOBS_PER_PAGE); }
+export function encSlot(enc) { return enc % KNOBS_PER_PAGE; }
+
+/** The rect an encoder's cell is drawn in. */
+export function cellRect(enc) {
+    const half = encHalf(enc);
+    const slot = encSlot(enc);
+    return {
+        x: (slot % COLS) * CELL_W,
+        y: half * HALF_H + HEADER_BAR_H + Math.floor(slot / COLS) * CELL_H,
+        w: CELL_W,
+        h: CELL_H,
+    };
+}
+
+/**
+ * The eight keys of a page, or eight nulls.
+ *
+ * `pageSlotKeys` is the planner's own exported answer to this question and is
+ * used for the ordinary case. It tests `kind === PAGE_KNOBS` strictly, which
+ * predates `as_page`: a module-owned canvas page carries real keys and its own
+ * kind, and the controller asks `pageHasKnobs` -- "does it have keys" -- for
+ * exactly that reason (CLAUDE.md). Blanking such a page here would be a
+ * surface that goes dark on the one page a module authored deliberately, so
+ * the canvas case is handled beside the delegation rather than by restating
+ * the whole function.
+ */
+function slotsOf(page) {
+    if (page && page.kind !== PAGE_KNOBS && page.canvas &&
+        Array.isArray(page.keys) && page.keys.length) {
+        const out = new Array(KNOBS_PER_PAGE).fill(null);
+        for (let i = 0; i < Math.min(page.keys.length, KNOBS_PER_PAGE); i++) {
+            out[i] = page.keys[i];
+        }
+        return out;
+    }
+    return pageSlotKeys(page);
+}
+
+/** The page puts at least one parameter under a knob. A page without one
+ *  (My Presets, the Module page, a preset browser) has nothing an encoder can
+ *  do, so the E16 pages past it -- presets stay on Move. */
+export function pageHasKnobs(page) {
+    return slotsOf(page).some(Boolean);
+}
+
+function headerOf(page, index, count) {
+    if (!page) return null;
+    return { name: page.name || "", index, count };
+}
+
+/**
+ * Build the view model for the page pair starting at `pageIndex`.
+ *
+ * @param {Array}  pages       planPages().pages
+ * @param {number} pageIndex   index of the TOP page (N); N+1 fills the bottom
+ * @param {object} [io]
+ * @param {function} [io.metaOf]   key -> param meta (param_meta shape)
+ * @param {function} [io.valueOf]  key -> current value
+ * @returns {{cells: Array, headers: Array, pageIndex: number, pageCount: number}}
+ *
+ * `cells` is always ENCODERS long and indexed BY ENCODER, so cells[e] is what
+ * encoder e drives and null means that encoder does nothing. A shorter array
+ * indexed by "occupied cell" would make every consumer re-derive the mapping.
+ */
+export function buildView(pages, pageIndex, io) {
+    const o = io || {};
+    const metaOf = o.metaOf || (() => null);
+    const valueOf = o.valueOf || (() => undefined);
+    const pageIndexOf = o.pageIndexOf || ((i) => i);
+    const list = Array.isArray(pages) ? pages : [];
+    const idx = pageIndex | 0;
+
+    const cells = new Array(ENCODERS).fill(null);
+    const headers = new Array(HALVES).fill(null);
+
+    for (let half = 0; half < HALVES; half++) {
+        const p = list[idx + half] || null;
+        /*
+         * A component with a single page leaves the bottom half DARK. There is
+         * deliberately no `|| list[idx + half - 1]` and no wrap to page 0: a
+         * second copy of page N under the lower eight encoders would make the
+         * same parameter reachable from two knobs, and wrapping would put the
+         * module's LAST page under its first. Absent is absent.
+         */
+        if (!p) continue;
+        headers[half] = headerOf(p, idx + half, list.length);
+        const keys = slotsOf(p);
+        for (let slot = 0; slot < KNOBS_PER_PAGE; slot++) {
+            const key = keys[slot];
+            if (!key) continue;   /* a 6-key page: cells 6 and 7 stay null */
+            const meta = metaOf(key) || {};
+            const min = typeof meta.min === "number" ? meta.min : 0;
+            const max = typeof meta.max === "number" ? meta.max : 1;
+            cells[half * KNOBS_PER_PAGE + slot] = {
+                enc: half * KNOBS_PER_PAGE + slot,
+                half,
+                slot,
+                /* The CONTROLLER's index of this page, which a turn moves
+                 * to. The list shown may be a filtered one (the E16 skips
+                 * pages with no knob), so its position is not the
+                 * controller's: `io.pageIndexOf` maps one to the other. */
+                pageIndex: pageIndexOf(idx + half),
+                key,
+                /* The authored short label lives on the PAGE, not the
+                 * meta: page_plan collects { key: short_name } into
+                 * page.shortNames and render_page_movy reads it there.
+                 * getOrGuess never carries it, so meta.short_name is
+                 * essentially always undefined and this fell through to the
+                 * raw parameter id -- which at 4px per character is a
+                 * fragment, and four columns of fragments read as noise. */
+                label: (p.shortNames && p.shortNames[key]) ||
+                       meta.short_name || meta.label || key,
+                value: valueOf(key),
+                /* Kept so the value is PRINTED through the shared formatter
+                 * (see renderView), never as the raw cached string. */
+                meta,
+                min,
+                max,
+                /* Bipolar is READ FROM THE RANGE, exactly as render_page_movy
+                 * reads it (min < 0). There is no meta.bipolar field, and
+                 * inventing one here would be a second answer to a question
+                 * the grid already answers. */
+                bipolar: min < 0,
+                readOnly: !!meta.readOnly,
+            };
+        }
+    }
+
+    return { cells, headers, pageIndex: idx, pageCount: list.length };
+}
+
+/* 0..RING_MAX for a cell's current value, clamped. A non-numeric value (an
+ * enum reported as a name, a param not yet read) parks the ring at zero rather
+ * than at NaN, which the protocol would truncate into a random position. */
+export function ringAmount(cell) {
+    if (!cell) return 0;
+    const v = Number(cell.value);
+    if (!isFinite(v)) return 0;
+    const span = cell.max - cell.min;
+    if (!(span > 0)) return 0;
+    const t = (v - cell.min) / span;
+    return Math.max(0, Math.min(RING_MAX, Math.round(t * RING_MAX)));
+}
+
+/** One ring descriptor for `ringMsg`: the cell's value in `rgb` (the
+ * edited module's colour), or DARK for an empty cell. */
+export function ringFor(view, enc, rgb) {
+    const cell = view && view.cells ? view.cells[enc] : null;
+    if (!cell) return darkRing(enc);
+    const base = rgb || RING_RGB;
+    const c = cell.readOnly ? (rgb ? dimRgb(base) : RING_RGB_READONLY) : base;
+    return { enc, r: c.r, g: c.g, b: c.b,
+             amount: ringAmount(cell), bipolar: cell.bipolar };
+}
+
+/** All sixteen rings of the knob view -- empty cells DARK, never omitted. */
+export function ringsFor(view, rgb) {
+    const out = [];
+    for (let e = 0; e < ENCODERS; e++) out.push(ringFor(view, e, rgb));
+    return out;
+}
+
+/** All sixteen rings of the slot map: slot knobs green (the current slot
+ * bright), each module knob full in its module's colour, the rest dark. */
+/** `rgbOf(cell)` names a module cell's colour (the caller knows the set). */
+export function mapRings(map, rgbOf) {
+    const cells = (map && map.cells) || [];
+    const out = [];
+    for (let e = 0; e < ENCODERS; e++) {
+        const cell = cells[e];
+        if (!cell) { out.push(darkRing(e)); continue; }
+        const c = cell.kind === "slot" ? (cell.current ? SLOT_RGB : SLOT_RGB_OTHER)
+                                       : (rgbOf ? rgbOf(cell) : RING_RGB);
+        out.push({ enc: e, r: c.r, g: c.g, b: c.b, amount: RING_MAX, bipolar: false });
+    }
+    return out;
+}
+
+/** The knob view of a slot with nothing in it: say so, rather than a blank
+ * screen that reads as a dead device. */
+export function renderEmptySlot(ctx, slotIndex) {
+    renderMessage(ctx, "Slot " + ((slotIndex | 0) + 1), "Empty");
+}
+
+/* Two centred lines -- what a page says when it has nothing to turn
+ * ("No controls", "Loading...") instead of drawing nothing. */
+export function renderMessage(ctx, a, b) {
+    ctx.clear();
+    a = clip(ctx, a || "", WIDTH - 4);
+    ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 22, a, 1);
+    if (b) ctx.print(Math.floor((WIDTH - ctx.textWidth(b)) / 2), 34, b, 1);
+}
+
+function clip(ctx, text, w) {
+    let s = String(text === undefined || text === null ? "" : text);
+    if (ctx.textWidth(s) <= w) return s;
+    while (s.length && ctx.textWidth(s + ".") > w) s = s.slice(0, -1);
+    return s + ".";
+}
+
+/**
+ * Draw the view into an e16 canvas (or anything with the param_pages draw
+ * context: fillRect / print / textWidth / clear).
+ *
+ * Two headers, one per half, each naming ITS page -- a single header could not
+ * name two pages honestly, which is also why this renders pixels instead of
+ * using the LABELS message (docs/E16_REMOTE.md: one 16-char title for the
+ * whole screen).
+ *
+ * Nothing is drawn into a half whose page is absent. That is the dark-bottom
+ * rule made visible: a test can assert the lower 512 bytes of the framebuffer
+ * are zero, which no amount of cell bookkeeping can fake.
+ */
+/*
+ * THE TURN HINT: a clockwise arrow beside each page number while Shift is
+ * held in the knob view, saying "turn now and this pages". 6 x 5, drawn in
+ * the header ink (the bar is inverted), so it needs no font support.
+ */
+const TURN_GLYPH = [
+    ".###..",
+    "#...#.",
+    "#..###",
+    "#...#.",
+    ".###..",
+];
+export const TURN_GLYPH_W = 6;
+function drawTurnGlyph(ctx, x, y, ink) {
+    for (let r = 0; r < TURN_GLYPH.length; r++)
+        for (let c = 0; c < TURN_GLYPH[r].length; c++)
+            if (TURN_GLYPH[r][c] === "#") ctx.fillRect(x + c, y + r, 1, 1, ink);
+}
+
+/** `opts.turnHint`: Shift is held -- mark the page numbers as turnable. */
+export function renderView(ctx, view, opts) {
+    const turnHint = !!(opts && opts.turnHint);
+    ctx.clear();
+    for (let half = 0; half < HALVES; half++) {
+        const h = view.headers[half];
+        if (!h) continue;
+        const y = half * HALF_H;
+        /* Inverted header bar, so the eye finds the two pages before it reads
+         * either -- the split is the whole point of this screen. */
+        ctx.fillRect(0, y, WIDTH, HEADER_BAR_H - 1, 1);
+        ctx.print(1, y + 1, clip(ctx, h.name, HEADER_TEXT_W - 2), 0);
+        const pos = `${h.index + 1}/${h.count}`;
+        const px = WIDTH - 1 - ctx.textWidth(pos);
+        ctx.print(px, y + 1, pos, 0);
+        if (turnHint) drawTurnGlyph(ctx, px - TURN_GLYPH_W - 2, y + 1, 0);
+    }
+    for (let e = 0; e < ENCODERS; e++) {
+        const cell = view.cells[e];
+        if (!cell) continue;
+        const r = cellRect(e);
+        ctx.print(r.x + 1, r.y + 1, clip(ctx, cell.label, r.w - 2), 1);
+        /*
+         * THE VALUE GOES THROUGH displayValue, THE SAME FORMATTER MOVE'S KNOB
+         * GRID USES. Printing String(cell.value) showed whatever form the
+         * cache happened to hold: the module's own reading before a turn
+         * (hank's ratio as "11.000") and the controller's written number
+         * after one ("11") -- one value, two pictures, reported on hardware
+         * 2026-09-24. An unread value still draws nothing.
+         */
+        if (cell.value !== undefined && cell.value !== null) {
+            const v = String(displayValue(cell.value, cell.meta || {}));
+            if (v !== "") ctx.print(r.x + 1, r.y + 7, clip(ctx, v, r.w - 2), 1);
+        }
+    }
+}
+
+/*
+ * THE KNOBS LAYOUT on the E16 (layout_knobs.mjs): the page Move shows on the
+ * top half, exactly as renderView draws a top half, and the eight navigation
+ * knobs on the bottom half -- label over value, under their own encoders --
+ * beneath a bar naming the slot and module they move.
+ *
+ * `scr` is the layout's screen: { view, component, pageName, navCells[8],
+ * empty, slot }.
+ */
+export function renderKnobsView(ctx, scr) {
+    if (scr.empty || scr.message || !scr.view) {
+        ctx.clear();
+        const a = scr.empty ? "Slot " + ((scr.slot | 0) + 1) + " Empty" : (scr.message || "");
+        ctx.print(Math.floor((WIDTH - ctx.textWidth(a)) / 2), 12, a, 1);
+    } else {
+        /* One page: buildView filled only the top half, so renderView draws
+         * only the top half. */
+        renderView(ctx, scr.view);
+    }
+    const y = HALF_H;
+    ctx.fillRect(0, y, WIDTH, HEADER_BAR_H - 1, 1);
+    ctx.print(1, y + 1, clip(ctx, "Slot " + ((scr.slot | 0) + 1), HEADER_TEXT_W - 2), 0);
+    const mod = clip(ctx, scr.component || "", HEADER_TEXT_W - 2);
+    ctx.print(WIDTH - 1 - ctx.textWidth(mod), y + 1, mod, 0);
+    const cells = scr.navCells || [];
+    for (let i = 0; i < KNOBS_PER_PAGE; i++) {
+        const cell = cells[i];
+        if (!cell) continue;
+        const r = cellRect(KNOBS_PER_PAGE + i);
+        ctx.print(r.x + 1, r.y + 1, clip(ctx, cell.label, r.w - 2), 1);
+        if (cell.value) ctx.print(r.x + 1, r.y + 7, clip(ctx, cell.value, r.w - 2), 1);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * THE MAP VIEW -- what Shift shows.
+ *
+ * The model is `buildMap()` in e16_map.mjs and it is not restated here: this
+ * function only turns its sixteen cells into pixels. Same division as the
+ * parameters view, and for the same reason -- the layout rules (holes are not
+ * destinations, twelve cells with pagination past that) have to be runnable in
+ * tests/host without a renderer, and the renderer has to be checkable in
+ * PIXELS without re-deriving the layout.
+ *
+ * Geometry is the 4x4 the device IS: 32 x 16 per cell, so a cell sits exactly
+ * under its own encoder. There is no header bar -- unlike the parameters view
+ * there is nothing to name that the sixteen cells do not already say, and 8 px
+ * of chrome would cost the bottom row a readable second line.
+ * ------------------------------------------------------------------------- */
+export const MAP_ROWS = 4;
+export const MAP_CELL_W = WIDTH / COLS;          /* 32 */
+export const MAP_CELL_H = (HALF_H * HALVES) / MAP_ROWS;  /* 16 */
+
+/** The rect a map cell is drawn in. Row-major, so cell i is under encoder i. */
+export function mapCellRect(i) {
+    return {
+        x: (i % COLS) * MAP_CELL_W,
+        y: Math.floor(i / COLS) * MAP_CELL_H,
+        w: MAP_CELL_W,
+        h: MAP_CELL_H,
+    };
+}
+
+/**
+ * Draw a map.
+ *
+ * @param {object} ctx  an e16 canvas (or any param_pages draw context)
+ * @param {object} map  buildMap()'s return: { cells, pageCount }
+ * @param {object} [opts]
+ * @param {number} [opts.page]  which map page is shown, for the indicator
+ *
+ * A cell is drawn ONLY where the model put one. An empty lower cell leaves
+ * blank pixels rather than an outline, because an outline is an affordance and
+ * `e16_map.mjs` is explicit that a hole is not a destination -- drawing the box
+ * anyway would offer a button that does nothing, which is the exact thing the
+ * compaction rule exists to prevent, reintroduced one layer down.
+ *
+ * Each component cell carries TWO lines: the module's name and its position id
+ * ("fx2", "midi_fx1", "bus1"). The id is not decoration -- two Freeverbs in one
+ * slot are indistinguishable by name, and the id is what the press addresses.
+ */
+export function renderMap(ctx, map, opts) {
+    const o = opts || {};
+    const page = o.page | 0;
+    const cells = (map && map.cells) || [];
+    const pageCount = (map && map.pageCount) || 1;
+    ctx.clear();
+
+    for (let i = 0; i < ENCODERS; i++) {
+        const cell = cells[i];
+        if (!cell) continue;
+        const r = mapCellRect(i);
+        const isSlot = cell.kind === "slot";
+        /* The current slot is INVERTED rather than merely outlined: this is the
+         * one fact the eye has to find before it reads anything else, since
+         * every lower cell means something different depending on it. */
+        const fill = isSlot && cell.current;
+        if (fill) ctx.fillRect(r.x, r.y, r.w - 1, r.h - 1, 1);
+        const ink = fill ? 0 : 1;
+        if (isSlot && !fill) {
+            ctx.drawLine(r.x, r.y, r.x + r.w - 2, r.y, 1);
+            ctx.drawLine(r.x, r.y + r.h - 2, r.x + r.w - 2, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x, r.y, r.x, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x + r.w - 2, r.y, r.x + r.w - 2, r.y + r.h - 2, 1);
+        }
+        ctx.print(r.x + 2, r.y + 2, clip(ctx, cell.label, r.w - 4), ink);
+        if (!isSlot) {
+            ctx.print(r.x + 2, r.y + 9, clip(ctx, cell.component, r.w - 4), ink);
+        } else if (fill && o.showBuses) {
+            /* In bus view the current slot box says so -- the list beneath it
+             * is buses, not modules. */
+            const tag = pageCount > 1 ? `Bus ${page + 1}/${pageCount}` : "Buses";
+            ctx.print(r.x + r.w - 2 - ctx.textWidth(tag), r.y + 9, tag, ink);
+        } else if (fill && pageCount > 1) {
+            /* The indicator lives on the CURRENT SLOT cell because that is the
+             * cell whose list is being paged -- a page number floating in a
+             * corner would belong to nothing on a screen that is otherwise
+             * entirely made of cells. */
+            const pos = `${page + 1}/${pageCount}`;
+            ctx.print(r.x + r.w - 2 - ctx.textWidth(pos), r.y + 9, pos, ink);
+        }
+    }
+}
+
+/*
+ * THE CUSTOM LAYOUT'S PAGE MAP (layout_custom.mjs): renderMap's boxes with a
+ * page in each -- the current page inverted, a "+" in the first empty cell
+ * (a push there adds a page), nothing in the rest.
+ */
+export function renderPageMap(ctx, scr) {
+    ctx.clear();
+    let added = false;
+    for (let i = 0; i < ENCODERS; i++) {
+        const name = (scr.names || [])[i];
+        const r = mapCellRect(i);
+        if (!name) {
+            if (!added && scr.canAdd !== false) {
+                added = true;
+                ctx.print(r.x + Math.floor((r.w - ctx.textWidth("+")) / 2), r.y + 5, "+", 1);
+            }
+            continue;
+        }
+        const fill = i === scr.current;
+        if (fill) ctx.fillRect(r.x, r.y, r.w - 1, r.h - 1, 1);
+        else {
+            ctx.drawLine(r.x, r.y, r.x + r.w - 2, r.y, 1);
+            ctx.drawLine(r.x, r.y + r.h - 2, r.x + r.w - 2, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x, r.y, r.x, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x + r.w - 2, r.y, r.x + r.w - 2, r.y + r.h - 2, 1);
+        }
+        ctx.print(r.x + 2, r.y + 2, clip(ctx, name, r.w - 4), fill ? 0 : 1);
+        ctx.print(r.x + 2, r.y + 9, String(i + 1), fill ? 0 : 1);
+    }
+}
+
+/*
+ * A CUSTOM PAGE: the parameter view's picture, with the Custom layout's two
+ * states said in the cell -- a DARK knob (its module is gone) keeps its name
+ * over "--", and the knob armed for LEARN says so.
+ */
+export function renderCustomPage(ctx, scr) {
+    const view = scr.view || { cells: [], headers: [null, null] };
+    const cells = view.cells.map((c, e) => {
+        /* Armed: move a parameter on Move to assign, or turn THIS knob --
+         * clockwise clears, anticlockwise cancels. An empty knob has nothing
+         * to clear. */
+        if (e === scr.armed) return { label: "LEARN", value: c ? "clear?" : "", meta: {}, enc: e };
+        if (!c || c.status === "live") return c;
+        return Object.assign({}, c, { value: "--", meta: {} });
+    });
+    renderView(ctx, { cells, headers: view.headers }, { turnHint: scr.turnHint });
+}
+
+/**
+ * Step the parameter view's page pair.
+ *
+ * BY TWO, not by one. The screen shows N in the top half and N+1 in the
+ * bottom, so a single-page step would put the page you were just reading under
+ * the other eight encoders -- half the surface would appear not to have moved
+ * while every one of its knobs quietly changed which parameter it drives.
+ *
+ * A step that would run past the last page is REFUSED rather than clamped to
+ * `pageCount - 1`: clamping changes the parity of the pair, so a six-page
+ * component paged 0/1 -> 2/3 -> 4/5 would come back 5/-, i.e. one page shown
+ * twice in a row and one never reachable as a top half. Refusing keeps the
+ * pairing an invariant of the whole traversal rather than of one step.
+ */
+export function pageStep(pageIndex, ticks, pageCount) {
+    let i = Math.max(0, pageIndex | 0);
+    const last = Math.max(0, (pageCount | 0) - 1);
+    if (!ticks) return Math.min(i, last);
+    const dir = ticks > 0 ? HALVES : -HALVES;
+    const n = Math.min(Math.abs(ticks | 0), MAX_TICKS_PER_TURN);
+    for (let k = 0; k < n; k++) {
+        const next = i + dir;
+        if (next < 0 || next > last) break;
+        i = next;
+    }
+    return i;
+}
+
+/**
+ * Route an encoder turn to the grid's own knob-turn path.
+ *
+ * `ctl` is a page controller (createController) or anything with the same
+ * three members. Injected rather than imported so tests can record the calls,
+ * and so this file has no way to write a parameter itself.
+ *
+ * THE PAGE SWAP IS NOT OPTIONAL. The controller has ONE current page and
+ * `onKnobTurn(slot)` resolves the key against it -- so a turn on the bottom
+ * half must move the controller to page N+1 first or it writes to page N's
+ * key of the same slot number. Both are small in-range integers and both
+ * exist, so the wrong one is a knob that silently edits a different parameter,
+ * with nothing logged. `remember: false` because section memory is the jog's
+ * notion of where you were, and this is not a navigation.
+ *
+ * @returns {{key: string, enc: number, ticks: number}|null} what moved, so the
+ *          caller can mark that ONE ring dirty. null for an empty encoder.
+ */
+export function applyTurn(view, ctl, enc, ticks, nowMs) {
+    const cell = view && view.cells ? view.cells[enc] : null;
+    if (!cell || !ctl || !ticks) return null;
+    if (ctl.pageIndex !== cell.pageIndex && ctl.goToPage) {
+        ctl.goToPage(cell.pageIndex, { remember: false });
+    }
+    const dir = ticks > 0 ? 1 : -1;
+    const n = Math.min(Math.abs(ticks), MAX_TICKS_PER_TURN);
+    /* One call per detent. The E16's relative CC already carries the
+     * acceleration, and the grid's knob engine applies its own on top from the
+     * timestamps -- so N detents must arrive as N turns, not as one turn with a
+     * multiplier the engine has no parameter for. */
+    for (let i = 0; i < n; i++) ctl.onKnobTurn(cell.slot, dir, nowMs, { fine: false });
+    return { key: cell.key, enc, ticks: n * dir };
+}
+
+/**
+ * Route an encoder PUSH to the grid's own click path.
+ *
+ * Same page swap and the same reason as applyTurn -- `onClick(slot)` resolves
+ * the slot against the controller's current page, so a push on the bottom half
+ * would otherwise click page N's cell. Everything a click MEANS (a two-option
+ * flip, a trigger firing, a door opening) lives in the controller, and must
+ * stay there: this file has no second answer to any of it.
+ *
+ * @returns {{key: string, enc: number}|null} what was clicked, or null for an
+ *          empty encoder.
+ */
+export function applyClick(view, ctl, enc) {
+    const cell = view && view.cells ? view.cells[enc] : null;
+    if (!cell || !ctl || typeof ctl.onClick !== "function") return null;
+    if (ctl.pageIndex !== cell.pageIndex && ctl.goToPage) {
+        ctl.goToPage(cell.pageIndex, { remember: false });
+    }
+    ctl.onClick(cell.slot);
+    return { key: cell.key, enc };
+}
+
+/*
+ * A layout probe, for reading the framebuffer convention off the device.
+ *
+ * "The screen is garbled" cannot distinguish a wrong bit direction from a
+ * wrong page order from a wrong stride -- every one of them produces
+ * structured nonsense, and describing structured nonsense over a chat window
+ * is unreliable. Each of these draws ONE unambiguous thing, so the question
+ * becomes "is there a line along the top?" rather than "what does it look
+ * like?".
+ *
+ *   0  a single lit row at y=0        -> top row. If it appears at the BOTTOM
+ *                                       of the first band, bit order in the
+ *                                       page is inverted; if 8 rows down, the
+ *                                       page stride is wrong.
+ *   1  a single lit column at x=0     -> left edge. Diagonal or repeated means
+ *                                       the row stride is wrong.
+ *   2  page 0 filled solid            -> the top 8 rows only. Anywhere else and
+ *                                       the page order is not what we assume.
+ *   3  a 16px box at the origin       -> corner, orientation and scale at once.
+ *
+ * Kept in the view module rather than a test file because it has to run on the
+ * device, through the same canvas and the same send path as a real frame --
+ * a probe that takes a different route measures the route, not the format.
+ */
+export function drawTestPattern(ctx, which, meter) {
+    ctx.clear();
+    /*
+     * 6 is the REFRESH METER, and it exists to answer a question the other
+     * five cannot: is the screen slow, or are the VALUES slow?
+     *
+     * Those are different subsystems with different costs and no shared knob.
+     * A repaint is a framebuffer on the wire -- 394 packets, paced. A value is
+     * an IPC read at ~2.8 ms, served on the controller's rotation of roughly
+     * one key per tick, so a full pass over sixteen cells takes far longer than
+     * a repaint does. Watching parameter numbers move measures the SUM of the
+     * two and cannot separate them, which is why "the refresh is so slow" was
+     * indistinguishable from "the values lag" from the outside -- and why
+     * changing SLOTS, which is a repaint with no value rotation in front of
+     * it, already felt quick.
+     *
+     * So this pattern draws nothing that comes from a parameter. Every element
+     * moves on the PAINT alone: a column that advances one step per frame, a
+     * counter, and the measured rate in frames per second. What you see is the
+     * repaint rate with the value path entirely removed from it.
+     *
+     * `meter` is { paints, fps } supplied by the caller, which is the only
+     * thing that knows when a send actually completed.
+     */
+    if ((which | 0) === 6) {
+        const m = meter || {};
+        const paints = m.paints | 0;
+        const fps = m.fps;
+        /* A column that steps one pixel per paint: at a glance its speed IS
+         * the frame rate, and it keeps meaning something when the number is
+         * too small to be interesting. */
+        ctx.fillRect(paints % 128, 0, 2, 18, 1);
+        /* A block that inverts every paint -- a flicker that is present at any
+         * rate at all, so "nothing is being painted" cannot be mistaken for "a
+         * slow paint". */
+        if (paints % 2) ctx.fillRect(112, 24, 14, 14, 1);
+        /* Ink 1. Omitting it drew black on black -- the bar and the flicker
+         * block appeared and the three readings did not, which on a device
+         * would have read as "the text is broken" rather than "the argument is
+         * missing". */
+        ctx.print(2, 26, "PAINTS " + paints, 1);
+        ctx.print(2, 38, "FPS " + (fps === undefined || fps === null
+            ? "--" : (Math.round(fps * 10) / 10)), 1);
+        ctx.print(2, 50, "MS " + (fps ? Math.round(1000 / fps) : "--"), 1);
+        return;
+    }
+    const n = (which | 0) % 6;
+    if (n === 0) ctx.fillRect(0, 0, 128, 1, 1);
+    else if (n === 1) ctx.fillRect(0, 0, 1, 64, 1);
+    else if (n === 2) ctx.fillRect(0, 0, 128, 8, 1);
+    else if (n === 3) ctx.fillRect(0, 0, 16, 16, 1);
+    /*
+     * 4 marks the FAR END of the buffer: the bottom 8 rows are page 7, bytes
+     * 896-1023, the last thing in the message. The header (page 0, bytes
+     * 0-127) renders correctly while everything below it does not, and that is
+     * exactly the shape of a device that accepts the front of the message and
+     * not the back. If this band appears, the whole buffer lands and the fault
+     * is our content; if it does not, the device is truncating and no amount
+     * of drawing will fix it.
+     */
+    else if (n === 4) ctx.fillRect(0, 56, 128, 8, 1);
+    /*
+     * 5 lights EVERY pixel the buffer can address.
+     *
+     * Content was observed SURVIVING an off/on cycle, which a full frame of
+     * zeros cannot allow: either the device ORs rather than replaces, or our
+     * 1024 bytes do not span the whole panel. Filling everything separates
+     * them by inspection -- if the entire screen goes white, we address all of
+     * it and the persistence is a clear/replace question; if only part does,
+     * that part IS what 1024 bytes covers and the rest is a geometry we have
+     * not accounted for.
+     */
+    else ctx.fillRect(0, 0, 128, 64, 1);
+}
+
+/* ===========================================================================
+ * LABELS -- the OTHER display mode, and the reason values can move at all.
+ *
+ * `06 02` FRAMEBUFFER replaces all 1024 bytes and has NO partial update; at the
+ * carry's pacing that is 394 packets, 132 SPI frames, 383 ms. A value that
+ * changed on a detent cannot be worth that, and there is no sub-region command
+ * to send instead -- so the protocol's own answer is the OTHER mode: `06 03`
+ * LABELS is 34 packets and 35 ms, an eleventh of the cost, and RING is 46.
+ *
+ * The division of labour that falls out of it:
+ *
+ *   the LABEL carries the NAME     16 x 4 characters, redrawn when the page
+ *                                  changes -- rarely
+ *   the RING carries the VALUE     one chunk per detent, which is what a hand
+ *                                  on a knob actually generates
+ *   the TITLE carries the READING  16 characters naming what is being turned
+ *                                  and what it now says
+ *
+ * FRAMEBUFFER and LABELS are MUTUALLY EXCLUSIVE -- sending one overrides the
+ * other, they are not layers. So a surface that shows a framebuffer map while
+ * Shift is held owes a LABELS message on the way back, and `createDisplay`
+ * cannot treat "nothing has changed" as "nothing to send" across that
+ * transition. That is what `screenKind` is for.
+ *
+ * FOUR CHARACTERS is the whole budget for a name, and the abbreviation is
+ * deliberately boring: predictable beats clever when the user has to learn it
+ * once and then read it at a glance: drop the separators and take the first
+ * four ("Osc Level" -> OSCL, "Cutoff" -> CUTO). Collisions are real ("Cutoff"
+ * and "Cutoff 2" are both CUTO) and are resolved by the title, which names in
+ * full whatever is under the hand.
+ * ========================================================================= */
+import { displayValue } from "./param_pages/render_page_movy.mjs";
+
+export const LABEL_CHARS = 4;
+export const TITLE_CHARS = 16;
+
+/* 7-bit ASCII, upper case: the wire takes `charCodeAt(0) & 0x7F`, so an
+ * accented character would arrive as an unrelated glyph rather than as itself.
+ * Folded here rather than at the packer so the abbreviation counts the
+ * characters that will actually be sent. */
+function ascii(s) {
+    return String(s === undefined || s === null ? "" : s)
+        .normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^\x20-\x7E]/g, "")
+        .toUpperCase();
+}
+
+/**
+ * A name in four characters.
+ *
+ * Multi-word names take initials, single words take a prefix. Both are stable
+ * under re-rendering and neither depends on the value, so a label only moves
+ * when the page does.
+ */
+export function abbrev4(name) {
+    /* Separators dropped, then the first four characters. Initials were tried
+     * first and SPEND THE BUDGET BADLY: "Osc Level" -> OL and "bouba-kiki" ->
+     * BK use two of the four columns we have, and two-letter stubs are harder
+     * to read than four-letter ones, not easier. Neither rule avoids
+     * collisions anyway -- "Env Attack" and "Env Amount" are EA under initials
+     * and ENVA under this one -- so the simpler rule wins, and the title is
+     * what disambiguates. */
+    return ascii(name).replace(/[^A-Z0-9]+/g, "").slice(0, LABEL_CHARS);
+}
+
+/**
+ * labelsFor(view, { component, focusEnc, metaOf }) -> { title, labels }
+ *
+ * `labels` is always 16 entries (an empty cell is an empty string, never a
+ * placeholder -- a dark encoder should look dark). `title` names the focused
+ * parameter and its current reading, falling back to the component when
+ * nothing is under a hand.
+ *
+ * The value string comes from `displayValue`, which is documented as THE value
+ * string precisely so a second formatter is not written beside it. A knob page
+ * drawn as a list, the held-knob header and this all have to agree, or the same
+ * parameter reads two ways on two surfaces.
+ */
+export function labelsFor(view, opts) {
+    const o = opts || {};
+    const metaOf = o.metaOf || (() => null);
+    const cells = (view && view.cells) || [];
+    const labels = new Array(ENCODERS).fill("");
+    for (let e = 0; e < ENCODERS; e++) {
+        const c = cells[e];
+        if (c) labels[e] = abbrev4(c.label);
+    }
+
+    let title = ascii(o.component || "");
+    const f = typeof o.focusEnc === "number" ? cells[o.focusEnc] : null;
+    if (f) {
+        const val = ascii(displayValue(f.value, metaOf(f.key) || {}));
+        const name = ascii(f.label);
+        /* The READING is the half that must survive: the name is already under
+         * the encoder being turned, so a title too long to hold both drops
+         * characters from the name and never from the value. */
+        const room = TITLE_CHARS - val.length - 1;
+        title = room > 0 ? name.slice(0, room) + " " + val : val.slice(0, TITLE_CHARS);
+    }
+    return { title: title.slice(0, TITLE_CHARS), labels };
+}

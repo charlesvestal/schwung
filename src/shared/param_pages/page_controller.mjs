@@ -9,6 +9,7 @@
  *   setParam(fullKey, value) -> void
  *   announce(text)           -> void          (optional)
  *   isModulated(fullKey)     -> boolean       (optional)
+ *   isAutomated(fullKey)     -> boolean       (optional)
  *   now()                    -> ms            (optional, injectable clock)
  *
  * What is left for the real binding is genuinely thin: route MIDI to the
@@ -38,7 +39,7 @@ import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, 
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
-         movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
+         movyHeaderFor, labelForCell, normalizedOf, widgetKindFor, WIDGET_BIGNUM,
          W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
@@ -579,6 +580,23 @@ export function createController(io = {}) {
      */
     const isModulated = io.isModulated || null;
     /*
+     * Optional: is this param driven by a SEQUENCER'S AUTOMATION LANE?
+     *
+     * A lane moves a parameter the way an LFO does, so it gets the same
+     * motion -- pointer on `:base`, the dot riding `:effective` -- and a host
+     * used to buy that by answering yes to `isModulated`. That cost the
+     * grammar: the cell then wore the modulation tilde, so a lane and an LFO
+     * drew the same mark and a parameter under both said it once.
+     *
+     * Asking separately keeps the motion and gives the lane its own mark (a
+     * 2x2 beside the label, `drawAutomatedMark`). Absent, nothing changes: no
+     * key is automated and every mark draws as before. No default probe --
+     * unlike modulation there is no chain key that answers this; the lane is
+     * the host's. Asked on the same rotation stop as `isModulated`, never per
+     * draw.
+     */
+    const isAutomated = io.isAutomated || null;
+    /*
      * WHICH STEP BUTTON IS HELD, 0..15, or -1.
      *
      * Asked of the device by default, because the alternative is another
@@ -633,6 +651,24 @@ export function createController(io = {}) {
      * invitation to handle one of them wrong.
      */
     const formatValue = io.formatValue || null;
+    /*
+     * Optional: may this key raise the enum peek on a turn?
+     *
+     *   allowEnumPeek(fullKey, meta) -> true | false | null
+     *
+     * The controller already declines on a list layout -- a row prints the
+     * option in full, so the panel covers a legible answer with the same one --
+     * and a grid cell can be in that same position when its box fits the whole
+     * option. Whether it does is a question about the HOST's cells, not about
+     * this metadata, so it is injected on the same terms as formatValue:
+     * absent, or null for a given key, and the existing rule decides.
+     *
+     * It can only DECLINE. `true` does not force a peek past the list, wide-
+     * graphic or switch gates, because those are facts about what is already
+     * on screen. Named apart from enumPeek(), which is the getter a frame owner
+     * draws from.
+     */
+    const allowEnumPeek = io.allowEnumPeek || null;
     /*
      * Optional: load a module-supplied card drawer.
      *
@@ -691,6 +727,10 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* key -> last-read automation flag, same cadence as modCache. Kept
+         * apart because the two draw different marks; `moving()` is where
+         * they are one question again. */
+        autoCache: Object.create(null),
         /* Selected child per child-level, by level key. See childResolve(). */
         childIndex: Object.create(null),
         /*
@@ -970,6 +1010,17 @@ export function createController(io = {}) {
      * A key declared by two levels that resolve it DIFFERENTLY has no single
      * answer; null, and the lane skips it rather than pick one. The evaluator
      * still reads it on demand, which is what it did before the lane existed.
+     *
+     * ⚠ A GATE IS PER-INSTANCE ONLY WHEN SOMETHING SAYS SO: the level lists
+     * the key (the evaluator's own rule, shadow_ui.js hierChildKeyFor), or the
+     * module declares the concrete key (`pad0_type` in its chain_params). A
+     * child level may gate on a MODULE-WIDE key too: DR32's
+     * `ui_engine` says which engine the focused pad runs, sits on no level and
+     * is served bare. Expanded, it was read as `synth:pad1_ui_engine`, which
+     * nothing serves; "" was cached, the evaluator trusted it, and every
+     * engine page vanished on the first pad switch and never came back. With
+     * several gated levels at different child indexes it was also "ambiguous"
+     * and skipped, so a real change never re-planned either.
      */
     const gateLevelsOf = (key) => {
         const out = [];
@@ -989,8 +1040,15 @@ export function createController(io = {}) {
     const gateWireKey = (key) => {
         const levels = (s.hierarchy && s.hierarchy.levels) || {};
         let wire = null;
+        const lists = (lvl) => {
+            const listed = (k) => (typeof k === "string" ? k : (k && k.key)) === key;
+            return (lvl.knobs || []).some(listed) || (lvl.params || []).some(listed);
+        };
+        const declared = (k) => !!(s.metaIndex && s.metaIndex.keys.indexOf(k) >= 0);
         for (const name of gateLevelsOf(key)) {
-            const w = resolveChildKey(levels[name], childIndexFor(name), key) || key;
+            const lvl = levels[name];
+            const concrete = resolveChildKey(lvl, childIndexFor(name), key);
+            const w = (concrete && (lists(lvl) || declared(concrete))) ? concrete : key;
             if (wire !== null && wire !== w) return null;
             wire = w;
         }
@@ -1919,7 +1977,13 @@ export function createController(io = {}) {
          * the loop above never sees them. The gate lane caches them under the
          * generic key the evaluator asks for; left in place, the pad we just
          * left would go on deciding what the new pad's pages are. Marked due
-         * so the new instance's answer is read rather than waited for. */
+         * so the new instance's answer is read rather than waited for.
+         * Deliberately wider than gateWireKey's per-instance test: a
+         * module-wide gate on this level (DR32's `ui_engine`) can move with
+         * the focus too, so it is dropped and marked due with the rest. Only
+         * reached when a GATED level's own index moves (an instance pick);
+         * a module-driven focus change is marked due by
+         * syncChildIndexFromModule regardless. */
         const lvlDef = s.hierarchy && s.hierarchy.levels && s.hierarchy.levels[levelName];
         if (lvlDef && s.conditionKeys) {
             for (const k of s.conditionKeys) {
@@ -2466,7 +2530,15 @@ export function createController(io = {}) {
                 if (s.gateAt >= due.length) { s.gatesDue = false; s.gateAt = 0; }
                 const gv = getParam(gateWireKey(k));
                 const before = s.values[k];
-                if (gv !== null && gv !== undefined) s.values[k] = gv;
+                /* "" is a MISS for anything but an opaque key -- the chain
+                 * host's answer for a key nobody serves (acceptValue's rule).
+                 * Storing it is how a wrongly resolved gate used to become a
+                 * cached verdict the evaluator then trusted for good; a miss
+                 * leaves the evaluator to read the key itself. */
+                const meta = s.metaIndex ? s.metaIndex.getOrGuess(k) : null;
+                const miss = gv === "" && !(meta && meta.kind === KIND_OPAQUE);
+                if (miss) delete s.values[k];
+                else if (gv !== null && gv !== undefined) s.values[k] = gv;
                 if (s.values[k] !== before) replanIfCondition(k);
                 return null;
             }
@@ -2673,6 +2745,7 @@ export function createController(io = {}) {
          * whatever it last found rather than clearing it here. */
         if (isModulated) s.modCache[key] = !!isModulated(fullKey(key));
         if (_lm && _lm.live === true) s.modCache[key] = true;
+        if (isAutomated) s.autoCache[key] = !!isAutomated(fullKey(key));
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
@@ -2684,7 +2757,7 @@ export function createController(io = {}) {
          * while a target is active, so fall back rather than blank the knob if
          * the flag and the target ever disagree. */
         let raw = null;
-        if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
+        if (moving(key)) raw = getParam(fullKey(key) + ":base");
         /*
          * "" counts as a MISS, not as a value.
          *
@@ -3849,8 +3922,9 @@ export function createController(io = {}) {
          */
         if (s.layout !== LAYOUT_LIST
             && meta.divable && meta.kind === KIND_ENUM
-            && !drawnWide(key) && !drawnAsSwitch(key)
-            && Array.isArray(meta.options) && meta.options.length >= 2) {
+            && !drawnWide(key) && !drawnAsSwitch(key) && !drawnBig(meta)
+            && Array.isArray(meta.options) && meta.options.length >= 2
+            && !(allowEnumPeek && allowEnumPeek(fullKey(key), meta) === false)) {
             const pi = Math.round(Number(value));
             s.peek = {
                 key,
@@ -4751,7 +4825,7 @@ export function createController(io = {}) {
     function refreshModulatedValues(p) {
         const modKeys = [];
         for (const k of p.keys) {
-            if (k && s.modCache[k]) modKeys.push(k);
+            if (k && moving(k)) modKeys.push(k);
         }
         if (!modKeys.length) {
             /* Nothing modulated: drop stale dots rather than leave them frozen
@@ -4781,9 +4855,14 @@ export function createController(io = {}) {
         s.modCursor = (s.modCursor + n) % modKeys.length;
         /* A key that stopped being modulated keeps no dot. */
         for (const k in s.modValues) {
-            if (!s.modCache[k]) delete s.modValues[k];
+            if (!moving(k)) delete s.modValues[k];
         }
     }
+
+    /* Does something other than the knob move this value -- a modulation
+     * source or an automation lane? The MOTION question (base vs effective),
+     * as opposed to which mark the cell wears. */
+    function moving(k) { return !!(s.modCache[k] || s.autoCache[k]); }
 
     function setLayout(layout) { s.layout = layout; }
     function setReveal(on) { s.revealValues = !!on; }
@@ -4906,6 +4985,7 @@ export function createController(io = {}) {
                  * the header is following. */
                 touchedSlots: s.hintLines ? [] : s.touchOrder,
                 modulated: (key) => !!s.modCache[key],
+                automated: (key) => !!s.autoCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
@@ -5097,7 +5177,9 @@ export function createController(io = {}) {
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
-            modulated: (key) => !!s.modCache[key],
+            /* The dial layout has no automation mark of its own, so a lane
+             * keeps wearing the modulation one there rather than none. */
+            modulated: moving,
             /* The live values, so a module-supplied widget can draw what the
              * param is ACTUALLY doing rather than where its knob was left. */
             modValues: s.modValues,
@@ -5516,6 +5598,24 @@ export function createController(io = {}) {
         return false;
     }
 
+    /*
+     * A BIG CELL ALREADY SHOWS THE OPTION, so it must not peek either.
+     *
+     * `display: "big"` draws an enum's option in the big face, and only when
+     * every option FITS (bigCellFits) -- so the cell is legible by
+     * construction, which is the list-layout case again. Movy could decline
+     * through io.allowEnumPeek, but that hook is the HOST's; a module that
+     * declares `display: "big"` has no hook, and got the panel over its own
+     * readout on every turn.
+     *
+     * Asks the renderer's own widget choice, not the declaration: one that
+     * does not fit falls back to the enum square, which still wants the peek.
+     * Movy only -- the dial renderer does not draw declared big cells.
+     */
+    function drawnBig(meta) {
+        return s.layout === LAYOUT_MOVY && widgetKindFor(meta) === WIDGET_BIGNUM;
+    }
+
     /**
      * The key this SLOT opens when its own cell has no door — see
      * vizDiveTarget. Null for every ordinary cell, including one that opens
@@ -5681,6 +5781,7 @@ export function createController(io = {}) {
                  * most divable cells wear nothing here. */
                 divable: !!(meta && meta.divable),
                 modulated: !!s.modCache[key],
+                automated: !!s.autoCache[key],
                 touched: s.touchOrder ? s.touchOrder.indexOf(slot) >= 0 : s.touched === slot,
                 /* A sequencer's parameter lock for this SLOT. */
                 decoration: dec || null,
@@ -5748,6 +5849,8 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** Same, for the injected isAutomated. */
+        isAutomatedCached: (key) => !!s.autoCache[key],
         /** The decorations in force -- a caller's own, or the step-held locks
          *  this builds while a step is down. Read-only view, for the host's
          *  screen reader and for tests: what the cells are showing is the only

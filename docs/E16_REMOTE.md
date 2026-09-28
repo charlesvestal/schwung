@@ -1,0 +1,394 @@
+# OXI E16 remote mode
+
+What the E16 accepts when a host takes it over, and the fixed input map that
+comes with it. Everything here is confirmed on hardware (2026-09-09) unless
+marked otherwise.
+
+## The surface, and what it shares
+
+The E16 is one of two external surfaces (Global Settings → Surfaces → Ext
+Surface); the other is the Faderfox EC4 (`docs/EC4_SURFACE.md`). What they
+DRIVE is shared in `src/shared/surface_core.mjs` — the focus, the page
+controller, the knob feel and presence — and this file is about the E16's
+wire. The Mixer is a **tap** of Shift on both devices (it was a double tap
+while the E16 was alone).
+
+**Surface Nav** (Global Settings → Surfaces) picks the layout per device: **Map**,
+the E16's own (sixteen parameters, hold Shift for the slot map, Shift+turn
+pages), or **Knobs**, the EC4's (the page Move shows on the top eight, and
+labelled navigation knobs below: `<PG`, page, `n/m`, `PG>`, slot, module, VOL,
+PAN -- drawn by `renderKnobsView`, each ring saying where you are along its
+list). Layouts never draw; see `src/shared/layout_common.mjs` for the contract.
+
+## Getting the spec
+
+OXI publishes it as a Google Sheet. The forum preview renders it as *"This
+Sheet is private"* — that is the unauthenticated preview, not the sheet. It
+exports:
+
+```bash
+curl -sL "https://docs.google.com/spreadsheets/d/1Yccnrluv10QL_PauMmtCt64EtYjfSeZEXKrlrw8P24w/export?format=csv&gid=1057524829"
+```
+
+Linked from [the lines thread on remote-controlling the E16](https://llllllll.co/t/remote-control-of-oxi-e16-with-maxmsp/74110),
+which is also where the packing rule below was worked out.
+
+## Messages
+
+Header `f0 00 21 5b 02 01`, then a two-byte message id, then a packed payload,
+then `f7`.
+
+| id | message | payload |
+|---|---|---|
+| `06 55` | ENTER REMOTE MODE | none |
+| `06 53` | REMOTE MODE ENTERED **ACK** (device to host) | none |
+| `06 00` | EXIT REMOTE MODE | none |
+| `06 01` | LED | 5-byte chunks: encoder 0-15, led 0-15, R, G, B (each 0-127) |
+| `06 04` | LED RING | 7-byte chunks: encoder, R, G, B, amount MSB, amount LSB, bipolar |
+| `06 02` | OLED FRAMEBUFFER | 1024 raw bytes, SSD1306 page/column, 128x64 |
+| `06 03` | OLED LABELS | 80 raw bytes: 16-char title + 16 x 4-char labels |
+
+LED and LED RING are **variable length** — repeat the chunk per encoder — which
+is why a single changed value costs one chunk rather than a repaint.
+
+The ring amount is 14 bits and maps to 0-100% of the ring; `bipolar` renders it
+centred, extending left or right, instead of as an arc from zero.
+
+FRAMEBUFFER replaces the whole screen; there is no partial update, and sending
+one overrides LABELS and vice versa. Note the geometry: **128x64 mono is Move's
+own display**, so mirroring a Schwung page onto an E16 is a packer rather than a
+renderer.
+
+## 8-to-7 packing
+
+Payloads are 7-bit packed: for each group of up to 7 raw bytes, emit one byte
+holding bit 7 of each following byte (bit *k* corresponds to byte *k*), then
+those bytes with bit 7 cleared.
+
+```
+raw     FF 00 80 7F 01 FE 55   AA
+packed  25 7F 00 00 7F 01 7E 55   01 2A
+        ^^                        ^^
+        bits 0,2,5 set            bit 0 set
+```
+
+**This is easy to get wrong in a way that tests do not catch.** For LABELS and
+LED RING every payload byte is already below `0x80`, so the MSB byte is always
+zero and the packing looks like padding — the lines thread describes it as *"leds
+msg need an additional leading 0"*. FRAMEBUFFER carries real pixel bytes with
+bit 7 set, so a packer that emits a constant zero works on everything except the
+one message that matters.
+
+Sizes: LABELS is 80 raw to 92 packed; FRAMEBUFFER is 1024 raw to 1171 packed.
+
+## Input is fixed in remote mode
+
+Whatever scene the device is on, once in remote mode:
+
+| control | message |
+|---|---|
+| encoder turn | CC **1-16** on **channel 1**, relative with acceleration: `0x01..0x08` clockwise, `0x7F..0x78` counter-clockwise |
+| encoder button | note **0-15**, channel 1 |
+| Shift | note **16**, channel 1 |
+
+That relative encoding is two's complement 7-bit — the same reading
+`src/modules/chain/dsp/relative_cc.h` documents, and that header names the E16
+in its own comment. Keep the two in agreement.
+
+Because the map is fixed, the surface needs no per-device configuration and a
+user's own scene cannot break it.
+
+## Entering and leaving
+
+There is no way to ask whether an E16 is attached: devices on Move's USB-A never
+enumerate in Linux (see `docs/SYSEX.md` and issue #358). So a host seeks by
+sending ENTER until an ACK arrives. Nine bytes is cheap enough to repeat.
+
+Entering is visible — the device blanks its screen and rings, because the host
+now owns them. The E16 has no battery, so unplugging it power-cycles it out of
+remote mode; a periodic probe restores it with no user action.
+
+Send EXIT when giving the device back, or it stays blank.
+
+## The USB-A limitation
+
+**Move's XMOS USB-host cannot exchange SysEx with a multi-jack USB-MIDI device.**
+Measured 2026-09-09: CC and Program Change reach an E16 on USB-A and work, SysEx
+never takes effect, and nothing the device sends ever arrives. Every device that
+works on that port — an Arturia MiniLab, a WIDI BLE dongle, the DIN adapter in
+issue #358 — presents a single jack. The E16 presents three (`Port 1/2/3`).
+
+Patching the E16's firmware to enumerate one port makes remote mode work over
+plain USB-A in **both** directions: ENTER acks, the 101-byte labels message
+renders, and the encoders send. Two bytes, `bNumEmbMIDIJack` 3 to 1 in both
+CS_ENDPOINT descriptors, no code touched.
+
+**Shipped:** current E16 firmware makes it a setting — Shift → Conf → MIDI → USB Multi Port → **Off** presents one port, and remote mode works over USB-A with no patch. Earlier: remote mode over USB-A needed OXI to make the port count configurable. This is
+not Move-specific — any host with a limited USB-MIDI stack will hit it.
+
+## Which mode to use, and what each costs
+
+Measured at the carry's pacing (3 packets per SPI frame, 2.90 ms a frame):
+
+| message | bytes | packets | time |
+|---|---|---|---|
+| `06 02` FRAMEBUFFER | 1576 | 394 | **383 ms** |
+| `06 03` LABELS | 136 | 34 | **35 ms** |
+| `06 04` RING (all 16) | 184 | 46 | **46 ms** |
+
+There is no partial framebuffer, so a value that moved on a detent cannot be
+worth a repaint — 383 ms is the whole cost of one, every time. The protocol's
+own answer is the other mode, and Schwung uses both:
+
+- **the LABEL carries the NAME** — 16 × 4 characters, redrawn when the page
+  changes, which is rare
+- **the RING carries the VALUE** — one chunk per detent, which is what a hand on
+  a knob actually generates
+- **the TITLE carries the READING** — 16 characters naming what is being turned
+  and what it now says, since four characters cannot hold both
+
+So the parameter view is LABELS and the Shift map is a FRAMEBUFFER, because a
+map is a picture and a parameter page is sixteen names.
+
+**The two modes OVERRIDE each other — they are not layers.** That makes
+"nothing changed" different from "nothing to send": dismissing the map leaves
+the map's picture on the panel while the surface believes the parameter view is
+up, and every later value change goes out as a ring with no name beside it.
+`createDisplay` therefore tracks what the DEVICE was last told (`shownKind`),
+not what the surface last decided, and resends on a difference. It is the same
+shape as the presence edge one layer in, and for the same reason: the device
+forgets and never says so.
+
+Four characters is the entire budget for a name, so the abbreviation drops
+separators and takes the first four (`Osc Level` → `OSCL`, `Cutoff` → `CUTO`).
+Initials were tried first and spend the budget badly — `Osc Level` → `OL` uses
+two of four columns, and neither rule avoids collisions, so the simpler one
+wins and the title disambiguates whatever is under the hand.
+
+## Measuring it: pace and the refresh meter
+
+Two switches, both file-armed, both off by default.
+
+**Pace** — `/data/UserData/schwung/e16_pace`, outbound packets per SPI frame.
+Read by shadow_ui once a second and published on the control block; the drain
+consults it on the callback. A 394-packet framebuffer takes `ceil(394 / pace)`
+frames at 2.90 ms each:
+
+| pace | full repaint |
+|---|---|
+| 3 | 383 ms |
+| 6 | 192 ms |
+| 8 | 144 ms |
+| 12 | 96 ms |
+| 16 | 72 ms |
+
+3 was never measured — it was the first value that stopped the garbling after
+sending a framebuffer all at once failed. Walk up until the screen tears, then
+back off one.
+
+**Refresh meter** — `echo 6 > /data/UserData/schwung/e16_testpattern`. It
+repaints continuously and draws a stepping column, a per-paint flicker block,
+and `PAINTS` / `FPS` / `MS`.
+
+**It exists because a slow SCREEN and slow VALUES are different subsystems and
+look identical from outside.** A repaint is 394 paced packets. A value is an
+IPC read at ~2.8 ms, served on the controller's rotation of roughly one key per
+tick, so a full pass over sixteen cells takes far longer than a repaint — and
+on top of that the settle waits for the hand to stop. Watching parameter
+numbers move measures the sum of all three. Changing SLOTS is a repaint with no
+value rotation in front of it, which is why that already felt quick while the
+numbers felt slow.
+
+Nothing on the meter comes from a parameter, so what it reports is the repaint
+rate alone. It counts COMPLETED sends, never intents: a refused send is not a
+paint, and a meter that climbed while the wire refused would be worse than no
+meter.
+
+## Why the framebuffer never became reliable
+
+Measured across a full day on hardware, 2026-09-11. Recorded because the
+conclusion is the opposite of where the evidence seemed to point at every
+individual step.
+
+**Four buffers sit between a drawn frame and the device, and every one of them
+dropped packets INDIVIDUALLY when full.** A 1171-byte framebuffer is a RUN of
+394 USB-MIDI packets that the receiver assembles into one message, so losing
+any packet in the middle is not a late frame — it is a corrupt one, rendered as
+a garbled screen. Three separate truncations were found and fixed, each hidden
+behind the one above it:
+
+1. `js_shadow_midi_send` wrote packets one at a time and dropped individually
+   once the SHM buffer filled. The same function already refused an oversize
+   message with the words *"refusing rather than truncating"* — that guard
+   covered only a message larger than the WHOLE buffer, never one larger than
+   the remaining room.
+2. `ui_midi_carry_push` does the same at the carry, and its own comment says so
+   (*"Refusing the newest packet truncates one message"*). The existing
+   `wants_more` backpressure asks whether the carry is below half, while a
+   snapshot can be the full buffer — so half-full plus a full snapshot
+   overruns, mid-message. Snapshots are taken whole or deferred whole now.
+3. A third source remains. After both fixes the screen went from constantly
+   garbled to occasionally garbled and no further.
+
+**And the pacing intuition was backwards the entire time.** 3 packets/frame was
+never measured — it was the first value that stopped the original garbling,
+which was really defect 1. Every later experiment contradicted the rate theory:
+
+- pace 1 (1.14 s per frame) garbles BADLY — a slower drain leaves less room, so
+  more refusals land mid-message rather than at a boundary
+- pace 12 is worse than pace 8 — `MIDI_OUT` is a SHARED 20-slot region and the
+  loss scales with how much of it we take
+- pace 20 wedged the device outright and needed a replug; the cap is 12 now,
+  with 8 slots reserved, and even 12 is too high in practice
+
+There is no pace that is reliably clean. **The framebuffer approach is fighting
+the transport's design**: a 394-packet message must survive four buffers intact
+every single time, and a short parameter message has to survive none of them —
+a 3-byte CC is one atomic packet that nothing on this path can split.
+
+That is the case for driving the device with SHORT messages and letting it draw
+its own UI, which is what OXI's own Lua scripting API exists for. LABELS (34
+packets) is the same idea within remote mode, and was rejected only because
+four characters cannot hold a parameter name.
+
+## Decoding the firmware image (and the byte that ruins it)
+
+The `.syx` is an unencrypted STM32 image, which is how the Lua API surface was
+recovered when OXI published no reference for it. 163 messages, each
+`F0 | 00 21 5B 02 01 | 00 7E | 4098 nibbles | F7`, high nibble first.
+
+**Each block decodes to 2049 bytes and only 2048 of them are image: the last is
+a checksum.** Keeping it inserts a stray byte every 2048, and the failure is
+maddeningly partial — `strings` still works, because a one-byte shift leaves
+most strings intact, so the image looks fine and every conclusion drawn from it
+is worthless. Code does not survive it: the vector table is right (it is in the
+first block) while everything after decodes as noise, which reads as "this
+firmware must be compressed" rather than as a decoder bug.
+
+Sanity check before trusting any analysis: the image must be exactly
+163 x 2048 = 333,824 bytes, and `0x08030000 + 0x8a0` must disassemble as
+coherent Thumb-2 (`--triple=thumbv7em-none-eabi`, base `0x08030000`, from the
+reset vector `0x080308A1`).
+
+Capstone reads it; Xcode's `llvm-objdump` will not take a raw binary at all.
+
+## The garbling: cause, and five attempts that did not fix it (2026-09-11)
+
+The screen corrupts because **Move splices its own MIDI into our SysEx.**
+Isolated with the transport STOPPED both ways: playing notes with Move's MIDI
+out ON garbles, MIDI out OFF is clean. Rate is not the driver — 559 packets/sec
+with no foreign traffic stayed perfectly clean while ~35 packets/sec with notes
+garbled, a 16x difference in the *opposite* direction.
+
+Only System Realtime bytes (`F8`–`FF`) may appear inside a SysEx, so a Note On
+inside one makes a conformant receiver discard the whole message. A 34-packet
+LABELS spans ~5 SPI frames (~15 ms); anything Move emits in that window lands
+inside it.
+
+**There is exactly one cable and we cannot get a second.** Move's XMOS carries
+SysEx only to a SINGLE-jack device — 2-jack and 3-jack images were built from
+`patch_e16.py` and flashed, and **both failed on every one of cables 0–13**
+(detector: the surface emits 34-packet LABELS only while the device ACKs, and
+3-packet seek probes otherwise, so receipt is readable from the 1 Hz
+`ui-midi-out: N packet(s) placed` log). The single-jack patch that made remote
+mode possible at all is what forces our screen data to share a stream with
+Move's notes, aftertouch and clock.
+
+**Do not attempt a sixth transport fix.** Each of these was built, deployed and
+measured on hardware:
+
+| attempt | outcome |
+|---|---|
+| quiet-start (don't open a run into a dirty mailbox) | kept; insufficient alone |
+| retry a collided run | kept at 2; a retry cannot win — the corrupt copy has already gone out |
+| suppress the 1.5 s self-heal while Move transmits | **reverted, made it worse**: removes the repair without removing the corruption, so a garble persists |
+| hold Move's packets clear of our run, v1 | **reverted**: held realtime too (~800 packets/s, mostly clock) and injected mid-run on cap expiry — corrupted the screen *and* delivered notes ~23 ms late, on 30% of holds |
+| same, v2 (realtime passes, 6 ms cap, message abandoned rather than a note delayed) | **reverted**: never cleanly measured, and an unproven change may not tax note timing |
+
+The exposure is **duration**, and nothing that changes *when* we send fixes a
+message that is on the wire 15 ms. The remedy is a shorter message:
+per-element addressing or `onCC` from OXI, or the Lua path. The mailbox hold
+becomes worth revisiting **only** once a message fits one SPI frame, where its
+cap is ~3 ms and inaudible — short messages plus mailbox atomicity close this;
+either alone does not.
+
+**The framebuffer garbles on its own**, with nothing playing: 394 packets,
+~130 SPI frames, ~380 ms on the wire. LABELS (34 packets) garbles far less but
+costs the drawn panel and caps every cell at four characters, which is the
+device's own limit. Neither is correct, so it is a product call —
+`echo labels > /data/UserData/schwung/e16_screen` selects the fallback, absent
+means the framebuffer.
+
+**Ext Surface is not persisted.** `host_external_surface()` writes only
+`shadow_control->external_surface` in SHM and never calls `features_json_set`,
+so every reboot turns the surface off — and a disabled surface emits *nothing*,
+which reads exactly like "the device stopped answering". Unfixed.
+
+## Partial updates (draft spec, not yet shipped)
+
+OXI shared a draft spec (2026-09-21) adding four more OLED opcodes and a
+reply pair, not yet in shipped firmware:
+
+| id | message | payload |
+|---|---|---|
+| `0x05` | OLED SCANLINE | Y (1 byte) + 16 bytes of one row, MSB first |
+| `0x06` | OLED RECTANGLE | x, y, w, h (1 byte each) + `ceil(w/8)*h` bytes, row-major, MSB first |
+| `0x07` | OLED CLEAR | none |
+| `0x53` | OLED UPDATE ACK (device to host) | original cmd, status 0x00, 4-byte address |
+| `0x54` | OLED UPDATE NACK (device to host) | original cmd, error status, 4-byte address |
+
+**Header ambiguity, unresolved without hardware.** Every other message's id
+is two bytes (`0x06 0xXX`) and its example bytes agree. These five list the
+same two-byte id in the ID column, but their EXAMPLE bytes in the sheet drop
+the `0x06`. We build against the literal examples (single-byte id, no
+`0x06`), gated behind `OLED_SUBCOMMAND_HAS_CATEGORY_PREFIX` in
+`e16_protocol.mjs` so it's a one-line fix if wrong. Neither NACK error code
+0x03 (CRC mismatch) nor an actual CRC is used — the algorithm is
+undocumented.
+
+**NACK status codes seen on hardware** (2026-09-24 and 2026-09-26):
+
+| status | meaning | how it was provoked |
+|---|---|---|
+| `0x01` | payload length does not match w×h | a RECTANGLE with no pixel bytes, or half of them |
+| `0x03` | CRC mismatch | a deliberately wrong CRC (the dispatch probe) |
+| `0x06` | interrupted — bytes dropped mid-message | wide rows sent faster than the device draws |
+
+**A short RECTANGLE is not a fill.** Measured 2026-09-26 on a white screen: a
+32×16 RECTANGLE with no payload and one with half its payload were both
+NACKed `0x01` and left the panel **untouched**; the full payload of zeros
+drew its black box. The length is checked before anything is drawn, so there
+is no way to clear a region cheaper than sending its pixels — a FILL_RECT has
+to come from OXI.
+
+**RECTANGLE/SCANLINE are row-major; our framebuffer is page/column.**
+`e16_canvas.mjs`'s `packRowMajor` is the one place that transpose happens.
+
+**The diff clusters by row RUN, not one bounding box** — two far-apart
+changes (e.g. the map cursor jumping corner to corner) would otherwise
+produce one screen-spanning rectangle. See `e16_diff.mjs` and
+`docs/superpowers/specs/2026-09-22-e16-partial-oled-updates-design.md` for
+the full reasoning, including why row-runs and not full 2D clustering.
+
+**An OLED UPDATE NACK feeds the same self-heal path a replug already uses.**
+`e16_surface.mjs`'s `createSysexAssembler` dispatch tries `isAck()` first
+(via `lifecycle.onSysex`, the fast path for the unrelated REMOTE MODE
+ENTERED ACK) and only on a `false` falls through to `parseOledUpdateReply`.
+A NACK calls `display.invalidateBuf()` — nulling the display's belief about
+what's on the device without touching `shownKind` — **and** `display.invalidate()`,
+which is what actually marks a repaint owed; `invalidateBuf()` alone only
+clears the belief and would otherwise leave a NACK'd screen uncorrected
+until something else invalidates or the (also foreign-traffic-gated) heartbeat
+eventually fires. Both calls together force the very next diff tick to a
+full repaint, with no new timer or retry machinery — the same pairing the
+self-heal heartbeat needs and for the identical reason. An ACK
+is a no-op: we already advanced optimistically on send. The two OLED reply
+bodies (13 bytes: 5-byte header + 1-byte id + 7-byte packed payload) can
+never be mistaken for the 7-byte REMOTE MODE ENTERED ACK body, since
+`isAck()` checks exact length first.
+
+**None of this closes the parked garbling bug** ([[e16_garble_is_move_note_interleave]]
+in project memory) — it shrinks the exposed window from ~130 SPI frames
+(a 394-packet FRAMEBUFFER) to typically 1-5, which should reduce collision
+odds, but the underlying single-cable sharing with Move's own note data is
+unchanged and unmeasurable until real firmware exists to test against.

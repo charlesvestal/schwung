@@ -29,7 +29,7 @@
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
 } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER, graphicValues } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
@@ -38,7 +38,7 @@ import { vizDiveTarget, VIZ_SAMPLE } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
-    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H,
+    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H, missingGlyphs,
 } from "./font_big_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
@@ -1805,7 +1805,20 @@ export function isCountedQuantity(meta) {
 
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
-    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.kind === KIND_OPAQUE) return false;
+    /*
+     * A PARAM MAY SAY IT IS READ RATHER THAN AIMED.
+     *
+     * isCountedQuantity concedes this for a closed list of NAMES, but a module
+     * cannot join that list, and the range alone cannot tell a swing
+     * percentage from a filter cutoff. A declaration can. It lifts the span
+     * cap and the enum refusal (a 2:4 trig condition is a value to read, and
+     * the enum square's two lines of 5x3 are not how you read it) for the
+     * declaring param only -- and only if the cell can hold it: see
+     * bigCellFits. Everything undeclared takes the rules below, unchanged.
+     */
+    if (meta.display === "big") return bigCellFits(meta);
+    if (meta.kind === KIND_ENUM) return false;
     if (!isWholeNumbered(meta)) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
@@ -1831,6 +1844,63 @@ export function bigNumberText(meta, raw) {
     if (!isFinite(n)) return "--";
     const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
     return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * DOES IT FIT, asked of the widest thing the cell can ever show.
+ *
+ * BIG_NUM_MAX_DIGITS is a proxy for this and a good one while every big value
+ * is an integer: an overflow does not clip, it runs over the next cell and
+ * clipped() reports nothing. Once a declaration can bring an option list here
+ * the proxy fails both ways ("1/4" is three characters and narrow, "88:88" is
+ * five and hopeless), so the width is measured -- and measured over every
+ * value, never the current one, so a cell cannot change widget as it is
+ * turned. A glyph the face lacks fails the fit too: a hole is not a reading.
+ */
+const BIG_CELL_BUDGET = CELL_W - 2;
+
+function bigTextFits(text) {
+    const t = String(text);
+    return missingGlyphs(t).size === 0 && numWidth(t) <= BIG_CELL_BUDGET;
+}
+
+function enumTexts(meta) {
+    const opts = Array.isArray(meta.options) ? meta.options : [];
+    const short = Array.isArray(meta.short_options) ? meta.short_options : null;
+    return opts.map((o, i) => String(short && short[i] !== undefined ? short[i] : o));
+}
+
+function bigCellFits(meta) {
+    if (meta.kind === KIND_ENUM) {
+        const texts = enumTexts(meta);
+        return texts.length > 0 && texts.every(bigTextFits);
+    }
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    return bigTextFits(bigNumberText(meta, meta.min)) && bigTextFits(bigNumberText(meta, meta.max));
+}
+
+/**
+ * The text a big cell draws.
+ *
+ * bigNumberText recomputes from the raw value, which is right for a counted
+ * quantity and wrong for what a declaration can bring: an enum's option, or a
+ * host reading with a unit ("54%"). The host's reading (formatValue, handed in
+ * as cellText) wins when the face can draw it inside the cell; then the
+ * option, short_options first, as the enum square resolves it; then the
+ * number. A reading that cannot be drawn falls back rather than smearing --
+ * the fit gate above only knew the static texts.
+ */
+export function bigValueText(meta, raw, cellText) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    if (cellText !== null && cellText !== undefined && cellText !== ""
+        && bigTextFits(cellText)) return String(cellText);
+    if (meta && meta.kind === KIND_ENUM) {
+        const idx = enumIndexOf(meta, raw);
+        const texts = enumTexts(meta);
+        return (idx >= 0 && idx < texts.length) ? texts[idx] : "--";
+    }
+    return bigNumberText(meta, raw);
 }
 
 /*
@@ -2147,6 +2217,9 @@ export function widgetKindFor(meta) {
     if (!meta) return WIDGET_KNOB;
     if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
     if (meta.writeOnly) return WIDGET_BUTTON;
+    /* A declared enum asks before the enum square takes it; see
+     * shouldDrawBigNumber. Undeclared, this line is inert. */
+    if (meta.display === "big" && shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
     if (shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
     return WIDGET_KNOB;
@@ -2228,7 +2301,8 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      */
     if (widget === WIDGET_BIGNUM) {
         drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
-                      bigNumberText(meta, raw));
+                      meta.display === "big" ? bigValueText(meta, raw, cellText)
+                                             : bigNumberText(meta, raw));
         return;
     }
     /* `?? 0` because the ARC has to point somewhere: an unread value draws its
@@ -2260,6 +2334,22 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         const modNorm = normalizedOf(meta, modRaw);
         if (modNorm !== null) drawModDot(ctx, kx, ky, modNorm);
     }
+}
+
+/*
+ * THE AUTOMATION MARK: a solid 2x2, schwung-movy's own (renderer/label.ts),
+ * ported. "A sequencer lane moves this", as against the tilde's "a modulation
+ * source moves this" -- both are motion, and the controller treats them alike
+ * for the pointer and the riding dot, but a player reads them as two different
+ * things to go and change, so they wear two different marks. Mirrors the tilde
+ * across the label: tilde left of the text, this at its top-right.
+ *
+ * Exported so a host can tell a library that draws it from one that does not
+ * (a missing export is `undefined` on the namespace object, not a link error),
+ * and decide whether to keep folding its lanes into `isModulated`.
+ */
+export function drawAutomatedMark(ctx, x, y, on) {
+    ctx.fillRect(x, y, 2, 2, on);
 }
 
 /* schwung-movy renderer/label.ts drawWaveMark (the modulation tilde), ported. */
@@ -2318,7 +2408,7 @@ function drawWaveMark(ctx, x, y, on) {
  * shortening it as well would put two changes in one option, and `LBL_H` is odd
  * precisely so a 5-row face gets one clear row above and below.
  */
-export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated, automated = false) {
     const cellX = cellLeft(g, col);
     let text = String((showValue ? displayValue : label) ?? "");
     /* Trim MEASURED, never by character count — the face is proportional (I is
@@ -2365,6 +2455,17 @@ export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue,
         const onStrip = strip && wx >= tx - 1;
         drawWaveMark(ctx, wx, lblY + 1, onStrip ? 0 : 1);
     }
+    if (automated) {
+        /* One clear column past whatever it follows -- the text at rest, the
+         * strip's shoulder when inverted (touching the strip it reads as a
+         * notch in it, not a mark) -- clamped inside the cell. Polarity follows
+         * what it lands on, by the tilde's rule above: past the strip it is on
+         * ground, and only a run long enough to push the clamp back over the
+         * strip puts it on black. */
+        const ax = Math.min(tx + tw + (strip ? 2 : 1), cellX + g.cellW - 2);
+        const onStrip = strip && ax <= tx + tw;
+        drawAutomatedMark(ctx, ax, lblY, onStrip ? 0 : 1);
+    }
 }
 
 /* --------------------------------------------------------------- one row */
@@ -2403,7 +2504,7 @@ function resolveGeom(geom) {
  */
 export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     const g = resolveGeom(geom);
-    const { page, metaIndex, values, touched, modulated, viz, modValues, decorations } = o;
+    const { page, metaIndex, values, touched, modulated, automated, viz, modValues, decorations } = o;
     /*
      * EVERY held knob inverts, not just the one the header follows. A single
      * index could not express two fingers: touching a second knob overwrote it
@@ -2436,9 +2537,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
      * copying that at 55fps is pure garbage for the overwhelmingly common case
      * of nothing modulated at all. `hasMod` makes the empty case free.
      */
-    let hasMod = false;
-    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
-    const liveValues = hasMod ? Object.assign({}, values, modValues) : values;
+    const liveValues = graphicValues(values, modValues, page, decorations);
+    const hasMod = liveValues !== values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -2801,7 +2901,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          */
         const showAsLock = isTouched || locked;
         drawLabelCell(ctx, g, col, lblY, label, display, showAsLock, showAsLock,
-                      modulated ? !!modulated(key) : false);
+                      modulated ? !!modulated(key) : false,
+                      automated ? !!automated(key) : false);
     }
 }
 
@@ -2994,6 +3095,7 @@ export function drawFooter(ctx, hints, o = {}) {
  * @param {number} [o.touched]   physical knob 0-7 currently held, or -1
  * @param {Array}  [o.pageGroups] one bank id per page, for the bank bar
  * @param {Function} [o.modulated] (key) => boolean
+ * @param {Function} [o.automated] (key) => boolean — a sequencer lane drives it (2x2 mark)
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */

@@ -789,6 +789,14 @@ globalThis.chain_ui = {
 ```
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
+
+**Your knobs on an external surface (`ui_pages`).** A module that draws its
+own screen often refuses `ui_hierarchy` on purpose, because serving one stops
+the host from loading `ui_chain.js`. External control surfaces (the E16 and
+EC4) have no other way to find its parameters. So such a module can serve the
+same document under `ui_pages`: when a surface's `ui_hierarchy` read fails, it
+reads `ui_pages` instead and lays out those knobs. A module serving neither shows
+"No controls" on the surface. Teng is the reference.
 Make sure to ship `ui_chain.js` in your build/install step if you use it.
 The host itself ignores `ui_chain`; it is consumed by the Signal Chain UI when
 loading a MIDI source module.
@@ -1749,7 +1757,13 @@ When that happens the gate keys of the WHOLE hierarchy are eligible, not just
 those of the level you are standing on — a level that is currently hidden must
 be able to come back. A gate declared on a child level is read for the
 instance the grid is showing (`pad3_type` for a `{ "param": "type" }` on a
-`child_prefix: "pad"` level), exactly as the condition itself is evaluated. They share the cap and the budget of a canvas page's
+`child_prefix: "pad"` level) when the gate is per-instance. **List the key
+on the level** to make it so: that is the rule the condition itself is
+evaluated by. (The gate lane also treats a key as per-instance when the
+module declares the concrete key, `pad3_type`, but the evaluator does not,
+so do not rely on that alone.) A key the level does not list is module-wide
+and read bare, like `ui_engine` above, which describes the FOCUSED pad and
+is served under that one name. They share the cap and the budget of a canvas page's
 `extra_keys`: at most four, one read per stop.
 
 **Four counts distinct gate PARAMS, not values or levels.** A drum machine
@@ -1793,7 +1807,7 @@ Kinds and their roles:
 
 | `kind` | Roles | Notes |
 |--------|-------|-------|
-| `envelope` | `attack`, `decay`, `sustain`, `release` | Any 2–4 of them: AD, AR, ASR and ADSR all draw. |
+| `envelope` | `attack`, `hold`, `decay`, `sustain`, `release`, optional `mode` | Any 2–4 stages: AD, AR, AHR, ASR and ADSR all draw. `mode` is an enum switching the shape (see below). |
 | `filter` | `cutoff`, `resonance`, optional `mode`, `slope` | `mode` should be an enum naming LP/HP/BP/notch. |
 | `eq` | `low`, `mid`, `high` | Band **gains**, not crossover frequencies. |
 | `lfo` | `shape`, `rate`, `depth`, optional `phase` | `shape` should be an enum of waveform names. |
@@ -1801,6 +1815,23 @@ Kinds and their roles:
 | `fader` | *(single param)* | A level/volume, drawn as a fader rather than a dial. |
 | `switch` | *(single param)* | A `toggle` or **boolean-flavoured** two-option enum, drawn as an on/off switch. See the note below — not every two-option enum qualifies, and it changes the behaviour as well as the picture. |
 | `sample` | *(single param)* + optional `position` | A `filepath`; a companion `wav_position` param marks playback position on the waveform. |
+
+**An envelope that switches shape declares `mode`.** Some envelopes run the same
+knobs as two shapes — DR32's pads switch between **A-H-D** (a timed hold at the
+peak, then decay to silence) and **A-S-R** (full level while the pad is held,
+then the Decay knob is the release, and Hold does nothing). Put the switch in
+the group as `role: "mode"` with `span: false`, so it keeps its own cell and
+only lends the picture its value:
+
+```json
+{ "key": "env_mode", "type": "enum", "options": ["A-H-D", "A-S-R"],
+  "viz": { "group": "amp", "role": "mode", "span": false } }
+```
+
+An option naming A-H-D (or `AHD`, `One Shot`, `Trigger`) draws attack, hold and
+decay; one naming A-S-R (or `ASR`, `Gate`, `Sustain`) draws attack, a full-level
+sustain, and your `decay` (or `release`) as the fall. Any other option draws the
+declared roles unchanged, and so does an older host.
 
 **A `switch` is not just a picture — it suppresses the option list.** Turning an
 enum knob normally flashes its options up over the grid for ~700ms. A switch
@@ -3533,6 +3564,35 @@ that *also* has a waveform editor behind it. The predicate is `alsoOpens()` in
 
 Module authors influence all of this only through `type`, `options`, and
 whether a `wav_position` declares `min`/`max`.
+
+### `display: "big"` — a value that is read, not aimed
+
+```json
+{ "key": "cond", "name": "Condition", "type": "enum",
+  "options": ["1:1", "1:2", "2:2", "3:4"], "display": "big" }
+```
+
+The cell draws the value in the big face instead of an arc or an enum square.
+Small counted ints already get it without asking; this is for everything else
+of the same shape — a trig condition, a swing percentage, a clip length.
+Optional and inert when absent.
+
+- It works on enums too, and draws the option (`short_options` first).
+  Turning it raises no option panel: the cell already shows the answer.
+- The text a host supplies through `formatValue` wins when it fits, so `54%`
+  can carry its unit.
+- **It must fit.** The face spells `0-9 + - : % / .` and the note names `A-G #`, and the widest thing the
+  cell can ever show must fit in 30px. If it does not, the cell keeps the
+  widget it would have had — an option list with a word in it stays an enum
+  square — so a declaration can never smear into the next cell.
+
+### `turn: "absolute"` — a two-option choice that has an order
+
+A two-option enum drawn as a box TOGGLES on a turn, either way, because the box
+shows a state and not a direction. If your two options are ordered — Chromatic
+then In Key, Off then Latch — declare `"turn": "absolute"` and clockwise lands
+on the second option and stays there, counter-clockwise on the first. It still
+draws as the box; only the knob changes. Optional and inert when absent.
 
 ### Knob Acceleration
 

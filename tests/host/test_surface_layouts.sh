@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# Every surface runs either navigation layout (layout_common.mjs). The two
+# pairings the devices were BORN with are tested in test_e16_*.sh and
+# test_ec4_surface.sh; this file drives the two CROSSED pairings and a switch:
+#
+#   EC4 + MAP    sixteen parameters across two pages as names; a Shift HOLD
+#                shows the slot map as names, and a Shift + push (a SysEx
+#                report on the EC4) jumps; Shift + turn pages by the EC4s
+#                selector angle, not per pulse; a Shift TAP is the Mixer
+#   E16 + KNOBS  the page on the top eight, labelled navigation knobs below,
+#                drawn in pixels and lit on the rings; the slot knob moves the
+#                focus, VOL writes the slot volume
+#   a switch     changing the setting at runtime lands on the new layout,
+#                off the old one s Mixer
+# No apostrophes in this file (the node program is single-quoted).
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
+
+node --input-type=module -e '
+import { createEc4Surface, DEFAULT_SETUP, SELECTOR_PULSES, EC4_MAP_SHOW_DELAY_MS } from "./src/shared/ec4_surface.mjs";
+import { createSurface, drawScreen, E16_SELECTOR } from "./src/shared/e16_surface.mjs";
+import { createCanvas } from "./src/shared/e16_canvas.mjs";
+import { screenLabels } from "./src/shared/layout_common.mjs";
+import { MAP_SHOW_DELAY_MS } from "./src/shared/layout_map.mjs";
+import { PAGE_KNOBS } from "./src/shared/param_pages/page_plan.mjs";
+import { createController } from "./src/shared/param_pages/page_controller.mjs";
+
+let fails = 0;
+const eq = (n, g, w) => { const a = JSON.stringify(g), b = JSON.stringify(w);
+  if (a !== b) { console.log("FAIL " + n + "\n  got  " + a + "\n  want " + b); fails++; } else console.log("ok   " + n); };
+const ok = (n, c) => eq(n, !!c, true);
+
+const page = (name, keys) => ({ kind: PAGE_KNOBS, name, level: name, keys });
+function fakeController(writes) {
+  return {
+    pages: [page("Main", ["cutoff", "reso"]), page("Env", ["attack", "decay"]), page("Mod", ["rate"])],
+    pageIndex: 0,
+    state: { values: { cutoff: "0.5", reso: "0.1", attack: "0.2", decay: "0.3", rate: "0.4" } },
+    load(f) { this.loaded = f; }, tick() {},
+    goToPage(i) { this.pageIndex = i; },
+    onKnobTurn(slot, dir) { writes.push([this.pages[this.pageIndex].name, slot, dir]); },
+  };
+}
+function fakeMixerIo(slotWrites) {
+  return {
+    getSlot: (s, k) => ({ "slot:volume": "1", "slot:muted": "0", "slot:soloed": "0", "slot:pan": "0",
+                          "buses:main_send1": "0", "buses:main_send2": "0" })[k],
+    setSlot: (s, k, v) => { slotWrites.push([s, k]); return true; },
+    getGlobal: () => "0", setGlobal: () => true, skipback: () => true,
+    nameOf: (s) => "Track " + (s + 1),
+  };
+}
+const chain = { slots: [{ synth: "obxd", fx: ["freeverb"] }, { synth: "dx7" }, {}, {}] };
+
+/* ================= EC4 + MAP ================= */
+{
+  let t = 1000, nav = "map";
+  const writes = [], slotWrites = [];
+  const s = createEc4Surface({ now: () => t, send: () => true, chainOf: () => chain,
+    makeController: () => fakeController(writes), mixer: fakeMixerIo(slotWrites),
+    pulsesPerDetentOf: () => 1, navigationOf: () => nav });
+  const HDR = [0xF0, 0x00, 0x00, 0x00, 0x4E, 0x2C, 0x1B];
+  const report = (setup) => HDR.concat([0x4E, 0x28, 0x10 | setup, 0x4E, 0x24, 0x10, 0xF7]);
+  const key = (k, down) => HDR.concat([0x4E, 0x26, 0x10 | k, 0x4E, 0x2E, down ? 0x11 : 0x10, 0xF7]);
+  const shiftedPush = (n) => HDR.concat([0x4E, 0x2A, 0x10 | n, 0x4E, 0x2E, 0x11, 0xF7]);
+  const run = (ms) => { for (let i = 0; i < ms / 16; i++) { t += 16; if (i % 30 === 0) s.feedMidi(report(DEFAULT_SETUP)); s.tick(); } };
+  const names = () => { const n = s.screen().names; return [0, 1, 2, 3].map((r) => n.slice(r * 16, r * 16 + 16)); };
+  const pulse = (enc, n) => { for (let i = 0; i < Math.abs(n); i++) s.feedMidi([0xB0, enc + 1, n > 0 ? 1 : 127]); };
+
+  s.setEnabled(true);
+  run(300);
+  eq("EC4+map: the map layout is live", s.layout.name, "map");
+  eq("EC4+map: sixteen parameters -- page Main on top, Env below",
+     [names()[0], names()[2]], ["CUTORESO        ", "ATTADECA        "]);
+
+  pulse(0, 2);
+  eq("EC4+map: a top-half turn edits page Main", writes.slice(-1)[0], ["Main", 0, 1]);
+  ok("EC4+map: ...and leaves a reading on the overlay", s.screen().overlay);
+  pulse(8, 1);
+  eq("EC4+map: a bottom-half turn edits page Env", writes.slice(-1)[0], ["Env", 0, 1]);
+
+  run(2000);
+  s.feedMidi(key(1, true));
+  /* The EC4 waits longer than the E16 (#539): at the E16 delay it is not up. */
+  run(MAP_SHOW_DELAY_MS + 50);
+  ok("EC4+map: no map yet at the E16 delay", names()[0].replace(/ /g, "") !== ">1234");
+  run(EC4_MAP_SHOW_DELAY_MS - MAP_SHOW_DELAY_MS);
+  eq("EC4+map: a Shift HOLD shows the slot map as names",
+     names()[0].replace(/ /g, ""), ">1234");
+  ok("EC4+map: ...with the slot modules below", names()[1].toLowerCase().includes("obxd"));
+  s.feedMidi(shiftedPush(5));
+  eq("EC4+map: Shift + push (a SysEx report) jumps to the module", s.component, "fx1");
+  s.feedMidi(key(1, false));
+  run(100);
+
+  s.feedMidi(key(1, true));
+  pulse(0, SELECTOR_PULSES - 1);
+  eq("EC4+map: Shift + turn below one selector angle does not page", s.pageIndex, 0);
+  pulse(0, 1);
+  eq("EC4+map: ...a whole angle pages (by two: a pair of pages)", s.pageIndex, 2);
+  s.feedMidi(key(1, false));
+  eq("EC4+map: ...and that release was not a tap", s.mixerOn, false);
+
+  run(500);
+  s.feedMidi(key(1, true)); t += 60; s.feedMidi(key(1, false));
+  run(100);
+  eq("EC4+map: a Shift TAP is the Mixer", [s.mixerOn, names()[0].slice(0, 4)], [true, "VOL "]);
+
+  nav = "knobs";
+  run(100);
+  eq("EC4: switching the setting lands on the knobs layout, off the Mixer",
+     [s.layout.name, s.mixerOn, names()[2].slice(0, 4)], ["knobs", false, "<PG "]);
+}
+
+/* ================= E16 + KNOBS ================= */
+{
+  let t = 1000;
+  const writes = [], slotWrites = [];
+  const s = createSurface({ now: () => t, send: () => true, chainOf: () => chain,
+    makeController: () => fakeController(writes), mixer: fakeMixerIo(slotWrites),
+    navigationOf: () => "knobs" });
+  s.setEnabled(true);
+  /* The E16 is present once it ACKs ENTER; the controller loads and the
+   * Mixer is read on the ticks after. */
+  const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+  const run = (ms) => { for (let i = 0; i < ms / 16; i++) { t += 16; if (i % 60 === 0) s.feedMidi(ACK); s.tick(); } };
+  const turn = (enc, n) => s.feedMidi([0xB0, enc + 1, n > 0 ? 0x01 : 0x7F]);
+  const shift = (down) => s.feedMidi(down ? [0x90, 16, 0x7F] : [0x80, 16, 0]);
+  run(200);
+
+  turn(0, 1);
+  eq("E16+knobs: the knobs layout is live", s.layout.name, "knobs");
+  eq("E16+knobs: a top-half turn edits the one page shown", writes.slice(-1)[0], ["Main", 0, 1]);
+
+  const labels = () => screenLabels(s.layout.screen(t)).labels;
+  eq("E16+knobs: the bottom row is navigation", labels().slice(8, 16),
+     ["<PG", "MAIN", "1/3", "PG>", "SL 1", "OBXD", "VOL", "PAN"]);
+
+  /* Selectors step by ANGLE on the E16 (E16_SELECTOR ticks a step). */
+  for (let i = 0; i < E16_SELECTOR.nav; i++) turn(9, 1);
+  eq("E16+knobs: the page knob pages by one", s.focus.pageIndex, 1);
+  eq("E16+knobs: ...and the header counts the module pages, not the one shown",
+     [s.layout.screen(t).view.headers[0].index, s.layout.screen(t).view.headers[0].count], [1, 3]);
+  for (let i = 0; i < E16_SELECTOR.slot; i++) turn(12, 1);
+  run(50);
+  eq("E16+knobs: the slot knob enters the next slot at its synth", [s.slot, s.component], [1, "synth"]);
+  t += 1000;
+  for (let i = 0; i < 4; i++) { t += 10; turn(14, 1); }
+  ok("E16+knobs: VOL writes the focused slot volume",
+     slotWrites.some((w) => w[0] === 1 && w[1] === "slot:volume"));
+
+  const rings = s.layout.rings(t);
+  eq("E16+knobs: sixteen rings", rings.length, 16);
+  eq("E16+knobs: the slot ring says where you are", rings[12].amount, Math.round(16383 / 3));
+
+  const cv = createCanvas();
+  drawScreen(cv, s.layout.screen(t));
+  const buf = Array.from(cv.toBuffer());
+  ok("E16+knobs: the navigation knobs are DRAWN (bottom half inked)", buf.slice(512).some((b) => b));
+  ok("E16+knobs: ...and the page on top", buf.slice(0, 512).some((b) => b));
+
+  shift(true); t += 60; shift(false);
+  eq("E16+knobs: a Shift TAP is the Mixer here too", s.layout.mixerOn, true);
+}
+
+/* ================= A PAGE REACHED BY PAGING HAS ITS VALUES ================= */
+{
+  /* The REAL page controller, whose read rotation walks only ITS current
+   * page: paging the surface must move it, or a page reached by paging
+   * shows no values until a knob is turned (Teng on hardware, 2026-09-26). */
+  const levels = {};
+  const keys = [];
+  for (let pg = 0; pg < 6; pg++) {
+    const ks = []; for (let i = 0; i < 8; i++) { ks.push("k" + pg + "_" + i); keys.push("k" + pg + "_" + i); }
+    levels["l" + pg] = { name: "P" + pg, knobs: ks, params: ks.map((k) => ({ key: k })) };
+  }
+  const HIER = { levels: Object.assign({ root: { name: "Root", children: Object.keys(levels).map((l) => ({ level: l })) } }, levels) };
+  const store = { ui_hierarchy: JSON.stringify(HIER),
+                  chain_params: JSON.stringify(keys.map((k) => ({ key: k, name: k, type: "float", min: 0, max: 1 }))) };
+  for (const k of keys) store[k] = "0.25";
+  const bare = (k) => String(k).replace(/^[a-z_0-9]+:/, "");
+  for (const nav of ["knobs", "map"]) {
+    let t = 1000;
+    const s = createSurface({ now: () => t, send: () => true, chainOf: () => chain,
+      makeController: () => createController({ getParam: (k) => (store[bare(k)] === undefined ? null : store[bare(k)]),
+                                               setParam: () => true, now: () => t }),
+      navigationOf: () => nav });
+    s.setEnabled(true);
+    const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+    const run = (n) => { for (let i = 0; i < n; i++) { t += 16; if (i % 60 === 0) s.feedMidi(ACK); s.tick(); } };
+    run(3);
+    const pages = s.controller.pages.length;
+    ok(nav + ": the fixture plans several knob pages", pages >= 4);
+    s.focus.setPage(nav === "map" ? 4 : 3);
+    run(1);
+    /* EVERY cell on the knobs -- on the map layout that is two pages, and
+     * the bottom one never filled by prefetch alone. */
+    const cells = s.layout.view().cells.filter(Boolean);
+    ok(nav + ": every page on the knobs has its values ONE tick after paging, no knob turned",
+       cells.length === (nav === "map" ? 16 : 8) && cells.every((c) => c.value !== undefined));
+  }
+}
+
+/* ================= NOTHING TO TURN IS SAID, NOT DRAWN BLANK ================= */
+{
+  /* A module whose contract never answers (Teng refuses ui_hierarchy) is
+   * given up on; one still reading has no plan yet. Neither is a blank page. */
+  for (const nav of ["map", "knobs"]) {
+    let t = 1000;
+    const ctl = { pages: [], pageIndex: 0, contractUnresolved: true, state: { values: {} },
+                  load() {}, tick() {}, goToPage() {}, onKnobTurn() {} };
+    const s = createSurface({ now: () => t, send: () => true, chainOf: () => chain,
+      makeController: () => ctl, navigationOf: () => nav });
+    s.setEnabled(true);
+    const ACK = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x53, 0xF7];
+    s.feedMidi(ACK); for (let i = 0; i < 5; i++) { t += 16; s.tick(); }
+    const msgOf = (scr) => scr.kind === "message" ? scr.text : scr.message;
+    eq(nav + ": still reading says so", msgOf(s.layout.screen(t)), "Loading...");
+    ctl.contractUnresolved = false; ctl.state.contractGaveUp = true;
+    eq(nav + ": given up says No controls", msgOf(s.layout.screen(t)), "No controls");
+    eq(nav + ": ...and a text device names it", screenLabels(s.layout.screen(t)).title, "NO CONTROLS");
+    const cv = createCanvas(); drawScreen(cv, s.layout.screen(t));
+    ok(nav + ": ...and it is DRAWN, not blank", Array.from(cv.toBuffer()).some((b) => b));
+    if (nav === "knobs") eq("knobs: the navigation row stays, so you can leave",
+      screenLabels(s.layout.screen(t)).labels[12], "SL 1");
+  }
+}
+
+console.log(fails ? "FAILED " + fails : "PASS");
+process.exit(fails ? 1 : 0);
+'
+
+# ---------------------------------------------------------------------------
+# THE SETTING REACHES THE SURFACES. A layout nobody selects is the gap one
+# layer up: each construction must read ITS device's entry, and the entry must
+# be persisted and restored. shadow_ui.js cannot be imported under node, so
+# this is a source pin.
+# ---------------------------------------------------------------------------
+UI=src/shadow/shadow_ui.js
+bad=0
+note() { echo "FAIL: $1"; bad=1; }
+perl -0ne 'exit(!/const e16Surface = createE16Surface\(\{[\s\S]{0,400}?navigationOf: \(\) => externalSurfaceNav\[1\],/)' "$UI" \
+  || note "the E16 is not handed its own Surface Nav"
+perl -0ne 'exit(!/const ec4Surface = createEc4Surface\(\{[\s\S]{0,400}?navigationOf: \(\) => externalSurfaceNav\[2\],/)' "$UI" \
+  || note "the EC4 is not handed its own Surface Nav"
+grep -q "config.external_surface_nav = " "$UI" || note "Surface Nav is not saved"
+grep -q "const nav = config.external_surface_nav;" "$UI" || note "Surface Nav is not restored"
+grep -q 'case "surface_nav":' "$UI" || note "the Surface Nav row is not read or written"
+# FOLLOW FOCUS follows a module that draws its own screen (COMPONENT_EDIT --
+# Teng), and never a synthesised settings grid (Global Settings went blank).
+perl -0ne 'exit(!/function currentEditFocus\(\) \{.*?if \(view === VIEWS\.COMPONENT_EDIT && editingComponentKey\) \{\s*return \{ slot: selectedSlot, component: chainComponentId\(editingComponentKey\) \};/s)' "$UI" \
+  || note "Follow Focus cannot see a module that draws its own screen"
+perl -0ne 'exit(!/function e16FollowFocus\(\) \{.*?\^\(synth\|fx\\d\+\|midi_fx\\d\+\)\$.*?\n\}/s)' "$UI" \
+  || note "Follow Focus follows synthesised settings components"
+# A MODULE THAT DRAWS ITS OWN SCREEN publishes its knobs as ui_pages: both
+# surfaces read through surfaceGetParam, which falls back to it ONLY when the
+# hierarchy read failed.
+[ "$(grep -c 'getParam: (key) => surfaceGetParam(focus.slot, key),' "$UI")" = 2 ] \
+  || note "a surface controller does not read through surfaceGetParam"
+perl -0ne 'exit(!/function surfaceGetParam\(slot, key\) \{.*?if \(\(v === null \|\| v === undefined\) && \/:ui_hierarchy\$\/.*?:ui_pages/s)' "$UI" \
+  || note "surfaceGetParam no longer falls back to ui_pages on a failed hierarchy read"
+[ "$bad" = 0 ] && echo "PASS: shadow_ui.js hands each surface its Surface Nav, Follow follows modules, and ui_pages is read" || exit 1
+

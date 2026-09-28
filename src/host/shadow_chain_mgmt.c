@@ -27,6 +27,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
+#include "song_abl_mix.h"
 #include "shadow_state.h"
 #include "shadow_midi.h"
 #include "unified_log.h"
@@ -812,12 +813,95 @@ void shadow_apply_mute(int slot, int is_muted) {
     shadow_save_state();
 }
 
+/* Set a slot's solo to a known state, as Move reported it. Exclusive, like
+ * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
+ * and Move announces only the track it soloed. */
+void shadow_apply_solo(int slot, int is_soloed) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    is_soloed = is_soloed ? 1 : 0;
+    if (is_soloed == shadow_chain_slots[slot].soloed &&
+        (!is_soloed || shadow_solo_count == 1)) return;
+    if (is_soloed) {
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            shadow_chain_slots[i].soloed = 0;
+        shadow_chain_slots[slot].soloed = 1;
+    } else {
+        shadow_chain_slots[slot].soloed = 0;
+    }
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        if (shadow_chain_slots[i].soloed) n++;
+    shadow_solo_count = n;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Solo: slot %d %s", slot, is_soloed ? "soloed" : "unsoloed");
+    shadow_log(msg);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    shadow_save_state();
+}
+
+/* Set every slot's mute and solo at once, as Move's Song.abl states them.
+ * Copies the file as-is; Move's solo is exclusive, so it names at most one. */
+void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
+        shadow_chain_slots[i].muted = muted[i] ? 1 : 0;
+        shadow_chain_slots[i].soloed = soloed[i] ? 1 : 0;
+        if (shadow_chain_slots[i].soloed) n++;
+    }
+    shadow_solo_count = n;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        shadow_ui_state_update_slot(i);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Move mix state: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+             muted[0], muted[1], muted[2], muted[3], soloed[0], soloed[1], soloed[2], soloed[3]);
+    shadow_log(msg);
+    shadow_save_state();
+}
+
+/* Boot: read the set Move is loading and take its track mute/solo. File I/O —
+ * init path only, never the SPI callback. Returns 1 if applied. */
+int shadow_sync_mix_from_song(const char *uuid, const char *set_name) {
+    if (!uuid || !uuid[0] || !set_name || !set_name[0]) return 0;
+    char path[768];
+    snprintf(path, sizeof(path), "%s/%s/%s/Song.abl", SAMPLER_SETS_DIR, uuid, set_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 16 * 1024 * 1024) { fclose(f); return 0; }
+    char *buf = malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[got] = '\0';
+    int muted[4], soloed[4];
+    int n = song_abl_mix_parse(buf, muted, soloed);
+    free(buf);
+    if (n < SONG_ABL_MIX_TRACKS) return 0;   /* not a whole answer: keep what we have */
+    shadow_apply_mix_state(muted, soloed);
+    return 1;
+}
+
+/* "m0 m1 m2 m3 s0 s1 s2 s3" -- the JS set-change path's copy of the above. */
+static int shadow_parse_mix_state(const char *value, int muted[4], int soloed[4]) {
+    if (!value) return 0;
+    return sscanf(value, "%d %d %d %d %d %d %d %d",
+                  &muted[0], &muted[1], &muted[2], &muted[3],
+                  &soloed[0], &soloed[1], &soloed[2], &soloed[3]) == 8;
+}
+
 void shadow_toggle_solo(int slot) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
 
     if (shadow_chain_slots[slot].soloed) {
         shadow_chain_slots[slot].soloed = 0;
+        /* Recounted, not zeroed: other slots may be soloed (the parameter
+         * path is additive). */
         shadow_solo_count = 0;
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            if (shadow_chain_slots[i].soloed) shadow_solo_count++;
         char msg[64];
         snprintf(msg, sizeof(msg), "Solo off: slot %d", slot);
         shadow_log(msg);
@@ -2902,7 +2986,42 @@ void shadow_process_fade_completions(void) {
  * Param Handling
  * ============================================================================ */
 
+/*
+ * AN EMPTY SLOT'S SENDS. A slot's Send A/B levels live in its module chain,
+ * so a slot with no module had nowhere to keep one -- and its Move track (under
+ * Move->Schwung) reached neither send bus. The shim keeps two levels for it:
+ * `buses:main_send<N>` lands here while the slot is empty (and in the chain
+ * otherwise), `slot:empty_send<N>` always does, for saving and restoring.
+ * Returns the send index 0/1, or -1.
+ */
+static int empty_send_index(int slot, const char *key) {
+    if (strcmp(key, "slot:empty_send1") == 0) return 0;
+    if (strcmp(key, "slot:empty_send2") == 0) return 1;
+    if (!shadow_chain_slots[slot].instance) {
+        if (strcmp(key, "buses:main_send1") == 0) return 0;
+        if (strcmp(key, "buses:main_send2") == 0) return 1;
+    }
+    return -1;
+}
+
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
+    {
+        const int es = empty_send_index(slot, key);
+        if (es >= 0) {
+            int v = atoi(value);
+            if (v < 0) v = 0;
+            if (v > 127) v = 127;
+            shadow_chain_slots[slot].empty_send[es] = (uint8_t)v;
+            return 1;
+        }
+    }
+    if (strcmp(key, "slot:pan") == 0) {
+        float p = (float)atof(value);
+        if (!(p >= -1.0f)) p = -1.0f;
+        if (p > 1.0f) p = 1.0f;
+        shadow_chain_slots[slot].pan = p;
+        return 1;
+    }
     if (strcmp(key, "slot:volume") == 0) {
         float vol = atof(value);
         if (vol < 0.0f) vol = 0.0f;
@@ -2915,6 +3034,17 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_apply_mute(slot, atoi(value));
         return 1;
     }
+    if (strcmp(key, "slot:move_mix") == 0) {
+        /* All four slots at once, from Move's Song.abl on a set change (the
+         * slot index is ignored). Pure assignment -- the UI did the file read. */
+        int muted[4], soloed[4];
+        if (!shadow_parse_mix_state(value, muted, soloed)) {
+            shadow_log("slot:move_mix: malformed value, ignored");
+            return 1;   /* consumed: never forward a slot key to the plugin */
+        }
+        shadow_apply_mix_state(muted, soloed);
+        return 1;
+    }
     if (strcmp(key, "slot:feedback_hold") == 0) {
         /* JS clears the boot feedback guard once jack state is safe. Pure flag
          * write — the caller separately sets slot:muted to unmute (confirmed) or
@@ -2923,16 +3053,15 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         return 1;
     }
     if (strcmp(key, "slot:soloed") == 0) {
-        int val = atoi(value);
-        if (val && !shadow_chain_slots[slot].soloed) {
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
-                shadow_chain_slots[i].soloed = 0;
-            shadow_chain_slots[slot].soloed = 1;
-            shadow_solo_count = 1;
-        } else if (!val && shadow_chain_slots[slot].soloed) {
-            shadow_chain_slots[slot].soloed = 0;
-            shadow_solo_count = 0;
-        }
+        /* ADDITIVE: soloing a slot leaves the others soloed, and un-soloing one
+         * keeps the rest -- several tracks can be soloed together (the E16
+         * Mixer, Slot Settings). Move's own Shift+Mute+Track combo stays
+         * exclusive (shadow_toggle_solo), because it solos Move's track too. */
+        shadow_chain_slots[slot].soloed = atoi(value) ? 1 : 0;
+        int n = 0;
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+            if (shadow_chain_slots[i].soloed) n++;
+        shadow_solo_count = n;
         for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
             shadow_ui_state_update_slot(i);
         return 1;
@@ -2968,8 +3097,17 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 }
 
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
+    {
+        const int es = empty_send_index(slot, key);
+        if (es >= 0) return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
+    }
     if (strcmp(key, "slot:volume") == 0) {
-        return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].volume);
+        /* Four places, not two: a surface stepping the level in dB (the E16
+         * Mixer) re-reads it, and two decimals put -30 dB half a dB off. */
+        return snprintf(buf, buf_len, "%.4f", shadow_chain_slots[slot].volume);
+    }
+    if (strcmp(key, "slot:pan") == 0) {
+        return snprintf(buf, buf_len, "%.3f", shadow_chain_slots[slot].pan);
     }
     if (strcmp(key, "slot:muted") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].muted);
@@ -4409,6 +4547,8 @@ void shadow_inprocess_handle_param_request(void) {
                 strcmp(param_key, "usbc_out_persist") == 0 ||
                 strcmp(param_key, "usbc_out_source") == 0 ||
                 strcmp(param_key, "midi_channel") == 0 ||
+                strcmp(param_key, "skipback_save") == 0 ||
+                strcmp(param_key, "filter") == 0 ||
                 strncmp(param_key, "jack:", 5) == 0 ||
                 strcmp(param_key, "suspend_overtake") == 0) {
                 if (host.handle_param_special(req_type, req_id)) {

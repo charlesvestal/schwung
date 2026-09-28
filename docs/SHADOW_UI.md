@@ -839,6 +839,17 @@ test.
   way to clear the position and no way to the store is a dead end. They are not
   all shaped alike either — `None` carries the EMPTY id while the others are
   `__`-prefixed, so `pickerRealIds` is written once rather than twice.
+- **Row 1 is `Sort` (A-Z / Type)**, and Type groups the modules under their
+  catalog category with `drawMenuList` divider rows as headings. The category
+  comes from the manager's cached catalog
+  (`manager-cache/catalog.json`), not from `module.json`: no fleet module
+  declares one, though one that does wins (`src/shared/module_categories.mjs`).
+  An uncategorised module lands under **Other, last**, never dropped, so a
+  device that has never fetched the catalog shows one group rather than an
+  empty list. The order is **filter, then sort, then the Move rows**: sorting
+  after the splice would pull Move Left/Right away from their module, and
+  filtering after the sort would leave headings over emptied groups. The jog
+  steps over headings.
 - **Favorites cannot be renamed or deleted**, and its Rename/Delete rows are
   **absent** rather than present-and-refusing — a row that answers a click by
   doing nothing teaches that the screen is broken. Clear works.

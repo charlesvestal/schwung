@@ -48,8 +48,15 @@ static void test_sysex_zero_payload_dropped(void) {
           "SysEx 3-byte-end CIN with all-zero payload is a stale slot");
     /* And the cases the old nonzero rule let through, which the end-byte rule
      * now catches — protection GAINED, not merely preserved. */
-    CHECK(!shadow_midi_forwardable(0x06, 0x11, 0x22, 0x00),
-          "2-byte-end whose final byte is not F7 is stale");
+    /* NOT stale: this is the OXI E16's real packetisation of the end of every
+     * OLED ACK/NACK (`26 00 02 00`, then `25 F7`), measured 2026-09-24 --
+     * a two-byte continuation. Refusing it dropped w/h from every reply. */
+    CHECK(shadow_midi_forwardable(0x06, 0x11, 0x22, 0x00),
+          "2-byte CIN 6 continuation of data (the E16 form) is forwarded");
+    CHECK(shadow_midi_forwardable(0x06, 0x00, 0x02, 0x00),
+          "...including the exact bytes captured from the E16");
+    CHECK(!shadow_midi_forwardable(0x06, 0x80, 0x22, 0x00),
+          "...but a status byte where data belongs is still stale");
     CHECK(!shadow_midi_forwardable(0x07, 0x11, 0x22, 0x33),
           "3-byte-end whose final byte is not F7 is stale");
     CHECK(!shadow_midi_forwardable(0x05, 0x40, 0x00, 0x00),

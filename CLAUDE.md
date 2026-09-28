@@ -854,6 +854,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   direction, so it TOGGLES either way, latched to one flick. The turn partition
   must EQUAL the draw partition or a shape promises what the knob won't do.
   `flipsOnClick` defines "is a two-way", not "flip".
+- **Four opt-ins for a host that owns its pages, all inert when absent** —
+  `turn: "absolute"` (a two-way steps by direction), `display: "big"` (read,
+  not aimed; must FIT, else the old widget), `io.allowEnumPeek` (can only
+  DECLINE) and `activity()` beside `settled()` (per-key durations; a stream is
+  REPORTED, never aged out). `tests/host/test_fleet_render_baseline.sh` pins
+  what every fleet cell draws and where a gesture lands it — the proof that
+  "opt-in" moved nothing.
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
@@ -1343,7 +1350,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 
-Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track) — these stay in sync, which is intended. Shadow slot mute/solo is set **only** by these combos — there is no D-Bus screen-reader text sync. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
+Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track). **The slot FOLLOWS Move's track mute AND solo rather than toggling beside them** — a blind toggle stays opposite forever once the two drift (a plain Mute tap mutes only Move). Live: Move announces `"<instrument> muted/unmuted/soloed/unsoloed"`; the text supplies only the STATE, and the TRACK comes from the gesture (`src/host/mute_follow.h`): Mute+Track (or Shift+Mute+Track) names that track, a plain Mute tap names the selected track (only after a Track press has been seen), and Mute+pad or any other button during the hold names nothing — the drum-cell announcement has the same shape. The shim still toggles as the fallback for a reply that never comes. At BOOT and SET LOAD the slots take `tracks[i].mixer.speakerOn` / `solo-cue` from the set's `Song.abl` (C: `song_abl_mix.h`; JS: `song_mix.mjs` → `slot:move_mix`), over the per-set saved values — Move has just read that file, so there it IS Move's state. **`speakerOn` has an OBJECT form** (`{"value": false, "presetValue": true}`) that a line/truthiness test reads as unmuted, and the same keys sit on every drum cell's mixer deeper in the track. This REVERSES fa6b97509 (2026-03), which removed the Song.abl sync on the view that slot and track mute are independent; they are not — Mute passes through. A consequence: a slot cannot keep a mute its Move track does not have past a set load. Solo is EXCLUSIVE on both sides (Move's confirmed 2026-09-26), so the live follow unsolos the other slots; a set load copies the file as-is. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
 ### A master-bus metronome is gone under Move→Schwung by CONSTRUCTION
 
@@ -1767,7 +1774,9 @@ instead. Installing never changes `default`. See `docs/BOOT_TARGETS.md`.
 ```
 
 An optional `channels` block adds beta/stable channels — see
-`docs/MODULE_CHANNELS.md`. Old release.json without it keeps working
+`docs/MODULE_CHANNELS.md`. **The manager hides the whole feature unless
+`manager-config.json` sets `"beta_channel_enabled": true`** (default off,
+read at startup); off, everyone resolves as Stable. Old release.json without it keeps working
 unchanged; the channel feature is strictly additive.
 
 Repositories that publish multiple catalog modules may key each release by
@@ -1896,6 +1905,7 @@ inline is how this file got to 151 KB.
   destination. Its "Not known" section is load-bearing — a mirror built on the
   untested half desyncs locks from notes silently.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
+- `docs/E16_REMOTE.md` — **OXI E16 remote mode**, and the fixed input map it forces. The spec sheet is not private; it exports as CSV. Payloads are 8-to-7 packed, and the MSB byte is always zero for LABELS and RING — so a packer that emits a constant zero works on everything except the FRAMEBUFFER, which is the one that matters. **SysEx does not reach a MULTI-JACK USB device on USB-A** (three ports on an E16); one jack fixes both directions. **Partial OLED updates (SCANLINE/RECTANGLE/CLEAR/ACK/NACK) are built against a DRAFT spec OXI has not shipped** — the diff engine clusters by ROW RUN, not one bounding box, because two far-apart changes (e.g. opposite map corners) otherwise degrade into one screen-spanning rectangle; a RECTANGLE's width/height are DIMENSIONS (1-128, 1-64), not coordinates, and masking them like coordinates truncates the ordinary values 128 and 64 to zero — caught only by a holistic review after all five per-piece tasks passed their own tests. A NACK must pair `invalidateBuf()` with `invalidate()`, same as the self-heal heartbeat; the first call alone only clears what the surface *believes* is shown; it never marks a repaint owed.
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
 - `BUILDING.md` — Build system, cross-compilation

@@ -40,6 +40,9 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/e16_claim.h"
+#include "host/cc_claim.h"
+#include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
 #include "host/shadow_test_stream.h"
@@ -50,6 +53,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/master_filter.h"
 #include "host/recall_quantize.h"
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
@@ -745,6 +749,23 @@ static volatile int shadow_selected_slot = 0;
 
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
+/* Set by the first Track press Schwung sees. Until then shadow_selected_slot
+ * is a default, not Move's selection, so a plain Mute tap names no slot. */
+static volatile int shadow_selection_known = 0;
+
+/* Buttons that turn Mute into a different gesture if pressed while it is held
+ * (tracks 40-43 are the gesture itself; encoders and jack-detect CCs are not
+ * presses). */
+static inline int mute_follow_is_other_button_cc(uint8_t cc) {
+    switch (cc) {
+    case 3: case 49: case 50: case 51: case 52: case 54: case 55: case 56:
+    case 58: case 60: case 62: case 63: case 85: case 86: case 87:
+    case 118: case 119:
+        return 1;
+    default:
+        return 0;
+    }
+}
 
 /* Set detection globals now in shadow_set_pages.c (extern via shadow_set_pages.h):
  * sampler_set_tempo, sampler_current_set_name, sampler_current_set_uuid,
@@ -905,6 +926,8 @@ static uint8_t track_longpress_fired[4];
  * Once set, that track's long-press is suppressed for the remainder of the press,
  * so adjusting a track's volume never opens the shadow UI. Cleared on press/release. */
 static uint8_t track_vol_touched_during_press[4];
+/* Shift+Vol+Sample took the press, so its release is ours too. */
+static uint8_t cc_learn_gesture_swallow;
 /* Set when a track long-press fires and a synthetic tap has been injected to
  * Move (see the fire site): the user's REAL release for that track is then
  * swallowed, so Move never sees an orphan release for a press it already had
@@ -1644,6 +1667,11 @@ void shim_step_note_plock_key(const char *key)
  * name — the drain memset its source and walked off the end of the mailbox,
  * so an outbound SysEx lost its tail with nothing recording that it had. */
 volatile int shim_ui_midi_out_drops = 0;
+volatile int shim_ui_midi_out_placed = 0;
+volatile int shim_ui_midi_out_stranded = 0;
+volatile int shim_ui_midi_out_foreign = 0;
+volatile int shim_ui_midi_out_retries = 0;
+volatile int shim_ui_midi_out_unretryable = 0;
 
 /* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
@@ -2212,8 +2240,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                         ps->active = 1;
                     }
                 }
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
@@ -2379,15 +2410,13 @@ static void shadow_inprocess_render_to_buffer(void) {
      * mix in place through process_block, the jack through audio_in_offset --
      * as one module with an input-source setting, rather than shipping as two.
      *
-     * ...unless the native resample bridge is the one that wrote it. It runs
-     * earlier in this same post-ioctl pass, so an unguarded restore silently
-     * beats it and Move's Resample captures the jack instead of Schwung's mix
-     * for as long as any overtake module is loaded. The bridge is the opt-in
-     * setting, so it wins; see src/host/audio_in_restore.h. */
+     * The native resample bridge no longer competes for the region: it writes
+     * AUDIO_IN at the very END of shim_post_transfer, after this render, so
+     * the restore cannot undo it and needs no stand-down. See
+     * src/host/audio_in_restore.h. */
     if (shadow_audio_in_restore_allowed(
             (overtake_dsp_gen_inst || overtake_dsp_fx_inst) ? 1 : 0,
-            hardware_mmap_addr ? 1 : 0,
-            native_resample_bridge_mode != NATIVE_RESAMPLE_BRIDGE_OFF)) {
+            hardware_mmap_addr ? 1 : 0)) {
         int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
         int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
         /* Log once to verify hardware audio levels */
@@ -2527,6 +2556,22 @@ static inline void shadow_stem_frame_reset(void) {
     memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
 }
 
+static inline void shadow_stem_store(int idx, const int16_t *src, float gain);
+/* The slot stem, panned like the slot main mix. */
+static inline void shadow_stem_store_slot(int s, const int16_t *src, float gain) {
+    float gl, gr;
+    shadow_pan_gains(s, &gl, &gr);
+    if (gl == 1.0f && gr == 1.0f) { shadow_stem_store(s, src, gain); return; }
+    if (!shadow_stems_wanted || s < 0 || s >= SAMPLER_STEM_COUNT || !src) return;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        float v = (float)src[i] * gain * ((i & 1) ? gr : gl);
+        if (v > 32767.0f) v = 32767.0f;
+        if (v < -32768.0f) v = -32768.0f;
+        shadow_stem_bus[s][i] = (int16_t)lroundf(v);
+    }
+    shadow_stem_valid[s] = 1;
+}
+
 static inline void shadow_stem_store(int idx, const int16_t *src, float gain) {
     if (!shadow_stems_wanted || idx < 0 || idx >= SAMPLER_STEM_COUNT || !src) return;
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -2587,6 +2632,20 @@ static void shim_drain_slot_send(int s, const int16_t *post_fx) {
                                  vol127);
 }
 
+/*
+ * THE MASTER FILTER (master_filter.h): one knob, -1 low-pass .. 0 off .. +1
+ * high-pass, set by master_fx:filter from Master FX Settings or the E16
+ * Mixer. Not persisted -- a filter left closed after a reboot reads as a
+ * muffled Move. Two instances, because it runs on two buffers with their own
+ * history: the DAC mailbox and the capture view.
+ */
+static volatile float shadow_master_filter_x = 0.0f;
+static master_filter_t master_filter_dac, master_filter_cap;
+static inline int master_filter_engaged(void) {
+    return master_filter_mode_of(shadow_master_filter_x) != 0 ||
+           master_filter_dac.mix > 0.0f || master_filter_cap.mix > 0.0f;
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
@@ -2619,8 +2678,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
                          shadow_chain_process_fx && shim_move_channel_count() >= 4);
     int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
+    /* An engaged master filter needs the full path: it filters Move's audio
+     * too, so "nothing of ours is running" is no longer "leave it alone". */
+    int any_filter = master_filter_engaged();
 
-    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
+    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture && !any_filter) {
         int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
         memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
@@ -2946,7 +3008,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     /* Same signal, same gain — the stem tap for this slot.
                      * Under Move->Schwung fx_buf is Move's track N plus this
                      * slot's synth, already through the slot FX chain. */
-                    shadow_stem_store(s, fx_buf, cap_vol);
+                    shadow_stem_store_slot(s, fx_buf, cap_vol);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -2963,8 +3025,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
 
                 /* Add FX output to mailbox */
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     float gain = vol;
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
@@ -2982,9 +3047,50 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * track playing on its own, and dropping it here would make
                  * "stems" mean "only the tracks I happened to put a synth on"
                  * — silently, since the file would exist and be empty. */
-                shadow_stem_store(s, move_track, 1.0f);
+                /*
+                 * THE SLOT'S FADER STILL APPLIES. This passed Move's track at
+                 * unity, so an EMPTY slot ignored its own volume, mute, solo
+                 * and pan: muting track 3 did nothing while slot 3 held no
+                 * module, and a solo elsewhere left it playing (hardware,
+                 * 2026-09-24, the E16 Mixer). The same gain an occupied slot
+                 * gets -- effective volume and pan -- without the fade
+                 * envelope, which belongs to a loaded module (and sits at 0
+                 * with none).
+                 */
+                const float pass_vol = shadow_effective_volume(s);
+                float pass_l, pass_r;
+                shadow_pan_gains(s, &pass_l, &pass_r);
+                shadow_stem_store_slot(s, move_track, pass_vol);
+                /* ITS SENDS, when above 0: send level x fader, post-fader,
+                 * pre-pan. A slot with no MODULE can still have a chain
+                 * INSTANCE (just not an active one) -- and that instance holds
+                 * the send levels Slot Settings and the Mixer write, so it is
+                 * drained exactly as an active slot is. Only a slot with no
+                 * instance at all uses the levels the shim keeps (empty_send).
+                 * Reading empty_send alone made sends need a module
+                 * (hardware, 2026-09-24). */
+                if (shadow_chain_slots[s].instance && shadow_chain_drain_main_send) {
+                    int16_t *send_targets[SEND_BUSES];
+                    for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+                    int vol127 = (int)lroundf(pass_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                    if (vol127 > 0)
+                        shadow_chain_drain_main_send(shadow_chain_slots[s].instance, send_targets,
+                                                     SEND_BUSES, move_track, MOVE_FRAMES_PER_BLOCK, vol127);
+                } else {
+                    int vol127 = (int)lroundf(pass_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                    for (int sb = 0; sb < SEND_BUSES && sb < 2 && vol127 > 0; sb++) {
+                        const int amt = shadow_chain_slots[s].empty_send[sb];
+                        if (amt <= 0) continue;
+                        bus_mix_send(send_accum[sb], move_track, FRAMES_PER_BLOCK * 2,
+                                     (amt * vol127) / BUS_MIX_SEND_LEVEL_MAX);
+                    }
+                }
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)move_track[i];
+                    const float g = pass_vol * ((i & 1) ? pass_r : pass_l);
+                    int32_t mixed = (int32_t)mailbox_audio[i] +
+                        (g == 1.0f ? (int32_t)move_track[i] : (int32_t)lroundf((float)move_track[i] * g));
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
@@ -3023,7 +3129,7 @@ skip_la_rebuild:
                 /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
                  * Move's own audio never enters a slot on this path, and is
                  * captured whole as the Move stem instead. */
-                shadow_stem_store(s, fx_buf,
+                shadow_stem_store_slot(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 /* Write to publisher shared memory for link_subscriber */
@@ -3040,8 +3146,11 @@ skip_la_rebuild:
                     ps->write_pos = wp;
                 }
 
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
@@ -3060,7 +3169,7 @@ skip_la_rebuild:
                  * legacy branch that runs the FX inline. */
                 shim_drain_slot_send(s, fx_buf);
 
-                shadow_stem_store(s, fx_buf,
+                shadow_stem_store_slot(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
@@ -3092,8 +3201,11 @@ skip_la_rebuild:
                     shadow_slot_fx_idle[s] = 0;
                 }
 
+                float pan_l, pan_r;
+                shadow_pan_gains(s, &pan_l, &pan_r);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
+                                ((i & 1) ? pan_r : pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
@@ -3413,6 +3525,20 @@ skip_la_rebuild:
         shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
     }
 
+    /*
+     * THE MASTER FILTER, on the final mix in BOTH routing modes -- what you
+     * hear (the mailbox) and what is recorded (unity_view) -- so it behaves
+     * like the volumes do, not only where Master FX reaches. Before the
+     * metronome below, so the click stays unfiltered; after the capture view
+     * is built, so Skipback, the sampler and Song Mode record it. Bit-exact
+     * at centre (master_filter.h).
+     */
+    {
+        const float fx = shadow_master_filter_x;
+        master_filter_process(&master_filter_dac, mailbox_audio, FRAMES_PER_BLOCK, fx, (float)MOVE_SAMPLE_RATE);
+        master_filter_process(&master_filter_cap, unity_view, FRAMES_PER_BLOCK, fx, (float)MOVE_SAMPLE_RATE);
+    }
+
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
@@ -3613,12 +3739,12 @@ static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static uint8_t *display_live_shm = NULL;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
-static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
 static shadow_midi_inject_t *shadow_midi_inject_ui_shm = NULL;  /* shadow UI's own inject, never diverted to a module */
 static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel remap table */
+static schwung_cc_claim_t *cc_claim_shm = NULL;               /* CC map: bound external CCs */
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -3708,16 +3834,37 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
      * packet always carries at least one nonzero byte, so the all-zero case
      * is now rejected too. See src/host/shadow_midi_filter.c. */
     if (!shadow_midi_forwardable(head, status, d1, d2)) return;
-    for (int slot = 0; slot < SHADOW_UI_MIDI_BYTES; slot += 4) {
-        if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
-            shadow_ui_midi_shm[slot + 1] = status;
-            shadow_ui_midi_shm[slot + 2] = d1;
-            shadow_ui_midi_shm[slot + 3] = d2;
-            __atomic_store_n(&shadow_ui_midi_shm[slot], head, __ATOMIC_RELEASE);
-            shadow_control->midi_ready++;
-            return;
-        }
+    /*
+     * A SYSEX THAT LOST A PACKET LOSES THE REST OF ITSELF TOO. Dropping one
+     * packet of a message and delivering the ones after it hands JS a head
+     * and a tail with a hole between -- which can assemble into a well-framed
+     * WRONG message (an OLED reply with a shifted address). So once a SysEx
+     * packet is dropped, the rest of that message is dropped with it, up to
+     * its end or the next F0; JS then sees a truncated head, which its
+     * assembler discards at the next F0. Per cable, on the SPI callback: a
+     * few compares, no allocation, no logging.
+     */
+    static uint8_t sysex_dropping[16];
+    const uint8_t cable = (uint8_t)((head >> 4) & 0x0F);
+    const uint8_t cin = (uint8_t)(head & 0x0F);
+    const int is_sysex = (cin >= 0x04 && cin <= 0x07);
+    const int starts = is_sysex && status == 0xF0;
+    const int ends = (cin >= 0x05 && cin <= 0x07);
+    if (sysex_dropping[cable] && is_sysex && !starts) {
+        if (ends) sysex_dropping[cable] = 0;   /* the damaged message is over */
+        shim_ui_midi_drops++;
+        return;
     }
+    if (starts) sysex_dropping[cable] = 0;
+    /* IN ARRIVAL ORDER -- a ring cursor, not the lowest free slot, which
+     * reordered every burst that straddled a drain. See ui_midi_ring.h. */
+    static int ui_midi_wr = 0;
+    if (ui_midi_ring_put(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES, &ui_midi_wr,
+                         head, status, d1, d2)) {
+        shadow_control->midi_ready++;
+        return;
+    }
+    if (is_sysex && !ends) sysex_dropping[cable] = 1;
     /* Ring full: this packet is gone.
      *
      * Falling off the end and returning is what made a 6.9% packet loss on
@@ -4164,6 +4311,17 @@ static void init_shadow_shm(void)
         ext_midi_remap_shm->version = EXT_MIDI_REMAP_VERSION;
         ext_midi_remap_shm->enabled = 0;
         memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
+    }
+
+    /* The CC map's claim table: empty until the shadow UI loads a set with
+     * bindings (it restates the table on every load and edit). */
+    cc_claim_shm = (schwung_cc_claim_t *)shadow_shm_map(SHM_SHADOW_CC_CLAIM,
+                                                        sizeof(schwung_cc_claim_t), 1, 1);
+    if (cc_claim_shm) {
+        cc_claim_shm->version = CC_CLAIM_VERSION;
+        cc_claim_shm->learn = 0;
+        cc_claim_shm->count = 0;
+        memset((void *)cc_claim_shm->bits, 0, sizeof(cc_claim_shm->bits));
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
@@ -5238,6 +5396,30 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
     /* master_fx:resample_bridge */
     if (strncmp(key, "master_fx:", 10) == 0) {
         const char *fx_key = key + 10;
+        /* master_fx:skipback_save -- the Shift+Capture save, for a control
+         * surface (the E16 Mixer's capture knob). A SET triggers it; the save
+         * itself is handed to the worker, exactly as the gesture's is. */
+        if (strcmp(fx_key, "filter") == 0) {
+            if (req_type == 1) {
+                float v = strtof(shadow_param->value, NULL);
+                if (!(v >= -1.0f)) v = -1.0f;
+                if (v > 1.0f) v = 1.0f;
+                shadow_master_filter_x = v;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%.3f", shadow_master_filter_x);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
+        if (strcmp(fx_key, "skipback_save") == 0) {
+            if (req_type == 1) skipback_trigger_save();
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+            return 1;
+        }
         if (strcmp(fx_key, "resample_bridge") == 0) {
             if (req_type == 1) {
                 native_resample_bridge_mode_t new_mode =
@@ -5670,6 +5852,7 @@ static void shim_init_subsystems(void)
             .log = shadow_log,
             .save_state = shadow_save_state,
             .apply_mute = shadow_apply_mute,
+            .apply_solo = shadow_apply_solo,
             .ui_state_update_slot = shadow_ui_state_update_slot,
             .chain_slots = shadow_chain_slots,
             .shadow_control_ptr = &shadow_control,
@@ -5691,9 +5874,15 @@ static void shim_init_subsystems(void)
      * so they would read 0 until something else happened to touch a slot. */
     shadow_ui_state_refresh();
 
-    /* Mute/solo state is now fully managed by shadow_load_state() above.
-     * Previously we synced from Song.abl here, but Move's native track
-     * mute (speakerOn) is independent of shadow slot mute state. */
+    /* Slot mute/solo FOLLOWS Move's track mute/solo (src/host/mute_follow.h),
+     * so at boot it is taken from the set Move is loading, over whatever the
+     * saved state says. Song.abl is only the last save, but Move has just
+     * read it, so here it IS Move's state. Removed in fa6b97509 on the view
+     * that the two were independent; reinstated on the view that they are
+     * one mute (Mute passes through, Mute+Track mutes both) — and with a
+     * reader that handles `speakerOn`'s object form, which the old one read
+     * as unmuted. Anything short of four tracks keeps the saved state. */
+    shadow_sync_mix_from_song(sampler_current_set_uuid, sampler_current_set_name);
 
     /* Initialize TTS and sync loaded state to shared memory */
     tts_init(44100);
@@ -7920,8 +8109,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              shadow_control ? &shadow_control->overtake_mode : NULL,
                              shadow_control ? &shadow_control->shift_held : NULL);
 
-    /* Bridge Schwung's total mix into native resampling path when selected. */
-    native_resample_bridge_apply();
+    /* The resample bridge is NOT here any more -- it is the LAST writer of
+     * AUDIO_IN, after the slot render below. See the call site. */
 
     /* Capture audio for sampler post-ioctl (Move Input source only - fresh hardware input) */
     if (sampler_source == SAMPLER_SOURCE_MOVE_INPUT) {
@@ -8565,6 +8754,74 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
         uint8_t cin = hw_midi[j] & 0x0F;
         uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+
+        /*
+         * === EXTERNAL CONTROL SURFACE (cable 2) ===
+         *
+         * THIS WALK, and not the shadow_display_mode block below, because a
+         * surface we own is ours WHETHER OR NOT OUR SCREEN IS UP. The first
+         * version of this lived down there and was correct only while the
+         * Schwung UI happened to be on the OLED; step onto a Move track and
+         * the whole block stops running, so nothing swallowed and the E16's
+         * own controls went straight to Move. Shift is note 16 on channel 1 --
+         * a very low note on whatever slot 1 holds -- and encoder 1 is CC 1,
+         * the mod wheel. Reported from hardware as "i hear a note from the e16
+         * when i press the shift button", and still heard after the swallow
+         * was added in the wrong place, which is what pointed here.
+         *
+         * CLAUDE.md records the same trap for capabilities.claims_ccs: a claim
+         * enforced inside the shadow_display_mode branch hands Move the event
+         * the moment the display closes. The claim latch needs a drain down
+         * there because it is a Move BUTTON whose press was already withheld;
+         * this is a different device entirely, and it never wanted that gate.
+         *
+         * ONE OWNER. The publish moved with the swallow deliberately: the
+         * swallow zeroes the hardware mailbox, which is exactly what the block
+         * below reads, so leaving the publish there would have starved it of
+         * the events this walk had already taken. Splitting them is a surface
+         * whose screen works and whose encoders do nothing.
+         */
+        if (!overtake_mode && cable == 0x02 && shadow_control &&
+            shadow_control->external_surface) {
+            uint8_t st = hw_midi[j + 1];
+            uint8_t e_d1 = hw_midi[j + 2];
+            uint8_t e_d2 = hw_midi[j + 3];
+            if (cin >= 0x04 && cin <= 0x07) {
+                /* The ACK. NO swallow: a chain slot declaring
+                 * capabilities.wants_sysex must still receive this -- the
+                 * surface is one consumer of inbound SysEx, not its owner. */
+                shadow_ui_midi_publish(hw_midi[j], st, e_d1, e_d2);
+            } else if (e16_claims_msg(1, st, e_d1)) {
+                shadow_ui_midi_publish(hw_midi[j], st, e_d1, e_d2);
+                /* BOTH BUFFERS. `continue` alone skips only OUR dispatch and
+                 * leaves the event in the mailbox Move reads, which is how a
+                 * claimed message gets consumed by us and played by Move at
+                 * the same time. */
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
+        /*
+         * THE GENERIC CC MAP -- second in the ownership order, AFTER the
+         * surface claim above (a surface's own encoders never reach it). A
+         * bound CC goes to the shadow UI and is taken out of BOTH buffers, or
+         * Move and the slot synths would also act on a CC now bound to a
+         * parameter. While learning, every CC is published and passed on.
+         * cc_claim.h; tests/host/test_cc_claim.sh.
+         */
+        if (!overtake_mode && cable == 0x02 && cin == 0x0B && cc_claim_shm) {
+            const uint8_t st = hw_midi[j + 1];
+            const uint8_t cc_d1 = hw_midi[j + 2];
+            const int route = cc_claim_route(cc_claim_shm->count, cc_claim_shm->learn,
+                                             cc_claim_shm->bits, st, cc_d1);
+            if (route & CC_ROUTE_PUBLISH) shadow_ui_midi_publish(hw_midi[j], st, cc_d1, hw_midi[j + 3]);
+            if (route & CC_ROUTE_SWALLOW) {
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
         if (cable != 0x00) continue;  /* Only internal cable */
         if (cin == 0x0B) {  /* Control Change */
             uint8_t d1 = hw_midi[j + 2];
@@ -8805,6 +9062,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
 
+            /* Anything else pressed while Mute is down makes it some other
+             * gesture — Mute+pad is a drum-CELL mute whose announcement looks
+             * exactly like a track's — so nothing Move says next belongs to a
+             * slot. Knob touches (notes 0-9) and encoder turns do not count. */
+            if (shadow_mute_held && d2 > 0 &&
+                ((cin == 0x09 && type == 0x90 && d1 >= 10) ||
+                 (cin == 0x0B && type == 0xB0 && mute_follow_is_other_button_cc(d1)))) {
+                mute_follow_on_other_press(&shadow_mute_follow);
+            }
+
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
                 /* Line-out / headphone jack detect: runs unconditionally, independent of
@@ -8880,8 +9147,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log(msg);
                         }
 
-                        /* Shift + Mute + Track = toggle solo; Mute + Track = toggle mute */
+                        shadow_selection_known = 1;
+
+                        /* Shift + Mute + Track = toggle solo; Mute + Track = mute.
+                         *
+                         * The toggle is only a GUESS at what Move just did to
+                         * its own track, and it is wrong whenever the two have
+                         * drifted apart (a plain Mute tap mutes only Move). So
+                         * the gesture also names this slot as the owner of
+                         * Move's "<name> muted/unmuted" reply, and the D-Bus
+                         * handler sets the slot to what Move reports. The
+                         * toggle stays as the fallback for a reply that never
+                         * comes. See src/host/mute_follow.h. */
                         if (shadow_mute_held) {
+                            mute_follow_on_track_press(&shadow_mute_follow, new_slot,
+                                                       SHADOW_CHAIN_INSTANCES);
                             if (shadow_shift_held) {
                                 shadow_toggle_solo(new_slot);
                             } else {
@@ -9018,9 +9298,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
-                /* Mute button (CC 88): track held state */
+                /* Mute button (CC 88): track held state, and open the window
+                 * in which Move's mute announcement is attributed to a slot. */
                 if (d1 == CC_MUTE) {
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
+                    if (d2 > 0) {
+                        mute_follow_on_mute_press(&shadow_mute_follow, shadow_selected_slot,
+                                                  shadow_selection_known,
+                                                  SHADOW_CHAIN_INSTANCES);
+                    } else {
+                        struct timespec mts;
+                        clock_gettime(CLOCK_MONOTONIC, &mts);
+                        mute_follow_on_mute_release(&shadow_mute_follow,
+                            (uint64_t)mts.tv_sec * 1000u + (uint64_t)(mts.tv_nsec / 1000000));
+                    }
                 }
 
 
@@ -9169,6 +9460,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /* Shift+Vol+Sample: CC learn mode on/off (the CC map, in the
+                 * shadow UI). Taken BEFORE the sampler, which owns Shift+Sample:
+                 * with the volume knob touched it is this, not the sampler. Both
+                 * edges are swallowed -- the release by the latch below. */
+                if (d1 == CC_RECORD && SHIFT_VOL_ACTIVE() && shadow_ui_enabled && shadow_control &&
+                    ((d2 > 0 && shadow_shift_held && shadow_volume_knob_touched) ||
+                     (d2 == 0 && cc_learn_gesture_swallow))) {
+                    if (d2 > 0) {
+                        shadow_control->ui_flags_ext |=
+                            (uint16_t)(SHADOW_UI_FLAG_CC_LEARN_TOGGLE >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        shadow_block_plain_volume_hide_until_release = 1;
+                    }
+                    cc_learn_gesture_swallow = d2 > 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    continue;
+                }
                 /* Sample/Record button (CC 118) - sampler intercept */
                 if (d1 == CC_RECORD && d2 > 0) {
                     if (shadow_shift_held) {
@@ -9608,8 +9915,34 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (overtake_mode) {
                 if (cin < 0x04 || cin > 0x0E) continue;
             } else {
-                if (cin < 0x08 || cin > 0x0E) continue;
-                if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
+                /* This CIN gate is the one docs/SYSEX.md names as the reason a
+                 * chain slot is WRITE-ONLY for SysEx: it excludes 0x04-0x07
+                 * before any cable or channel test, so SysEx "falls out the
+                 * bottom of it". It was written as a channel-voice filter and
+                 * has no comment saying so.
+                 *
+                 * An external surface's REPLIES are SysEx -- the ACK that tells
+                 * the lifecycle a device is present. Measured on hardware
+                 * 2026-09-10: with only the CABLE condition widened below, the
+                 * ACK reached the mailbox and died here, `present` never
+                 * flipped, and the E16 sat in remote mode with every frame
+                 * withheld. Eleven ENTERs out, not one framebuffer, and the 2 s
+                 * seek cadence running forever.
+                 *
+                 * So SysEx survives this gate for cable 2 when a surface is
+                 * configured, and only then. */
+                if (cin < 0x08 || cin > 0x0E) {
+                    if (!(cin >= 0x04 && cin <= 0x07 && cable == 0x02 &&
+                          shadow_control->external_surface)) continue;
+                }
+                /* Only internal cable 0 (Move hardware) -- unless an external
+                 * control surface is configured, which is the one case where
+                 * cable 2 has a consumer outside overtake mode. The flag is
+                 * the whole gate: with it clear this is the same single
+                 * comparison it always was, so a device with a keyboard on
+                 * USB-A sees no change in what reaches the shadow UI. */
+                if (cable != 0x00 &&
+                    !(cable == 0x02 && shadow_control->external_surface)) continue;
             }
             /* Cable 14 ("system") carries internal signaling — e.g. the power
              * button's CC, whose value on a long hold (0x3A = 58) happens to
@@ -9626,6 +9959,32 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* External control surface, outside overtake mode. Publish the
+             * whole cable-2 event -- CCs (the E16's encoders) and notes (its
+             * encoder buttons) alike -- and STOP here.
+             *
+             * Publishing with the raw head byte keeps cable 2 in its high
+             * nibble, which is what routes it to onMidiMessageExternal in
+             * shadow_ui.c rather than into Move's own control handlers.
+             *
+             * The `continue` is the load-bearing half. Everything below is
+             * written for Move's own surface: the CC branch tests d1 against
+             * jog/track/knob NUMBERS, the note branch broadcasts pad notes to
+             * every audio FX, and neither means anything for a device whose
+             * CC 1-16 are encoders. Falling through would route the surface
+             * into Move's gestures by numeric coincidence. Which is also why
+             * the flag is re-tested here rather than left implied by the cable
+             * filter above: if that filter is ever widened for some other
+             * reason, this branch must not silently swallow the cable. */
+            /* The external surface is handled in the UNCONDITIONAL walk
+             * earlier in this function, never here. It was here first, and
+             * that was wrong in a way only hardware showed: this whole block
+             * is gated on shadow_display_mode, so a surface we own was left
+             * un-swallowed -- its Shift audible as a note on slot 1 -- the
+             * moment the Schwung screen was not the one on the OLED. Both the
+             * publish and the swallow moved together, because the swallow
+             * zeroes the very mailbox this block reads. */
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
@@ -9693,8 +10052,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * Move won't play it because sh_midi has the patched note-off. */
 
                 /* Queue cable 2 note-on messages (external LED commands like M8)
-                 * for rate-limited forwarding to prevent buffer overflow */
-                if (cable == 0x02 && type == 0x90) {
+                 * for rate-limited forwarding to prevent buffer overflow.
+                 *
+                 * NOT for a control surface. This queue COALESCES per note and
+                 * never publishes the event as input -- exactly what an M8's
+                 * LED stream wants and exactly wrong for an E16, whose encoder
+                 * buttons are note-ons. Ungated, every button press is dropped
+                 * with nothing logged, which is indistinguishable from the
+                 * device not sending them. So a configured surface takes the
+                 * ordinary publish below instead. */
+                if (cable == 0x02 && type == 0x90 &&
+                    !shadow_control->external_surface) {
                     shadow_queue_input_led(src[j], status, d1, d2);
                     continue;
                 }
@@ -10208,6 +10576,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         }
     }
     TIME_SECTION_END(spi_post_render_sum, spi_post_render_max);
+
+    /*
+     * THE RESAMPLE BRIDGE WRITES AUDIO_IN LAST -- after every reader in the
+     * frame, never before one.
+     *
+     * It overwrites the shadow mailbox's AUDIO_IN with Schwung's total mix so
+     * Move's own Resample records what Schwung is playing. It used to run up
+     * by the JACK post, BEFORE the slot render above -- and the render is
+     * where a Line In slot reads AUDIO_IN (host->mapped_memory is this very
+     * buffer). So with Resample on Mix, Line In read Schwung's previous mix,
+     * which contains Line In's own output: jack -> Line In -> mix -> bridge ->
+     * Line In, a closed digital loop 1-2 blocks long that rang whenever its
+     * gain reached 1. It was never guarded for chain slots; #515 made it
+     * audible by stopping the idle park that used to starve it.
+     *
+     * Move reads the mailbox only after this callback returns (post_fn runs
+     * inside the hooked ioctl), so writing it here loses Move nothing: its
+     * Resample still gets the mix, and every Schwung reader in the render got
+     * the jack. That also retires the overtake restore's stand-down (#457) --
+     * the restore can no longer overwrite the bridge, because the bridge now
+     * comes after it. Pinned by tests/host/test_resample_bridge_after_render.sh.
+     */
+    native_resample_bridge_apply();
 
     /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
     /* Shadow UI can request a Move restart (e.g. after core update) */

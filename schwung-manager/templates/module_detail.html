@@ -162,9 +162,9 @@
                     {{else}}
                         <span class="text-muted">up to date</span>
                     {{end}}
-                    {{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
+                    {{if $.BetaEnabled}}{{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
                         <span class="beta-teaser" title="Enable Beta channel on the Modules page to install this pre-release">beta {{versionStr .}} available</span>
-                    {{end}}
+                    {{end}}{{end}}
                 {{else}}
                     {{if (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}
                         <a href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}</code></a>
@@ -172,17 +172,19 @@
                     {{else}}
                         <span class="text-muted">—</span>
                     {{end}}
-                    {{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
+                    {{if $.BetaEnabled}}{{with betaTeaser (releaseMeta .Module.ID .ReleaseMeta) .Channel}}
                         <span class="beta-teaser" title="Enable Beta channel on the Modules page to install this pre-release">beta {{versionStr .}} available</span>
-                    {{end}}
+                    {{end}}{{end}}
                 {{end}}
             </dd>
 
+            {{if .BetaEnabled}}
             <dt>Channel</dt>
             <dd>
                 <span class="channel-value">{{if eq .Channel "beta"}}Beta{{else}}Stable{{end}}</span>
                 <span class="text-muted">&mdash; <a href="/modules">change</a></span>
             </dd>
+            {{end}}
 
         </dl>
     </div>

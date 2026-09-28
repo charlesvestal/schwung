@@ -449,8 +449,8 @@ export function register() {
         /* The band's own height, exported for the test's encroachment check —
          * an option is allowed [lblY, lblY + LBL_H - 1] and nothing else. */
         bandH: LBL_H,
-        baseline: (ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) =>
-            drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated),
+        baseline: (ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated, automated) =>
+            drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated, automated),
         /*
          * In context, the label band is redrawn for ALL EIGHT cells rather than
          * for the knob slots only: a viz group or an enum square still has a

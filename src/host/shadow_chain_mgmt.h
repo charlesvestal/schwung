@@ -5,6 +5,7 @@
 #define SHADOW_CHAIN_MGMT_H
 
 #include <stdint.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -468,6 +469,19 @@ static inline float shadow_effective_volume(int slot) {
     return shadow_chain_slots[slot].volume;
 }
 
+/*
+ * PAN, as a stereo BALANCE: at centre both channels are x1.0 exactly (every
+ * existing mix bit-identical); turning one way fades the OPPOSITE channel
+ * out on an equal-power curve and leaves the near one alone -- how Ableton
+ * pans a stereo track. Applied where a slot joins the master mix and in its
+ * stem (so stems still sum to the master); sends stay pre-pan.
+ */
+static inline void shadow_pan_gains(int slot, float *gl, float *gr) {
+    const float p = shadow_chain_slots[slot].pan;
+    *gl = (p > 0.0f) ? cosf(p * 1.57079632679f) : 1.0f;
+    *gr = (p < 0.0f) ? cosf(-p * 1.57079632679f) : 1.0f;
+}
+
 /* Advance the fade envelope by one sample. Call once per stereo frame in mix loop. */
 static inline void shadow_fade_advance(int slot) {
     slot_fade_t *f = &shadow_chain_slots[slot].fade;
@@ -558,6 +572,9 @@ void shadow_ui_state_refresh(void);
 /* --- Mute/solo --- */
 void shadow_apply_mute(int slot, int is_muted);
 void shadow_toggle_solo(int slot);
+void shadow_apply_solo(int slot, int is_soloed);
+void shadow_apply_mix_state(const int muted[4], const int soloed[4]);
+int shadow_sync_mix_from_song(const char *uuid, const char *set_name);
 
 /* --- Master FX --- */
 

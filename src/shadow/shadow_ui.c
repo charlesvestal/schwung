@@ -31,7 +31,11 @@
 
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
+#include "host/ui_midi_out_ring.h"   /* SPSC discipline for /schwung-midi-out */
+#include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
+#include "host/e16_mirror_shm.h"
+#include "host/cc_claim.h"          /* the CC map's claim table writer */
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
@@ -50,6 +54,7 @@ static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_midi_inject_t *shadow_midi_inject = NULL;
 static shadow_midi_inject_t *shadow_midi_inject_ui = NULL;
 static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
+static schwung_cc_claim_t *cc_claim = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
 
@@ -99,6 +104,7 @@ static int open_shadow_shm(void) {
     shadow_midi_inject_ui = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT_UI, sizeof(shadow_midi_inject_t), 0, 0);
 
     ext_midi_remap = (schwung_ext_midi_remap_t *)shadow_shm_map(SHM_SHADOW_EXT_MIDI_REMAP, sizeof(schwung_ext_midi_remap_t), 0, 0);
+    cc_claim = (schwung_cc_claim_t *)shadow_shm_map(SHM_SHADOW_CC_CLAIM, sizeof(schwung_cc_claim_t), 0, 0);
 
     shadow_screenreader = (shadow_screenreader_t *)shadow_shm_map(SHM_SHADOW_SCREENREADER, sizeof(shadow_screenreader_t), 0, 0);
     if (shadow_screenreader) {
@@ -1563,8 +1569,98 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
     JS_ToInt32(ctx, &len, len_val);
     JS_FreeValue(ctx, len_val);
 
-    /* Process 4 bytes at a time (USB-MIDI packet format) */
-    int dropped = 0;
+    /* WHOLE PACKETS ONLY. The ring's indices advance by `len`, and every
+     * reader walks it four bytes at a time: a 3- or 7-byte push would shift
+     * both indices off the packet grid for good, and every later packet
+     * would decode shifted -- no error, just garbage from then on. Refused,
+     * never padded: padding would invent bytes the caller did not send. */
+    if (len <= 0 || (len & 3) != 0) return JS_FALSE;
+
+    /* A message too large to EVER fit is not a transient refusal.
+     *
+     * The caller's contract is "false means retry", and that is right for a
+     * full buffer -- it drains. It is a LIVELOCK when the message can never
+     * fit: the caller re-owes the send, retries next tick, and pushes another
+     * truncated burst at the device forever. Measured on hardware 2026-09-10
+     * with an E16 framebuffer (394 packets against a 256-packet buffer): six
+     * short frames a second and a wedged device.
+     *
+     * Report that case distinctly so a producer can tell "wait" from "never",
+     * and so the log names the size rather than leaving someone to infer it
+     * from a device that has gone quiet. */
+    if (len > (int)UI_MIDI_OUT_CAPACITY) {
+        static time_t last_oversize = 0;
+        time_t now_os = time(NULL);
+        if (now_os != last_oversize) {
+            last_oversize = now_os;
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                        "shadow MIDI out: message of %d bytes exceeds the %d-byte "
+                        "ring capacity and can never be sent -- refusing rather "
+                        "than truncating", len, (int)UI_MIDI_OUT_CAPACITY);
+        }
+        return JS_FALSE;
+    }
+
+    /*
+     * ALL OR NOTHING, and this is the whole difference between a message that
+     * is late and a message that is CORRUPT.
+     *
+     * The guard above already refuses a message larger than the entire buffer,
+     * with the right words on it -- "refusing rather than truncating". It only
+     * ever covered the whole buffer, though, and the loop below then did the
+     * very thing that guard exists to prevent whenever the message was merely
+     * larger than the REMAINING ROOM: it wrote packets one at a time until the
+     * buffer filled and counted the rest as dropped.
+     *
+     * For an LED flush that costs a few LEDs. For a SysEx it is fatal in a way
+     * that is invisible here: a USB-MIDI SysEx is a RUN of packets the device
+     * assembles into one message, so a prefix landing and a tail vanishing is
+     * a truncated message, and the receiver draws whatever the fragment
+     * decodes to. Measured on the device at 07:42 UTC on 2026-09-11 -- among
+     * whole-frame refusals of 394 packets sat "dropped 158" and "dropped 3",
+     * which are the partial ones, and they line up exactly with a screen that
+     * "sometimes garbles and then comes back".
+     *
+     * This is why the fault survived every pacing change and got WORSE at
+     * pace 1: a slower drain means less room, which means more refusals land
+     * mid-message rather than at a message boundary. It was read as a rate
+     * problem for most of this feature's life. It is not one.
+     *
+     * Refusing the whole message returns false, which callers already treat as
+     * "still owed" and retry -- the same contract the oversize guard uses.
+     */
+    {
+        int room = ui_midi_out_free(shadow_midi_out);
+        if (len > room) {
+            shadow_midi_out_drops += len / 4;
+            time_t now = time(NULL);
+            static time_t last_partial_report = 0;
+            if (now != last_partial_report) {
+                last_partial_report = now;
+                unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                            "shadow MIDI out: refusing a %d-byte message with "
+                            "%d bytes free (%d total dropped) -- a partial "
+                            "write would truncate it on the wire",
+                            len, room, shadow_midi_out_drops);
+            }
+            return JS_FALSE;
+        }
+    }
+
+    /*
+     * ASSEMBLE LOCALLY, THEN PUBLISH ONCE.
+     *
+     * The old loop marshalled each packet straight into the SHM buffer and
+     * advanced write_idx per packet, which made every intermediate state of a
+     * multi-packet SysEx visible to the shim: it could snapshot a run whose
+     * tail had not been written yet, and the tail then arrived as a separate
+     * snapshot behind whatever else got queued in between. The capacity check
+     * above cannot prevent that — it only guarantees the room exists.
+     *
+     * Marshalling into a local buffer first means write_idx moves exactly once
+     * per message, so the shim either sees the whole run or none of it.
+     */
+    uint8_t staged[SHADOW_MIDI_OUT_BUFFER_SIZE];
     for (int i = 0; i < len; i += 4) {
         uint8_t packet[4] = {0, 0, 0, 0};
 
@@ -1578,44 +1674,55 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
 
         /* Override cable number in CIN byte */
         packet[0] = (packet[0] & 0x0F) | (cable << 4);
-
-        /* Find space in buffer and write */
-        int write_offset = shadow_midi_out->write_idx;
-        if (write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE) {
-            memcpy(&shadow_midi_out->buffer[write_offset], packet, 4);
-            shadow_midi_out->write_idx = (uint16_t)(write_offset + 4);
-        } else {
-            dropped++;
-        }
+        memcpy(&staged[i], packet, 4);
     }
 
-    /* Signal shim that data is ready */
-    shadow_midi_out->ready++;
-
-    /* A write that discards and reports success is how an LED goes permanently
-     * wrong: input_filter's setLED records the colour it believes the hardware
-     * now shows and suppresses the next identical repaint, so a packet lost
-     * here is never retried. Report the failure so the caller can decline to
-     * cache it, and count it so "sometimes drops LEDs" is a number rather than
-     * a feeling. Logging here is safe — shadow_ui is a separate SCHED_OTHER
-     * process, not the SPI callback — but it is rate-limited so a flood cannot
-     * turn a dropped LED into a dropped audio block. */
-    if (dropped) {
-        shadow_midi_out_drops += dropped;
+    /* Cannot fail: the capacity check above already reserved the room, and
+     * this process is the only producer. Checked anyway — a silent success on
+     * a discarded write is the defect class this whole path exists to end. */
+    if (!ui_midi_out_push(shadow_midi_out, staged, (uint16_t)len)) {
+        shadow_midi_out_drops += len / 4;
         static time_t last_report = 0;
         time_t now = time(NULL);
         if (now != last_report) {
             last_report = now;
             unified_log("shadow_ui", LOG_LEVEL_DEBUG,
-                        "shadow MIDI out: buffer full, dropped %d packet(s) "
-                        "(%ld total) - more than %d bytes queued in one flush",
-                        dropped, shadow_midi_out_drops,
-                        SHADOW_MIDI_OUT_BUFFER_SIZE);
+                        "shadow MIDI out: push of %d bytes refused after the "
+                        "capacity check passed (%ld total dropped) -- two "
+                        "producers, or the ring indices are corrupt",
+                        len, shadow_midi_out_drops);
         }
         return JS_FALSE;
     }
 
     return JS_TRUE;
+}
+
+/* move_midi_cable_send(cable, [cin, status, data1, data2, ...]) -> bool
+ *
+ * DIAGNOSTIC. The other two senders hardcode their cable -- 0 for Move's own
+ * hardware, 2 for the external USB port -- and those are the only two values
+ * anything has ever used. The SPI mailbox carries a full 4-bit cable nibble
+ * per packet though (schwung_encode_usb_midi takes it as a parameter), and
+ * what the XMOS does with the other fourteen values is simply unknown.
+ *
+ * It matters because a separate cable is the ONE thing that would make our
+ * SysEx immune: two cables cannot splice into each other, so Move's notes
+ * could not land inside a screen update. Today we share cable 2 with them and
+ * any message spanning more than one SPI frame is exposed.
+ *
+ * So this exists to ASK the hardware rather than reason about it. Paired with
+ * /data/UserData/schwung/e16_blast_cable, the whole experiment is an echo.
+ * The CIN nibble is still overwritten per packet by js_shadow_midi_send, so a
+ * malformed cable cannot produce a malformed packet -- only a packet that goes
+ * somewhere else, or nowhere. */
+static JSValue js_move_midi_cable_send(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    if (argc < 2) return JS_FALSE;
+    int32_t cable = 0;
+    if (JS_ToInt32(ctx, &cable, argv[0])) return JS_FALSE;
+    if (cable < 0 || cable > 15) return JS_FALSE;
+    return js_shadow_midi_send(cable, ctx, this_val, argc - 1, argv + 1);
 }
 
 /* move_midi_external_send([cin, status, data1, data2, ...]) -> bool
@@ -1697,6 +1804,55 @@ static JSValue js_host_ext_midi_remap_set(JSContext *ctx, JSValueConst this_val,
                      (out_ch < 0 || out_ch > 15) ? EXT_MIDI_REMAP_PASSTHROUGH :
                      (uint8_t)out_ch;
     ext_midi_remap->remap[in_ch] = mapped;
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_cc_claim_set([[channel, cc], ...]) -> bool
+ * RESTATE the CC map's claim table: exactly these (channel 0-15, cc 0-127)
+ * pairs are bound, every other bit cleared. The count is written LAST, after
+ * the bits, so the shim never sees a count over a half-written table.
+ */
+static JSValue js_host_cc_claim_set(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!cc_claim || argc < 1 || !JS_IsArray(ctx, argv[0])) return JS_FALSE;
+    uint8_t bits[CC_CLAIM_BYTES];
+    memset(bits, 0, sizeof bits);
+    uint32_t n = 0, bound = 0;
+    JSValue len = JS_GetPropertyStr(ctx, argv[0], "length");
+    JS_ToUint32(ctx, &n, len);
+    JS_FreeValue(ctx, len);
+    for (uint32_t i = 0; i < n && i < 4096; i++) {
+        JSValue pair = JS_GetPropertyUint32(ctx, argv[0], i);
+        int32_t ch = -1, cc = -1;
+        JSValue a = JS_GetPropertyUint32(ctx, pair, 0), b = JS_GetPropertyUint32(ctx, pair, 1);
+        JS_ToInt32(ctx, &ch, a); JS_ToInt32(ctx, &cc, b);
+        JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, pair);
+        if (ch < 0 || ch > 15 || cc < 0 || cc > 127) continue;
+        cc_claim_set(bits, ch, cc, 1);
+        bound++;
+    }
+    cc_claim->count = 0;
+    __sync_synchronize();
+    memcpy((void *)cc_claim->bits, bits, sizeof bits);
+    __sync_synchronize();
+    cc_claim->count = (uint8_t)(bound > 255 ? 255 : bound);
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_cc_learn(on) -> bool
+ * While on, the shim publishes EVERY external CC to the UI (and swallows
+ * none that are not bound), so the CC map can learn which one was moved.
+ */
+static JSValue js_host_cc_learn(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!cc_claim || argc < 1) return JS_FALSE;
+    int on = JS_ToBool(ctx, argv[0]);
+    if (on < 0) return JS_FALSE;
+    cc_claim->learn = on ? 1 : 0;
     __sync_synchronize();
     return JS_TRUE;
 }
@@ -2889,6 +3045,128 @@ static JSValue js_host_claim_ccs(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
+/* host_external_surface(mode) -> bool
+ *
+ * Tells the shim whether an external control surface owns cable 2. The shim
+ * reads this on the SPI callback to decide two things it cannot decide for
+ * itself: whether to publish cable-2 CCs and notes to the shadow UI outside
+ * overtake, and whether to keep diverting cable-2 note-ons into the LED
+ * coalescing queue (which would swallow every encoder button).
+ *
+ * IDEMPOTENT against the SHM, for the same reason as pad_block below: the
+ * segment does not survive a shim restart, so JS has to be free to RESTATE
+ * this every tick without memoising. A mirror latches and the surface dies
+ * silently the first time the shim is restarted under it; the SHM cannot.
+ */
+static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    val = val ? 1 : 0;
+    if (shadow_control->external_surface == (uint8_t)val) return JS_TRUE;
+    shadow_control->external_surface = (uint8_t)val;
+    shadow_ui_log_line(val ? "shadow_ui: external_surface ON"
+                           : "shadow_ui: external_surface OFF");
+    return JS_TRUE;
+}
+
+/*
+ * Outbound packets per SPI frame, or 0 for the compiled default.
+ *
+ * A knob for an EXPERIMENT that was never run: 3 packets/frame was the first
+ * value that stopped the garbling after sending a framebuffer all at once
+ * failed, and nobody searched upward from it. It decides the only latency the
+ * user feels -- 394 packets at 3/frame is 383 ms, at 12 it would be 96 -- and
+ * until now trying a value meant a cross-compile and a restart.
+ *
+ * Clamped in the carry rather than here, so every writer gets the same bounds.
+ */
+/* host_ui_midi_foreign() -> number
+ *
+ * The shim's running count of cable-2 packets Move placed in the mailbox while
+ * a message of ours was still going out. Free-running; the caller reads the
+ * DELTA, because the absolute value means nothing.
+ *
+ * This is the one fact the E16 surface cannot observe for itself. Move's own
+ * notes, aftertouch and clock leave on the external port and shadow_ui never
+ * sees them -- pads arrive on cable 0, and a playing clip arrives nowhere --
+ * so "is Move transmitting right now" has to come from the shim or not at all.
+ */
+static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt64(ctx, (int64_t)shadow_control->ui_midi_foreign);
+}
+
+/*
+ * host_e16_mirror(frame, rings, active) -- publish what the E16 shows, for the
+ * web mirror (display_server's /stream-e16; see e16_mirror_shm.h). `frame` is
+ * 1024 bytes of SSD1306 pages or null, `rings` 16 x 6 bytes. Created lazily
+ * on first use, so a device with no E16 never makes the segment.
+ */
+static e16_mirror_shm_t *e16_mirror_shm = NULL;
+static JSValue js_host_e16_mirror(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_FALSE;
+    if (!e16_mirror_shm) {
+        e16_mirror_shm = (e16_mirror_shm_t *)shadow_shm_map(E16_MIRROR_SHM_NAME,
+                                                            sizeof(e16_mirror_shm_t), 1, 1);
+        if (!e16_mirror_shm) return JS_FALSE;
+    }
+    e16_mirror_shm_t *m = e16_mirror_shm;
+    __atomic_store_n(&m->seq, m->seq | 1u, __ATOMIC_RELEASE);        /* odd: writing */
+    __sync_synchronize();
+    memcpy(m->magic, E16_MIRROR_MAGIC, sizeof(m->magic));
+    m->version = 1;
+    m->active = JS_ToBool(ctx, argv[2]) ? 1 : 0;
+    m->has_frame = 0;
+    if (!JS_IsNull(argv[0]) && !JS_IsUndefined(argv[0])) {
+        for (uint32_t i = 0; i < E16_MIRROR_FRAME_SIZE; i++) {
+            JSValue v = JS_GetPropertyUint32(ctx, argv[0], i);
+            int32_t b = 0;
+            JS_ToInt32(ctx, &b, v);
+            JS_FreeValue(ctx, v);
+            m->frame[i] = (uint8_t)b;
+        }
+        m->has_frame = 1;
+    }
+    for (uint32_t i = 0; i < E16_MIRROR_RINGS * E16_MIRROR_RING_BYTES; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[1], i);
+        int32_t b = 0;
+        JS_ToInt32(ctx, &b, v);
+        JS_FreeValue(ctx, v);
+        m->rings[i] = (uint8_t)b;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    m->last_update_ms = (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000);
+    __sync_synchronize();
+    __atomic_store_n(&m->seq, (m->seq | 1u) + 1u, __ATOMIC_RELEASE); /* even: done */
+    return JS_TRUE;
+}
+
+static JSValue js_host_ui_midi_pace(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    if (val < 0) val = 0;
+    if (val > 255) val = 255;
+    if (shadow_control->ui_midi_pace == (uint8_t)val) return JS_TRUE;
+    shadow_control->ui_midi_pace = (uint8_t)val;
+    {
+        char line[96];
+        snprintf(line, sizeof(line), "shadow_ui: ui_midi_pace = %d", val);
+        shadow_ui_log_line(line);
+    }
+    return JS_TRUE;
+}
+
 static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3310,10 +3588,13 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
+    JS_SetPropertyStr(ctx, global_obj, "move_midi_cable_send", JS_NewCFunction(ctx, js_move_midi_cable_send, "move_midi_cable_send", 2));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_inject_to_move", JS_NewCFunction(ctx, js_move_midi_inject_to_move, "move_midi_inject_to_move", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_set", JS_NewCFunction(ctx, js_host_ext_midi_remap_set, "host_ext_midi_remap_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_cc_claim_set", JS_NewCFunction(ctx, js_host_cc_claim_set, "host_cc_claim_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_cc_learn", JS_NewCFunction(ctx, js_host_cc_learn, "host_cc_learn", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_clear", JS_NewCFunction(ctx, js_host_ext_midi_remap_clear, "host_ext_midi_remap_clear", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_enable", JS_NewCFunction(ctx, js_host_ext_midi_remap_enable, "host_ext_midi_remap_enable", 1));
 
@@ -3390,6 +3671,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
 
     /* Register pad block function */
+    JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_e16_mirror", JS_NewCFunction(ctx, js_host_e16_mirror, "host_e16_mirror", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_step_observe", JS_NewCFunction(ctx, js_host_step_observe, "host_step_observe", 1));
@@ -3428,7 +3713,14 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onExternal) {
     if (!shadow_ui_midi_shm) return 0;
     int handled = 0;
-    for (int i = 0; i < SHADOW_UI_MIDI_BYTES; i += 4) {
+    /* IN ARRIVAL ORDER: a ring cursor that persists across calls, bounded to
+     * one ring's worth per call. Draining in INDEX order reordered every
+     * burst that straddled a drain -- see src/host/ui_midi_ring.h. */
+    static int ui_midi_rd = 0;
+    for (int n = 0; n < SHADOW_UI_MIDI_BYTES / 4; n++) {
+        int i = ui_midi_ring_next(shadow_ui_midi_shm, SHADOW_UI_MIDI_BYTES, &ui_midi_rd);
+        if (i < 0) break;
+        ui_midi_ring_advance(&ui_midi_rd, SHADOW_UI_MIDI_BYTES);
         /* Acquire-load the gate byte: pairs with the producer's release-store
          * in shadow_ui_midi_publish() (schwung_shim.c). Ensures bytes 1-3 are
          * visible whenever byte 0 is nonzero. */
@@ -3436,19 +3728,29 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         uint8_t cin = head & 0x0F;
         uint8_t cable = (head >> 4) & 0x0F;
 
-        /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
-        if (cin < 0x04 || cin > 0x0E) continue;
+        /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc. A slot we skip
+         * is still CLEARED: with a ring cursor the producer comes back to it,
+         * and a slot left full would read as "ring full" to it forever. */
+        if (cin < 0x04 || cin > 0x0E) {
+            __atomic_store_n(&shadow_ui_midi_shm[i], 0, __ATOMIC_RELEASE);
+            continue;
+        }
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
+        /* A SysEx packet carries only as many REAL bytes as its CIN says --
+         * 1 for 0x05, 2 for 0x06, 3 for 0x04/0x07 -- and hands over exactly
+         * those. The rest is padding, and padding (00) is indistinguishable
+         * from SysEx data once the CIN is gone. Voice CINs keep all three. */
+        int n = (cin == 0x05) ? 1 : (cin == 0x06) ? 2 : 3;
         handled = 1;
         if (cable == 2) {
             /* Re-lookup onMidiMessageExternal each time in case overtake module replaced it */
             JSValue freshExternal;
             if (getGlobalFunction(ctx, "onMidiMessageExternal", &freshExternal)) {
-                callGlobalFunction(ctx, &freshExternal, msg);
+                callGlobalFunctionN(ctx, &freshExternal, msg, n);
                 JS_FreeValue(ctx, freshExternal);
             }
         } else {
-            callGlobalFunction(ctx, onInternal, msg);
+            callGlobalFunctionN(ctx, onInternal, msg, n);
         }
         /* Release the slot back to the producer. Producer overwrites bytes
          * 1-3 unconditionally on next claim, so we only need to clear byte 0. */

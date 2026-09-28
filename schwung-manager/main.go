@@ -1048,6 +1048,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/config.html",
 		"templates/system.html",
 		"templates/system_cpu.html",
+		"templates/controls.html",
 		"templates/install.html",
 		"templates/help.html",
 		"templates/remote_ui.html",
@@ -1128,6 +1129,9 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		data["CSRFToken"] = cookie.Value
 	}
+	// Every page that names a channel or hints at a beta asks this first;
+	// the feature is hidden unless manager-config.json switches it on.
+	data["BetaEnabled"] = app.channelPref.Enabled()
 	// Inject mirror enabled state for nav bar.
 	if app.shm != nil {
 		data["MirrorEnabled"] = app.shm.DisplayMirror()
@@ -1269,7 +1273,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		hostOfferedIsBeta = hostServedChannel == ChannelBeta
 		// Stable users get the same "beta X.Y.Z available" nudge that
 		// modules do, when the host publishes a beta ahead of stable.
-		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
 			beta := cat.Host.Channels.Beta.Version
 			stable := cat.Host.LatestVersion
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
@@ -1332,6 +1336,10 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 // re-rendering the whole list is cleaner than dozens of partial swaps.
 func (app *App) handleModulesChannelSet(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("channel")
+	if !app.channelPref.Enabled() {
+		http.Redirect(w, r, "/modules?flash=Beta+channel+is+not+enabled", http.StatusSeeOther)
+		return
+	}
 	if !app.channelPref.SetChannel(value) {
 		http.Redirect(w, r, "/modules?flash=Unknown+channel", http.StatusSeeOther)
 		return
@@ -2291,7 +2299,7 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 			b := rm.Channels.Beta.Version
 			am.OfferedIsBeta = b != "" && versionNewer(b, channelStableVersion(rm))
 		}
-		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
+		if app.channelPref.Enabled() && channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
 			if b != "" && versionNewer(b, channelStableVersion(rm)) {
 				am.BetaAvailable = b
@@ -3094,7 +3102,7 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
 		updateAvailable = hostOfferIsUpdate(latestVersion, version)
 		offeredIsBeta = served == ChannelBeta
-		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+		if app.channelPref.Enabled() && currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
 			beta := cat.Host.Channels.Beta.Version
 			stable := cat.Host.LatestVersion
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
@@ -4242,6 +4250,13 @@ func main() {
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
 
+	// Controls: the set's Custom surface pages and CC map (controls.go)
+	mux.HandleFunc("GET /controls", app.handleControls)
+	mux.HandleFunc("GET /api/controls", app.handleControlsGet)
+	mux.HandleFunc("PUT /api/controls", app.handleControlsPut)
+	mux.HandleFunc("GET /api/controls/params", app.handleControlsParams)
+	mux.HandleFunc("GET /controls/js/{path...}", app.handleControlsJS)
+
 	// Remote UI.
 	mux.HandleFunc("GET /remote-ui", app.handleRemoteUI)
 
@@ -4268,7 +4283,7 @@ func main() {
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
-	// Display server proxy (/mirror and /stream-auto).
+	// Display server proxy (/mirror, /stream-auto and /stream-e16).
 	displayProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
@@ -4288,7 +4303,18 @@ func main() {
 	}
 	mux.Handle("GET /mirror", displayProxy)
 	mux.Handle("GET /mirror/", displayProxy)
-	mux.Handle("GET /stream-auto", displayProxy)
+	// THE STREAMS ARE ENDLESS, so the server WriteTimeout (60 s) must not apply
+	// to them: Go enforces it on every response, and it cut each mirror feed
+	// once a minute -- the page froze until the EventSource reconnected. The
+	// deadline is lifted for these two routes only.
+	streamProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		displayProxy.ServeHTTP(w, r)
+	})
+	mux.Handle("GET /stream-auto", streamProxy)
+	// The OXI E16 mirror (display_server /stream-e16), shown under Move's
+	// screen on /mirror while an E16 is live.
+	mux.Handle("GET /stream-e16", streamProxy)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
 	// SecurityHeaders runs outermost so headers are set even on responses

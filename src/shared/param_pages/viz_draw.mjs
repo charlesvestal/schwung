@@ -464,7 +464,40 @@ function optionText(metaIndex, key, values) {
  * (Movy's own reference width) whenever this draws a full-width row. Partial
  * envelopes (2-3 roles) use Movy's span-relative formula directly.
  */
+/*
+ * AN ENVELOPE MAY SWITCH SHAPE, and a `mode` role says which one it is in.
+ *
+ * DR32's pads carry an Envelope switch, A-H-D / A-S-R, over the same three
+ * knobs. In A-H-D, Hold is a timed plateau at the peak and Decay falls to
+ * silence. In A-S-R, Hold is ignored: the level stays FULL while the pad is
+ * held, and Decay is what falls after the release. One fixed set of roles is
+ * wrong for one of the two, so the switch is a role -- usually declared
+ * `span: false`, so its cell stays an ordinary control and only lends the
+ * picture its value.
+ *
+ * The picture then draws the shape the voice actually plays: a hold plateau
+ * when there is a hold stage, a full-level sustain before the fall when there
+ * is a gate. An option text neither pattern recognises draws the declared
+ * roles unchanged, which is what every envelope without a `mode` does.
+ */
+export function envelopeModeOf(text) {
+    const s = String(text || "").toLowerCase().replace(/[\s_]/g, "");
+    if (/(^|[^a-z])a-?s-?r($|[^a-z])|^gate$|^sustain$/.test(s)) return "asr";
+    if (/(^|[^a-z])a-?h-?d($|[^a-z])|^oneshot$|^trigger$/.test(s)) return "ahd";
+    return null;
+}
+
 export function drawEnvelope(ctx, rect, roles, values, metaIndex) {
+    const envMode = roles.mode ? envelopeModeOf(optionText(metaIndex, roles.mode, values)) : null;
+    /* A-S-R: hold stage gone, a sustain at full level, and whatever falls
+     * after it (declared as decay or release) is the release. */
+    let fixed = null;
+    if (envMode === "asr") {
+        roles = { attack: roles.attack, sustain: "__full", release: roles.release || roles.decay };
+        fixed = { sustain: 1 };
+    } else if (envMode === "ahd") {
+        roles = { attack: roles.attack, hold: roles.hold, decay: roles.decay || roles.release };
+    }
     /* Time order, which is draw order. HOLD is here because an AHR envelope is
      * a real shape, not a degenerate ADSR: gate and ducker both declare
      * attack/hold/release and nothing else. Leaving hold out of this list did
@@ -484,7 +517,7 @@ export function drawEnvelope(ctx, rect, roles, values, metaIndex) {
     if (isPlainAdsr) {
         drawFullAdsr(ctx, x0, x1, topY, bodyBottom, roles, values, metaIndex);
     } else {
-        drawPartialEnv(ctx, x0, x1, topY, bodyBottom, present, roles, values, metaIndex);
+        drawPartialEnv(ctx, x0, x1, topY, bodyBottom, present, roles, values, metaIndex, fixed);
     }
 }
 
@@ -527,14 +560,16 @@ function drawFullAdsr(ctx, x0, x1, topY, baseY, roles, values, metaIndex) {
     dot(ctx, Math.min(x1 - 2, relEndX - 1), baseY - 1);
 }
 
-function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, metaIndex) {
+function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, metaIndex, fixed) {
     const rightX = xEnd - 1;
     const usableH = baseY - topY;
     const span = rightX - leftX;
 
     const has = (r) => present.includes(r);
     const val = {};
-    for (const r of present) val[r] = frac(metaIndex, roles[r], values);
+    /* `fixed` is a stage the mode implies with no knob behind it (A-S-R's
+     * full-level sustain); every other stage is read from its key. */
+    for (const r of present) val[r] = fixed && r in fixed ? fixed[r] : frac(metaIndex, roles[r], values);
 
     /*
      * A RELEASE ROLE IS EVIDENCE OF A SUSTAIN STAGE, even with no sustain role.

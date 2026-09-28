@@ -31,7 +31,10 @@
 
 /** A fresh store. One per page controller; not global. */
 export function createAnimState() {
-    return { prev: new Map(), from: new Map(), since: new Map() };
+    /* `dur` and `run` are read by activity() only: the duration each key was
+     * last observed with, and when its current unbroken run of changes began.
+     * Nothing else consults them, so settled() and observe() are unchanged. */
+    return { prev: new Map(), from: new Map(), since: new Map(), dur: new Map(), run: new Map() };
 }
 
 /**
@@ -63,6 +66,7 @@ export function observe(state, key, value, now, durationMs = 120) {
          * for a full duration afterwards, which also holds `settled()` false
          * and keeps an idle page redrawing. */
         state.since.set(key, now - durationMs);
+        if (state.dur) { state.dur.set(key, durationMs); state.run.set(key, now - durationMs); }
         return { from: null, to: value, t: 1, moving: false };
     }
 
@@ -75,6 +79,12 @@ export function observe(state, key, value, now, durationMs = 120) {
         state.from.set(key, inflight < 1 ? interpolatedOrPrev(state, key, inflight) : prev);
         state.prev.set(key, value);
         state.since.set(key, now);
+        /* A change landing on a transition still in flight CONTINUES the run;
+         * one landing on a settled key starts a new one. See activity(). */
+        if (state.dur) {
+            if (!(inflight < 1) || !state.run.has(key)) state.run.set(key, now);
+            state.dur.set(key, durationMs);
+        }
     }
 
     const t = progress(state, key, now, durationMs);
@@ -154,6 +164,47 @@ export function settled(state, now, durationMs = 120) {
         if (dt >= 0 && dt < durationMs) return false;
     }
     return true;
+}
+
+/**
+ * What is moving, asked per key against each key's OWN duration.
+ *
+ * Returns `{ moving, streaming }`:
+ *   moving     some key is inside a transition that began less than its own
+ *              duration ago -- draw every tick, it finishes on its own
+ *   streaming  some key has been re-stamped without a break for longer than
+ *              its own duration -- a value that never rests (an LFO on an enum,
+ *              a live read), which no number of frames will ever finish
+ *
+ * settled() cannot say either. It measures every key against one duration (its
+ * argument, 120 by default), so a 100 ms wave morph reads as moving for 120 ms,
+ * and it cannot tell a stream from a transition, so a single never-resting key
+ * holds a whole page redrawing at the tick rate forever.
+ *
+ * A stream is REPORTED, not hidden. The obvious fix -- age a key out once its
+ * run is older than its duration -- also freezes the final tween of a fast
+ * knob turn that happened to last longer than one duration: the last detent
+ * lands, nothing asks for the remaining frames, and the widget stops part way.
+ * So the answer is split and the HOST chooses: redraw on `moving`, throttle on
+ * `streaming`. When a stream stops it settles on its own schedule, and the
+ * next single change is an ordinary transition again.
+ *
+ * Additive: settled() and observe() answer exactly as before, and a store made
+ * before this existed (no `dur` map) reports nothing here.
+ */
+export function activity(state, now) {
+    const out = { moving: false, streaming: false };
+    if (!state || !state.dur) return out;
+    for (const [key, since] of state.since) {
+        const dur = state.dur.get(key);
+        const dt = now - since;
+        if (!(dur > 0) || !(dt >= 0) || dt >= dur) continue;
+        const run = state.run.get(key);
+        if (run !== undefined && now - run >= dur) out.streaming = true;
+        else out.moving = true;
+        if (out.moving && out.streaming) break;
+    }
+    return out;
 }
 
 /** Ease-out. Fast off the mark, settling rather than arriving. */
