@@ -1,0 +1,627 @@
+{
+  "id": "dr32",
+  "name": "DrumRack32",
+  "abbrev": "DR32",
+  "version": "0.3.2",
+  "author": "legsmechanical",
+  "license": "MIT",
+  "description": "Ableton Move's Drum Rack with 32 pads instead of 16. Loads Move's own .ablpreset drum kits from the Core and User libraries and plays them through a reconstruction of the same Drum Sampler voice: playback region, transpose/detune, A-H-D / A-S-R envelope, four filter types, velocity modulation, choke groups, Punch, and a per-pad Send A / Send B into the host's return buses.",
+  "ui": "ui.js",
+  "dsp": "dsp.so",
+  "api_version": 2,
+  "capabilities": {
+    "audio_out": true,
+    "audio_in": false,
+    "midi_in": true,
+    "midi_out": false,
+    "aftertouch": false,
+    "chainable": true,
+    "claims_edit_ccs": true,
+    "component_type": "sound_generator",
+    "chain_params": [
+      {
+        "key": "kit",
+        "name": "Kit",
+        "type": "filepath",
+        "root": "/data",
+        "start_path": "/data/UserData/UserLibrary/Track Presets",
+        "filter": [
+          ".ablpreset",
+          ".json"
+        ],
+        "default": "",
+        "live_preview": true,
+        "browser_hooks": {
+          "on_open": [
+            {
+              "key": "kit_mark",
+              "value": "1"
+            }
+          ],
+          "on_cancel": [
+            {
+              "key": "kit_restore",
+              "value": "1"
+            }
+          ],
+          "on_commit": [
+            {
+              "key": "kit_mark",
+              "value": "0"
+            }
+          ]
+        }
+      },
+      {
+        "key": "master",
+        "name": "Master",
+        "type": "float",
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.02,
+        "default": 1.0
+      }
+    ],
+    "ui_hierarchy": {
+      "pad_layout": "drums",
+      "levels": {
+        "root": {
+          "name": "DrumRack32",
+          "params": [
+            {
+              "level": "kits",
+              "label": "Category"
+            },
+            {
+              "level": "pads",
+              "label": "Sample"
+            },
+            {
+              "level": "pad_shape",
+              "label": "Shape"
+            },
+            {
+              "level": "pad_mix",
+              "label": "Mix"
+            },
+            {
+              "level": "output",
+              "label": "Master"
+            }
+          ],
+          "knobs": []
+        },
+        "pads": {
+          "name": "Sample",
+          "child_prefix": "pad",
+          "child_count": 32,
+          "child_index_base": 1,
+          "child_label": "Pad",
+          "child_index_param": "ui_current_pad",
+          "child_note_base": 36,
+          "child_copy_keys": [
+            "sample",
+            "start",
+            "end",
+            "transpose",
+            "detune",
+            "choke",
+            "gain",
+            "cell_volume",
+            "vel_vol",
+            "attack",
+            "hold",
+            "decay",
+            "env_mode",
+            "volume",
+            "pan",
+            "punch",
+            "punch_time",
+            "filter_on",
+            "filter_type",
+            "cutoff",
+            "resonance",
+            "peak_gain",
+            "mod_target",
+            "mod_amount",
+            "pitch_env",
+            "send_a",
+            "send_b",
+            "fx_type",
+            "fx_p1",
+            "fx_p2"
+          ],
+          "child_press_param": "ui_live_press",
+          "child_press_note_param": "ui_live_note",
+          "params": [
+            {
+              "key": "ui_current_pad",
+              "name": "Pad",
+              "short_name": "PAD",
+              "type": "int",
+              "min": 1,
+              "max": 32,
+              "default": 1
+            },
+            {
+              "key": "sample",
+              "name": "Sample",
+              "short_name": "SMPL",
+              "type": "canvas",
+              "canvas_script": "browser.js",
+              "enterable": true,
+              "show_footer": false
+            },
+            {
+              "key": "start",
+              "name": "Start",
+              "type": "wav_position",
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "short_name": "STRT",
+              "mode": "start",
+              "display_unit": "percent",
+              "filepath_param": "sample",
+              "default": 0.0
+            },
+            {
+              "key": "end",
+              "name": "End",
+              "short_name": "END",
+              "type": "wav_position",
+              "mode": "end",
+              "display_unit": "percent",
+              "filepath_param": "sample",
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "default": 1.0
+            },
+            {
+              "key": "transpose",
+              "name": "Transpose",
+              "type": "int",
+              "min": -48,
+              "max": 48,
+              "unit": "st",
+              "short_name": "TRSP",
+              "default": 0
+            },
+            {
+              "key": "detune",
+              "name": "Detune",
+              "type": "float",
+              "min": -50.0,
+              "max": 50.0,
+              "step": 1.0,
+              "unit": "ct",
+              "short_name": "DETN",
+              "default": 0
+            },
+            {
+              "key": "choke",
+              "name": "Choke",
+              "type": "int",
+              "min": 0,
+              "max": 16,
+              "short_name": "CHOKE",
+              "default": 0
+            },
+            {
+              "key": "volume_clone",
+              "name": "Volume",
+              "type": "float",
+              "min": -36.0,
+              "max": 12.0,
+              "step": 0.5,
+              "unit": "dB",
+              "short_name": "VOL",
+              "viz": {
+                "kind": "fader"
+              },
+              "default": 0.0
+            }
+          ],
+          "knobs": [
+            "ui_current_pad",
+            "sample",
+            "start",
+            "end",
+            "transpose",
+            "detune",
+            "choke",
+            "volume_clone"
+          ],
+          "child_key_overrides": {
+            "ui_current_pad": "ui_current_pad"
+          }
+        },
+        "pad_shape": {
+          "name": "Shape",
+          "child_prefix": "pad",
+          "child_count": 32,
+          "child_index_base": 1,
+          "child_label": "Pad",
+          "child_index_param": "ui_current_pad",
+          "child_copy_keys": [
+            "sample",
+            "start",
+            "end",
+            "transpose",
+            "detune",
+            "choke",
+            "gain",
+            "cell_volume",
+            "vel_vol",
+            "attack",
+            "hold",
+            "decay",
+            "env_mode",
+            "volume",
+            "pan",
+            "punch",
+            "punch_time",
+            "filter_on",
+            "filter_type",
+            "cutoff",
+            "resonance",
+            "peak_gain",
+            "mod_target",
+            "mod_amount",
+            "pitch_env",
+            "send_a",
+            "send_b",
+            "fx_type",
+            "fx_p1",
+            "fx_p2"
+          ],
+          "params": [
+            {
+              "key": "attack",
+              "name": "Attack",
+              "type": "float",
+              "min": 0.0001,
+              "max": 20.0,
+              "step": 0.001,
+              "unit": "s",
+              "short_name": "ATK",
+              "viz": {
+                "group": "amp",
+                "role": "attack"
+              },
+              "default": 0.0001
+            },
+            {
+              "key": "decay",
+              "name": "Decay",
+              "type": "float",
+              "min": 0.001,
+              "max": 60.0,
+              "step": 0.01,
+              "unit": "s",
+              "short_name": "DCY",
+              "viz": {
+                "group": "amp",
+                "role": "decay"
+              },
+              "default": 1.0
+            },
+            {
+              "key": "hold",
+              "name": "Hold",
+              "type": "float",
+              "min": 0.001,
+              "max": 60.0,
+              "step": 0.01,
+              "unit": "s",
+              "short_name": "HOLD",
+              "default": 0.3,
+              "viz": {
+                "group": "amp",
+                "role": "hold"
+              }
+            },
+            {
+              "key": "env_mode",
+              "name": "Envelope",
+              "type": "enum",
+              "options": [
+                "A-H-D",
+                "A-S-R"
+              ],
+              "short_name": "ENV",
+              "default": "A-H-D",
+              "viz": {
+                "group": "amp",
+                "role": "mode",
+                "span": false
+              }
+            },
+            {
+              "key": "cutoff",
+              "name": "Filter Freq",
+              "type": "float",
+              "min": 30.0,
+              "max": 22000.0,
+              "step": 50.0,
+              "unit": "Hz",
+              "short_name": "CUT",
+              "viz": {
+                "group": "flt",
+                "role": "cutoff"
+              },
+              "default": 22000.0
+            },
+            {
+              "key": "resonance",
+              "name": "Filter Reso",
+              "type": "float",
+              "min": 0.0,
+              "max": 0.9,
+              "step": 0.01,
+              "short_name": "RES",
+              "viz": {
+                "group": "flt",
+                "role": "resonance"
+              },
+              "default": 0.0,
+              "visible_if": {
+                "param": "filter_type",
+                "not_equals": "Peak"
+              }
+            },
+            {
+              "key": "peak_db",
+              "name": "Filter Gain",
+              "type": "float",
+              "min": -12.0,
+              "max": 12.0,
+              "step": 0.5,
+              "unit": "dB",
+              "short_name": "GAIN",
+              "viz": {
+                "group": "flt",
+                "role": "resonance"
+              },
+              "default": 0.0,
+              "visible_if": {
+                "param": "filter_type",
+                "equals": "Peak"
+              }
+            },
+            {
+              "key": "filter_type",
+              "name": "Filter Type",
+              "type": "enum",
+              "options": [
+                "Lowpass 12dB",
+                "Lowpass",
+                "Highpass",
+                "Peak"
+              ],
+              "short_name": "TYPE",
+              "viz": {
+                "group": "flt",
+                "role": "mode",
+                "span": false
+              },
+              "default": "Lowpass"
+            },
+            {
+              "key": "filter_on",
+              "name": "Filter On",
+              "short_name": "FILT",
+              "type": "int",
+              "min": 0,
+              "max": 1,
+              "viz": {
+                "kind": "switch"
+              },
+              "default": 0
+            }
+          ],
+          "knobs": [
+            "attack",
+            "decay",
+            "hold",
+            "env_mode",
+            "cutoff",
+            "resonance",
+            "peak_db",
+            "filter_type",
+            "filter_on"
+          ],
+          "child_key_overrides": {
+            "ui_current_pad": "ui_current_pad"
+          }
+        },
+        "pad_mix": {
+          "name": "Mix",
+          "child_prefix": "pad",
+          "child_count": 32,
+          "child_index_base": 1,
+          "child_label": "Pad",
+          "child_index_param": "ui_current_pad",
+          "child_copy_keys": [
+            "sample",
+            "start",
+            "end",
+            "transpose",
+            "detune",
+            "choke",
+            "gain",
+            "cell_volume",
+            "vel_vol",
+            "attack",
+            "hold",
+            "decay",
+            "env_mode",
+            "volume",
+            "pan",
+            "punch",
+            "punch_time",
+            "filter_on",
+            "filter_type",
+            "cutoff",
+            "resonance",
+            "peak_gain",
+            "mod_target",
+            "mod_amount",
+            "pitch_env",
+            "send_a",
+            "send_b",
+            "fx_type",
+            "fx_p1",
+            "fx_p2"
+          ],
+          "params": [
+            {
+              "key": "vel_vol",
+              "name": "Vel Vol",
+              "short_name": "VVOL",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "default": 0.35,
+              "viz": false
+            },
+            {
+              "key": "volume",
+              "name": "Volume",
+              "type": "float",
+              "min": -36.0,
+              "max": 12.0,
+              "step": 0.5,
+              "unit": "dB",
+              "short_name": "VOL",
+              "viz": {
+                "kind": "fader"
+              },
+              "default": 0.0
+            },
+            {
+              "key": "pan",
+              "name": "Pan",
+              "type": "float",
+              "min": -50.0,
+              "max": 50.0,
+              "step": 1.0,
+              "short_name": "PAN",
+              "default": 0.0
+            },
+            {
+              "key": "link",
+              "name": "Link",
+              "short_name": "LINK",
+              "type": "enum",
+              "options": [
+                "One",
+                "All"
+              ],
+              "default": "One",
+              "viz": {
+                "kind": "switch"
+              }
+            },
+            {
+              "key": "send_a",
+              "name": "Send A",
+              "type": "float",
+              "min": -70.0,
+              "max": 6.0,
+              "step": 0.5,
+              "unit": "dB",
+              "short_name": "SNDA",
+              "default": -70.0
+            },
+            {
+              "key": "send_b",
+              "name": "Send B",
+              "type": "float",
+              "min": -70.0,
+              "max": 6.0,
+              "step": 0.5,
+              "unit": "dB",
+              "short_name": "SNDB",
+              "default": -70.0
+            },
+            {
+              "key": "punch",
+              "name": "Punch",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "default": 0.0,
+              "short_name": "PUNCH"
+            },
+            {
+              "key": "punch_time",
+              "name": "Punch Time",
+              "type": "float",
+              "min": 0.06,
+              "max": 1.0,
+              "step": 0.01,
+              "unit": "s",
+              "default": 0.3,
+              "short_name": "PTIME"
+            }
+          ],
+          "knobs": [
+            "vel_vol",
+            "volume",
+            "pan",
+            "link",
+            "send_a",
+            "send_b",
+            "punch",
+            "punch_time"
+          ],
+          "child_key_overrides": {
+            "ui_current_pad": "ui_current_pad",
+            "link": "link"
+          }
+        },
+        "output": {
+          "name": "Master",
+          "params": [
+            {
+              "key": "master",
+              "name": "Master",
+              "short_name": "MASTR",
+              "type": "float",
+              "min": 0.0,
+              "max": 2.0,
+              "step": 0.02,
+              "default": 1.0
+            }
+          ],
+          "knobs": [
+            "master"
+          ]
+        },
+        "kits": {
+          "name": "Category",
+          "items_param": "kit_cat_items",
+          "select_param": "kit_cat",
+          "navigate_to": "kit_list",
+          "params": [
+            {
+              "level": "kit_list",
+              "label": "Kit"
+            }
+          ]
+        },
+        "kit_list": {
+          "name": "Kit",
+          "list_param": "kit_index",
+          "count_param": "kit_count",
+          "name_param": "kit_name"
+        }
+      }
+    }
+  },
+  "min_host_version": "1.3.0"
+}

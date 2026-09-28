@@ -161,6 +161,19 @@ typedef struct {
                           * maps to one CC step emits once, not once per turn. */
 } knob_mapping_t;
 
+/* A CHILD LEVEL'S KEY TEMPLATE -- how a module that declares a rack of
+ * instances once (dr32: 32 pads, `pad{index}_{key}`) names each instance's
+ * parameters. The same rule src/shared/param_pages/child_key.mjs resolves on
+ * the UI side, so a key the grid writes is a key the chain can type. */
+#define CHAIN_CHILD_TMPL_MAX 8
+typedef struct {
+    char tmpl[48];          /* child_key_template, or "<child_prefix>{index}_{key}" */
+    int  base;              /* child_index_base */
+    int  count;             /* child_count */
+    int  digits;            /* child_index_digits, 0 = unpadded */
+} chain_child_tmpl_t;
+#define CHAIN_PARAM_ALIAS_MAX 64
+
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
 #define MAX_ENUM_OPTIONS 128
@@ -776,6 +789,14 @@ typedef struct chain_instance {
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
+    /* The synth's child templates, and the instance keys already resolved
+     * through them (`pad7_transpose` -> synth_params index of `transpose`).
+     * The cache is what keeps a lane on a templated key from re-matching every
+     * block; both are reset at every synth load. */
+    chain_child_tmpl_t synth_child_tmpl[CHAIN_CHILD_TMPL_MAX];
+    int synth_child_tmpl_count;
+    struct { char key[48]; int idx; } synth_param_alias[CHAIN_PARAM_ALIAS_MAX];
+    int synth_param_alias_count;
     /*
      * POINTERS, not inline arrays, and the reason is the reorder.
      *
@@ -1387,6 +1408,11 @@ CHAIN_INTERNAL int chain_params_emit_json(const chain_param_info_t *params, int 
 CHAIN_INTERNAL int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 CHAIN_INTERNAL int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);
+CHAIN_INTERNAL int parse_child_templates(const char *module_path, chain_child_tmpl_t *out, int max);
+CHAIN_INTERNAL int parse_child_templates_json(const char *json, chain_child_tmpl_t *out, int max);
+CHAIN_INTERNAL void chain_synth_child_keys_load(chain_instance_t *inst, const char *synth_path);
+CHAIN_INTERNAL int chain_child_key_base(const chain_child_tmpl_t *t, int n, const char *key,
+                                        char *base, int base_len);
 CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
 CHAIN_INTERNAL void smoother_set_target(param_smoother_t *smoother, const char *key, float value);
 CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
