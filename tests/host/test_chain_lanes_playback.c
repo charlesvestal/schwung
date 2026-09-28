@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 #include "chain_internal.h"
 
@@ -1113,9 +1114,15 @@ int main(void) {
                   dr->synth_param_count > 20,
                   "dr32's hierarchy parsed (%d params) -- a key on several levels is not fatal",
                   dr->synth_param_count);
-            CHECK(find_param_info(dr->synth_params, dr->synth_param_count, "kit") &&
-                  find_param_info(dr->synth_params, dr->synth_param_count, "master"),
-                  "chain_params' globals are merged in, not dropped");
+            CHECK(find_param_info(dr->synth_params, dr->synth_param_count, "master") != NULL,
+                  "dr32's master is typed");
+            /* chain_params' `kit` is a FILEPATH carrying nested browser hooks:
+             * not a knob, and its hooks are not parameters. The flat legacy
+             * parser used to turn it into a float plus two phantoms. */
+            CHECK(!find_param_info(dr->synth_params, dr->synth_param_count, "kit") &&
+                  !find_param_info(dr->synth_params, dr->synth_param_count, "kit_restore") &&
+                  !find_param_info(dr->synth_params, dr->synth_param_count, "kit_mark"),
+                  "no filepath knob and no phantom hook params from the merge");
             chain_child_keys_load(&dr->synth_child_keys, "tests/fixtures/dr32");
             const chain_child_keys_t *ck = &dr->synth_child_keys;
             CHECK(ck->ntmpl == 1 && !strcmp(ck->tmpl[0].tmpl, "pad{index}_{key}") &&
@@ -1215,15 +1222,54 @@ int main(void) {
             c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
             CHECK(c && c->n == 2, "redo: the take is back");
 
-            /* A p-lock is its own step. */
+            /* A P-LOCK GESTURE is one step: the grid writes every 20 ms while
+             * a step is held, and each write used to be its own Undo step --
+             * so the button could never get back past one gesture. */
             uint32_t pj = 0;
             lane_param_set(ue, "plock", "synth cutoff 4.0 77");
+            lane_param_set(ue, "plock", "synth cutoff 4.0 78");
+            lane_param_set(ue, "plock", "synth cutoff 4.0 79");
+            CHECK(!lane_take_edit_event(ue, &pj, &kind), "a p-lock gesture stays open while it goes on");
+            lane_param_set(ue, "plock", "synth cutoff 6.0 40");   /* another step: the first gesture ends */
             CHECK(lane_take_edit_event(ue, &pj, &kind) && kind == LANE_EDIT_PLOCK && pj != jid,
-                  "the p-lock is announced as its own edit");
+                  "the first step's whole gesture is ONE announced edit");
+            uint32_t pj2 = 0;
+            usleep(350 * 1000);                                     /* the writes stop */
+            lane_tick(ue);
+            CHECK(lane_take_edit_event(ue, &pj2, &kind) && kind == LANE_EDIT_PLOCK && pj2 != pj,
+                  "a gesture whose writes stopped commits on its own");
+            snprintf(v, sizeof v, "undo %u", pj2);
+            lane_param_set(ue, "journal", v);
             snprintf(v, sizeof v, "undo %u", pj);
             lane_param_set(ue, "journal", v);
             c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
-            CHECK(c && c->n == 2, "undoing the p-lock leaves the take (n=%d)", c ? c->n : -1);
+            CHECK(c && c->n == 2, "undoing both gestures leaves the take (n=%d)", c ? c->n : -1);
+
+            /* A commit that records nothing never touches the ring: fill it,
+             * then an empty edit must leave the oldest entry undoable. */
+            {
+                uint32_t first = 0, ej; int ek;
+                for (int k = 0; k < LANE_SJOURNAL_DEPTH; k++) {
+                    char pl[64]; snprintf(pl, sizeof pl, "synth cutoff %d.5 %d", k % 7, 10 + k);
+                    lane_param_set(ue, "plock", pl);
+                    lane_param_set(ue, "clear_point", "99.0");     /* a verb: closes the gesture */
+                    while (lane_take_edit_event(ue, &ej, &ek)) if (!first && ek == LANE_EDIT_PLOCK) first = ej;
+                }
+                lane_param_set(ue, "armed", "1");
+                lane_param_set(ue, "armed", "0");                  /* an EMPTY take */
+                snprintf(v, sizeof v, "undo %u", first);
+                lane_param_set(ue, "journal", v);
+                CHECK(strcmp(lane_get(ue, "journaled"), "0") != 0,
+                      "the oldest entry survived an empty commit (journaled=%s)", lane_get(ue, "journaled"));
+            }
+
+            /* A RESTORE voids the journal and says so. */
+            {
+                uint32_t ej = 1; int ek = 0, reset = 0;
+                lane_param_set(ue, "state", "");
+                while (lane_take_edit_event(ue, &ej, &ek)) if (ek == LANE_EDIT_RESET) reset = 1;
+                CHECK(reset, "a lanes:state restore announces RESET");
+            }
 
             /* A clear is too. */
             lane_param_set(ue, "clear", "1");

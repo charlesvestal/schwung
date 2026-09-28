@@ -100,7 +100,12 @@ int lane_journal_apply(lane_store_t *st, const lane_journal_entry_t *je, int to_
  * not undoable from the button (Slot Settings' Undo still is). */
 #define LANE_EDIT_WHOLE_LO  (-1.0e12)
 #define LANE_EDIT_WHOLE_LEN ( 2.0e12)
-enum { LANE_EDIT_PLOCK = 1, LANE_EDIT_TAKE, LANE_EDIT_CLEAR, LANE_EDIT_OTHER };
+enum { LANE_EDIT_PLOCK = 1, LANE_EDIT_TAKE, LANE_EDIT_CLEAR, LANE_EDIT_OTHER,
+       LANE_EDIT_RESET   /* announced, never journaled: the store was replaced */ };
+/* How many lanes differ between two stores (-1: more than LANE_JOURNAL_LANES),
+ * without writing anything -- so a commit that will record nothing never
+ * touches the journal ring. */
+int lane_journal_changed(const lane_store_t *before, const lane_store_t *after);
 int lane_journal_diff(const lane_store_t *before, const lane_store_t *after, lane_journal_entry_t *je);
 
 /* Move every lane of (track, slot) into `sh` and out of the store. */

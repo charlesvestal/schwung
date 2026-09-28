@@ -139,6 +139,53 @@ int main(void)
     while (press_undo(&u, 100) == 1) claimed++;
     CHECK(claimed == UT_SLOT_DEPTH, "only the chain's %d are claimed, not %d", UT_SLOT_DEPTH, claimed);
 
+    /* ---- a take split by a mirrored edit: two entries on one Move step,
+     *      undone NEWEST first and redone oldest first ---------------------- */
+    ut_reset(&u); nstk = cur = 0; nlog = 0;
+    move_edit(&u, 0);
+    ut_on_arm(&u, 1, 100);
+    move_edit(&u, 150);
+    ut_on_schwung_edit(&u, 3, 0x80000001u, UT_TAKE, 200);   /* part a (committed at the mirrored verb) */
+    ut_on_schwung_edit(&u, 3, 0x80000002u, UT_TAKE, 400);   /* part b */
+    ut_on_arm(&u, 0, 400);
+    press_undo(&u, 500);
+    CHECK(nlog == 2 && strstr(log_[0], "undo 2147483650") && strstr(log_[1], "undo 2147483649"),
+          "newest part undone first: %s / %s", log_[0], nlog > 1 ? log_[1] : "");
+    nlog = 0;
+    press_redo(&u, 600);
+    CHECK(nlog == 2 && strstr(log_[0], "redo 2147483649") && strstr(log_[1], "redo 2147483650"),
+          "oldest part redone first");
+
+    /* ---- nothing is claimed while a take is open ------------------------- */
+    ut_reset(&u); nstk = cur = 0; nlog = 0;
+    move_edit(&u, 0);
+    ut_on_schwung_edit(&u, 0, 0x80000001u, UT_PLOCK, 10);
+    ut_on_arm(&u, 1, 20);
+    CHECK(!ut_undo_target(&u, &s, &j), "armed: Undo is Move's");
+    ut_on_arm(&u, 0, 30);
+    CHECK(ut_undo_target(&u, &s, &j), "disarmed: ours again");
+
+    /* ---- a Schwung edit leaves a linked take's redo alone ---------------- */
+    ut_reset(&u); nstk = cur = 0; nlog = 0;
+    move_edit(&u, 0);
+    ut_on_arm(&u, 1, 100);
+    move_edit(&u, 150);
+    ut_on_arm(&u, 0, 400);
+    ut_on_schwung_edit(&u, 3, 0x80000001u, UT_TAKE, 410);
+    press_undo(&u, 500);                                     /* Move + take undone */
+    ut_on_schwung_edit(&u, 0, 0x80000001u, UT_PLOCK, 600);   /* an unrelated p-lock */
+    nlog = 0;
+    press_redo(&u, 700);                                     /* the p-lock is live: Redo is Move's */
+    CHECK(nlog == 1 && strstr(log_[0], "3 lanes:journal redo"), "Move's redo brings the take back too: %s",
+          nlog ? log_[0] : "(none)");
+
+    /* ---- a restore voids the slot's journal ------------------------------ */
+    ut_reset(&u); nstk = cur = 0; nlog = 0;
+    move_edit(&u, 0);
+    ut_on_schwung_edit(&u, 2, 0x80000001u, UT_PLOCK, 10);
+    ut_on_schwung_edit(&u, 2, 0, UT_RESET, 20);
+    CHECK(!ut_undo_target(&u, &s, &j), "restored: the old p-lock is not undoable");
+
     /* ---- no history, no claims ------------------------------------------ */
     ut_reset(&u);
     ut_on_schwung_edit(&u, 0, 0x80000001u, UT_PLOCK, 0);

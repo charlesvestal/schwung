@@ -347,7 +347,10 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
     }
 }
 
+static void lane_edit_tick(chain_instance_t *inst);
+
 void lane_tick(chain_instance_t *inst) {
+    if (inst) lane_edit_tick(inst);
     if (!inst) return;
 
     /* DISARMED: RELEASE, THEN NOTHING.
@@ -851,7 +854,10 @@ void lane_set_armed(chain_instance_t *inst, int armed) {
     if (!inst) return;
     /* A TAKE is everything recorded between Record going solid and going out
      * -- one Undo step, as Move's own recording pass is one. */
-    if (armed && !inst->lane_armed) lane_edit_mark(inst, LANE_EDIT_TAKE);
+    if (armed && !inst->lane_armed) {
+        if (inst->lanes_edit_open) lane_edit_commit(inst);   /* a p-lock gesture ends here */
+        lane_edit_mark(inst, LANE_EDIT_TAKE);
+    }
     if (!armed && inst->lane_armed && inst->lanes_edit_open) lane_edit_commit(inst);
     /* It releases nothing and clears nothing (above) -- but it does END THE
      * RECORDING PASS. That is not a release: it only means the next armed
@@ -938,23 +944,38 @@ static void lane_edit_mark(chain_instance_t *inst, int kind) {
     inst->lanes_edit_open = kind;
 }
 
-/* Diff against the mark and journal it. Nothing changed: nothing to undo, and
- * no event -- an empty take must not become an Undo that does nothing. */
-static void lane_edit_commit(chain_instance_t *inst) {
-    const int kind = inst->lanes_edit_open;
-    inst->lanes_edit_open = 0;
-    if (!kind) return;
-    uint32_t id = 0x80000000u | (++inst->lanes_sjournal_seq & 0x7fffffffu);
-    lane_journal_entry_t *je = &inst->lanes_sjournal[id % LANE_SJOURNAL_DEPTH];
-    je->id = id;
-    const int n = lane_journal_diff(&inst->lanes_edit_base, &inst->lanes, je);
-    inst->lanes_last_sjournaled = n;
-    if (n <= 0) { je->id = 0; inst->lanes_sjournal_seq--; return; }
+static void lane_edit_event(chain_instance_t *inst, uint32_t id, int kind) {
     unsigned w = inst->lanes_edit_ev_w;
     if (w - inst->lanes_edit_ev_r >= 8) inst->lanes_edit_ev_r = w - 7;   /* drop the oldest */
     inst->lanes_edit_ev[w % 8].jid = id;
     inst->lanes_edit_ev[w % 8].kind = kind;
     inst->lanes_edit_ev_w = w + 1;
+}
+
+/* Diff against the mark and journal it. Nothing changed: nothing to undo, and
+ * no event -- an empty take must not become an Undo that does nothing. And
+ * COUNTED FIRST: the ring slot the next id maps to still holds an entry the
+ * host may undo, so a commit that records nothing must not touch it. */
+static void lane_edit_commit(chain_instance_t *inst) {
+    const int kind = inst->lanes_edit_open;
+    inst->lanes_edit_open = 0;
+    if (!kind) return;
+    const int n = lane_journal_changed(&inst->lanes_edit_base, &inst->lanes);
+    inst->lanes_last_sjournaled = n;
+    if (n <= 0) return;
+    uint32_t id = 0x80000000u | (++inst->lanes_sjournal_seq & 0x7fffffffu);
+    lane_journal_entry_t *je = &inst->lanes_sjournal[id % LANE_SJOURNAL_DEPTH];
+    je->id = id;
+    lane_journal_diff(&inst->lanes_edit_base, &inst->lanes, je);
+    lane_edit_event(inst, id, kind);
+}
+
+#define LANE_PLOCK_GESTURE_MS 300
+/* Called every block: a p-lock gesture whose writes have stopped is over. */
+static void lane_edit_tick(chain_instance_t *inst) {
+    if (inst->lanes_edit_open == LANE_EDIT_PLOCK &&
+        get_time_ms() - inst->lanes_edit_plock_ms > LANE_PLOCK_GESTURE_MS)
+        lane_edit_commit(inst);
 }
 
 /* What a verb does to the unified history. A Schwung edit (>0) is one step
@@ -979,12 +1000,36 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (!inst || !sub) return;
     const int kind = lane_edit_kind_of(sub);
     if (!kind) { lane_param_set_impl(inst, sub, val); return; }
+    /* One held step, one Undo step (see lanes_edit_plock_phase). Not while
+     * armed: a take is open then, and a p-lock inside it stays its own step. */
+    if (kind == LANE_EDIT_PLOCK && !inst->lane_armed) {
+        char t[16], pa[32];
+        double ph = NAN;
+        if (!val || sscanf(val, "%15s %31s %lf", t, pa, &ph) != 3) ph = NAN;
+        const int same = inst->lanes_edit_open == LANE_EDIT_PLOCK &&
+                         isfinite(ph) && ph == inst->lanes_edit_plock_phase;
+        if (!same) {
+            if (inst->lanes_edit_open) lane_edit_commit(inst);
+            lane_edit_mark(inst, LANE_EDIT_PLOCK);
+            inst->lanes_edit_plock_phase = ph;
+        }
+        lane_param_set_impl(inst, sub, val);
+        inst->lanes_edit_plock_ms = get_time_ms();
+        return;                                      /* stays open */
+    }
     if (inst->lanes_edit_open) lane_edit_commit(inst);
     if (kind > 0) lane_edit_mark(inst, kind);
     lane_param_set_impl(inst, sub, val);
     if (kind > 0) lane_edit_commit(inst);
-    /* A restore replaces the store wholesale: the take that was open is
-     * about another set's lanes and would diff nonsense. */
+    /* A RESTORE REPLACES THE STORE WHOLESALE (a set's lanes, a snapshot
+     * recall, Slot Settings' swap Undo): every entry journaled before it
+     * describes lanes that are gone, and undoing one would splice pre-restore
+     * content into the restored state. Void them here and tell the host. */
+    if (!strcmp(sub, "state") || !strcmp(sub, "undo")) {
+        for (int k = 0; k < LANE_SJOURNAL_DEPTH; k++) inst->lanes_sjournal[k].id = 0;
+        lane_edit_event(inst, 0, LANE_EDIT_RESET);
+    }
+    /* ...and the take that was open is about another set's lanes. */
     if (inst->lane_armed && strcmp(sub, "state") != 0) lane_edit_mark(inst, LANE_EDIT_TAKE);
 }
 
