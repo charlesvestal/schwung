@@ -1497,3 +1497,30 @@ document is fetched a clip at a time instead of whole — is designed and
 degrades resolution rather than dropping the gesture (the write replaces its
 nearest point and counts a `full_hits`), because a lost write mid-sweep is a
 hole the user can neither see nor fix.
+
+## A rack's templated keys are typed by the CHAIN
+
+A drum module declares each pad parameter ONCE per level and names every
+instance's key through the level's template (`child_key_template`, or
+`<child_prefix>{index}_{key}` -- dr32: `pad{index}_{key}`, pads 1..32). The UI
+resolves those in `child_key.mjs`; the chain did not, so every dr32 pad
+parameter was `unknown_param` to lanes, p-locks and modulation. Two defects,
+both ours:
+
+- `parse_hierarchy_params` treated a key found on several levels as FATAL and
+  returned -1, dropping every inline definition. dr32 lists `ui_current_pad`
+  and `link` on each pad level on purpose (and the C walker's unbounded
+  `"params"` strstr re-reads the next level's params for a level with none).
+  First declaration now wins. Fleet check: only magneto and genera also hit it,
+  and their hierarchy and `chain_params` metadata are identical.
+- Nothing mapped `pad7_transpose` to `transpose`. At synth load the chain now
+  records each rack level's template (`parse_child_templates`), and
+  `find_param_by_key` resolves an instance key through it -- `{index}` digits
+  (longest first, `child_index_digits` honoured, within `child_count` from
+  `child_index_base`), `{key}` the base key -- with a 64-entry alias cache so a
+  lane on a templated key does not re-match every block.
+
+`chain_params` entries the hierarchy does not declare (dr32's `kit`, `master`)
+are now MERGED rather than skipped whenever the hierarchy has inline params.
+Synth only; `child_key_overrides` naming a different template per key are not
+resolved. Pinned against dr32's real module.json (`tests/fixtures/dr32`).

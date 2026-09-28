@@ -587,6 +587,10 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   Song.abl resolver it replaced (blind takes, adoption, the strip's
   bar count, `edit_unconfirmed`) -- they are history now, kept for the
   measurements. Orphans are not written to disk; Undo re-attaches in memory.
+- **A rack's templated keys (`pad7_transpose`) are typed by the CHAIN**, from
+  the level's `child_key_template`/`child_prefix` -- the same rule as
+  `child_key.mjs`. A key listed on several levels is no longer a fatal
+  "duplicate"; that was why every dr32 pad param was `unknown_param`.
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.
