@@ -981,6 +981,21 @@ typedef struct chain_instance {
     char   lanes_voice_map[16384];
     char   lanes_voice_map_for[MAX_NAME_LEN];
     int    lanes_last_paste_scoped;   /* 1 when the last paste_span was voice-scoped */
+    /* SCHWUNG'S OWN EDITS, for the unified Undo (host/undo_timeline.h): each
+     * take, p-lock and clear is diffed against the store as it was when the
+     * edit began (`lanes_edit_base`; a take begins when Record arms) and
+     * journaled as whole lanes. Ids carry the high bit so `lanes:journal`
+     * can tell them from Move-mirrored pastes, and the host is told of each
+     * through chain_take_lane_edit() -- it anchors the edit to Move's own
+     * undo stack at that moment. In memory only, like Move's history. */
+#define LANE_SJOURNAL_DEPTH 8
+    lane_journal_entry_t lanes_sjournal[LANE_SJOURNAL_DEPTH];
+    uint32_t lanes_sjournal_seq;
+    lane_store_t lanes_edit_base;
+    int    lanes_edit_open;           /* 0, or the LANE_EDIT_* kind being made */
+    struct { uint32_t jid; int kind; } lanes_edit_ev[8];
+    unsigned lanes_edit_ev_w, lanes_edit_ev_r;
+    int    lanes_last_sjournaled;     /* lanes in the last own-edit entry, -1 too many */
     /* How many times an adopting lane DISPLACED a lane already holding its
      * key. Counted rather than done silently, for the reason every other
      * destructive step here is counted: it drops somebody's points, and "my
@@ -1391,6 +1406,7 @@ CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
 CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
 CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
 CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
+CHAIN_INTERNAL int  lane_take_edit_event(chain_instance_t *inst, uint32_t *jid, int *kind);
 /* ONE dispatch for every "lanes:" key -- `sub` is the key past the prefix.
  * chain_host.c carries a single branch each way; every lane key lives here. */
 CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,

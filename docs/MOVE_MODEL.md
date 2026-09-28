@@ -313,11 +313,59 @@ snare lock with it.
   all) is a **whole-step** paste. Double Loop is always whole.
 - `lanes:paste_scoped` reports whether the last paste was scoped.
 
+## One Undo for Move's edits and Schwung's
+
+Move's Undo undid Move's last edit, and a take or p-lock made in Schwung is not
+one -- so Undo after recording automation undid the NOTE edit before it and
+left the automation. There is one instrument, so there is one history.
+
+**Move's side is read, not modelled.** Move's undo stack is flip's own
+`History<HistoryStoreMemory>` (the strings name `mTransactionHub.mHistory`):
+a libc++ `std::list<Transaction>` plus a redo iterator. The reader finds it
+once by its two vptrs (History at +0, its store at +0x10) and each tick reads
+the last-undo and first-redo NODES with their transaction numbers
+(`mm_history_read`; node+0x10 is vptr-checked as a `flip::Transaction` every
+time). List nodes never move, so a node plus its number IS a step's identity.
+Every change of that pair is exactly one of: Move UNDO (the new first-redo is
+the old last-undo), Move REDO (the reverse), or a NEW step -- which covers
+every kind of Move edit, including device knobs and anything else this reader
+never models.
+
+**Schwung's side is journaled by the chain** (`lane_journal_diff`): a take is
+everything recorded between Record going solid and going out, a p-lock and
+each clear verb are one step each, all stored as whole lanes before/after in
+`lanes_sjournal` (ids with the high bit) and announced once through the
+dlsym'd `chain_take_lane_edit`. An empty take announces nothing. A
+Move-mirrored edit (paste, its undo, a stash) landing mid-take commits the take
+first, so undoing the take can never revert Move's paste.
+
+**The decision** (`undo_timeline.c`): each Schwung edit is ANCHORED to Move's
+last-undo step when it was made. An Undo press is Schwung's iff the latest
+live Schwung edit is anchored at Move's CURRENT last-undo -- nothing of Move's
+came after it. Then the shim swallows the press AND its release
+(`midi_in_swallow`, latched) and the slot gets `lanes:journal undo <jid>`.
+Otherwise the press reaches Move untouched. Shift+Undo mirrors it for Redo. A
+new edit on either side ends the other's redo branch where it can (ours; Move's
+own stays Move's).
+
+**A take recorded while Move recorded notes is ONE step.** If Move pushed a new
+step between arm and 600 ms after the take ended, the take is LINKED to that
+step: the press goes to Move, and the take follows Move's undo and redo of it
+(observed from the stack, no press needed). Re-linking follows Move squashing
+its recording into a fresh top node.
+
+Fails closed: an unreadable stack (`hist_valid = 0`, unknown firmware, object
+not found) claims no press, so Undo is exactly Move's as before. The chain keeps
+8 own-edits per slot, and the timeline never claims one older than that.
+Not hardware-verified yet -- the History candidates are logged to
+`move_model_status.txt`, and `move_model.json` carries `history`.
+
 ### Known limits
 
-- **Schwung-only edits are not in Move's undo history.** Move's Undo undoes
-  Move's last edit; a p-lock made in Schwung is not one. Undo/Redo across a
-  mirrored edit restore that span to exactly how it was around that edit.
+- **Undo depth for Schwung's own edits is 8 per slot** (the chain's journal);
+  older ones fall out of the button's reach, and Slot Settings' one-level Undo
+  is still there. An edit touching more than 16 lanes (clearing a busy slot)
+  is not journaled at all, so the button passes it to Move.
 - **Cross-track clip copies** are not mirrored (a different slot, usually a
   different module).
 - **Page copy** is Loop held + Copy + page, then RELEASE Copy before touching

@@ -576,6 +576,11 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   **A drum paste is VOICE-scoped**: the pitches that appeared name the voices,
   the module's declared hierarchy names their keys (`lane_voice_map.mjs`,
   keyed to the synth by NAME in the chain), and no map means whole-step.
+  **ONE UNDO**: Move's undo stack is READ (flip `History`, last-undo/first-redo
+  node + tx number); each Schwung take/p-lock/clear is journaled by the chain
+  and anchored to Move's top when made. Undo is swallowed and routed to ours
+  only when our latest edit sits on Move's CURRENT top; an unreadable stack
+  claims nothing (`undo_timeline.h`, `docs/MOVE_MODEL.md`).
 - **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
   Clip, loop, launch beat, step page and grid are READ; deletions and copies
   are diffs of it. Several bullets below describe the LED / step-strip /

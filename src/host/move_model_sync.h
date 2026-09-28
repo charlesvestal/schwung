@@ -39,8 +39,16 @@ int      move_model_sync_settled(void);
 /* A set load the model saw has not been aligned yet (move_doc_gen != set_doc_gen). */
 int      move_model_sync_misaligned(void);
 
-/* AUTOMATION FOLLOWS MOVE'S EDITS (edit_follow.h).
- * RT: feed every cable-0 MIDI_IN event Move is given (buttons, steps). */
-void     move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2);
+/* AUTOMATION FOLLOWS MOVE'S EDITS (edit_follow.h), and ONE UNDO for both
+ * (undo_timeline.h).
+ * RT: feed every cable-0 MIDI_IN event Move is given (buttons, steps).
+ * Returns 1 when the event must be SWALLOWED from Move: an Undo/Redo press
+ * (and its release) that undoes one of Schwung's own edits instead. */
+int      move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2);
+/* RT: the chain journaled one of Schwung's own edits (chain_take_lane_edit). */
+void     move_model_sync_on_lane_edit(int slot, uint32_t jid, int kind);
+/* RT: Move's Record went solid (1) or out (0) -- a take's window. */
+void     move_model_sync_on_arm(int armed);
+#define  MMS_CMD_VAL 160    /* a lane command's value, the longest being a voice-scoped paste */
 /* RT: the next lane command for a slot's chain ("lanes:<verb>", value); 0 = none. */
 int      move_model_sync_pop_cmd(int *slot, char *key, int klen, char *val, int vlen);

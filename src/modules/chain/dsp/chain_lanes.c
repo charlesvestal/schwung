@@ -844,8 +844,15 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
  * would end by handing the parameter back to wherever the knob happens to sit.
  * lane_tick owns playback and reads `lane_armed` only to decide whether a turn
  * is a write; the transition itself is not an event anything needs. */
+static void lane_edit_mark(chain_instance_t *inst, int kind);
+static void lane_edit_commit(chain_instance_t *inst);
+
 void lane_set_armed(chain_instance_t *inst, int armed) {
     if (!inst) return;
+    /* A TAKE is everything recorded between Record going solid and going out
+     * -- one Undo step, as Move's own recording pass is one. */
+    if (armed && !inst->lane_armed) lane_edit_mark(inst, LANE_EDIT_TAKE);
+    if (!armed && inst->lane_armed && inst->lanes_edit_open) lane_edit_commit(inst);
     /* It releases nothing and clears nothing (above) -- but it does END THE
      * RECORDING PASS. That is not a release: it only means the next armed
      * turn is the first write of a new take, so it cannot erase the span
@@ -924,7 +931,74 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
  * RT: both run on the SPI callback like every other module entry point. No
  * allocation, no I/O, no locks, no logging, and every loop is LANE_MAX-bounded.
  */
+/* ---- SCHWUNG'S OWN EDITS, journaled (host/lane_edit.h) ---------------- */
+
+static void lane_edit_mark(chain_instance_t *inst, int kind) {
+    memcpy(&inst->lanes_edit_base, &inst->lanes, sizeof(inst->lanes_edit_base));
+    inst->lanes_edit_open = kind;
+}
+
+/* Diff against the mark and journal it. Nothing changed: nothing to undo, and
+ * no event -- an empty take must not become an Undo that does nothing. */
+static void lane_edit_commit(chain_instance_t *inst) {
+    const int kind = inst->lanes_edit_open;
+    inst->lanes_edit_open = 0;
+    if (!kind) return;
+    uint32_t id = 0x80000000u | (++inst->lanes_sjournal_seq & 0x7fffffffu);
+    lane_journal_entry_t *je = &inst->lanes_sjournal[id % LANE_SJOURNAL_DEPTH];
+    je->id = id;
+    const int n = lane_journal_diff(&inst->lanes_edit_base, &inst->lanes, je);
+    inst->lanes_last_sjournaled = n;
+    if (n <= 0) { je->id = 0; inst->lanes_sjournal_seq--; return; }
+    unsigned w = inst->lanes_edit_ev_w;
+    if (w - inst->lanes_edit_ev_r >= 8) inst->lanes_edit_ev_r = w - 7;   /* drop the oldest */
+    inst->lanes_edit_ev[w % 8].jid = id;
+    inst->lanes_edit_ev[w % 8].kind = kind;
+    inst->lanes_edit_ev_w = w + 1;
+}
+
+/* What a verb does to the unified history. A Schwung edit (>0) is one step
+ * of its own. A change that is NOT one (-1: Move's mirrored edits, their
+ * undo, a restore) must not land inside an open take -- the take's undo would
+ * revert it too -- so the take is committed before it and resumed after. */
+static int lane_edit_kind_of(const char *sub) {
+    if (!strcmp(sub, "plock")) return LANE_EDIT_PLOCK;
+    if (!strcmp(sub, "clear") || !strcmp(sub, "clear_clip") || !strcmp(sub, "clear_param") ||
+        !strcmp(sub, "clear_target") || !strcmp(sub, "clear_point"))
+        return LANE_EDIT_CLEAR;
+    if (!strcmp(sub, "paste_span") || !strcmp(sub, "journal") || !strcmp(sub, "stash") ||
+        !strcmp(sub, "unstash") || !strcmp(sub, "double") || !strcmp(sub, "copy_clip") ||
+        !strcmp(sub, "state") || !strcmp(sub, "undo"))
+        return -1;
+    return 0;
+}
+
+static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const char *val);
+
 void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
+    if (!inst || !sub) return;
+    const int kind = lane_edit_kind_of(sub);
+    if (!kind) { lane_param_set_impl(inst, sub, val); return; }
+    if (inst->lanes_edit_open) lane_edit_commit(inst);
+    if (kind > 0) lane_edit_mark(inst, kind);
+    lane_param_set_impl(inst, sub, val);
+    if (kind > 0) lane_edit_commit(inst);
+    /* A restore replaces the store wholesale: the take that was open is
+     * about another set's lanes and would diff nonsense. */
+    if (inst->lane_armed && strcmp(sub, "state") != 0) lane_edit_mark(inst, LANE_EDIT_TAKE);
+}
+
+/* The host takes each journaled own-edit once (chain_take_lane_edit). */
+int lane_take_edit_event(chain_instance_t *inst, uint32_t *jid, int *kind) {
+    if (!inst || inst->lanes_edit_ev_r == inst->lanes_edit_ev_w) return 0;
+    unsigned r = inst->lanes_edit_ev_r;
+    *jid = inst->lanes_edit_ev[r % 8].jid;
+    *kind = inst->lanes_edit_ev[r % 8].kind;
+    inst->lanes_edit_ev_r = r + 1;
+    return 1;
+}
+
+static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const char *val) {
     if (!inst || !sub) return;
 
     /* The whole store as one opaque document. */
@@ -1633,9 +1707,13 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         unsigned id = 0;
         inst->lanes_last_journaled = 0;
         if (!val || sscanf(val, "%7s %u", dir, &id) != 2 || !id) return;
-        lane_journal_entry_t *je = &inst->lanes_journal[id % LANE_JOURNAL_DEPTH];
+        /* The high bit names Schwung's OWN edits (lane_edit_commit). */
+        lane_journal_entry_t *je = (id & 0x80000000u)
+            ? &inst->lanes_sjournal[id % LANE_SJOURNAL_DEPTH]
+            : &inst->lanes_journal[id % LANE_JOURNAL_DEPTH];
         if (je->id != id) return;             /* overwritten: too far back */
-        if (je->nrec > 0) lane_release_clip(inst, je->rec[0].track, je->rec[0].slot);
+        for (int k = 0; k < je->nrec; k++)    /* an own edit can span clips */
+            lane_release_clip(inst, je->rec[k].track, je->rec[k].slot);
         inst->lanes_last_journaled = lane_journal_apply(&inst->lanes, je, strcmp(dir, "redo") == 0);
         return;
     }
@@ -1823,6 +1901,8 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
     }
     if (strcmp(sub, "voice_map_for") == 0)
         return snprintf(buf, buf_len, "%s", inst->lanes_voice_map_for);
+    if (strcmp(sub, "sjournaled") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_sjournaled);
     if (strcmp(sub, "journaled") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_journaled);
     if (strcmp(sub, "stashed") == 0)

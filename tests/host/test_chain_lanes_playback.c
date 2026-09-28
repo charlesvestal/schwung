@@ -1094,6 +1094,86 @@ int main(void) {
         }
     }
 
+    /* ========== SCHWUNG'S OWN EDITS ARE ONE UNDO STEP EACH ===========
+     *
+     * A take (Record armed -> out), a p-lock and a clear are each journaled
+     * and announced to the host once (chain_take_lane_edit); `lanes:journal`
+     * with the announced id undoes and redoes exactly that edit. An armed
+     * pass that recorded nothing announces nothing.
+     */
+    {
+        chain_instance_t *ue = calloc(1, sizeof(*ue));
+        CHECK(ue != NULL, "calloc for the own-edit instance");
+        if (ue) {
+            ue->lanes_enabled = 1;
+            setup_fake_synth(ue);
+            ue->clip_phase_valid = 1;
+            ue->clip_loop_len = 8.0;
+            uint32_t jid = 0; int kind = 0;
+
+            lane_param_set(ue, "armed", "1");
+            lane_param_set(ue, "armed", "0");
+            CHECK(!lane_take_edit_event(ue, &jid, &kind), "an empty take announces nothing");
+
+            lane_param_set(ue, "armed", "1");
+            ue->clip_phase_beats = 1.0; lane_on_set_param(ue, "synth", "cutoff", "20");
+            ue->clip_phase_beats = 1.5; lane_on_set_param(ue, "synth", "cutoff", "40");
+            CHECK(!lane_take_edit_event(ue, &jid, &kind), "nothing until the take ends");
+            lane_param_set(ue, "armed", "0");
+            CHECK(lane_take_edit_event(ue, &jid, &kind) && kind == LANE_EDIT_TAKE && (jid & 0x80000000u),
+                  "the take is announced once it ends (kind=%d jid=%x)", kind, jid);
+            { uint32_t j2; int k2; CHECK(!lane_take_edit_event(ue, &j2, &k2), "one-shot"); }
+            lane_t *c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
+            CHECK(c && c->n == 2, "the take recorded 2 points (%d)", c ? c->n : -1);
+
+            char v[32];
+            snprintf(v, sizeof v, "undo %u", jid);
+            lane_param_set(ue, "journal", v);
+            CHECK(!lane_find(&ue->lanes, "synth", "cutoff", 0, 0), "undo: the take's lane is gone");
+            CHECK(!lane_take_edit_event(ue, &jid, &kind), "an undo is not itself a new edit");
+            snprintf(v, sizeof v, "redo %u", jid);
+            lane_param_set(ue, "journal", v);
+            c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
+            CHECK(c && c->n == 2, "redo: the take is back");
+
+            /* A p-lock is its own step. */
+            uint32_t pj = 0;
+            lane_param_set(ue, "plock", "synth cutoff 4.0 77");
+            CHECK(lane_take_edit_event(ue, &pj, &kind) && kind == LANE_EDIT_PLOCK && pj != jid,
+                  "the p-lock is announced as its own edit");
+            snprintf(v, sizeof v, "undo %u", pj);
+            lane_param_set(ue, "journal", v);
+            c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
+            CHECK(c && c->n == 2, "undoing the p-lock leaves the take (n=%d)", c ? c->n : -1);
+
+            /* A clear is too. */
+            lane_param_set(ue, "clear", "1");
+            CHECK(lane_take_edit_event(ue, &pj, &kind) && kind == LANE_EDIT_CLEAR, "the clear is announced");
+            snprintf(v, sizeof v, "undo %u", pj);
+            lane_param_set(ue, "journal", v);
+            c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
+            CHECK(c && c->n == 2, "undoing the clear brings the take back");
+
+            /* A Move-mirrored edit during a take splits it: the take's undo
+             * must never revert Move's paste. */
+            lane_param_set(ue, "armed", "1");
+            ue->clip_phase_beats = 6.0; lane_on_set_param(ue, "synth", "cutoff", "90");
+            lane_param_set(ue, "paste_span", "0 0 1 3 0.25 3");
+            CHECK(lane_take_edit_event(ue, &pj, &kind) && kind == LANE_EDIT_TAKE,
+                  "the take so far is committed before Move's edit lands");
+            lane_param_set(ue, "armed", "0");
+            CHECK(!lane_take_edit_event(ue, &jid, &kind), "nothing recorded after it: no second entry");
+            snprintf(v, sizeof v, "undo %u", pj);
+            lane_param_set(ue, "journal", v);
+            c = lane_find(&ue->lanes, "synth", "cutoff", 0, 0);
+            int has3 = 0, has6 = 0;
+            for (int i = 0; c && i < c->n; i++) { has3 |= fabs(c->pts[i].phase - 3.0) < 1e-9; has6 |= fabs(c->pts[i].phase - 6.0) < 1e-9; }
+            CHECK(!has6, "the take's point is undone");
+            (void)has3;
+            free(ue);
+        }
+    }
+
     /* ========== A DRUM PASTE MOVES ONLY THE PASTED VOICE'S LOCKS ======
      *
      * Move copies only the selected voice's notes on a drum track. The host

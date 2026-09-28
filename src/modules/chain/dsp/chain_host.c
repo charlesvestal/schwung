@@ -2912,6 +2912,16 @@ int chain_synth_requires_continuous(void *instance) {
  * means a timer-generated MIDI message has already reached the synth, so the
  * current audio block must render instead of remaining parked. One-shot; see
  * chain_idle_tick.h for why a "no" clears the double-tick guard here. */
+/* One of Schwung's own automation edits was journaled (a take, a p-lock, a
+ * clear -- see chain_internal.h). The shim drains these each frame and hands
+ * them to the unified Undo timeline. One-shot per event. */
+__attribute__((visibility("default")))
+int chain_take_lane_edit(void *instance, uint32_t *jid, int *kind) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !jid || !kind) return 0;
+    return lane_take_edit_event(inst, jid, kind);
+}
+
 __attribute__((visibility("default")))
 int chain_take_midi_tick_wake(void *instance) {
     chain_instance_t *inst = (chain_instance_t *)instance;

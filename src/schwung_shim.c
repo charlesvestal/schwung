@@ -2143,7 +2143,7 @@ static void shadow_inprocess_render_to_buffer(void) {
          * touch a chain. A few per frame, so a burst cannot stack on one block. */
         if (shadow_plugin_v2->set_param) {
             int cs;
-            char ck[24], cv[104];
+            char ck[24], cv[MMS_CMD_VAL];
             for (int k = 0; k < 4 && move_model_sync_pop_cmd(&cs, ck, sizeof ck, cv, sizeof cv); k++) {
                 if (cs >= 0 && cs < SHADOW_CHAIN_INSTANCES && shadow_chain_slots[cs].active &&
                     shadow_chain_slots[cs].instance)
@@ -2151,8 +2151,26 @@ static void shadow_inprocess_render_to_buffer(void) {
             }
         }
 
+        /* Record's arm edge, for the unified Undo's take window -- once, not
+         * per slot, and whether or not any slot is loaded. */
+        {
+            static int arm_told = -1;
+            const int armed_now = shadow_rec_arm_recording() ? 1 : 0;
+            if (armed_now != arm_told) { move_model_sync_on_arm(armed_now); arm_told = armed_now; }
+        }
+
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+            /* Schwung's own automation edits, as the chain journals them: the
+             * unified Undo anchors each to Move's undo stack (undo_timeline.h).
+             * Optional export -- an older chain simply announces none. */
+            if (shadow_chain_take_lane_edit) {
+                uint32_t ejid; int ekind;
+                for (int k = 0; k < 4 &&
+                     shadow_chain_take_lane_edit(shadow_chain_slots[s].instance, &ejid, &ekind); k++)
+                    move_model_sync_on_lane_edit(s, ejid, ekind);
+            }
 
             /* Tell the slot where its Move track's clip is. BEFORE the idle
              * gate on purpose: a silent slot still advances its modulation via
@@ -9321,8 +9339,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* Copy/Loop/step/Undo presses, for the automation that follows
              * Move's own edits (move_model_sync.h). Intent only: nothing is
              * changed unless the live model confirms Move made the edit. */
-            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B))
-                move_model_sync_on_midi(status, d1, d2);
+            /* ...and ONE UNDO (undo_timeline.h): an Undo press whose latest
+             * step is Schwung's own automation edit undoes THAT, and Move
+             * never sees the button (both edges). */
+            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B) &&
+                move_model_sync_on_midi(status, d1, d2)) {
+                midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                continue;
+            }
 
             /* Anything else pressed while Mute is down makes it some other
              * gesture — Mute+pad is a drum-CELL mute whose announcement looks

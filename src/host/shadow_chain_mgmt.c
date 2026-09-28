@@ -86,6 +86,7 @@ void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
                                      int n_sends, const int16_t *post_fx,
                                      int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
+int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind) = NULL;
 /* Optional, and NULL on any chain built before automation lanes. A NULL here
  * is "phase unknown" for every slot: the call site is guarded, which is the
  * only degradation that is safe -- see the plan's ABI note for why this is a
@@ -2621,6 +2622,8 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
+    shadow_chain_take_lane_edit = (int (*)(void *, uint32_t *, int *))
+        dlsym(shadow_dsp_handle, "chain_take_lane_edit");
     shadow_chain_set_clip_phase =
         (void (*)(void *, int, double, double, int, int, int, const double *))
         dlsym(shadow_dsp_handle, "chain_set_clip_phase");

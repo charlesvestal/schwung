@@ -247,7 +247,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/step_strip.c src/host/step_strip.h \
     src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
-    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h \
+    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
@@ -302,6 +302,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/move_model_sync.c \
         src/host/edit_follow.c \
         src/host/edit_gesture.c \
+        src/host/undo_timeline.c \
         src/host/shadow_state.c \
         src/host/shadow_xmos_audio.c \
         src/host/usbc_out_gate.c \

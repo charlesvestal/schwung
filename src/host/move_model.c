@@ -15,6 +15,42 @@
 #include <time.h>
 #include <unistd.h>
 
+static int vp_in(const uint64_t *v, int n, uint64_t x)
+{
+    for (int i = 0; i < n; i++) if (v[i] == x) return 1;
+    return 0;
+}
+
+int mm_history_read(mm_read_fn rd, void *ctx, uint64_t obj, const mm_hist_vps_t *vps, move_model_t *m)
+{
+    m->hist_valid = 0;
+    m->hist_undo_node = m->hist_undo_nbr = m->hist_redo_node = m->hist_redo_nbr = 0;
+    m->hist_size = 0;
+    if (!obj || !vps) return -1;
+    uint64_t w[8];
+    if (rd(ctx, obj, w, sizeof w)) return -1;
+    if (!vp_in(vps->hist, vps->nh, w[0]) || !vp_in(vps->store, vps->ns, w[2])) return -1;
+    const uint64_t sentinel = obj + 0x20;
+    const uint64_t size = w[6], it_redo = w[7];
+    if (size > 1000000) return -1;
+    uint64_t last = w[4];                           /* sentinel.prev: the tail */
+    uint64_t node[7];
+    if (it_redo != sentinel) {
+        if (rd(ctx, it_redo, node, sizeof node) || !vp_in(vps->tx, vps->nt, node[2])) return -1;
+        m->hist_redo_node = it_redo;
+        m->hist_redo_nbr = node[6];
+        last = node[0];                             /* prev(_it_redo) */
+    }
+    if (last != sentinel) {
+        if (!size || rd(ctx, last, node, sizeof node) || !vp_in(vps->tx, vps->nt, node[2])) return -1;
+        m->hist_undo_node = last;
+        m->hist_undo_nbr = node[6];
+    }
+    m->hist_size = (uint32_t)size;
+    m->hist_valid = 1;
+    return 0;
+}
+
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)
 #include <elf.h>
 #include "unified_log.h"
@@ -443,6 +479,8 @@ static int vp_is(const vpset_t *s, uint64_t vp)
     return 0;
 }
 static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip, g_vp_mixparams;
+static vpset_t g_vp_hist, g_vp_hstore, g_vp_tx;
+static uint64_t g_hist;
 static uint64_t g_song;
 static int g_clock_pinned;
 
@@ -465,6 +503,42 @@ static uint64_t find_song(void)
         if (RD(s, buf, n)) continue;
         for (size_t k = 0; k < n / 8; k++)
             if (vp_is(&g_vp_song, buf[k]) && song_ok(s + k * 8)) { hit = s + k * 8; break; }
+        sched_yield();
+    }
+    free(buf);
+    return hit;
+}
+
+/* MOVE'S UNDO STACK. Found once by its two vptrs (History, then its store
+ * sixteen bytes in) and confirmed by a full read; every candidate is logged,
+ * because a second flip document would carry a second History and which one
+ * is the Song's is only knowable by watching it move. */
+static mm_hist_vps_t hist_vps(void)
+{
+    mm_hist_vps_t v = { g_vp_hist.v, g_vp_hist.n, g_vp_hstore.v, g_vp_hstore.n, g_vp_tx.v, g_vp_tx.n };
+    return v;
+}
+static void status(const char *fmt, ...);
+static uint64_t find_history(void)
+{
+    if (!g_vp_hist.n || !g_vp_hstore.n || !g_vp_tx.n) return 0;
+    const size_t CH = 1 << 20;
+    uint64_t *buf = malloc(CH), hit = 0;
+    if (!buf) return 0;
+    mm_hist_vps_t v = hist_vps();
+    int found = 0;
+    for (uint64_t s = g_heap.lo; s < g_heap.hi; s += CH) {
+        size_t n = (g_heap.hi - s < CH) ? (size_t)(g_heap.hi - s) : CH;
+        if (RD(s, buf, n)) continue;
+        for (size_t k = 0; k + 2 < n / 8; k++) {
+            if (!vp_is(&g_vp_hist, buf[k]) || !vp_is(&g_vp_hstore, buf[k + 2])) continue;
+            move_model_t t;
+            const uint64_t at = s + k * 8;
+            if (mm_history_read(self_read, NULL, at, &v, &t)) continue;
+            status("history candidate %d at %llx size=%u", found, (unsigned long long)at, t.hist_size);
+            if (!hit) hit = at;
+            found++;
+        }
         sched_yield();
     }
     free(buf);
@@ -510,6 +584,12 @@ static int resolve_all(void)
         return -1;
     }
     g_song = find_song();
+    g_vp_hist.n   = rtti_vptrs("N4flip7HistoryINS_18HistoryStoreMemoryEEE", g_vp_hist.v, MAXVP);
+    g_vp_hstore.n = rtti_vptrs("N4flip18HistoryStoreMemoryE", g_vp_hstore.v, MAXVP);
+    g_vp_tx.n     = rtti_vptrs("N4flip11TransactionE", g_vp_tx.v, MAXVP);
+    g_hist = find_history();
+    status("history: vptrs hist=%d store=%d tx=%d obj=%llx", g_vp_hist.n, g_vp_hstore.n, g_vp_tx.n,
+           (unsigned long long)g_hist);
     status("resolve: build=%s clock=%s song=%llx vptrs song=%d clips=%d sc=%d mc=%d", bid,
            g_clock_pinned ? "pinned" : "UNKNOWN-BUILD(no clock)", (unsigned long long)g_song,
            g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_midicontent.n);
@@ -1016,7 +1096,9 @@ static void write_json(const move_model_t *m)
         }
         fprintf(f, "]}");
     }
-    fprintf(f, "]}\n");
+    fprintf(f, "],\"history\":{\"valid\":%d,\"size\":%u,\"undo\":[%llu,%llu],\"redo\":[%llu,%llu]}}\n",
+            m->hist_valid, m->hist_size, (unsigned long long)m->hist_undo_node, (unsigned long long)m->hist_undo_nbr,
+            (unsigned long long)m->hist_redo_node, (unsigned long long)m->hist_redo_nbr);
     fclose(f);
     rename(DIAG_JSON ".tmp", DIAG_JSON);
 }
@@ -1094,6 +1176,16 @@ static void *reader_main(void *arg)
             walks++;
             skel = a;
             have_plan = !g_plan_overflow && plan_compile() == 0;
+        }
+        {   /* Move's undo stack: three small reads, every tick. A failed
+             * read re-finds the object, at most every ~5 s. */
+            static unsigned hist_retry;
+            mm_hist_vps_t hv = hist_vps();
+            if (mm_history_read(self_read, NULL, g_hist, &hv, &b) != 0 && tick - hist_retry > (g_hist ? 250u : 3000u)) {
+                hist_retry = tick;
+                if (parse_maps() == 0) g_hist = find_history();
+                mm_history_read(self_read, NULL, g_hist, &hv, &b);
+            }
         }
         if (b.doc_id != prev.doc_id) doc_gen++;         /* a different document: a set load */
         b.doc_gen = doc_gen;

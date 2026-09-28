@@ -31,10 +31,12 @@ int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t
 /* Clip events now travel as lane COMMANDS through the ring the SPI callback
  * drains: count what comes out. */
 static uint32_t del_mask; static int n_del, n_copy, cp_t, cp_src, cp_dst;
+static int n_jrn, jrn_slot; static char jrn_val[64];
 static void drain_cmds(void)
 {
-    int slot; char k[24], v[104];
+    int slot; char k[24], v[MMS_CMD_VAL];
     while (move_model_sync_pop_cmd(&slot, k, sizeof k, v, sizeof v)) {
+        if (!strcmp(k, "lanes:journal")) { n_jrn++; jrn_slot = slot; snprintf(jrn_val, sizeof jrn_val, "%s", v); }
         int t, s, a, b;
         if (!strcmp(k, "lanes:stash") && sscanf(v, "%d %d", &t, &s) == 2) { n_del++; del_mask |= 1u << (t * 8 + s); }
         if (!strcmp(k, "lanes:copy_clip") && sscanf(v, "%d %d", &a, &b) == 2) { n_copy++; cp_t = slot; cp_src = a; cp_dst = b; }
@@ -186,6 +188,48 @@ int main(void)
     z.track[1].slot[0] = clip(900, 0xabc);
     reset(); g_fn(&z, &p); drain_cmds();
     CHECK(n_del == 0 && n_copy == 0 && n_mix == 1);
+
+    /* ---- ONE UNDO: the press path, end to end ---------------------------
+     * Move's stack top is (0x10, 1); Schwung p-locks on slot 2; Undo is
+     * swallowed (both edges) and becomes that slot's journal undo. */
+    {
+        move_model_t u = z;
+        u.hist_valid = 1; u.hist_undo_node = 0x10; u.hist_undo_nbr = 1;
+        CHECK(g_tick != NULL);
+        reset(); n_jrn = 0;
+        g_tick(&u);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* nothing of ours yet */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+        move_model_sync_on_lane_edit(2, 0x80000001u, 1);
+        g_tick(&u);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);          /* ours: swallowed */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);            /* and its release */
+        g_tick(&u); drain_cmds();
+        CHECK(n_jrn == 1 && jrn_slot == 2 && strcmp(jrn_val, "undo 2147483649") == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* next Undo is Move's */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* Shift+Undo is Redo, and ours comes back first. */
+        CHECK(move_model_sync_on_midi(0xB0, 49, 127) == 0);          /* Shift reaches Move */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);
+        CHECK(move_model_sync_on_midi(0xB0, 49, 0) == 0);
+        g_tick(&u); drain_cmds();
+        CHECK(n_jrn == 2 && strcmp(jrn_val, "redo 2147483649") == 0);
+
+        /* Move makes an edit: Undo is Move's again. */
+        move_model_t v2 = u; v2.hist_undo_node = 0x20; v2.hist_undo_nbr = 2;
+        g_tick(&v2);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* An unreadable stack claims nothing, whatever the timeline holds. */
+        move_model_sync_on_lane_edit(1, 0x80000001u, 1);
+        move_model_t blind = v2; blind.hist_valid = 0;
+        g_tick(&blind);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+    }
 
     if (fails) { printf("test_move_model_sync: %d FAILED\n", fails); return 1; }
     printf("test_move_model_sync: PASS\n");
