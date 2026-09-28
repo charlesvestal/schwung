@@ -99,7 +99,12 @@ void shadow_set_pages_consume(void);
 
 /* shadow_ui finished switching its per-set state for the SET_CHANGED it was
  * last given: set_doc_gen = that change's document generation. */
-void shadow_set_pages_ack_aligned(void);
+void shadow_set_pages_ack_aligned(uint32_t gen);
+/* The consume's decision for one read (age = ms since it was taken). */
+int shadow_set_pages_consume_read(const char *name, const char *uuid, uint32_t gen,
+                                  int settled, uint64_t age_ms);
+/* The generation of the SET_CHANGED last raised (served as `active_set` line 3). */
+uint32_t shadow_set_pages_published_gen(void);
 
 
 /* Read current page from disk (returns 0 if not found) */

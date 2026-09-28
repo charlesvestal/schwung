@@ -108,6 +108,9 @@ typedef struct {
 void move_model_start(void);              /* spawns the reader thread, once */
 int  move_model_get(move_model_t *out);   /* seqlock copy; returns out->valid */
 uint32_t move_model_seq(void);            /* bumps on every published change */
+/* CLOCK_MONOTONIC ms of the last VALID publish (0 = never): how a consumer
+ * tells a live model from one that stopped reading. */
+uint64_t move_model_last_publish_ms(void);
 
 /* Called on the READER thread (SCHED_OTHER, may do file I/O, must not block
  * for long) after every published change, with the new and previous snapshot.

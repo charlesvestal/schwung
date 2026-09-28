@@ -40,7 +40,8 @@ static double fake_now = -1.0;
 int move_model_get(move_model_t *out) { *out = fake_model; return out->valid; }
 double shadow_transport_beat_position(void) { return fake_now; }
 int move_model_sync_active(void) { return fake_model.valid; }
-void shadow_set_pages_ack_aligned(void) {}
+void shadow_set_pages_ack_aligned(uint32_t gen) { (void)gen; }
+uint32_t shadow_set_pages_published_gen(void) { return 0; }
 
 /* The file-era tables are still referenced elsewhere in the unit; nothing
  * under test reads them any more. */
@@ -60,6 +61,7 @@ int set_page_read_persisted(void) { return 0; }
 void shadow_batch_migrate_sets(void) {}
 int shadow_load_config_from_dir(const char *dir) { (void)dir; return 0; }
 void shadow_save_state(void) {}
+void shadow_request_save_state(void) {}
 int shadow_chain_midi_inject(const uint8_t *msg, int len) { (void)msg; (void)len; return 0; }
 void unified_log(const char *source, int level, const char *fmt, ...)
 { (void)source; (void)level; (void)fmt; }

@@ -27483,6 +27483,10 @@ globalThis.tick = function() {
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
+            /* The model generation this name belongs to, read in the same
+             * answer: it is what step 11 acks, so a set loaded while this one
+             * is being switched to is re-raised rather than marked handled. */
+            const handledGen = activeSetLines[2] ? (parseInt(activeSetLines[2], 10) || 0) : 0;
 
             /* A SET CHANGE WE CANNOT NAME IS NOT CONSUMED.
              *
@@ -27554,7 +27558,7 @@ globalThis.tick = function() {
                 activeSlotStateDir.indexOf("/set_state/__pending-") >= 0 &&
                 !host_file_exists(newDir + "/slot_0.json")) {
                 const st = moveModelState();
-                if (st && st[0] && st[1] === pendingSetDocGen) {
+                if (st && st[0] && handledGen === pendingSetDocGen) {
                     const from = activeSlotStateDir;
                     debugLog("SET_CHANGED: new set saved, moving its state " + from + " -> " + newDir);
                     host_system_cmd("sh -c \"cp -a '" + from + "'/. '" + newDir + "'/ && rm -rf '" + from + "'\"");
@@ -27875,17 +27879,20 @@ globalThis.tick = function() {
                 }
             }
 
-            /* 11. Tell the shim this set's state is now the active one (the
-             * model's set_doc_gen), then clear the flag. */
-            setSlotParamWithTimeout(0, "set_aligned", "1", 500);
-            if (uuid.indexOf("__pending-") === 0) {
-                const st = moveModelState();
-                pendingSetDocGen = (st && st[0]) ? st[1] : -1;
-            } else {
-                pendingSetDocGen = -1;
-            }
+            /* 11. Clear the flag, THEN tell the shim which generation this
+             * set's state now is. That order is load-bearing: a set loaded
+             * during this switch raised the flag again, and the clear just
+             * erased it -- the ack names handledGen, the shim sees it is not
+             * the latest, and raises it once more. */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
+            }
+            setSlotParamWithTimeout(0, "set_aligned", String(handledGen), 500);
+            if (uuid.indexOf("__pending-") === 0) {
+                const st = moveModelState();
+                pendingSetDocGen = (st && st[0]) ? handledGen : -1;
+            } else {
+                pendingSetDocGen = -1;
             }
             debugLog("SET_CHANGED: reload complete");
         }
