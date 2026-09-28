@@ -318,6 +318,36 @@ int main(void) {
           !strcmp(buf, "50"), "an armed send read answers the lock: %s", buf);
     CHECK(chain_scene_route_set(inst, "buses:bus1:level", "50") == 0, "an unlisted buses key is not a lock");
 
+    /* ---- The knob grid's VIEW of a driven setting: :modulated / :effective / :base */
+    {
+        setup(inst);
+        inst->main_send_level[0] = 40;
+        chain_scene_set_param(inst, "lock", "0 slot main_send1 100 chain");
+        frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+        chain_scene_get_around_state(inst, "buses:main_send1:modulated", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "1"), "a scene-driven send reads :modulated 1: %s", buf);
+        chain_scene_get_around_state(inst, "buses:main_send1:effective", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "70"), "... :effective is what the drain uses (70): %s", buf);
+        chain_scene_get_around_state(inst, "buses:main_send1:base", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "40"), "... :base is the knob (40): %s", buf);
+        chain_scene_get_around_state(inst, "buses:main_send2:modulated", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "0"), "an undriven send reads :modulated 0: %s", buf);
+        frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+        chain_scene_get_around_state(inst, "buses:main_send1:modulated", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "0"), "no scene: not modulated any more: %s", buf);
+        inst->lfos[1].depth = 0.2f;
+        chain_scene_set_param(inst, "lock", "0 lfo2 depth 1 chain");
+        frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+        chain_scene_get_around_state(inst, "lfo2:depth:modulated", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "1"), "a driven LFO field reads :modulated 1: %s", buf);
+        chain_scene_get_around_state(inst, "lfo2:depth:effective", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(buf), 0.6f), "... :effective 0.6: %s", buf);
+        chain_scene_get_around_state(inst, "lfo2:depth:base", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(buf), 0.2f), "... :base the knob 0.2: %s", buf);
+        chain_scene_get_around_state(inst, "lfo2:shape:modulated", buf, sizeof(buf), state_impl);
+        CHECK(!strcmp(buf, "0"), "an undriven LFO field: 0: %s", buf);
+    }
+
     /* ---- LFO fields: written into the LFO, with the knob kept as the base. */
     setup(inst);
     inst->lfos[0].depth = 0.2f;

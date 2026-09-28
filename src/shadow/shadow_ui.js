@@ -4377,6 +4377,14 @@ function busSendsGridIo() {
                     ? BusModel.busSendGridHierarchy(busConfig)
                     : BusModel.busSendGridParams(busConfig));
             }
+            /* A modulation VIEW keeps its suffix through the key map (see
+             * createSlotGridIo.getParam) -- the Main row's send is what a scene
+             * or a slot LFO drives. */
+            const view = /:(modulated|effective|base)$/.exec(k);
+            if (view) {
+                const realBase = BusModel.busSendGridRealKey(k.slice(0, view.index));
+                return realBase ? getSlotParam(slot, realBase + view[0]) : "";
+            }
             const real = BusModel.busSendGridRealKey(k);
             /* The RAW answer, null included: it is the wire value, and only the
              * caller that saw the wire can tell a stalled channel from a zero. */
@@ -4394,17 +4402,16 @@ function busSendsGridIo() {
             return ok;
         },
         /*
-         * FALSE, and now only MOSTLY true. A per-BUS send level is still not a
-         * modulation target -- the chain host serves no bus LFO -- but the Main
-         * row this mixer gained can be driven by a slot LFO (target "buses",
-         * param "main_send<N>"). It is answered false anyway because the chain
-         * host publishes no `:modulated` for these keys, so the honest answer
-         * would cost up to three IPC round trips per tick to fetch, and the
-         * only cost of saying no is a missing dot rather than a wrong value:
-         * the cell still shows the BASE, which is what the user set and what is
-         * saved. If those keys ever publish `:modulated`, this is the line.
+         * The Main row -- the slot's own sends -- is driven by a scene or a
+         * slot LFO, and the chain serves `buses:main_send<N>:modulated` for it
+         * now. A per-BUS level is still never driven (no bus LFO, no scene
+         * lock), so only the Main row asks.
          */
-        isModulated: () => false,
+        isModulated: (fullKey) => {
+            const real = BusModel.busSendGridRealKey(bare(fullKey));
+            if (!real || !/^buses:main_send\d$/.test(real)) return false;
+            return getSlotParam(slot, real + ":modulated") === "1";
+        },
     };
 }
 
@@ -16562,9 +16569,14 @@ function sendSettingsGridIo() {
             if (ok) sendLevelsDirty = true;
             return ok;
         },
-        /* No send level is a modulation target: a send bus has no LFOs, so the
-         * generic oracle would spend IPC round trips per tick to answer no. */
-        isModulated: () => false,
+        /* A send's RETURN and Send A->B are driven by a scene (the host
+         * scope); nothing else here is ever driven. Asked by `:modulated`,
+         * which the shim serves for exactly those, so no guessing fallback. */
+        isModulated: (fullKey) => {
+            const k = bare(fullKey);
+            if (!/^send[12]:(return|to_send2)$/.test(k)) return false;
+            return getSlotParam(0, k + ":modulated") === "1";
+        },
     };
 }
 
