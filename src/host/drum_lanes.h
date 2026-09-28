@@ -22,6 +22,13 @@
 #include "move_model.h"
 
 #define DL_LANES      16
+/* The SEQUENCED path runs this much behind Schwung's MIDI clock. Measured on
+ * hardware (2026-09-28, Skipback stems, Move kit vs slot synth on the same
+ * steps): timed from the clock, drum-lane notes led Move's own audio by a
+ * median 4.6 ms over 52 notes; LIVE notes (from Move's engine) landed within
+ * +-2 ms and need nothing. What remains is block quantization, up to one
+ * block (2.9 ms), because on_midi carries no in-block offset. */
+#define DL_SEQ_LAG_MS 4.6
 #define DL_FIRST_PAD  36      /* Move's drum cells receive 36..51 by default */
 
 typedef struct {
