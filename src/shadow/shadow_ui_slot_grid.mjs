@@ -129,184 +129,73 @@ export const SLOT_SEND_PARAMS = [
 ];
 
 /*
- * The two slot LFOs, each its own page.
+ * The two LFO pages — shared/param_pages/lfo_page.mjs, where anything else
+ * that edits these LFOs can reach the same declaration. Re-exported so every
+ * existing importer of this file keeps its names.
  *
- * They earn a grid rather than a menu: eight of the nine things an LFO has are
- * turnable, and the widgets say more than a list of words can. The shape cell
- * draws the actual waveform, Enabled draws as a switch, Depth and Rate as
- * knobs. Only Target is a door.
- *
- * Stored under "lfoN:<key>" — see makeSlotLfoCtx, which uses the same prefix.
- *
- * Enum words are <= 3 characters for the enum square, as everywhere else.
- * rate_div is the one that does not fit that rule: its vocabulary is "16bar",
- * "1/16T", "1/32T", 5 and 6 characters, which the square breaks across two
- * lines badly. It is declared as a param but NOT as a knob, so it lands on an
- * overflow page where the cell is the same size but at least it is not
- * competing for one of the eight. A proper fix is a wider widget for it, or
- * short and long option labels.
+ * RELATIVE, unlike the shadow UI's other shared imports: this file is pure and
+ * the host tests import it straight from src/, where an absolute
+ * /data/UserData path does not exist. shadow/ and shared/ are siblings on the
+ * device and in src/, so the one specifier resolves in both.
  */
+import { lfoParams, lfoLevels, lfoTargetIndex } from '../shared/param_pages/lfo_page.mjs';
+export {
+    LFO_SHAPES, LFO_SHAPES_SHORT, LFO_DIVISIONS, LFO_DIVISIONS_SHORT,
+    lfoParams, lfoKnobKeys, lfoLevels, lfoTargetOptions, lfoTargetIndex,
+} from '../shared/param_pages/lfo_page.mjs';
+
 /*
- * Full option words, and a parallel short list for the enum SQUARE.
+ * TARGET AS A KNOB — the io half of lfoTargetParam, shared by both contracts.
  *
- * The square is three characters a line; the held-knob header has room for the
- * real word and exists to show it. Declaring only the short form made the
- * header read "BI" and "THR", which tells you nothing you could not already
- * see in the cell.
+ * The grid drives an enum by index; the device stores a routing as a
+ * component and a param. So the read turns the stored pair into its position
+ * in the host's list, and the write turns a position back into the pair —
+ * committed by the HOST (io.commitTarget), which writes `enabled` with it and
+ * blocks between the keys, because consecutive non-blocking writes to one
+ * slot clobber each other.
+ *
+ * Inert when the host supplies no io.targetOptions: Target is then declared a
+ * door (see lfoTargetParam) and every call below answers null, so the caller
+ * falls through to what it did before.
+ *
+ * @param {object} io         the host's io (targetOptions, commitTarget)
+ * @param {(lfoIdx:number, name:string)=>string} read  a real LFO key
  */
-export const LFO_SHAPES = ["Sine", "Triangle", "Saw", "Square", "S&H", "Swishy"];
-export const LFO_SHAPES_SHORT = ["SIN", "TRI", "SAW", "SQR", "S&H", "SWY"];
-export const LFO_DIVISIONS = [
-    "16 bar", "15 bar", "14 bar", "13 bar", "12 bar", "11 bar", "10 bar", "9 bar",
-    "8 bar", "7 bar", "6 bar", "5 bar", "4 bar", "3 bar", "2 bar",
-    "1/1", "1/1T", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
-    "1/16", "1/16T", "1/32", "1/32T",
-];
-export const LFO_DIVISIONS_SHORT = [
-    "16b", "15b", "14b", "13b", "12b", "11b", "10b", "9b",
-    "8b", "7b", "6b", "5b", "4b", "3b", "2b",
-    "1/1", "1T", "1/2", "2T", "1/4", "4T", "1/8", "8T",
-    "16", "16T", "32", "32T",
-];
-
-/**
- * ONE builder, two contracts.
- *
- * A slot's LFOs are stored as "lfoN:<key>" and Master FX's as
- * "master_fx:lfoN:<key>"; everything else about them — the nine params, the
- * ordering the viz group depends on, the one-rate-cell visibility condition —
- * is identical. So the only thing parameterised is the key prefix.
- *
- * A SECOND COPY OF THIS FUNCTION IS HOW THE TWO EDITORS DRIFTED. Master FX went
- * years without a windowed diagram, then shipped without the knob card, because
- * each feature landed in a Master-FX-shaped copy of something the slot chain
- * already had — or did not land at all. Anything added below therefore arrives
- * on both screens by construction. If a future difference is genuinely needed,
- * it belongs as another argument here, not as a fork of the file.
- *
- * @param {number} lfoIndex   1-based
- * @param {string} [keyPrefix]  "" for a slot, "master_fx:" for the master bus.
- *   It prefixes the param keys AND the visibility condition, which is the part
- *   that is easy to miss: normalizeVisibilityConditionKey passes any key
- *   containing ":" straight through unchanged, so an unprefixed "lfo1:sync"
- *   would be resolved against slot 0's chain rather than the master bus, read
- *   empty, compare false, and hide BOTH rate cells rather than one.
- */
-export function lfoParams(lfoIndex, keyPrefix = "") {
-    /* The viz group is a name scoped to ONE page, and an LFO is exactly one
-     * page, so it does not need the prefix and stays "lfoN" for both. */
-    const g = `lfo${lfoIndex}`;
-    const k = (name) => `${keyPrefix}lfo${lfoIndex}:${name}`;
-    return [
-        /*
-         * ROW 1 — what the modulator IS: where it goes, whether it runs, how it
-         * is scaled, what its clock is.
-         *
-         * ROW 2 — what its motion LOOKS like: shape, rate, depth, phase. Those
-         * four are declared as one `lfo` viz group, so instead of four separate
-         * cells the whole second row draws the actual waveform, at its actual
-         * depth, with its actual phase offset. The group is a hard adjacency
-         * gate — its roles must land contiguously on ONE row — which is exactly
-         * why the ordering below is not arbitrary.
-         *
-         * Declared rather than detected: the detector wants rate and depth to
-         * share a stem, and "rate_hz" against "depth" does not match, so it
-         * never fired. A declared group wins over detection anyway.
-         */
-        /* A door: clicking opens the existing two-step target picker. Declared
-         * `string` so it is opaque (a knob cannot turn it) and divable, and so
-         * the cell shows the current target rather than a blank frame. */
-        { key: k("target"), name: "Targ", type: "string" },
-        { key: k("enabled"), name: "On", type: "enum",
-          options: ["Off", "On"], short_options: ["OFF", "ON"] },
-        /*
-         * span:false — it lends the graphic its baseline without joining the
-         * four cells the wave is drawn across. Counting it in the span would
-         * straddle the row boundary and the graphic would not draw at all.
-         */
-        { key: k("polarity"), name: "Mode", type: "enum",
-          options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"],
-          viz: { group: g, role: "polarity", span: false } },
-        { key: k("sync"), name: "Sync", type: "enum",
-          options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
-
-        { key: k("shape"), name: "Shape", type: "enum",
-          options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT,
-          viz: { group: g, role: "shape" } },
-        /*
-         * ONE rate cell, not two. Free-run and synced rates are the same
-         * control wearing different units, and showing both spends a cell on
-         * whichever one the DSP is currently ignoring.
-         *
-         * The condition key carries its own "lfoN:" prefix deliberately:
-         * normalizeVisibilityConditionKey passes any key containing ":"
-         * straight through, so it resolves against the LFO instead of being
-         * prefixed with the component. page_controller watches conditionKeys
-         * and re-plans when one changes, so the cell swaps as you turn Sync.
-         *
-         * Both carry role "rate": only ever one of them is on the page, so the
-         * group finds exactly one either way.
-         */
-        { key: k("rate_hz"), name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
-          visible_if: { param: k("sync"), equals: "0" },
-          viz: { group: g, role: "rate" } },
-        { key: k("rate_div"), name: "Rate", type: "enum",
-          options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT,
-          visible_if: { param: k("sync"), equals: "1" },
-          viz: { group: g, role: "rate" } },
-        /* Percent, not a raw fraction: "65%" is the value, "0.65" is the storage.
-         * Bipolar is kept — a negative depth INVERTS the modulation, which is a
-         * real feature, so the range reads -100%..+100% rather than 0..100%. */
-        { key: k("depth"), name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
-          default: 1,
-          viz: { group: g, role: "depth" } },
-        { key: k("phase_offset"), name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
-          viz: { group: g, role: "phase" } },
-    ];
-}
-
-/**
- * Nine declared, one of them always hidden — so EIGHT show and an LFO is
- * exactly one page.
- *
- * The two rates never appear together (visible_if on sync), and that is what
- * pays for Phase. Retrigger is the one still missing: ten params do not fit
- * eight cells however they are arranged, and of the two, phase offset is the
- * one a per-slot LFO reaches for more often. Retrigger stays editable in the
- * list view.
- */
-export function lfoKnobKeys(lfoIndex, keyPrefix = "") {
-    return lfoParams(lfoIndex, keyPrefix).map((p) => p.key);
-}
-
-/**
- * The LFO LEVELS, ready to merge into a hierarchy — the second half of the
- * sharing, and the half that is easy to forget.
- *
- * lfoParams alone is not enough: `visible_if` has to travel on the LEVEL param
- * entry, because that is what isHiddenParam reads. A condition declared only in
- * chain_params is never consulted when planning which keys get a knob, so a
- * contract that copied the params but assembled its own level would show BOTH
- * rate cells and push a real param off the page. That is exactly the kind of
- * near-miss a second copy produces, so the assembly is shared too.
- *
- * @param {number[]} indices    which LFOs, 1-based
- * @param {string} [keyPrefix]  see lfoParams
- * @returns {object} { lfo1: {...}, lfo2: {...} } keyed by LEVEL name, which is
- *   unprefixed — a level name is internal to the hierarchy, not a param key.
- */
-export function lfoLevels(indices, keyPrefix = "") {
-    const levels = {};
-    for (const n of indices) {
-        levels["lfo" + n] = {
-            label: "LFO " + n,
-            knobs: lfoKnobKeys(n, keyPrefix),
-            params: lfoParams(n, keyPrefix).map((p) => (
-                p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key }
-            )),
-        };
-    }
-    return levels;
+function lfoTargetBridge(io, read) {
+    const on = typeof io.targetOptions === "function" && typeof io.commitTarget === "function";
+    const optionsFor = (i, current) => (on ? io.targetOptions(i, current) : null);
+    return {
+        /* lfoN's enum for chain_params, 1-based to match lfoParams. */
+        targetsFor(n) { return optionsFor(n - 1, null); },
+        read(i) {
+            if (!on) return null;
+            const target = read(i, "target") || "";
+            const param = read(i, "target_param") || "";
+            const o = optionsFor(i, { target, param });
+            if (!o) return null;
+            return String(Math.max(0, lfoTargetIndex(o.routes, target, param)));
+        },
+        write(i, value) {
+            const o = optionsFor(i, null);
+            if (!o) return false;
+            const idx = parseInt(value, 10);
+            const route = o.routes[Number.isFinite(idx) ? idx : 0];
+            if (route) io.commitTarget(i, route);
+            return true;
+        },
+        /* The option the knob is ON, which during a turn is not yet the
+         * stored routing — so it is read off `raw`, never off the device. */
+        format(i, raw, surface) {
+            const o = optionsFor(i, null);
+            if (!o) return null;
+            const idx = parseInt(raw, 10);
+            const long = o.options[Number.isFinite(idx) ? idx : 0];
+            if (long === undefined) return null;
+            if (surface === "header") return long;
+            const at = long.indexOf(": ");
+            return at < 0 ? long : long.slice(at + 2);
+        },
+    };
 }
 
 /*
@@ -319,8 +208,8 @@ export function lfoLevels(indices, keyPrefix = "") {
  */
 export const SLOT_GRID_ACTIONS = [
     { label: "Knob Mapping", action: "knobs", when: null },
-    /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
-     * params are turnable and the widgets draw the thing itself. */
+    /* LFO 1 and LFO 2 are PAGES now, not menu entries — every param on them
+     * is turnable and the widgets draw the thing itself. */
     /* Buses is a DOOR, not a page: it opens a list of this slot's split-voice
      * buses, each with its own voices, inserts and sends. It is here as well as
      * on the two settings LISTS because this menu is what the grid shows in
@@ -422,10 +311,16 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
     return { modes: null, levels };
 }
 
-/** Every declared param across the slot page and both LFO pages. */
-export function allSlotGridParams() {
+/**
+ * Every declared param across the slot page and both LFO pages.
+ *
+ * @param {(lfoIndex:number)=>object} [targetsFor]  Target's options for LFO N
+ *   (1-based) — see lfoTargetParam. Omitted, Target is a door.
+ */
+export function allSlotGridParams(targetsFor) {
+    const t = (n) => ({ targets: targetsFor ? targetsFor(n) : null });
     return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
-                           .concat(lfoParams(1)).concat(lfoParams(2));
+                           .concat(lfoParams(1, "", t(1))).concat(lfoParams(2, "", t(2)));
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
@@ -483,9 +378,22 @@ export function realKeyFor(gridKey) {
  *   routing to {short, header, long} — see shared/lfo_target_label.mjs. The
  *   host owns it because it costs IPC and therefore wants caching; omitted,
  *   the target simply reads as its stored key, which is what it did before.
+ * @param {(lfoIndex:number, current:?object)=>object} [io.targetOptions]
+ *   LFO N's routings as lfoTargetOptions builds them, cached by the host. With
+ *   io.commitTarget, Target becomes a knob — see lfoTargetBridge. `current` is
+ *   the stored routing when the caller has just read it: a host whose cached
+ *   list lacks it must rebuild, or the knob would read None over a live route.
+ * @param {(lfoIndex:number, route:{target:string,param:string})=>void} [io.commitTarget]
+ *   write a routing, `enabled` included (an empty route turns the LFO off).
  */
 export function createSlotGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    const target = lfoTargetBridge(io,
+        (i, name) => io.readSlotParam("lfo" + (i + 1) + ":" + name));
+    const targetOf = (k) => {
+        const m = /^lfo([12]):target$/.exec(k);
+        return m ? parseInt(m[1], 10) - 1 : -1;
+    };
 
     return {
         getParam(fullKey) {
@@ -496,8 +404,14 @@ export function createSlotGridIo(io) {
                     io.hasSplitVoices ? !!io.hasSplitVoices() : false,
                     io.clipLabel ? io.clipLabel() : ""));
             }
-            if (k === "chain_params") return JSON.stringify(allSlotGridParams());
+            if (k === "chain_params") {
+                return JSON.stringify(allSlotGridParams((n) => target.targetsFor(n)));
+            }
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
+            if (targetOf(k) >= 0) {
+                const v = target.read(targetOf(k));
+                if (v !== null) return v;
+            }
             if (k === "forward_channel") {
                 const raw = parseInt(io.readSlotParam("slot:forward_channel"), 10);
                 /* Default to AUTO (-1) rather than 0, which is channel 1: an
@@ -556,6 +470,10 @@ export function createSlotGridIo(io) {
          */
         formatValue(fullKey, raw, surface) {
             const k = bare(fullKey);
+            if (targetOf(k) >= 0) {
+                const v = target.format(targetOf(k), raw, surface);
+                if (v !== null) return v;
+            }
             const m = /^lfo([12]):target$/.exec(k);
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
@@ -578,6 +496,7 @@ export function createSlotGridIo(io) {
                 const v = Number.isFinite(idx) ? idx : FWD_OFFSET;
                 return io.writeSlotParam("slot:forward_channel", String(v - FWD_OFFSET));
             }
+            if (targetOf(k) >= 0 && target.write(targetOf(k), value)) return;
             const real = realKeyFor(k);
             if (real) io.writeSlotParam(real, String(value));
         },
@@ -713,11 +632,13 @@ export function masterGridHierarchy(hasPreset) {
     return { modes: null, levels };
 }
 
-/** Every declared param across the root page and both LFO pages. */
-export function allMasterGridParams() {
+/** Every declared param across the root page and both LFO pages.
+ *  @param {(lfoIndex:number)=>object} [targetsFor]  see allSlotGridParams */
+export function allMasterGridParams(targetsFor) {
+    const t = (n) => ({ targets: targetsFor ? targetsFor(n) : null });
     return MASTER_GRID_PARAMS
-        .concat(lfoParams(1, MASTER_KEY_PREFIX))
-        .concat(lfoParams(2, MASTER_KEY_PREFIX));
+        .concat(lfoParams(1, MASTER_KEY_PREFIX, t(1)))
+        .concat(lfoParams(2, MASTER_KEY_PREFIX, t(2)));
 }
 
 const MASTER_LFO_KEY = new RegExp("^" + MASTER_KEY_PREFIX + "lfo[12]:");
@@ -742,16 +663,30 @@ const MASTER_LFO_TARGET = new RegExp("^" + MASTER_KEY_PREFIX + "lfo([12]):target
  *   runSlotAction, which takes the IPC SLOT — and Master FX's IPC slot is 0,
  *   so "save" from here would have saved instrument slot 1's patch.
  * @param {(lfoIndex:number)=>object}  [io.describeTarget]  see createSlotGridIo
+ * @param {Function} [io.targetOptions]  see createSlotGridIo
+ * @param {Function} [io.commitTarget]   see createSlotGridIo
  * @param {(realKey:string)=>boolean}  [io.isModulated]
  */
 export function createMasterGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    const target = lfoTargetBridge(io,
+        (i, name) => io.readParam(MASTER_KEY_PREFIX + "lfo" + (i + 1) + ":" + name));
+    const targetOf = (k) => {
+        const m = MASTER_LFO_TARGET.exec(k);
+        return m ? parseInt(m[1], 10) - 1 : -1;
+    };
 
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
-            if (k === "chain_params") return JSON.stringify(allMasterGridParams());
+            if (k === "chain_params") {
+                return JSON.stringify(allMasterGridParams((n) => target.targetsFor(n)));
+            }
+            if (targetOf(k) >= 0) {
+                const v = target.read(targetOf(k));
+                if (v !== null) return v;
+            }
             /* Wire -> option index. A failed read must stay a failed read: the
              * grid distinguishes null from "", and turning either into index 0
              * would silently assert "All" for a channel we never saw. */
@@ -781,6 +716,11 @@ export function createMasterGridIo(io) {
         },
 
         formatValue(fullKey, raw, surface) {
+            const tk = targetOf(bare(fullKey));
+            if (tk >= 0) {
+                const v = target.format(tk, raw, surface);
+                if (v !== null) return v;
+            }
             const m = MASTER_LFO_TARGET.exec(bare(fullKey));
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
@@ -795,6 +735,7 @@ export function createMasterGridIo(io) {
                 io.writeParam(k, String(mfxMidiChannelFromIndex(value)));
                 return;
             }
+            if (targetOf(k) >= 0 && target.write(targetOf(k), value)) return;
             io.writeParam(k, String(value));
         },
 
