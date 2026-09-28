@@ -95,3 +95,19 @@ func (app *App) handleShowRebooting(w http.ResponseWriter, r *http.Request) {
 	app.logger.Info("show-rebooting: frame written")
 	w.WriteHeader(http.StatusOK)
 }
+
+// handleMirror serves the /mirror page: the large screen, then Move's whole
+// control surface drawn under it (static/mirror.html). It used to be
+// display-server's own page, proxied; it lives here now because it grew past
+// what is sane to keep as a C string, and because only the stream needs
+// display-server. no-store, so a device update is seen on the next load.
+func (app *App) handleMirror(w http.ResponseWriter, r *http.Request) {
+	page, err := staticFS.ReadFile("static/mirror.html")
+	if err != nil {
+		http.Error(w, "mirror page missing from this build", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(page)
+}

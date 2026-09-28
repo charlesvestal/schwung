@@ -42,6 +42,7 @@
 #include "host/shadow_constants.h"
 #include "host/e16_claim.h"
 #include "host/cc_claim.h"
+#include "host/surface_live_shm.h"
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
@@ -4058,6 +4059,12 @@ static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static uint8_t *display_live_shm = NULL;
+/* The control surface for the web mirror's device view: every LED as the
+ * hardware was last told to light it, every control as it is held. Always
+ * tracked (a few byte compares a frame) so the picture is right the moment a
+ * viewer arrives -- an LED is written once and then left alone. */
+static surface_live_shm_t *surface_live_shm = NULL;
+static surface_live_writer_t surface_live_writer;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
@@ -4496,6 +4503,10 @@ static void init_shadow_shm(void)
     /* Create/open live display shared memory (for remote display server) */
     display_live_shm = (uint8_t *)shadow_shm_map(SHM_DISPLAY_LIVE,
                                                  DISPLAY_BUFFER_SIZE, 1, 1);
+
+    surface_live_shm = (surface_live_shm_t *)shadow_shm_map(SURFACE_LIVE_SHM_NAME,
+                                                           sizeof(surface_live_shm_t), 1, 1);
+    if (surface_live_shm) surface_live_init(surface_live_shm, &surface_live_writer);
 
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
     shadow_control = (shadow_control_t *)shadow_shm_map(SHM_SHADOW_CONTROL,
@@ -8043,6 +8054,11 @@ pre_done:
      * and POSThw changed during the ioctl.
      *
      * Add a MIDI_OUT writer after this call and the log will exonerate it. */
+    /* The device view reads LEDs here for the same reason: this is what the
+     * XMOS receives, Move's writes and Schwung's merged. */
+    if (surface_live_shm)
+        surface_live_scan_out(surface_live_shm, &surface_live_writer,
+                              shadow + MIDI_OUT_OFFSET, HW_MIDI_OUT_SIZE);
     xmos_log_slots("PREEND", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
 }
 
@@ -8385,6 +8401,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
+
+    /* The device view's presses, from the RAW mailbox: before any blocking
+     * site swallows an event, so a press Schwung withholds from Move shows. */
+    if (surface_live_shm && hw)
+        surface_live_scan_in(surface_live_shm, &surface_live_writer,
+                             hw + MIDI_IN_OFFSET, SHADOW_MIDI_IN_BYTES);
 
     /* SPI frame telemetry from the kernel's own counters. One aligned 8-byte
      * load of the transfer time ablspi already stamped at the end of the page

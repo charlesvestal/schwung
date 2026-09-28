@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Move Mirror</title>
+<!--
+  /mirror -- Move's screen, large, and the whole control surface under it:
+  every LED as the hardware was last told to light it and every control as it
+  is being held, from display-server's /stream-auto?v=2 (one connection:
+  frames, `surface`, `e16`, and an `hb` heartbeat).
+
+  The device drawing's arrangement, its 128-entry LED palette (RGB and the
+  white-LED balance column) and the SysEx channel meaning follow
+  move_midi_emulator.html from Cycling '74's rnbo.move.templates:
+    The MIT License. Copyright 2026, Cycling '74. All rights reserved.
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software ... (full text in THIRD_PARTY_LICENSES.md).
+  Byte offsets below mirror src/host/surface_live_shm.h (pinned there by
+  _Static_assert); a layout change bumps SURFACE_LIVE_VERSION, and a version
+  this page does not know is ignored rather than misread.
+-->
+<style>
+  :root { --bg: #000; --fg: #ccc; --dim: #777; --ok: #4a4; --warn: #c93; --bad: #c44;
+          --panel: #141414; --line: #2a2a2a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { display: flex; flex-direction: column; align-items: center; min-height: 100dvh;
+         padding: 12px 16px 24px; gap: 12px; -webkit-user-select: none; user-select: none; }
+  #bar { width: 100%; max-width: 920px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #status { flex: 1 1 auto; min-width: 12em; color: var(--dim); }
+  #status::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                    background: var(--bad); margin-right: 6px; vertical-align: 0; }
+  #status.live::before { background: var(--ok); }
+  #status.stale::before { background: var(--warn); }
+  button, select { background: #1c1c1c; color: var(--fg); border: 1px solid #333; border-radius: 4px;
+                   font: inherit; padding: 5px 10px; cursor: pointer; }
+  button:hover, select:hover { border-color: #555; }
+  button.on { border-color: #777; color: #fff; background: #2a2a2a; }
+  button.recording { border-color: var(--bad); color: #fff; background: #3a1010; }
+  #hero { display: block; width: 100%; max-width: 768px; aspect-ratio: 2 / 1; height: auto;
+          image-rendering: pixelated; image-rendering: crisp-edges; border: 2px solid #333;
+          cursor: zoom-in; background: #000; }
+  #device { display: block; width: 100%; max-width: 920px; height: auto; }
+  #e16 { display: none; text-align: center; }
+  #e16.on { display: block; }
+  #e16 .label { color: var(--dim); margin-bottom: 6px; }
+  #e16c { width: 384px; max-width: 60vw; aspect-ratio: 2 / 1; image-rendering: pixelated; vertical-align: middle; }
+  #e16r { width: 192px; max-width: 30vw; aspect-ratio: 1; vertical-align: middle; margin-left: 12px; }
+  #log { width: 100%; max-width: 920px; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 6px; padding: 8px 10px; min-height: 3em; }
+  #log .row { display: flex; gap: 1em; white-space: nowrap; overflow: hidden; }
+  #log .row .t { color: var(--dim); margin-left: auto; }
+  #log .empty { color: var(--dim); }
+  .hidden { display: none !important; }
+  /* fullscreen: the hero alone, as the old page did on a tap */
+  body.fs { padding: 0; justify-content: center; }
+  body.fs > :not(#hero) { display: none !important; }
+  body.fs #hero { border: none; max-width: none; width: min(100vw, 200dvh); cursor: zoom-out; }
+</style>
+</head><body>
+<div id="bar">
+  <span id="status">connecting…</span>
+  <select id="what" title="What Save PNG and Record capture">
+    <option value="both">Screen + device</option>
+    <option value="screen">Screen</option>
+    <option value="device">Device</option>
+  </select>
+  <button id="png" type="button">Save PNG</button>
+  <button id="rec" type="button">Record</button>
+  <button id="logbtn" type="button">Log</button>
+</div>
+<canvas id="hero" width="128" height="64" title="Tap for fullscreen"></canvas>
+<canvas id="device"></canvas>
+<div id="e16"><div class="label">OXI E16 (as last sent)</div>
+  <canvas id="e16c" width="128" height="64"></canvas><canvas id="e16r" width="256" height="256"></canvas></div>
+<div id="log" class="hidden"></div>
+<script>
+'use strict';
+
+/* ---------------- palette (Cycling '74, MIT -- see header) ---------------- */
+const COLOR_TABLE = [
+  [0x000000,0],[0xFF4032,2],[0x800400,4],[0xC93C00,6],[0xAC1F00,8],
+  [0x8C5018,10],[0x491804,12],[0xFADC3B,14],[0xFFC516,16],[0xB6FF0E,18],
+  [0x79FF18,20],[0x34C216,22],[0x4F8A04,24],[0x62FF55,26],[0x297D53,28],
+  [0x269E72,30],[0x31ADFF,32],[0x3663FC,34],[0x1A34FF,36],[0x1C0CE6,38],
+  [0x153999,40],[0x3937FF,42],[0x5722FF,44],[0x972BFF,46],[0x852178,48],
+  [0xFF1032,50],[0xFF2BD4,52],[0xA63421,54],[0x995628,56],[0x876700,58],
+  [0x90821F,60],[0x4A8700,62],[0x007F12,64],[0x1853B2,66],[0x624BAD,68],
+  [0x733A67,70],[0xF8BCAF,72],[0xFF9B76,74],[0xFFBF5F,76],[0xD9AF71,78],
+  [0xFFF480,80],[0xBFBA69,80],[0xBCCC88,81],[0xAEFF99,81],[0x7CDD9F,82],
+  [0x89B47D,82],[0x80F3FF,83],[0x7ACEFC,83],[0x68A1D3,84],[0x858FC2,85],
+  [0xBBAAF2,85],[0xCDBBE4,86],[0xEF8BB0,86],[0x859D8C,87],[0x6B756E,87],
+  [0x84909B,88],[0x6A7075,88],[0x88859D,89],[0x6C6A75,90],[0x9D859C,90],
+  [0x746A74,91],[0x9C9D85,91],[0x74756A,92],[0x9D8484,92],[0x756A6A,93],
+  [0x661914,93],[0x210806,94],[0x460300,94],[0x280000,95],[0x5D1700,96],
+  [0x200D00,96],[0x470C00,97],[0x1C0800,97],[0x3B2B14,98],[0x1C130A,98],
+  [0x250E05,99],[0x0D0602,99],[0x645817,100],[0x201C07,101],[0x664E08,101],
+  [0x211902,102],[0x486605,102],[0x172101,103],[0x306609,103],[0x0F2103,104],
+  [0x144D08,104],[0x061902,105],[0x1F3701,106],[0x0A1100,106],[0x276622,107],
+  [0x0C210B,107],[0x143E29,108],[0x081910,108],[0x004D36,109],[0x00180E,109],
+  [0x134566,110],[0x061621,110],[0x152764,111],[0x070C20,112],[0x0A1466,112],
+  [0x030621,113],[0x0B045C,113],[0x03011D,114],[0x0A1C4C,114],[0x040B1E,115],
+  [0x161666,115],[0x070721,116],[0x220D66,117],[0x0B0421,117],[0x3C1166,118],
+  [0x130521,118],[0x350D30,119],[0x11040F,119],[0x660614,120],[0x210206,120],
+  [0x661154,121],[0x21051B,122],[0x000000,122],[0x595959,123],[0x1A1A1A,123],
+  [0xFFFFFF,124],[0x595959,124],[0xCCCCCC,125],[0x404040,125],[0x141414,126],
+  [0x0000FF,126],[0x00FF00,127],[0xFF0000,127],
+];
+const palette = v => {
+  if (v <= 0 || v > 127) return null;
+  const h = COLOR_TABLE[v][0];
+  return [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+};
+const white = v => {
+  if (v <= 0 || v > 127) return null;
+  const b = Math.round(COLOR_TABLE[v][1] / 127 * 255);
+  return [b, b, b];
+};
+
+/* ---------------- surface_live_shm_t ---------------- */
+const SURFACE_VERSION = 1;
+const OFF = { frame: 16, evCount: 20, noteLed: 24, noteAnim: 152, ccLed: 280, ccAnim: 408,
+              rgb: 536, noteDown: 1560, press: 1688, ccVal: 1816, enc: 1944, events: 1976, size: 2232 };
+const ANIM_NONE = 0xFF;
+const N_EVENTS = 32;
+let surf = null;              // Uint8Array of the struct
+let surfView = null;
+let curFrame = 0;             // SPI frame counter (~2.902 ms each)
+const FRAME_MS = 128 / 44100 * 1000;
+
+/* ---------------- the screen ---------------- */
+const hero = document.getElementById('hero');
+const hctx = hero.getContext('2d');
+const img = hctx.createImageData(128, 64);
+function drawMono(raw) {
+  const d = img.data;
+  for (let page = 0; page < 8; page++) for (let col = 0; col < 128; col++) {
+    const b = raw.charCodeAt(page * 128 + col);
+    for (let bit = 0; bit < 8; bit++) {
+      const idx = ((page * 8 + bit) * 128 + col) * 4;
+      const on = (b >> bit) & 1 ? 255 : 0;
+      d[idx] = d[idx + 1] = d[idx + 2] = on; d[idx + 3] = 255;
+    }
+  }
+}
+function drawGray4(raw) {
+  const d = img.data;
+  for (let y = 0; y < 64; y++) for (let x = 0; x < 128; x += 2) {
+    const b = raw.charCodeAt(y * 64 + (x >> 1));
+    let idx = (y * 128 + x) * 4;
+    d[idx] = d[idx + 1] = d[idx + 2] = ((b >> 4) & 15) * 17; d[idx + 3] = 255;
+    idx += 4;
+    d[idx] = d[idx + 1] = d[idx + 2] = (b & 15) * 17; d[idx + 3] = 255;
+  }
+}
+hero.addEventListener('click', () => document.body.classList.toggle('fs'));
+
+/* ---------------- the connection ----------------
+ * EventSource alone is not enough: after a Wi-Fi blip a half-open TCP
+ * connection fires no error at all, and a non-200 answer (display-server
+ * restarting, the proxy's 502) closes it for good. So the heartbeat is a real
+ * event, and silence past WATCHDOG_MS -- or a CLOSED source -- rebuilds the
+ * connection here, with backoff. */
+const WATCHDOG_MS = 6000;
+const statusEl = document.getElementById('status');
+let connects = 0;
+let es = null, lastEvent = 0, retryMs = 1000, retryTimer = 0, frames = 0, fps = 0, fpsAt = Date.now();
+let sourceLabel = '';
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ''; }
+function alive() { lastEvent = Date.now(); retryMs = 1000; }
+
+function connect() {
+  clearTimeout(retryTimer); retryTimer = 0;
+  if (es) { es.close(); es = null; }
+  setStatus('connecting…');
+  lastEvent = Date.now();
+  connects++;
+  const src = new EventSource('/stream-auto?v=2');
+  es = src;
+  src.onopen = () => { if (es === src) { alive(); setStatus('live', 'live'); } };
+  src.onerror = () => {
+    if (es !== src) return;
+    if (src.readyState === EventSource.CLOSED) reconnectLater();
+    else setStatus('reconnecting…');
+  };
+  src.onmessage = e => {
+    if (es !== src) return;
+    alive();
+    let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+    const raw = atob(p.data || '');
+    if (p.format === 'gray4' || p.format === 'gray4_packed') drawGray4(raw); else drawMono(raw);
+    hctx.putImageData(img, 0, 0);
+    sourceLabel = p.source || p.format || '';
+    frames++; dirty = true;
+  };
+  src.addEventListener('hb', e => {
+    if (es !== src) return;
+    alive();
+    try { const h = JSON.parse(e.data); if (h.frame) curFrame = h.frame; } catch (_) {}
+    renderLog();
+  });
+  src.addEventListener('surface', e => {
+    if (es !== src) return;
+    alive();
+    let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+    if (p.v !== SURFACE_VERSION) return;
+    const raw = atob(p.data || '');
+    if (raw.length < OFF.size) return;
+    const u = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) u[i] = raw.charCodeAt(i);
+    surf = u; surfView = new DataView(u.buffer);
+    curFrame = p.frame || curFrame;
+    dirty = true; renderLog();
+  });
+  src.addEventListener('e16', e => { if (es === src) { alive(); e16Event(e.data); } });
+}
+
+function reconnectLater() {
+  if (es) { es.close(); es = null; }
+  if (retryTimer) return;
+  setStatus('disconnected — retrying in ' + Math.round(retryMs / 1000) + ' s');
+  retryTimer = setTimeout(connect, retryMs);
+  retryMs = Math.min(retryMs * 2, 8000);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  if (now - fpsAt >= 1000) { fps = frames; frames = 0; fpsAt = now; }
+  if (!es) return;
+  const quiet = now - lastEvent;
+  if (quiet > WATCHDOG_MS) { reconnectLater(); return; }
+  if (es.readyState === EventSource.OPEN) {
+    if (quiet > 2500) setStatus('no data for ' + Math.round(quiet / 1000) + ' s', 'stale');
+    else setStatus('live' + (sourceLabel ? ' — ' + sourceLabel : '') + ' — ' + (fps ? fps + ' fps' : 'screen idle'), 'live');
+  }
+}, 500);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && Date.now() - lastEvent > 2500) connect();
+});
+window.addEventListener('online', () => connect());
+window.addEventListener('pageshow', e => { if (e.persisted) connect(); });
+
+/* ---------------- surface accessors ---------------- */
+const u8 = (o, i) => surf ? surf[o + i] : 0;
+const noteLed = n => u8(OFF.noteLed, n), noteAnim = n => surf ? surf[OFF.noteAnim + n] : ANIM_NONE;
+const ccLed = c => u8(OFF.ccLed, c), ccAnim = c => surf ? surf[OFF.ccAnim + c] : ANIM_NONE;
+const noteDown = n => u8(OFF.noteDown, n), pressure = n => u8(OFF.press, n), ccVal = c => u8(OFF.ccVal, c);
+const encPos = i => surfView ? surfView.getInt16(OFF.enc + i * 2, true) : 0;
+function rgbOf(ch, idx) {
+  if (!surf) return null;
+  const o = OFF.rgb + (ch * 128 + idx) * 4;
+  return surf[o + 3] ? [surf[o], surf[o + 1], surf[o + 2]] : null;
+}
+
+/* Animation lives in the status channel: 1-5 transition (drawn solid),
+ * 6-10 pulse, 11-15 blink, each at 24th/16th/8th/4th/half. Channel 16 (15)
+ * is the steps' and white buttons' normal channel, not a blink. No tempo
+ * reaches this page, so the rate assumes 120 BPM. */
+const ANIM_MS = [500 / 6, 125, 250, 500, 1000];
+let animating = false;
+function animate(rgb, anim, now) {
+  if (!rgb || anim === ANIM_NONE || anim < 6 || anim > 14) return rgb;
+  animating = true;
+  const ms = ANIM_MS[(anim - 6) % 5];
+  const ph = (now % (ms * 2)) / (ms * 2);
+  if (anim >= 11) return ph < 0.5 ? rgb : null;                    // blink
+  const k = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos(ph * 2 * Math.PI)); // pulse
+  return rgb.map(c => Math.round(c * k));
+}
+function noteColor(n, now) {
+  const r = rgbOf(0, n);
+  if (r) return r;
+  const a = noteAnim(n), v = noteLed(n);
+  if (a === ANIM_NONE || !v) return null;
+  return animate(palette(v), a, now);
+}
+function ccColor(c, isWhite, now) {
+  const r = rgbOf(1, c);
+  if (r) return r;
+  const a = ccAnim(c), v = ccLed(c);
+  if (a === ANIM_NONE || !v) return null;
+  return animate(isWhite ? white(v) : palette(v), a, now);
+}
+
+/* ---------------- the device drawing ----------------
+ * One canvas, laid out like move_midi_emulator.html: screen / encoders /
+ * volume across the top; wheel, Back and Menu left; track capsules; the 4x8
+ * pads; the 2x4 function buttons; Play and Rec, 16 steps and their icon LEDs;
+ * the arrow cluster. Coordinates are logical units scaled to the canvas. */
+const W = 920, P = 18, GAP = 12;
+const COL_L = 150, COL_T = 30, COL_F = 112;
+const PAD_X = P + COL_L + GAP + COL_T + GAP;
+const PAD_W = W - PAD_X - GAP - COL_F - P;
+const PAD_GAP = 7, PAD_CW = (PAD_W - 7 * PAD_GAP) / 8, PAD_CH = Math.round(PAD_CW * 2 / 3);
+const TOP_H = 84, TOP_Y = P;
+const PADS_Y = TOP_Y + TOP_H + GAP;
+const PADS_H = 4 * PAD_CH + 3 * PAD_GAP;
+const STEP_Y = PADS_Y + PADS_H + GAP + 22;       // centre of the step row
+const ICON_Y = STEP_Y + 24;
+const H = ICON_Y + 10 + P;
+const FUNC_X = W - P - COL_F;
+const padCx = c => PAD_X + c * (PAD_CW + PAD_GAP) + PAD_CW / 2;
+const rowCy = r => PADS_Y + r * (PAD_CH + PAD_GAP) + PAD_CH / 2;   // r = 0 top
+
+const ICONS = {  /* 16x16 SVG path data, from the emulator's button glyphs */
+  back: 'M10,4 L6,8 L10,12',
+  menu: 'M2,3.5 L14,3.5 M2,8 L14,8 M2,12.5 L14,12.5',
+  play: 'M3,1 L14,8 L3,15 Z',
+  rec: 'M15,8 A7,7 0 1,1 1,8 A7,7 0 1,1 15,8',
+  capture: 'M1,4 L1,1 L4,1 M12,1 L15,1 L15,4 M15,12 L15,15 L12,15 M4,15 L1,15 L1,12',
+  sample: '*dot',
+  loop: 'M4,3 L12,3 A3.5,3.5 0 0,1 12,13 L4,13 A3.5,3.5 0 0,1 4,3 M9,15.5 L6,13 L9,10.5',
+  mute: 'M3,13 L3,3 L8,10 L13,3 L13,13',
+  delete: 'M2.3,2.3 L13.7,13.7 M13.7,2.3 L2.3,13.7',
+  copy: 'M2,5 h7 v7 h-7 Z M6,1.5 h7 v7 h-7',
+  undo: 'M5,4.5 L3,7 L5,9.5 M3,7 L11,7 A3.5,3.5 0 0,1 11,13 L9,13',
+  shift: '*dots',
+  up: 'M8,3 L8,13 M3,8 L13,8',
+  down: 'M3,8 L13,8',
+  left: 'M10,4 L6,8 L10,12',
+  right: 'M6,4 L10,8 L6,12',
+};
+const path2d = {};
+for (const [k, d] of Object.entries(ICONS)) if (d[0] !== '*') path2d[k] = new Path2D(d);
+
+/* id, CC, white LED?, glyph */
+const FUNCS = [
+  ['capture', 52, true], ['sample', 118, false], ['loop', 58, true], ['mute', 88, true],
+  ['delete', 119, true], ['copy', 60, true], ['undo', 56, true], ['shift', 49, true],
+];
+const NAV = [['up', 55, 0, -1], ['down', 54, 0, 1], ['left', 62, -1, 0], ['right', 63, 1, 0]];
+
+const dev = document.getElementById('device');
+const dctx = dev.getContext('2d');
+let dpr = 1;
+function sizeDevice() {
+  dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  dev.width = Math.round(W * dpr); dev.height = Math.round(H * dpr);
+  dirty = true;
+}
+window.addEventListener('resize', sizeDevice);
+
+const css = c => c ? 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')' : null;
+const HELD = '#fff', TOUCH = '#5588bb', BODY = '#1b1b1b', CAP = '#2b2b2b', EDGE = '#3a3a3a';
+
+function glyph(ctx, name, cx, cy, size, color) {
+  ctx.save();
+  ctx.translate(cx - size / 2, cy - size / 2);
+  ctx.scale(size / 16, size / 16);
+  ctx.strokeStyle = ctx.fillStyle = color;
+  ctx.lineWidth = 1.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'sample') { ctx.beginPath(); ctx.arc(8, 8, 5, 0, 7); ctx.fill(); }
+  else if (name === 'shift') { for (const x of [3, 8, 13]) { ctx.beginPath(); ctx.arc(x, 8, 1.4, 0, 7); ctx.fill(); } }
+  else ctx.stroke(path2d[name]);
+  ctx.restore();
+}
+
+/* A round button: body, LED colour as the rim/glow, a held state. */
+function roundButton(ctx, cx, cy, r, led, held, name) {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7);
+  ctx.fillStyle = held ? '#555' : CAP; ctx.fill();
+  if (led) {
+    ctx.save(); ctx.shadowColor = css(led); ctx.shadowBlur = 10;
+    ctx.lineWidth = 2.5; ctx.strokeStyle = css(led); ctx.stroke(); ctx.restore();
+  } else { ctx.lineWidth = 1; ctx.strokeStyle = EDGE; ctx.stroke(); }
+  if (held) { ctx.lineWidth = 2; ctx.strokeStyle = HELD; ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, 7); ctx.stroke(); }
+  if (name) glyph(ctx, name, cx, cy, r * 0.95, led ? css(led) : '#888');
+}
+
+/* An encoder: LED ring (its colour), touch ring, a notch that turns with it. */
+function encoder(ctx, cx, cy, r, led, touched, pos) {
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, r + 5, 0.75 * Math.PI, 2.25 * Math.PI);
+  ctx.strokeStyle = led ? css(led) : '#262626';
+  if (led) { ctx.save(); ctx.shadowColor = css(led); ctx.shadowBlur = 8; ctx.stroke(); ctx.restore(); } else ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7);
+  ctx.fillStyle = touched ? '#3a4a55' : '#2e2e2e'; ctx.fill();
+  ctx.lineWidth = touched ? 2 : 1; ctx.strokeStyle = touched ? TOUCH : EDGE; ctx.stroke();
+  const a = pos * (Math.PI / 12) - Math.PI / 2;
+  ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r * 0.35, cy + Math.sin(a) * r * 0.35);
+  ctx.lineTo(cx + Math.cos(a) * r * 0.85, cy + Math.sin(a) * r * 0.85);
+  ctx.lineWidth = 2; ctx.strokeStyle = '#aaa'; ctx.stroke();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function drawDevice(ctx, now) {
+  animating = false;
+  ctx.save();
+  ctx.fillStyle = '#0e0e0e'; ctx.fillRect(0, 0, W, H);
+  roundRect(ctx, 2, 2, W - 4, H - 4, 10); ctx.fillStyle = BODY; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = '#2c2c2c'; ctx.stroke();
+
+  /* screen: the same frame as the hero, pixel for pixel */
+  const sw = 128 * 1.05, sh = 64 * 1.05, sx = P + (COL_L - sw) / 2, sy = TOP_Y + (TOP_H - sh) / 2;
+  ctx.fillStyle = '#000'; ctx.fillRect(sx - 4, sy - 4, sw + 8, sh + 8);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(hero, sx, sy, sw, sh);
+
+  /* encoders 1-8 over the pad columns, volume over the right function column */
+  for (let i = 0; i < 8; i++)
+    encoder(ctx, padCx(i), TOP_Y + TOP_H / 2, 15, ccColor(71 + i, false, now), !!noteDown(i), encPos(i));
+  /* Move paints the volume ring by RGB SysEx at CC index 79 (seen on hardware) */
+  encoder(ctx, FUNC_X + COL_F * 0.75, TOP_Y + TOP_H / 2, 19, ccColor(79, false, now), !!noteDown(8), encPos(8));
+
+  /* wheel across pad rows 0-1, Back and Menu on row 2 */
+  const wx = P + COL_L / 2, wy = (rowCy(0) + rowCy(1)) / 2;
+  encoder(ctx, wx, wy, 32, null, !!noteDown(9), encPos(9));
+  if (ccVal(3)) { ctx.beginPath(); ctx.arc(wx, wy, 11, 0, 7); ctx.fillStyle = '#666'; ctx.fill(); }
+  roundButton(ctx, wx - 22, rowCy(2), 16, ccColor(51, true, now), !!ccVal(51), 'back');
+  roundButton(ctx, wx + 22, rowCy(2), 16, ccColor(50, true, now), !!ccVal(50), 'menu');
+
+  /* track capsules: CC 43 on top down to CC 40 */
+  for (let r = 0; r < 4; r++) {
+    const cc = 43 - r, x = P + COL_L + GAP + (COL_T - 16) / 2, y = rowCy(r) - PAD_CH / 2;
+    roundRect(ctx, x, y, 16, PAD_CH, 8);
+    ctx.fillStyle = ccVal(cc) ? '#555' : CAP; ctx.fill();
+    ctx.lineWidth = ccVal(cc) ? 2 : 1; ctx.strokeStyle = ccVal(cc) ? HELD : EDGE; ctx.stroke();
+    const led = ccColor(cc, false, now);
+    roundRect(ctx, x + 6, y + PAD_CH * 0.18, 4, PAD_CH * 0.64, 2);
+    ctx.fillStyle = led ? css(led) : '#444'; ctx.fill();
+  }
+
+  /* pads: row 0 (top) = notes 92-99, row 3 (bottom) = 68-75 */
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) {
+    const n = 68 + (3 - r) * 8 + c;
+    const x = PAD_X + c * (PAD_CW + PAD_GAP), y = PADS_Y + r * (PAD_CH + PAD_GAP);
+    const led = noteColor(n, now), vel = noteDown(n);
+    ctx.fillStyle = led ? css(led) : '#262626';
+    if (led) { ctx.save(); ctx.shadowColor = css(led); ctx.shadowBlur = 12; ctx.fillRect(x, y, PAD_CW, PAD_CH); ctx.restore(); }
+    else ctx.fillRect(x, y, PAD_CW, PAD_CH);
+    if (vel) {
+      ctx.lineWidth = 3; ctx.strokeStyle = HELD; ctx.strokeRect(x + 1.5, y + 1.5, PAD_CW - 3, PAD_CH - 3);
+      const pr = pressure(n);                    /* aftertouch as a bar, velocity as a tick */
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(x + 5, y + PAD_CH - 8, (PAD_CW - 10) * (pr / 127), 3);
+      ctx.fillRect(x + 5 + (PAD_CW - 10) * (vel / 127) - 1, y + PAD_CH - 11, 2, 9);
+    }
+  }
+
+  /* function buttons, 2 x 4 */
+  for (let i = 0; i < FUNCS.length; i++) {
+    const [name, cc, isWhite] = FUNCS[i];
+    const cx = FUNC_X + COL_F * (i % 2 ? 0.75 : 0.25), cy = rowCy(Math.floor(i / 2));
+    roundButton(ctx, cx, cy, 18, ccColor(cc, isWhite, now), !!ccVal(cc), name);
+  }
+
+  /* play / record */
+  roundButton(ctx, wx - 22, STEP_Y, 16, ccColor(85, false, now), !!ccVal(85), 'play');
+  roundButton(ctx, wx + 22, STEP_Y, 16, ccColor(86, false, now), !!ccVal(86), 'rec');
+
+  /* steps (notes 16-31, RGB) and their icon LEDs (CC 16-31, white) */
+  const stepPitch = PAD_W / 16;
+  for (let i = 0; i < 16; i++) {
+    const cx = PAD_X + stepPitch * (i + 0.5);
+    roundButton(ctx, cx, STEP_Y, Math.min(11, stepPitch * 0.36), noteColor(16 + i, now), !!noteDown(16 + i), null);
+    if (i % 4 === 0) { ctx.fillStyle = '#444'; ctx.fillRect(cx - 5, STEP_Y + 15, 10, 2); }
+    const icon = ccColor(16 + i, true, now);
+    ctx.fillStyle = icon ? css(icon) : '#2a2a2a';
+    ctx.fillRect(cx - 5, ICON_Y, 10, 3);
+  }
+
+  /* arrows */
+  const nx = FUNC_X + COL_F / 2, ny = STEP_Y + 4;
+  for (const [name, cc, dx, dy] of NAV)
+    roundButton(ctx, nx + dx * 26, ny + dy * 14, 11, ccColor(cc, true, now), !!ccVal(cc), name);
+
+  ctx.restore();
+}
+
+/* ---------------- the press log ---------------- */
+const CC_NAMES = { 3: 'Jog click', 40: 'Track 4', 41: 'Track 3', 42: 'Track 2', 43: 'Track 1',
+  49: 'Shift', 50: 'Menu', 51: 'Back', 52: 'Capture', 54: 'Down', 55: 'Up', 56: 'Undo', 58: 'Loop',
+  60: 'Copy', 62: 'Left', 63: 'Right', 85: 'Play', 86: 'Rec', 88: 'Mute', 118: 'Sample', 119: 'Delete' };
+function noteName(n) {
+  if (n >= 68 && n <= 99) { const i = n - 68; return 'Pad ' + (Math.floor(i / 8) + 1) + '-' + (i % 8 + 1); }
+  if (n >= 16 && n <= 31) return 'Step ' + (n - 15);
+  if (n <= 7) return 'Knob ' + (n + 1) + ' touch';
+  if (n === 8) return 'Volume touch';
+  if (n === 9) return 'Jog touch';
+  return 'Note ' + n;
+}
+function describe(st, d1, d2) {
+  const t = st & 0xF0;
+  if (t === 0x90 || t === 0x80) {
+    const down = t === 0x90 && d2 > 0;
+    return [noteName(d1), down ? '↓' + (d1 >= 10 ? ' ' + d2 : '') : '↑'];
+  }
+  if (t === 0xB0) return [CC_NAMES[d1] || 'CC ' + d1, d2 ? '↓' : '↑'];
+  return ['0x' + st.toString(16), d1 + ' ' + d2];
+}
+const logEl = document.getElementById('log');
+let logShown = false, logKey = '';
+function renderLog() {
+  if (!logShown || !surfView) return;
+  const count = surfView.getUint32(OFF.evCount, true);
+  const key = count + ':' + Math.floor(curFrame / 100);
+  if (key === logKey) return;
+  logKey = key;
+  const rows = [];
+  for (let k = 0; k < Math.min(12, count, N_EVENTS); k++) {
+    const i = (count - 1 - k) % N_EVENTS, o = OFF.events + i * 8;
+    const fr = surfView.getUint32(o, true);
+    const [what, how] = describe(surf[o + 4], surf[o + 5], surf[o + 6]);
+    const age = Math.max(0, (curFrame - fr) * FRAME_MS / 1000);
+    rows.push('<div class="row"><span>' + what + '</span><span>' + how + '</span><span class="t">' +
+              (age < 60 ? age.toFixed(1) + ' s' : Math.round(age / 60) + ' min') + ' ago</span></div>');
+  }
+  logEl.innerHTML = rows.length ? rows.join('') : '<div class="empty">No presses yet.</div>';
+}
+document.getElementById('logbtn').addEventListener('click', e => {
+  logShown = !logShown; logKey = '';
+  logEl.classList.toggle('hidden', !logShown);
+  e.currentTarget.classList.toggle('on', logShown);
+  if (logShown) renderLog(); if (logShown && !surfView) logEl.innerHTML = '<div class="empty">Waiting for the device…</div>';
+});
+
+/* ---------------- capture ---------------- */
+const what = document.getElementById('what');
+try { const w = localStorage.getItem('mirror.what'); if (w) what.value = w; } catch (_) {}
+what.addEventListener('change', () => { try { localStorage.setItem('mirror.what', what.value); } catch (_) {} });
+
+const out = document.createElement('canvas');
+const octx = out.getContext('2d');
+function composite(kind) {
+  const OW = 1280;
+  const heroH = OW / 2, devH = Math.round(OW * H / W);
+  out.width = OW;
+  out.height = kind === 'screen' ? heroH : kind === 'device' ? devH : heroH + devH;
+  octx.fillStyle = '#000'; octx.fillRect(0, 0, out.width, out.height);
+  octx.imageSmoothingEnabled = false;
+  let y = 0;
+  if (kind !== 'device') { octx.drawImage(hero, 0, 0, OW, heroH); y = heroH; }
+  if (kind !== 'screen') {
+    octx.save(); octx.translate(0, y); octx.scale(OW / W, OW / W);
+    drawDevice(octx, performance.now()); octx.restore();
+  }
+  return out;
+}
+const stamp = () => new Date().toISOString().replace(/[:T]/g, '-').replace(/\..*/, '');
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+document.getElementById('png').addEventListener('click', () => {
+  composite(what.value).toBlob(b => b && download(b, 'move-' + stamp() + '.png'), 'image/png');
+});
+
+let recorder = null, chunks = [], recKind = 'both';
+const recBtn = document.getElementById('rec');
+recBtn.addEventListener('click', () => {
+  if (recorder) { recorder.stop(); return; }
+  if (!window.MediaRecorder || !out.captureStream) { recBtn.textContent = 'Record unsupported'; return; }
+  recKind = what.value;
+  composite(recKind);
+  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  const type = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  chunks = [];
+  try { recorder = new MediaRecorder(out.captureStream(30), type ? { mimeType: type } : undefined); }
+  catch (_) { recorder = null; recBtn.textContent = 'Record unsupported'; return; }
+  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  recorder.onstop = () => {
+    const mt = recorder.mimeType || type || 'video/webm';
+    download(new Blob(chunks, { type: mt }), 'move-' + stamp() + (mt.includes('mp4') ? '.mp4' : '.webm'));
+    recorder = null; recBtn.textContent = 'Record'; recBtn.classList.remove('recording');
+  };
+  recorder.start(1000);
+  recBtn.textContent = 'Stop'; recBtn.classList.add('recording');
+});
+
+/* ---------------- the E16 (unchanged from the old page) ---------------- */
+const e16El = document.getElementById('e16');
+const e16c = document.getElementById('e16c').getContext('2d');
+const e16r = document.getElementById('e16r').getContext('2d');
+const e16img = e16c.createImageData(128, 64);
+function e16Event(data) {
+  let p; try { p = JSON.parse(data); } catch (_) { return; }
+  if (!p.active) { e16El.className = ''; return; }
+  e16El.className = 'on';
+  if (p.hasFrame) {
+    const raw = atob(p.data || ''), d = e16img.data;
+    for (let page = 0; page < 8; page++) for (let col = 0; col < 128; col++) {
+      const b = raw.charCodeAt(page * 128 + col);
+      for (let bit = 0; bit < 8; bit++) {
+        const idx = ((page * 8 + bit) * 128 + col) * 4, on = (b >> bit) & 1 ? 255 : 0;
+        d[idx] = d[idx + 1] = d[idx + 2] = on; d[idx + 3] = 255;
+      }
+    }
+    e16c.putImageData(e16img, 0, 0);
+  } else { e16c.fillStyle = '#000'; e16c.fillRect(0, 0, 128, 64); }
+  const raw = atob(p.rings || ''), Wr = 256, cell = Wr / 4, R = cell * 0.36;
+  e16r.fillStyle = '#000'; e16r.fillRect(0, 0, Wr, Wr);
+  for (let e = 0; e < 16; e++) {
+    const o = e * 6, r = raw.charCodeAt(o), g = raw.charCodeAt(o + 1), b = raw.charCodeAt(o + 2);
+    const amt = ((raw.charCodeAt(o + 3) << 8) | raw.charCodeAt(o + 4)) / 16383, bip = raw.charCodeAt(o + 5);
+    const cx = (e % 4) * cell + cell / 2, cy = Math.floor(e / 4) * cell + cell / 2;
+    const start = Math.PI * 0.75, span = Math.PI * 1.5;
+    e16r.lineWidth = 6; e16r.lineCap = 'round'; e16r.strokeStyle = '#1a1a1a';
+    e16r.beginPath(); e16r.arc(cx, cy, R, start, start + span); e16r.stroke();
+    if (r || g || b) {
+      e16r.strokeStyle = 'rgb(' + Math.min(255, r * 2) + ',' + Math.min(255, g * 2) + ',' + Math.min(255, b * 2) + ')';
+      e16r.beginPath();
+      if (bip) { const mid = start + span / 2, to = start + span * amt;
+        if (to >= mid) e16r.arc(cx, cy, R, mid, Math.max(mid + 0.02, to)); else e16r.arc(cx, cy, R, to, mid); }
+      else e16r.arc(cx, cy, R, start, start + Math.max(0.02, span * amt));
+      e16r.stroke();
+    }
+    e16r.fillStyle = '#555'; e16r.font = '10px monospace'; e16r.textAlign = 'center';
+    e16r.fillText(String(e + 1), cx, cy + 4);
+  }
+}
+
+/* ---------------- frame loop ---------------- */
+let dirty = true;
+function tick() {
+  const now = performance.now();
+  if (dirty || animating) {
+    dirty = false;
+    dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawDevice(dctx, now);
+  }
+  if (recorder) composite(recKind);
+  requestAnimationFrame(tick);
+}
+sizeDevice();
+connect();
+requestAnimationFrame(tick);
+</script>
+</body></html>
