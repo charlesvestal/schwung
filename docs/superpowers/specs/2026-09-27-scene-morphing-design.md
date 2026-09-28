@@ -356,3 +356,18 @@ a module that renders at the morphed values pays its own render. An
 every-second-block decimation of fader-only updates was tried against the
 misreading and reverted: it changed nothing, because the writes were never the
 cost.
+
+### Revision 2026-09-28: scenes on the PADS
+
+Charles, on the first cut: the step-based controls were confusing (a tap went
+to "the far end", the same step assigned, armed and disarmed), and the steps --
+Shift+steps included -- must always stay Move's. So the Scenes screen now picks
+scenes on the pads while it is on screen: top two rows A 1-16, bottom two B,
+the OLED drawing the same 4x8 grid, LEDs bright / dim / darkest for selected /
+has locks / empty and white for the scene being edited. Knobs 1-2 no longer
+pick scenes and `step_claim` is gone (its byte is `scene_pads`, which strips
+Move's pad LED repaints while the screen owns the pads).
+
+EDITING IS STILL OPEN. Hold-a-pad-to-arm is kept for now; Charles rejected both
+"hold a step on any knob page" (steps are Move's) and a scoped edit trip that
+changes the nav stack. Next decision.

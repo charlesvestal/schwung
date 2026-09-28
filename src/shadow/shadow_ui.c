@@ -742,16 +742,16 @@ static JSValue js_shadow_set_scene_unlock(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
-/* host_step_claim(on) - with host_step_observe(1): every step press is
- * CONSUMED (never replayed to Move as a tap). Restated every tick by the
- * caller; idempotent against the SHM. */
-static JSValue js_host_step_claim(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+/* host_scene_pads(on) - the Scenes screen owns the pad LEDs (Move's pad LED
+ * writes are stripped while the display is up; restored on release).
+ * Restated every tick by the caller; idempotent against the SHM. */
+static JSValue js_host_scene_pads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1 || !shadow_control) return JS_FALSE;
     int val = 0;
     JS_ToInt32(ctx, &val, argv[0]);
     uint8_t next = val ? 1 : 0;
-    if (shadow_control->step_claim != next) shadow_control->step_claim = next;
+    if (shadow_control->scene_pads != next) shadow_control->scene_pads = next;
     return JS_TRUE;
 }
 
@@ -3656,7 +3656,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_edit", JS_NewCFunction(ctx, js_shadow_set_scene_edit, "shadow_set_scene_edit", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_scene_flash", JS_NewCFunction(ctx, js_shadow_clear_scene_flash, "shadow_clear_scene_flash", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_unlock", JS_NewCFunction(ctx, js_shadow_set_scene_unlock, "shadow_set_scene_unlock", 1));
-    JS_SetPropertyStr(ctx, global_obj, "host_step_claim", JS_NewCFunction(ctx, js_host_step_claim, "host_step_claim", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_scene_pads", JS_NewCFunction(ctx, js_host_scene_pads, "host_scene_pads", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step_is_hold", JS_NewCFunction(ctx, js_shadow_get_held_step_is_hold, "shadow_get_held_step_is_hold", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_delete_held", JS_NewCFunction(ctx, js_shadow_get_delete_held, "shadow_get_delete_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));

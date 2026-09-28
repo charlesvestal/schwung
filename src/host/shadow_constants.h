@@ -756,14 +756,14 @@ typedef struct shadow_control_t {
     volatile uint16_t scene_xfade_q;
     volatile uint16_t scene_rev;
     /*
-     * STEPS CLAIMED OUTRIGHT, 0 or 1: while set (with step_observe), every
-     * withheld step press is marked USED, so no tap is ever replayed to Move.
-     * The Scenes screen picks scenes with the steps; a replayed tap would ALSO
-     * toggle a note in the clip. Rides the existing latched both-edge swallow
-     * rather than a second one. Restated every tick by the UI (the shim drops
-     * step_observe on its own).
+     * THE SCENES SCREEN OWNS THE PADS' LEDS, 0 or 1. The screen picks scenes
+     * with the pads (pad_block withholds the presses); this is the LED half:
+     * while set AND the shadow display is up, Move's own pad LED writes --
+     * note and RGB sysex -- are stripped from MIDI_OUT so the scene colours
+     * are not repainted over, and on the falling edge Move's cached pad
+     * colours are put back. Restated every tick by the UI.
      */
-    volatile uint8_t step_claim;
+    volatile uint8_t scene_pads;
     /*
      * DELETE IS HELD WITH A SCENE ARMED, 0 or 1: the next armed write REMOVES
      * that parameter from the scene instead of locking it (SCENE_EDIT_UNLOCK).
