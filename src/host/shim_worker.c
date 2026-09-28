@@ -17,6 +17,7 @@
 #include "spi_tally.h"
 #include "align_capture.h"
 #include "shadow_set_pages.h"
+#include "move_model_sync.h"     /* set-load edge -> prompt identity poll */
 #include "unified_log.h"
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
@@ -1835,7 +1836,10 @@ static void *worker_main(void *arg) {
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
         }
-        if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
+        /* ~1.4 s FS scan -- every tick (200 ms) while a set load the model saw
+         * is not yet aligned, so identity lands promptly even if the model's
+         * own edge-triggered read raced Move's Settings.json rewrite. */
+        if (tick % 7 == 0 || move_model_sync_misaligned()) shadow_poll_current_set();
         tick++;
     }
     return NULL;
