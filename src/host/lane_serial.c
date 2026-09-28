@@ -115,6 +115,15 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
          * written. Both halves of "blind" are covered now, not just the one
          * that shows up as -2. */
         if (lane_fp_absent(&ln->fp)) continue;
+        /* AN ORPHAN IS NOT WRITTEN, for the same reason. `orphaned` is runtime
+         * state (below), so a deleted clip's lane went to disk looking like a
+         * live one; after a reload a NEW clip made in that slot mismatched its
+         * fingerprint, read as an edit of the same clip, and inherited the dead
+         * clip's automation. In memory the orphan stays -- Move's Undo restores
+         * the same clip, its fingerprint matches, and the lane re-attaches
+         * (measured) -- but Move's undo history does not survive a reload, so
+         * once written down an orphan could only ever mislead. */
+        if (ln->orphaned) continue;
         emitted++;
         /* stale / orphaned / driving / punch_* are deliberately absent: they
          * are recomputed from the live clip every block, and only a

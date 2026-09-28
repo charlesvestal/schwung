@@ -273,6 +273,11 @@ void shadow_save_state(void) {}
  * and set path on its pre-model behaviour (move_model_sync.h). */
 int move_model_sync_active(void) { return 0; }
 void shadow_set_pages_ack_aligned(void) {}
+/* ...and no model at all, so the lane resolver answers "unknown". */
+typedef struct move_model_t move_model_t;
+int move_model_get(move_model_t *out) { (void)out; return 0; }
+double shadow_transport_beat_position(void) { return -1.0; }
+double mm_clip_position(const void *c, double a, double b) { (void)c; (void)a; (void)b; return -1.0; }
 int shadow_chain_midi_inject(const uint8_t *msg, int len) {
     (void)msg; (void)len; return 0;
 }

@@ -17,7 +17,9 @@
 #include "spi_tally.h"
 #include "align_capture.h"
 #include "shadow_set_pages.h"
-#include "move_model_sync.h"     /* set-load edge -> prompt identity poll */
+#include "move_model_sync.h"
+#include "move_model.h"
+#include "step_plock.h"     /* set-load edge -> prompt identity poll */
 #include "unified_log.h"
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
@@ -503,6 +505,25 @@ uint32_t shadow_clip_new_generation(void) { return g_clip_new_gen; }
 uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
 uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
 uint32_t shadow_clip_copy_generation(void) { return g_clip_copy_gen; }
+
+/* The live model's producers (move_model_sync.c) -- the same channels the file
+ * diff below feeds, current to the edit instead of ~10 s behind it. Payload
+ * first, generation LAST, as everywhere here. */
+void shim_worker_publish_clip_deleted(uint32_t mask)
+{
+    if (!mask) return;
+    g_clip_deleted_mask = mask;
+    __sync_synchronize();
+    g_clip_deleted_gen++;
+}
+void shim_worker_publish_clip_copy(int track, int src, int dst)
+{
+    g_clip_copy_track = track;
+    g_clip_copy_src = src;
+    g_clip_copy_dst = dst;
+    __sync_synchronize();
+    g_clip_copy_gen++;
+}
 int shadow_clip_copy_track(void) { return g_clip_copy_track; }
 int shadow_clip_copy_src(void)   { return g_clip_copy_src; }
 int shadow_clip_copy_dst(void)   { return g_clip_copy_dst; }
@@ -634,7 +655,10 @@ static void clip_regions_tick(void)
      * deleted. Compared against the PREVIOUS parse so a newly copied clip --
      * also absent from the file until Move saves -- is not mistaken for one
      * that was removed. */
-    if (!set_changed) {
+    /* With the live model, deletions and copies come from it (the same channels,
+     * ~10 s sooner) -- and a file diff that lands a save later would ORPHAN a
+     * lane on a clip made in the same slot since. */
+    if (!set_changed && !move_model_sync_active()) {
         uint32_t deleted = 0;
         clip_regions_forget_deleted(&before, &g_regions, st, &deleted);
         /* Only publish when something actually went away. A generation bumped
@@ -805,11 +829,39 @@ static void clip_phase_check_tick(void)
     if (!cs || !g_regions.valid) return;
     double res = g_regions.step_resolution > 0 ? g_regions.step_resolution : 0.25;
 
+    /* THE MODEL PATH, scored against Move's own step playhead: for each lit
+     * step on the selected track, where the live-model resolver says that
+     * track's clip is at the LED's clock pulse, minus the lit step's start --
+     * in beats. Right is a small, steady positive number (the LED's ~25 ms
+     * latency) whatever the tempo, loop or page. Written only while
+     * move_model_on is armed. */
+    const int mm_log = (access("/data/UserData/schwung/move_model_on", F_OK) == 0);
+    FILE *mmf = NULL;
     clip_playhead_ev_t ev[32];
     int n;
     while ((n = clip_playhead_take(ev, 32)) > 0) {
         for (int i = 0; i < n; i++) {
             g_ph_total++;
+            if (mm_log) {
+                static move_model_t mm;
+                if (move_model_get(&mm) && mm.clock_valid && mm.selected_track >= 0 &&
+                    mm.step_beats > 0.0) {
+                    const mm_track_t *T = &mm.track[mm.selected_track];
+                    const int cs2 = (T->mode == 1) ? T->playing_slot : -1;
+                    if (cs2 >= 0 && cs2 < MM_SLOTS && T->slot[cs2].exists && T->slot[cs2].scroll >= 0.0) {
+                        const mm_clip_t *c = &T->slot[cs2];
+                        const double pos = mm_clip_position(c, T->start_beats, ev[i].pulses / 24.0);
+                        const int step = step_plock_button_to_step(ev[i].idx, mm.step_triplet);
+                        if (pos >= 0.0 && step >= 0) {
+                            const double d = (pos - c->scroll) - step * mm.step_beats;
+                            if (!mmf) mmf = fopen("/data/UserData/schwung/phase_model.log", "a");
+                            if (mmf) fprintf(mmf, "pul=%u T%d s%d idx=%u pos=%.4f scroll=%.2f grid=%.4f d=%+.4f bpm=%.1f\n",
+                                             ev[i].pulses, mm.selected_track + 1, cs2 + 1, ev[i].idx, pos,
+                                             c->scroll, mm.step_beats, d, mm.tempo);
+                        }
+                    }
+                }
+            }
             /* Before scoring: if the SELECTED track has identity but no
              * anchor, solve it from this very sighting. Loading a set while
              * the transport keeps running produces no Start and no witnessed
@@ -972,6 +1024,7 @@ static void clip_phase_check_tick(void)
         }
         if (n < 32) break;
     }
+    if (mmf) fclose(mmf);
 }
 
 /* THE LANE TRACE, drained. The callback fills a preallocated ring (lane_trace.h);

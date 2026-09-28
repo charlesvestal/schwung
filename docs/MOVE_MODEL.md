@@ -174,6 +174,49 @@ Pending ids also carry a per-boot token now: the sequence restarted at 1 every
 boot, so `__pending-26-1` named a different unsaved set each session and a new
 one silently loaded an old one's leftovers.
 
+## Automation lanes on the model
+
+`shadow_slot_clip_phase()` and `shadow_lanes_step_phase()`
+(`shadow_chain_mgmt.c`) answer from the model; the ~365-line LED / step-strip /
+Song.abl resolver they replaced is gone. The chain seam
+(`chain_set_clip_phase`) is unchanged.
+
+- **Clip** = the track's `PlayingState` clip; **loop** from its region;
+  **phase** = `mm_clip_position(clip, start_beats, now)` in CLIP time, where
+  `now` is the shim's per-block interpolated MIDI-clock position (the model's
+  own beat clock refreshes every ~20 ms, too coarse to drive a parameter).
+- **Fingerprint** `{loop_start, loop_len, notes_len, notes_hash}` — the content
+  half is a hash of Move's notes blob, so it is always valid: there is no
+  "blind take" and no adoption any more. A take lands on the clip it was made
+  on, at the moment it is made.
+- **A held step** is `scroll + step × step_beats` (triplets skip the dead
+  fourth button); refused past the clip's end, pending with no current clip.
+- **Deletions and copies** come from diffing the model (`move_model_sync.c` →
+  the worker's clip-event channels): a deleted clip ORPHANS its lanes at once
+  (it waited for Move's save before — long enough for a clip made in the same
+  slot to inherit them); a clip that arrives with the same notes and geometry
+  as one on its track is a COPY, and its lanes are copied.
+- **Orphans re-attach on Undo** — Move's Undo restores the same clip object
+  (measured: same flip id), its fingerprint matches, and the lane plays again.
+  They are **not written to disk**: undo history does not survive a reload,
+  and a written orphan came back looking live, so a new clip in that slot
+  inherited the dead clip's automation.
+
+Measured on hardware (hank on Set 5, T2, 117 BPM):
+- p-lock on a clip made one second earlier, stopped: accepted (`ok`), bound to
+  the new clip, and heard on step 5 every loop (0.9 for phase 1.00–1.25, base
+  elsewhere);
+- the model phase against Move's own step playhead: **143/143 LED events in the
+  right step**, offset +1 or +2 clock pulses (the LED's latency), including a
+  clip launched mid-playback at beat 8;
+- a recorded knob sweep (45 points) played back at median error 0.002 over two
+  loops;
+- delete → `orph=1` at once; Undo → re-attached and driving; Copy → the
+  duplicate got a 45-point copy of the lane.
+
+`move_model_on` also writes `phase_model.log`: one line per step-playhead LED
+with the model's position and the offset `d` from the lit step's start.
+
 ## Not RT, and cheap
 
 The reader is its own SCHED_OTHER thread on cores 0–2, created from shim init.

@@ -567,6 +567,12 @@ The `ui_hierarchy` and `chain_params` declarations (what a module must publish f
 the shadow UI to know its steps, ranges and enum options), the chain host's file
 layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 
+- **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
+  Clip, loop, launch beat, step page and grid are READ; deletions and copies
+  are diffs of it. Several bullets below describe the LED / step-strip /
+  Song.abl resolver it replaced (blind takes, adoption, the strip's
+  bar count, `edit_unconfirmed`) -- they are history now, kept for the
+  measurements. Orphans are not written to disk; Undo re-attaches in memory.
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.

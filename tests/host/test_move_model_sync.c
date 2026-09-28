@@ -22,8 +22,24 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4])
 void shadow_apply_mute(int slot, int v) { n_mute++; last_slot = slot; last_val = v; }
 void shadow_apply_solo(int slot, int v) { n_solo++; last_slot = slot; last_val = v; }
 void shadow_poll_current_set(void) { n_poll++; }
+static uint32_t del_mask; static int n_del, n_copy, cp_t, cp_src, cp_dst;
+void shim_worker_publish_clip_deleted(uint32_t mask) { n_del++; del_mask = mask; }
+void shim_worker_publish_clip_copy(int t, int src, int dst) { n_copy++; cp_t = t; cp_src = src; cp_dst = dst; }
 
-static void reset(void) { n_mix = n_mute = n_solo = n_poll = 0; last_slot = last_val = -1; }
+static void reset(void)
+{
+    n_mix = n_mute = n_solo = n_poll = n_del = n_copy = 0;
+    last_slot = last_val = -1;
+    del_mask = 0;
+}
+static mm_clip_t clip(uint64_t id, uint32_t hash)
+{
+    mm_clip_t c;
+    memset(&c, 0, sizeof c);
+    c.exists = 1; c.clip_id = id; c.notes_len = hash ? 40 : 0; c.notes_hash = hash;
+    c.region_end = 4; c.loop_end = 4; c.loop_on = 1;
+    return c;
+}
 
 static move_model_t doc(uint32_t gen)
 {
@@ -118,6 +134,41 @@ int main(void)
     reset();
     g_fn(&bad, &h);
     CHECK(n_mix == 0 && n_poll == 0 && ctl.move_doc_gen == 3);
+
+    /* ---- clip events, within one document -------------------------------- */
+    move_model_t p = doc(3), q;
+    p.track[1].slot[0] = clip(100, 0xabc);
+    p.track[1].slot[2] = clip(101, 0x777);
+    /* delete track 2 slot 3 -> bit 1*8+2 */
+    q = p; memset(&q.track[1].slot[2], 0, sizeof(mm_clip_t));
+    reset(); g_fn(&q, &p);
+    CHECK(n_del == 1 && del_mask == (1u << 10) && n_copy == 0);
+    /* deleted and REMADE in the same slot within one tick: still a deletion */
+    q = p; q.track[1].slot[2] = clip(202, 0x777);
+    reset(); g_fn(&q, &p);
+    CHECK(n_del == 1 && del_mask == (1u << 10));
+    /* Move's Copy: slot 0 duplicated into slot 5 */
+    q = p; q.track[1].slot[5] = clip(300, 0xabc);
+    reset(); g_fn(&q, &p);
+    CHECK(n_copy == 1 && cp_t == 1 && cp_src == 0 && cp_dst == 5 && n_del == 0);
+    /* a new clip with different notes is not a copy */
+    q = p; q.track[1].slot[5] = clip(301, 0x999);
+    reset(); g_fn(&q, &p);
+    CHECK(n_copy == 0);
+    /* two EMPTY clips are not a copy either */
+    move_model_t r = p; r.track[2].slot[0] = clip(400, 0);
+    q = r; q.track[2].slot[1] = clip(401, 0);
+    reset(); g_fn(&q, &r);
+    CHECK(n_copy == 0);
+    /* an edit in place (same id, new notes) is neither */
+    q = p; q.track[1].slot[0].notes_hash = 0xdef;
+    reset(); g_fn(&q, &p);
+    CHECK(n_copy == 0 && n_del == 0);
+    /* a SET LOAD replaces every id: never read as deletions */
+    move_model_t z = doc(4);
+    z.track[1].slot[0] = clip(900, 0xabc);
+    reset(); g_fn(&z, &p);
+    CHECK(n_del == 0 && n_copy == 0 && n_mix == 1);
 
     if (fails) { printf("test_move_model_sync: %d FAILED\n", fails); return 1; }
     printf("test_move_model_sync: PASS\n");
