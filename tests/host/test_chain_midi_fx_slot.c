@@ -47,6 +47,10 @@ CHAIN_INTERNAL int parse_chain_params(const char *module_path,
     if (count) *count = 1;
     return 0;
 }
+CHAIN_INTERNAL void chain_child_keys_load(chain_child_keys_t *ck, const char *module_path) {
+    (void)module_path;
+    if (ck) { ck->ntmpl = 0; ck->nalias = 0; }   /* touches the position's state, as the real one does */
+}
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len) {
     (void)module_path;
     if (out && out_len > 0) out[0] = '\0';

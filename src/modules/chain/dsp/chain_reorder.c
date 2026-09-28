@@ -52,6 +52,8 @@
  * chain_alloc_position_storage rather than trusting what is written here.
  */
 #define PERM_FIELD(arr) { (void *)(arr), sizeof((arr)[0]), 0 }
+_Static_assert(sizeof(chain_child_keys_t) <= CHAIN_PERM_MAX_ELEM,
+               "chain_child_keys_t permutes by value: over CHAIN_PERM_MAX_ELEM every fx:move is refused");
 #define PERM_OWNED(arr, bytes) { (void *)(arr), sizeof((arr)[0]), (bytes) }
 #define PERM_PARAMS_BYTES (MAX_CHAIN_PARAMS * sizeof(chain_param_info_t))
 
@@ -65,6 +67,7 @@ static int chain_perm_collect_fx(chain_instance_t *inst, chain_perm_array_t *out
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_on_midi);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_param_counts);
+    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_child_keys);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_smoothers);
@@ -81,6 +84,7 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->current_midi_fx_modules);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_param_counts);
+    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_child_keys);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_midi_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_pre_capable);

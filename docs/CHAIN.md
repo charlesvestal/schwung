@@ -1522,5 +1522,16 @@ both ours:
 
 `chain_params` entries the hierarchy does not declare (dr32's `kit`, `master`)
 are now MERGED rather than skipped whenever the hierarchy has inline params.
-Synth only; `child_key_overrides` naming a different template per key are not
-resolved. Pinned against dr32's real module.json (`tests/fixtures/dr32`).
+
+Every position resolves this way -- synth, `fx<N>` and `midi_fx<N>` -- through
+one `chain_child_keys_t` per position (templates + a 24-entry alias ring,
+round-robin when full). An alias stores its BASE key and is re-checked on every
+hit, so a table replaced underneath it (a reload, the runtime `chain_params`
+refresh) re-resolves instead of answering with whatever now sits at its index.
+The fx/midi_fx copies are VALUE arrays in the permutation (`chain_reorder.c`),
+so a rack's keys follow its module on `fx:move`; the struct is held under
+`CHAIN_PERM_MAX_ELEM` by a `_Static_assert`, because a larger element makes
+the permute REFUSE and every move silently do nothing. No installed effect
+declares a rack yet (dr32, forge, minijv, simian, voice-poc are all synths).
+`child_key_overrides` naming a different template per key are not resolved.
+Pinned against dr32's real module.json (`tests/fixtures/dr32`).
