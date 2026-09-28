@@ -331,6 +331,32 @@ export function drawArrowDown(x, y, ctx = DEVICE_CTX) {
     px(ctx, x + 2, y + 2, 1);
 }
 
+/*
+ * ROW HEIGHT FOLLOWS THE FONT THE CTX ACTUALLY DRAWS WITH.
+ *
+ * The list geometry is tuned for the device's 7px glyphs: a 9px row, the
+ * highlight one pixel above and one below. An embedding host that draws its
+ * own face through the ctx (movy's is 5px tall) kept those 9px rows, so the
+ * glyphs sat at the TOP of the highlight with three pixels under them and
+ * one over — off-centre on every row, and a row shorter than it could be.
+ *
+ * Measured widths already go through the ctx (measurer); this is the same
+ * idea for height. A ctx may declare `fontHeight`, and the row becomes the
+ * glyphs plus one pixel of highlight either side. Absent — the device ctx and
+ * every existing caller — nothing moves. An explicit argument always wins.
+ */
+function rowGeometry(ctx, lineHeight, highlightHeight, highlightOffset) {
+    const fh = ctx && typeof ctx.fontHeight === "number" && ctx.fontHeight > 0
+        ? ctx.fontHeight : 0;
+    const line = lineHeight !== undefined ? lineHeight : (fh ? fh + 2 : LIST_LINE_HEIGHT);
+    return {
+        lineHeight: line,
+        highlightHeight: highlightHeight !== undefined ? highlightHeight
+            : (fh ? line : LIST_HIGHLIGHT_HEIGHT),
+        highlightOffset: highlightOffset !== undefined ? highlightOffset : LIST_HIGHLIGHT_OFFSET,
+    };
+}
+
 export function drawMenuList({
     /* The draw surface. Defaults to the device globals, which is what every
      * shadow view module wants and what this file always did. The param-page
@@ -343,9 +369,11 @@ export function drawMenuList({
     selectedIndex,
     listArea,
     topY = LIST_TOP_Y,
-    lineHeight = LIST_LINE_HEIGHT,
-    highlightHeight = LIST_HIGHLIGHT_HEIGHT,
-    highlightOffset = LIST_HIGHLIGHT_OFFSET,
+    /* Left undefined so a ctx that names its own glyph height can size the
+     * rows — see rowGeometry. */
+    lineHeight,
+    highlightHeight,
+    highlightOffset,
     labelX = LIST_LABEL_X,
     valueX = LIST_VALUE_X,
     valueAlignRight = false,
@@ -370,6 +398,8 @@ export function drawMenuList({
                         screen-reader announcements (e.g. file-browser) to
                         avoid double-announcing each selection move */
 }) {
+    ({ lineHeight, highlightHeight, highlightOffset } =
+        rowGeometry(ctx, lineHeight, highlightHeight, highlightOffset));
     const totalItems = items.length;
     /* Every width below is MEASURED through the ctx this row is drawn with, so
      * the budget and the glyphs can never disagree. See measurer(). */
