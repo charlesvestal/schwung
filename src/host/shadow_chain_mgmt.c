@@ -32,6 +32,7 @@
 #include "shadow_midi.h"
 #include "unified_log.h"
 #include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
+#include "move_model_sync.h"
 
 
 /* Weak no-op for the RT-thread audit's module attribution.
@@ -3034,9 +3035,18 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_apply_mute(slot, atoi(value));
         return 1;
     }
+    if (strcmp(key, "set_aligned") == 0) {
+        /* shadow_ui finished its SET_CHANGED switch (slot index ignored). */
+        shadow_set_pages_ack_aligned();
+        return 1;
+    }
     if (strcmp(key, "slot:move_mix") == 0) {
         /* All four slots at once, from Move's Song.abl on a set change (the
-         * slot index is ignored). Pure assignment -- the UI did the file read. */
+         * slot index is ignored). Pure assignment -- the UI did the file read.
+         * With the live model the mixer was already taken from Move itself at
+         * the set-load edge, and a file that is only the last SAVE must not
+         * override it. */
+        if (move_model_sync_active()) return 1;
         int muted[4], soloed[4];
         if (!shadow_parse_mix_state(value, muted, soloed)) {
             shadow_log("slot:move_mix: malformed value, ignored");

@@ -62,6 +62,10 @@ typedef struct {
  * 2 = the track was stopped (an empty slot was launched/selected). */
 typedef struct {
     uint8_t   selected;
+    uint8_t   mixer_valid;
+    uint8_t   muted, soloed;  /* derived: speakerOn off / solo-cue on */
+    double    volume, pan;    /* the mixer Parameters' manual values, as stored (volume 0..1) */
+    double    speaker_value, solo_value;
     int       mode;
     int       playing_slot;  /* 0..7, or -1 */
     double    start_beats;   /* transport beat the current clip started on */
@@ -70,6 +74,8 @@ typedef struct {
 
 typedef struct {
     int      valid;          /* the document was resolved and read */
+    uint64_t doc_id;         /* hash of the four track object ids: new on every set load */
+    uint32_t doc_gen;        /* bumps when doc_id changes -- the set-load edge */
     int      clock_valid;    /* playing/song_beats are known (build-pinned) */
     int      playing;
     double   song_beats;     /* transport clock: beats since Play, 0 on every Play */
@@ -87,6 +93,12 @@ typedef struct {
 void move_model_start(void);              /* spawns the reader thread, once */
 int  move_model_get(move_model_t *out);   /* seqlock copy; returns out->valid */
 uint32_t move_model_seq(void);            /* bumps on every published change */
+
+/* Called on the READER thread (SCHED_OTHER, may do file I/O, must not block
+ * for long) after every published change, with the new and previous snapshot.
+ * One listener; set it before or after start. */
+typedef void (*move_model_listener_fn)(const move_model_t *now, const move_model_t *prev);
+void move_model_set_listener(move_model_listener_fn fn);
 
 /* Where the current clip of a track is, in CLIP time (beats), given the
  * transport clock. Plays region_start..loop_end once, then wraps inside the

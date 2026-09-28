@@ -88,6 +88,7 @@ copied into Schwung.
 | Step length | `Song.mStepEditorResolution` via the enum | all six values tracked live through the Step Grid dialog |
 | Clip identity | the SessionClip's flip object id | unique per clip for the life of the loaded set; a new clip gets a new id |
 | When the clip started | `PlayingState.mSessionClipStartTime` (beats) | **the quantised launch boundary, exactly**: pressed at 4.76 → `8.0`; pressed at 13.5 → `16.0`. Every Play resets all to `0.0` |
+| Track mute / solo / volume / pan | `Track.mTrackMixerDevice` → `AudioMixerParameters.mSpeakerOn/mSolo/mVolume/mPan` | instant; see below |
 | Transport run state + position | `Transport.mTransportControlMessage` +0xb0 (0/1) and +0x158 (double beats) | **build-pinned**, see below. ~20 ms update. Resets to 0 on every Play, holds on Stop |
 
 **Clip position** is then `region_start + (song_beats − start_beats)`, wrapped
@@ -120,6 +121,58 @@ Loading another set from Set Overview replaced the contents **in place** — sam
 `FSong` address, new tempo, new clips. The reader re-validates the vptr every
 tick and re-finds the object if it ever fails (`refind=` in the log); across
 two set loads it never had to.
+
+## What Schwung does with it — mute/solo and set alignment
+
+`src/host/move_model_sync.{h,c}` is the consumer, a listener on the reader
+thread.
+
+**Mute / solo follow Move's mixer directly.** `Track.mTrackMixerDevice` holds
+a `live.AudioMixerParameters` with `mSpeakerOn` (1 = audible) and `mSolo`
+(`solo-cue`) — Mute+Track flipped `speakerOn` 1→0→1 and Shift+Mute+Track
+`mSolo` 0→1→0, instantly. On a NEW DOCUMENT (a set load, or the first snapshot
+after boot) all four slots take them as LEVELS; after that only EDGES are
+applied, so Schwung's own slot-mute controls (slot settings, E16, CC map) still
+hold between Move gestures, as #540 specified. Measured on hardware: slot
+mute/unmute within ~200 ms of the gesture, and Move's exclusive solo handed
+T3 → T4 → none edge for edge.
+
+It replaces two inferences, which remain ONLY as the fallback on a firmware
+the model cannot resolve (`move_model_sync_active()` gates them): the D-Bus
+`"<name> muted"` text paired with a gesture window (`mute_follow.h`), and the
+Song.abl read at set load — which is only ever the last save. The SPI-thread
+optimistic toggle (Mute+Track, which also wrote the state file on the SPI
+callback) is gone under the model, and the per-set chain config no longer
+overrides the mixer when a set loads.
+
+**Set changes land in ~10 ms, not ~3 s.** A set load replaces the document:
+the new tracks are inserted before the old are removed, over ~180 ms, and
+Move rewrites `Settings.json`'s `currentSongIndex` within ~12 ms of the swap
+completing. The model's edge (a new hash of the four track ids) runs the
+identity poll at once, and the SPI-side consume went from every 500 frames to
+every 16. Measured: press → document edge 0.35 s (Move's own load) → SET_CHANGED
+7 ms later → Schwung switched and aligned 0.6 s after that (its slot reload).
+
+**Alignment gates autosave.** `shadow_control_t.move_doc_gen` is the document
+Move has loaded; `set_doc_gen` is the one Schwung's per-set state belongs to.
+While they differ, `shadow_ui` refuses periodic autosave — the old detection
+window was exactly how state landed in the outgoing set's folder. A reload of
+the SAME set (a new document, same name — which the index poll never saw)
+aligns in C once a read is known to postdate Move's rewrite (≥ 300 ms after
+the edge); a different set aligns when the UI acknowledges its SET_CHANGED
+with the `set_aligned` key. The poll republishes while misaligned — without
+that, a boot never aligned, found on hardware.
+
+**A new, unsaved set keeps its state.** Move writes a new set's folder only on
+its first save, so until then it runs under a synthetic `__pending-*` id —
+and whatever was configured there used to be orphaned when the real UUID
+appeared (eight such folders on one device). Now, if the model shows it is
+the SAME document (no set load in between), the pending folder's whole
+contents move to the real UUID. Verified with a positive-control file: slots,
+sends, snapshot and the marker all arrived; the pending folder was removed.
+Pending ids also carry a per-boot token now: the sequence restarted at 1 every
+boot, so `__pending-26-1` named a different unsaved set each session and a new
+one silently loaded an old one's leftovers.
 
 ## Not RT, and cheap
 
