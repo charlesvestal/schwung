@@ -43,6 +43,9 @@
 typedef struct {
     int  (*get)(const char *target, const char *param, float *out);   /* the BASE */
     void (*apply)(const char *target, const char *param, int on, float v);
+    /* What is APPLIED right now (the override), 1 if one is on. Diagnostics
+     * only -- the `scenes:driven` read. */
+    int  (*peek)(const char *target, const char *param, float *out);
 } scene_host_io_t;
 void shadow_scene_host_bind(const scene_host_io_t *io);
 /* The edit arm for a host setting: 1 when consumed as a lock. */
@@ -72,7 +75,11 @@ int  shadow_scene_bus_scope(const char *prefix, int prefix_len);
 
 /* The table verbs ("lock", "unlock", "clear", "copy", "load"); 1 = handled. */
 int  shadow_scene_bus_set_verb(int scope, const char *verb, const char *val);
-/* "dump", "count", "rev", "locks"; bytes written, or -1. */
+/* "dump", "count", "rev", "locks", "driven"; bytes written, or -1.
+ * "driven" is a DIAGNOSTIC measured at the destination: one line per param a
+ * scene drives right now, "<target> <param> <value>", the value asked of the
+ * PLUGIN itself (every other read of a driven param answers the knob, by
+ * design) -- or, in the host scope, the override the host has applied. */
 int  shadow_scene_bus_get_verb(int scope, const char *verb, char *buf, int len);
 
 /* The edit arm: 1 when the write was consumed as a lock (pos is 0-based). */
