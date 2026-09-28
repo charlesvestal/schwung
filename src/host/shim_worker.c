@@ -19,6 +19,7 @@
 #include "shadow_set_pages.h"
 #include "move_model_sync.h"
 #include "move_model.h"
+#include "drum_lanes.h"   /* dl_config_poll: the prototype switch */
 #include "step_plock.h"     /* set-load edge -> prompt identity poll */
 #include "shadow_state.h"
 #include "unified_log.h"
@@ -1421,6 +1422,7 @@ static void align_capture_tick(void) {
 }
 
 static void poll_flags(void) {
+    dl_config_poll();
     shim_touch_trace_on =
         (access("/data/UserData/schwung/touch_trace_on", F_OK) == 0);
 

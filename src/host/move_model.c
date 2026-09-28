@@ -125,6 +125,19 @@ int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
     return n;                                               /* landed exactly on the end */
 }
 
+void mm_decode_live_recs(const uint8_t *raw, int n, mm_live_rec_t *out)
+{
+    for (int k = 0; k < n; k++) {
+        const uint8_t *r = raw + (size_t)k * MM_LIVE_REC_BYTES;
+        memcpy(&out[k].frame, r, 8);                   /* little-endian, native on aarch64 */
+        memcpy(&out[k].ep, r + 8, 4);
+        memcpy(&out[k].a, r + 16, 4);
+        memcpy(&out[k].b, r + 20, 4);
+        memcpy(&out[k].id, r + 24, 8);
+        memcpy(&out[k].kind, r + 32, 4);
+    }
+}
+
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)
 #include <elf.h>
 #include "unified_log.h"
@@ -1117,6 +1130,167 @@ static uint64_t mono_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+/* ---- every track's PLAYING clip, for the audio thread (move_model.h) ---- */
+
+static mm_play_clip_t g_play[MM_TRACKS][2];
+static int g_play_cur[MM_TRACKS];            /* the index the RT side reads */
+static uint64_t g_play_flip_ms[MM_TRACKS];
+static const mm_play_clip_t g_play_none;
+
+const mm_play_clip_t *move_model_playing_notes(int track)
+{
+    if (track < 0 || track >= MM_TRACKS) return &g_play_none;
+    return &g_play[track][__atomic_load_n(&g_play_cur[track], __ATOMIC_ACQUIRE)];
+}
+
+static void play_flip(int t, uint64_t now)
+{
+    __atomic_store_n(&g_play_cur[t], 1 - g_play_cur[t], __ATOMIC_RELEASE);
+    g_play_flip_ms[t] = now;
+}
+
+/* Decode each track's playing clip when {slot, clip_id, notes_hash} moves.
+ * The bytes decoded are re-hashed and must equal the snapshot's notes_hash:
+ * Move edits the blob on its own thread, and a buffer read mid-edit decodes
+ * as a plausible wrong clip at least as often as it fails. A mismatch keeps
+ * the published clip and retries next tick. */
+static void playing_clips_update(const move_model_t *m)
+{
+    static uint8_t raw[MM_NOTES_RAW_MAX];
+    static mm_note_t scratch[MM_NOTES_MAX];
+    const uint64_t now = mono_ms();
+    for (int t = 0; t < MM_TRACKS; t++) {
+        const mm_track_t *T = &m->track[t];
+        const int cs = (T->mode == 1) ? T->playing_slot : -1;
+        const mm_clip_t *c = (cs >= 0 && cs < MM_SLOTS && T->slot[cs].exists) ? &T->slot[cs] : NULL;
+        const mm_play_clip_t *cur = &g_play[t][g_play_cur[t]];
+        if (!c || !c->notes_len) {
+            if (cur->valid || cur->clip_id) {          /* nothing playing: publish "unknown" */
+                if (now - g_play_flip_ms[t] < MM_PLAY_REUSE_MS) continue;
+                memset(&g_play[t][1 - g_play_cur[t]], 0, sizeof(mm_play_clip_t));
+                play_flip(t, now);
+            }
+            continue;
+        }
+        /* Same key = the same bytes (only hash-verified reads are published),
+         * so the same answer -- including "unknown": no need to decode again. */
+        if (cur->clip_id == c->clip_id && cur->slot == cs && cur->notes_hash == c->notes_hash)
+            continue;
+        if (now - g_play_flip_ms[t] < MM_PLAY_REUSE_MS) continue;   /* the RT side may still hold it */
+
+        const uint64_t vec = g_probe_tab[t][cs].notes_vec;
+        uint64_t be[2];
+        if (!vec || RD(vec, be, sizeof be) || be[1] < be[0] || be[1] - be[0] > MM_NOTES_RAW_MAX) continue;
+        const size_t len = (size_t)(be[1] - be[0]);
+        if (len && RD(be[0], raw, len)) continue;
+        uint32_t h = 2166136261u;
+        for (size_t i = 0; i < len; i++) { h ^= raw[i]; h *= 16777619u; }
+        if (h != c->notes_hash) continue;                            /* torn, or the snapshot is behind */
+
+        mm_play_clip_t *d = &g_play[t][1 - g_play_cur[t]];
+        const int n = mm_decode_notes_buf(raw, len, scratch, MM_NOTES_MAX, NULL, 0);
+        d->slot = cs;
+        d->clip_id = c->clip_id;
+        d->notes_hash = c->notes_hash;
+        /* All or nothing: more notes than fit is "unknown", never a truncated clip. */
+        d->valid = (n >= 0 && n <= MM_PLAY_NOTES_MAX);
+        d->n = d->valid ? n : 0;
+        for (int i = 0; i < d->n; i++)
+            d->note[i] = (mm_play_note_t){ scratch[i].pitch, (float)scratch[i].pitch_offset,
+                                           scratch[i].vel, scratch[i].start, scratch[i].dur };
+        play_flip(t, now);
+    }
+}
+
+/* ---- LIVE notes: Move's engine EventBuffers (move_model.h) ------------- */
+
+/* The shared_ptr control block that owns each buffer -- its vtable is the
+ * handle, resolved from this RTTI name once per process. Layout after the
+ * vptr (measured, 2.1.0): +0x18 capacity (256), +0x20 count (per block),
+ * +0x28 the record array. */
+static const char *EB_CLASS =
+    "NSt3__120__shared_ptr_emplaceIN7ableton6engine11EventBufferINS1_4midi21EndpointedMidiMessageENS1_"
+    "8datatype8DistanceINS6_4UnitINS1_4time5units9FrameKindENS_5ratioILl1ELl1EEEEEdEENS2_19MidiOverflow"
+    "HandlerIS5_SF_EEEENS_9allocatorISI_EEEE";
+#define EB_MAX 32
+#define EB_CAP 256
+static vpset_t g_vp_eb;
+static int g_eb_resolved;
+static uint64_t g_eb_cb[EB_MAX];
+static int g_neb;
+static uint64_t g_live_data;                 /* published: the record array, 0 = none */
+
+static int eb_valid(uint64_t cb, uint64_t *data)
+{
+    uint64_t w[6];
+    if (RD(cb, w, sizeof w) || !vp_is(&g_vp_eb, w[0]) || w[3] != EB_CAP) return 0;
+    if (w[5] < g_heap.lo || w[5] >= g_heap.hi) return 0;
+    if (data) *data = w[5];
+    return 1;
+}
+
+/* Every EventBuffer control block in the heap. Heavy (a pass over the heap,
+ * reader thread only), so it runs at start and when the published buffer
+ * dies -- a set load rebuilds Move's graph. */
+static void eb_scan(void)
+{
+    g_neb = 0;
+    if (!g_eb_resolved) {
+        g_vp_eb.n = rtti_vptrs(EB_CLASS, g_vp_eb.v, MAXVP);
+        g_eb_resolved = 1;
+        status("live: EventBuffer vtables %d", g_vp_eb.n);
+    }
+    if (!g_vp_eb.n || !g_heap.lo) return;
+    const size_t CH = 1 << 20;
+    uint64_t *buf = malloc(CH);
+    if (!buf) return;
+    for (uint64_t s = g_heap.lo; s < g_heap.hi && g_neb < EB_MAX; s += CH) {
+        size_t n = (g_heap.hi - s < CH) ? (size_t)(g_heap.hi - s) : CH;
+        if (RD(s, buf, n)) continue;
+        for (size_t k = 0; k < n / 8 && g_neb < EB_MAX; k++)
+            if (vp_is(&g_vp_eb, buf[k]) && eb_valid(s + 8 * k, NULL)) g_eb_cb[g_neb++] = s + 8 * k;
+    }
+    free(buf);
+    status("live: %d EventBuffers", g_neb);
+}
+
+/* Every tick: keep the published buffer only while its owner is alive, and
+ * publish the first buffer whose records carry the live-input endpoint.
+ * Its records persist between blocks, so one press after a scan is enough
+ * to classify it. */
+static void live_update(unsigned tick)
+{
+    static unsigned next_scan;
+    uint64_t data = 0;
+    int have = 0;
+    for (int i = 0; i < g_neb && !have; i++) {
+        if (!eb_valid(g_eb_cb[i], &data)) continue;
+        uint8_t raw[MM_LIVE_REC_BYTES * 4];
+        if (RD(data, raw, sizeof raw)) continue;
+        mm_live_rec_t r[4];
+        mm_decode_live_recs(raw, 4, r);
+        for (int k = 0; k < 4; k++)
+            if (r[k].ep == MM_LIVE_EP_INPUT && r[k].kind <= MM_LIVE_KIND_PNCC && r[k].id > 0) { have = 1; break; }
+    }
+    __atomic_store_n(&g_live_data, have ? data : 0, __ATOMIC_RELEASE);
+    /* Nothing live: rescan, backing off -- a fresh graph, or no press yet. */
+    if (!have && tick >= next_scan) {
+        if (parse_maps() == 0) eb_scan();
+        next_scan = tick + (g_neb ? 500u : 3000u);       /* ~10 s, or ~60 s */
+    }
+}
+
+int move_model_live_read(mm_live_rec_t *out, int max)
+{
+    const uint64_t data = __atomic_load_n(&g_live_data, __ATOMIC_ACQUIRE);
+    if (!data || max <= 0) return -1;
+    if (max > 32) max = 32;
+    uint8_t raw[MM_LIVE_REC_BYTES * 32];
+    if (RD(data, raw, (size_t)max * MM_LIVE_REC_BYTES)) return -1;
+    mm_decode_live_recs(raw, max, out);
+    return max;
+}
+
 static void publish(const move_model_t *m)
 {
     atomic_fetch_add_explicit(&g_seq, 1, memory_order_acq_rel);
@@ -1295,6 +1469,8 @@ static void *reader_main(void *arg)
         if (b.doc_id != prev.doc_id) doc_gen++;         /* a different document: a set load */
         b.doc_gen = doc_gen;
         edited_clip_update(&b);
+        playing_clips_update(&b);
+        live_update(tick);
         int changed = !same_shape(&b, &prev) || prev.valid != b.valid || prev.playing != b.playing;
         publish(&b);
         if (changed && g_listener) g_listener(&b, &prev);
