@@ -105,6 +105,8 @@ int shadow_set_pages_consume_read(const char *name, const char *uuid, uint32_t g
                                   int settled, uint64_t age_ms);
 /* The generation of the SET_CHANGED last raised (served as `active_set` line 3). */
 uint32_t shadow_set_pages_published_gen(void);
+/* CLOCK_MONOTONIC ms of the worker's last successful set read (0 = never). */
+uint64_t shadow_set_pages_last_publish_ms(void);
 
 
 /* Read current page from disk (returns 0 if not found) */
