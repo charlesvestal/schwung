@@ -38,3 +38,11 @@ uint32_t move_model_sync_gen(void);        /* current doc generation, 0 if not a
 int      move_model_sync_settled(void);
 /* A set load the model saw has not been aligned yet (move_doc_gen != set_doc_gen). */
 int      move_model_sync_misaligned(void);
+
+/* SPI thread: apply the mute/solo changes the reader posted. Called beside
+ * shadow_set_pages_consume(), so every write to the slot mix flags happens on
+ * the one thread that also serves slot:muted / slot:soloed. */
+void     move_model_sync_apply_pending(void);
+/* Shim worker, every tick: publish liveness to the UI (move_model_ready) and
+ * expire a set misalignment nothing can resolve. */
+void     move_model_sync_housekeep(void);

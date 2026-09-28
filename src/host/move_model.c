@@ -501,9 +501,11 @@ static int resolve_all(void)
     g_vp_sessionclip.n = rtti_vptrs("N7ableton10flip_model12FSessionClipE", g_vp_sessionclip.v, MAXVP);
     g_vp_midicontent.n = rtti_vptrs("N7ableton10flip_model16FMidiClipContentE", g_vp_midicontent.v, MAXVP);
     g_vp_mixparams.n   = rtti_vptrs("N7ableton10flip_model21FAudioMixerParametersE", g_vp_mixparams.v, MAXVP);
-    if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n) {
-        status("resolve: rtti unresolved song=%d clips=%d sessionclip=%d",
-               g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n);
+    /* The MIXER is mandatory too: the model owning mute/solo while it can
+     * read no mixer turns every fallback off and follows nothing. */
+    if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n || !g_vp_mixparams.n) {
+        status("resolve: rtti unresolved song=%d clips=%d sessionclip=%d mixer=%d",
+               g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_mixparams.n);
         return -1;
     }
     g_song = find_song();
@@ -788,26 +790,44 @@ void move_model_set_listener(move_model_listener_fn fn) { g_listener = fn; }
 static atomic_uint g_seq;          /* odd while writing */
 static atomic_uint g_changes;
 
+/* A torn read leaves `out` UNTOUCHED and returns 0: a caller keeping a static
+ * copy then still holds the last good snapshot. Zeroing it made one preempted
+ * publish read as "no clip, phase unknown" -- every lane released for a block
+ * and a recording pass ended. */
 int move_model_get(move_model_t *out)
 {
+    static __thread move_model_t tmp;
     for (int tries = 0; tries < 8; tries++) {
         unsigned a = atomic_load_explicit(&g_seq, memory_order_acquire);
         if (a & 1) continue;
-        memcpy(out, &g_pub, sizeof *out);
+        memcpy(&tmp, &g_pub, sizeof tmp);
         atomic_thread_fence(memory_order_acquire);
-        if (atomic_load_explicit(&g_seq, memory_order_relaxed) == a) return out->valid;
+        if (atomic_load_explicit(&g_seq, memory_order_relaxed) == a) {
+            memcpy(out, &tmp, sizeof *out);
+            return out->valid;
+        }
     }
-    memset(out, 0, sizeof *out);
     return 0;
 }
 
+static atomic_ullong g_last_publish_ms;
+uint64_t move_model_last_publish_ms(void) { return atomic_load(&g_last_publish_ms); }
+
 uint32_t move_model_seq(void) { return atomic_load(&g_changes); }
+
+static uint64_t mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
 
 static void publish(const move_model_t *m)
 {
     atomic_fetch_add_explicit(&g_seq, 1, memory_order_acq_rel);
     memcpy(&g_pub, m, sizeof g_pub);
     atomic_fetch_add_explicit(&g_seq, 1, memory_order_release);
+    if (m->valid) atomic_store(&g_last_publish_ms, mono_ms());
 }
 
 /* Structure equality: everything but the clock, which moves every read. */
@@ -902,8 +922,16 @@ static void *reader_main(void *arg)
     pthread_setaffinity_np(pthread_self(), sizeof mask, &mask);
 
     sleep(8);                        /* let Move build its document first */
-    int backoff = 1;
+    /* BOUNDED. Each attempt scans the heap and the image; an unrecognised
+     * firmware would otherwise pay that every 32 s for the life of the
+     * process and grow the status file without end. The fallbacks (D-Bus
+     * mute follow, Song.abl, the file poll) are in charge meanwhile. */
+    int backoff = 1, attempts = 0;
     while (resolve_all() != 0) {
+        if (++attempts >= 8) {
+            status("resolve: giving up after %d attempts; the model stays off this boot", attempts);
+            return NULL;
+        }
         sleep(backoff);
         if (backoff < 30) backoff *= 2;
     }
@@ -939,7 +967,13 @@ static void *reader_main(void *arg)
                 refinds++;
                 if (parse_maps() == 0) g_song = find_song();
                 status("song object invalid; re-found at %llx", (unsigned long long)g_song);
-                if (!g_song) sleep(2);                       /* a heap scan is not a 50 Hz thing */
+                /* A heap scan is not a 50 Hz thing, nor a 2 s one forever:
+                 * back off to a minute. The model is reported stale
+                 * meanwhile (move_model_last_publish_ms), so the fallbacks
+                 * take over rather than following a frozen document. */
+                static unsigned refind_wait = 2;
+                if (!g_song) { sleep(refind_wait); if (refind_wait < 60) refind_wait *= 2; }
+                else refind_wait = 2;
                 continue;
             }
             if (ra || snapshot(&b) || !same_shape(&a, &b)) { torn++; have_plan = 0; continue; }
