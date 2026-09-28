@@ -52,3 +52,10 @@ void     move_model_sync_on_arm(int armed);
 #define  MMS_CMD_VAL 160    /* a lane command's value, the longest being a voice-scoped paste */
 /* RT: the next lane command for a slot's chain ("lanes:<verb>", value); 0 = none. */
 int      move_model_sync_pop_cmd(int *slot, char *key, int klen, char *val, int vlen);
+/* SPI thread: apply the mute/solo changes the reader posted. Called beside
+ * shadow_set_pages_consume(), so every write to the slot mix flags happens on
+ * the one thread that also serves slot:muted / slot:soloed. */
+void     move_model_sync_apply_pending(void);
+/* Shim worker, every tick: publish liveness to the UI (move_model_ready) and
+ * expire a set misalignment nothing can resolve. */
+void     move_model_sync_housekeep(void);
