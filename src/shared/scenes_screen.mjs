@@ -322,12 +322,10 @@ export function createScenesScreen(io) {
                 }
             }
 
-            /* Right of the grid: each end's lock count and the position. */
-            const ca = counts && s.a >= 0 ? counts[s.a] : 0;
-            const cb = counts && s.b >= 0 ? counts[s.b] : 0;
+            /* The fader position. (Per-end lock COUNTS were drawn beside the
+             * grid and read as unlabelled mystery numbers; a filled box already
+             * says a scene holds locks.) */
             const pct = Math.round(Math.max(0, Math.min(1, s.xfade)) * 100) + "%";
-            ctx.print(127 - ctx.textWidth(String(ca)), 15, String(ca), 1);
-            ctx.print(127 - ctx.textWidth(String(cb)), 31, String(cb), 1);
             ctx.print(127 - ctx.textWidth(pct), 44, pct, 1);
 
             /* The fader: A |####....| B, the position as a notch. */

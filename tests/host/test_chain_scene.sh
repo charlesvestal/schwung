@@ -43,8 +43,10 @@ grep -q 'chain_scene_get_param(inst, key + 7' "$host" || fail "scenes: reads not
 [ "$(grep -c 'chain_scene_edit_read(inst' "$host")" -eq 3 ] || fail "armed read missing from a component route"
 
 # The tick runs inside lfo_tick, which also runs on idle frames via mod:tick.
-awk '/^static void lfo_tick\(chain_instance_t \*inst, int frames\) \{/,/^}/' "$host" \
-  | grep -q 'chain_scene_tick(inst)' || fail "chain_scene_tick not called from lfo_tick"
+# Captured first, not piped into grep -q: grep exits on its first match, awk
+# then dies of SIGPIPE, and pipefail reports a failure that is only timing.
+lfo_body=$(awk '/^static void lfo_tick\(chain_instance_t \*inst, int frames\) \{/,/^}/' "$host")
+grep -q 'chain_scene_tick(inst)' <<< "$lfo_body" || fail "chain_scene_tick not called from lfo_tick"
 
 grep -q 'chain_scene_init(inst)' "$host" || fail "instance never initialises its scenes (zeroed = scene 1)"
 grep -q '^uint32_t chain_set_scene_morph(void \*instance' src/modules/chain/dsp/chain_scene.c || fail "export missing"
