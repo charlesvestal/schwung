@@ -3094,6 +3094,24 @@ static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
  * sees them -- pads arrive on cable 0, and a playing clip arrives nowhere --
  * so "is Move transmitting right now" has to come from the shim or not at all.
  */
+/* host_move_model_state() -> [ready, move_doc_gen, set_doc_gen]
+ *
+ * The live song model's view of set alignment (move_model_sync.h). ready is 0
+ * on a firmware the model cannot resolve, and then both generations are 0 --
+ * which reads as aligned, so callers keep their pre-model behaviour. */
+static JSValue js_host_move_model_state(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t ready = shadow_control ? shadow_control->move_model_ready : 0;
+    uint32_t doc = shadow_control ? shadow_control->move_doc_gen : 0;
+    uint32_t set = shadow_control ? shadow_control->set_doc_gen : 0;
+    JS_SetPropertyUint32(ctx, arr, 0, JS_NewInt32(ctx, (int32_t)ready));
+    JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt64(ctx, (int64_t)doc));
+    JS_SetPropertyUint32(ctx, arr, 2, JS_NewInt64(ctx, (int64_t)set));
+    return arr;
+}
+
 static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
@@ -3674,6 +3692,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_move_model_state", JS_NewCFunction(ctx, js_host_move_model_state, "host_move_model_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_e16_mirror", JS_NewCFunction(ctx, js_host_e16_mirror, "host_e16_mirror", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));

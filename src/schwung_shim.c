@@ -58,6 +58,8 @@
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
+#include "host/move_model.h"
+#include "host/move_model_sync.h"
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
@@ -6647,10 +6649,17 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     {
         static uint32_t set_poll_counter = 0;
         set_poll_counter++;
-        if (set_poll_counter >= 500) {  /* ~1.5s at 44100/128 */
+        /* ~46 ms. It was 500 (~1.5 s), which on top of the worker's 1.4 s scan
+         * made set detection take up to ~3 s; the consume is two volatile reads
+         * and a memcpy, and a set load the model sees now publishes promptly. */
+        if (set_poll_counter >= 16) {
             set_poll_counter = 0;
             shadow_set_pages_consume();
         }
+        /* Move's mute/solo, posted by the model reader: applied HERE so the
+         * slot mix flags have one writer (see move_model_sync.h). Every frame --
+         * it is an empty ring check when nothing changed. */
+        move_model_sync_apply_pending();
     }
 
 
@@ -9159,7 +9168,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * handler sets the slot to what Move reports. The
                          * toggle stays as the fallback for a reply that never
                          * comes. See src/host/mute_follow.h. */
-                        if (shadow_mute_held) {
+                        /* With the live model, Move's own mixer is read directly
+                         * and follows within a tick (move_model_sync.c) -- so no
+                         * optimistic toggle, and no file I/O on this thread. */
+                        if (shadow_mute_held && !move_model_sync_active()) {
                             mute_follow_on_track_press(&shadow_mute_follow, new_slot,
                                                        SHADOW_CHAIN_INSTANCES);
                             if (shadow_shift_held) {
@@ -11175,6 +11187,8 @@ static void shim_spi_init(void)
         shim_worker_set_hooks(&hooks);
     }
     shim_worker_start();
+    move_model_sync_init(&shadow_control);   /* mute/solo + set alignment from it */
+    move_model_start();   /* Move's live song document -- move_model.h */
     snap_worker_start();   /* off-RT remote-snapshot servicer (idle until a browser pulls) */
 
     /* Start LED capture logger thread (gated by flag file) */

@@ -842,6 +842,9 @@ function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
+/* move_doc_gen while the active set was an unsaved "__pending-*" one: its
+ * state migrates to the real UUID only if the document is still the same. */
+let pendingSetDocGen = -1;
 let slotDirtyCache = [false, false, false, false];
 /* Module signature ("synth|midi_fx1|fx1|fx2", one field per chain position, in
  * signal order — see getSlotModuleSignature) from the last successful autosave.
@@ -9793,6 +9796,9 @@ function loadRnboGraphFromDir(dir) {
  * four tracks -- leaves the per-set saved state as it is. */
 function syncSlotMixFromSong(uuid, setName) {
     if (!uuid || !setName) return;
+    /* The live model already took Move's mixer at the set-load edge; Song.abl
+     * is only the last save. This read remains for a firmware it cannot resolve. */
+    if (moveModelOwnsMix()) return;
     const path = "/data/UserData/UserLibrary/Sets/" + uuid + "/" + setName + "/Song.abl";
     try {
         const raw = host_read_file(path);
@@ -9810,6 +9816,27 @@ function syncSlotMixFromSong(uuid, setName) {
     }
 }
 
+/* The live song model (move_model_sync.h): [ready, move_doc_gen, set_doc_gen]. */
+function moveModelState() {
+    if (typeof host_move_model_state !== "function") return null;
+    try { return host_move_model_state(); } catch (e) { return null; }
+}
+/* Move reads its own mixer through the model, so mute/solo follow it directly
+ * and a per-set FILE (only ever the last save) must not override them. */
+function moveModelOwnsMix() {
+    const st = moveModelState();
+    return !!(st && st[0]);
+}
+/* A set load the model saw that Schwung's per-set state has not caught up
+ * with. Periodic autosave must not run in that window: whatever it writes
+ * goes to activeSlotStateDir, which still names the OUTGOING set. (The
+ * SET_CHANGED handler's own save of the outgoing set is deliberate and does
+ * not pass through here.) */
+function setAlignmentPending() {
+    const st = moveModelState();
+    return !!(st && st[0] && st[1] !== st[2]);
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -9818,6 +9845,7 @@ function loadChainConfigFromDir(dir) {
         if (!raw) return;
         const data = JSON.parse(raw);
         if (!data || !Array.isArray(data.slots)) return;
+        const ownsMix = moveModelOwnsMix();
         for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
             const s = data.slots[i];
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
@@ -9833,8 +9861,8 @@ function loadChainConfigFromDir(dir) {
             const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
             setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
-            if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
-            if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
+            if (!ownsMix && typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
+            if (!ownsMix && typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
     } catch (e) {
@@ -26945,6 +26973,10 @@ globalThis.tick = function() {
             const activeSetLines = activeSetRaw ? activeSetRaw.split("\n") : [];
             const uuid = activeSetLines[0] ? activeSetLines[0].trim() : "";
             const setName = activeSetLines[1] ? activeSetLines[1].trim() : "";
+            /* The model generation this name belongs to, read in the same
+             * answer: it is what step 11 acks, so a set loaded while this one
+             * is being switched to is re-raised rather than marked handled. */
+            const handledGen = activeSetLines[2] ? (parseInt(activeSetLines[2], 10) || 0) : 0;
 
             /* A SET CHANGE WE CANNOT NAME IS NOT CONSUMED.
              *
@@ -27003,6 +27035,24 @@ globalThis.tick = function() {
             if (uuid && typeof host_ensure_dir === "function") {
                 host_ensure_dir("/data/UserData/schwung/set_state");
                 host_ensure_dir(newDir);
+            }
+
+            /* 3b. A NEW set was unsaved until now: Move had loaded it but not
+             *     written its Sets/<UUID>/ folder, so it ran under a
+             *     "__pending-*" id and everything configured meanwhile went
+             *     there. Its real UUID has now appeared. Carry that state over
+             *     instead of orphaning it -- but only when the model proves it
+             *     is the SAME document (no set load in between), never on a
+             *     guess. */
+            if (uuid && uuid.indexOf("__pending-") !== 0 && pendingSetDocGen >= 0 &&
+                activeSlotStateDir.indexOf("/set_state/__pending-") >= 0 &&
+                !host_file_exists(newDir + "/slot_0.json")) {
+                const st = moveModelState();
+                if (st && st[0] && handledGen === pendingSetDocGen) {
+                    const from = activeSlotStateDir;
+                    debugLog("SET_CHANGED: new set saved, moving its state " + from + " -> " + newDir);
+                    host_system_cmd("sh -c \"cp -a '" + from + "'/. '" + newDir + "'/ && rm -rf '" + from + "'\"");
+                }
             }
 
             /* 4. First visit to this set: seed its state directory.
@@ -27318,9 +27368,20 @@ globalThis.tick = function() {
                 }
             }
 
-            /* 11. Clear flag */
+            /* 11. Clear the flag, THEN tell the shim which generation this
+             * set's state now is. That order is load-bearing: a set loaded
+             * during this switch raised the flag again, and the clear just
+             * erased it -- the ack names handledGen, the shim sees it is not
+             * the latest, and raises it once more. */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
+            }
+            setSlotParamWithTimeout(0, "set_aligned", String(handledGen), 500);
+            if (uuid.indexOf("__pending-") === 0) {
+                const st = moveModelState();
+                pendingSetDocGen = (st && st[0]) ? handledGen : -1;
+            } else {
+                pendingSetDocGen = -1;
             }
             debugLog("SET_CHANGED: reload complete");
         }
@@ -27480,10 +27541,14 @@ globalThis.tick = function() {
         refreshSlots();
     }
 
-    /* Periodic autosave (suppressed briefly after set change) */
+    /* Periodic autosave (suppressed briefly after set change, and for as long
+     * as a set load the model saw is not yet aligned) */
     if (autosaveSuppressUntil > 0) {
         autosaveSuppressUntil--;
         autosaveCounter = 0;
+    } else if (setAlignmentPending()) {
+        autosaveCounter = 0;
+        autosaveJob = null;
     } else {
         autosaveCounter++;
         if (!isOvertakeActive && autosaveCounter >= AUTOSAVE_INTERVAL) {
