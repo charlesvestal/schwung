@@ -811,7 +811,7 @@ void shadow_apply_mute(int slot, int is_muted) {
     char msg[64];
     snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
     shadow_log(msg);
-    shadow_save_state();
+    shadow_request_save_state();
 }
 
 /* Set a slot's solo to a known state, as Move reported it. Exclusive, like
@@ -838,7 +838,7 @@ void shadow_apply_solo(int slot, int is_soloed) {
     shadow_log(msg);
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
         shadow_ui_state_update_slot(i);
-    shadow_save_state();
+    shadow_request_save_state();
 }
 
 /* Set every slot's mute and solo at once, as Move's Song.abl states them.
@@ -857,7 +857,7 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
     snprintf(msg, sizeof(msg), "Move mix state: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
              muted[0], muted[1], muted[2], muted[3], soloed[0], soloed[1], soloed[2], soloed[3]);
     shadow_log(msg);
-    shadow_save_state();
+    shadow_request_save_state();
 }
 
 /* Boot: read the set Move is loading and take its track mute/solo. File I/O —
@@ -918,7 +918,7 @@ void shadow_toggle_solo(int slot) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_ui_state_update_slot(i);
     }
-    shadow_save_state();
+    shadow_request_save_state();
 }
 
 /* ============================================================================
@@ -3036,8 +3036,9 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         return 1;
     }
     if (strcmp(key, "set_aligned") == 0) {
-        /* shadow_ui finished its SET_CHANGED switch (slot index ignored). */
-        shadow_set_pages_ack_aligned();
+        /* shadow_ui finished its SET_CHANGED switch to the generation it
+         * names (slot index ignored). */
+        shadow_set_pages_ack_aligned((uint32_t)strtoul(value ? value : "0", NULL, 10));
         return 1;
     }
     if (strcmp(key, "slot:move_mix") == 0) {
@@ -3139,9 +3140,12 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].transpose);
     }
     if (strcmp(key, "active_set") == 0) {
-        /* Return "uuid\nname" for UI thread to write active_set.txt */
-        return snprintf(buf, buf_len, "%s\n%s",
-                        sampler_current_set_uuid, sampler_current_set_name);
+        /* "uuid\nname\ngen": the UI writes active_set.txt from the first two
+         * and acks `set_aligned` with the third -- read together, so the
+         * generation it acks is the one belonging to the name it switched to. */
+        return snprintf(buf, buf_len, "%s\n%s\n%u",
+                        sampler_current_set_uuid, sampler_current_set_name,
+                        shadow_set_pages_published_gen());
     }
     return -1;
 }

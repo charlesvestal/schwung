@@ -17,7 +17,8 @@
 #include "spi_tally.h"
 #include "align_capture.h"
 #include "shadow_set_pages.h"
-#include "move_model_sync.h"     /* set-load edge -> prompt identity poll */
+#include "move_model_sync.h"
+#include "shadow_state.h"     /* set-load edge -> prompt identity poll */
 #include "unified_log.h"
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
@@ -1840,6 +1841,8 @@ static void *worker_main(void *arg) {
          * is not yet aligned, so identity lands promptly even if the model's
          * own edge-triggered read raced Move's Settings.json rewrite. */
         if (tick % 7 == 0 || move_model_sync_misaligned()) shadow_poll_current_set();
+        move_model_sync_housekeep();   /* liveness -> UI; expire an unresolvable misalignment */
+        shadow_save_state_service();   /* the slot mix mutators only ask */
         tick++;
     }
     return NULL;
