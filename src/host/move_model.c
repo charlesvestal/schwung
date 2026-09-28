@@ -51,6 +51,80 @@ int mm_history_read(mm_read_fn rd, void *ctx, uint64_t obj, const mm_hist_vps_t 
     return 0;
 }
 
+static uint32_t be32(const uint8_t *r) { return (uint32_t)r[0] << 24 | (uint32_t)r[1] << 16 | (uint32_t)r[2] << 8 | r[3]; }
+static uint64_t be64(const uint8_t *r) { return (uint64_t)be32(r) << 32 | be32(r + 4); }
+static double be_f64(const uint8_t *r) { uint64_t u = be64(r); double d; memcpy(&d, &u, 8); return d; }
+
+#define MM_NOTE_HEAD     29             /* pitch, start, dur, vel, offvel, flag */
+#define MM_LANE_PITCH    (-2)
+#define MM_LANE_PRESSURE (-1)
+#define MM_PITCH_SCALE   (8191.0 / 48.0) /* 14-bit, +-48 semitones: 170.6458 per semitone */
+#define MM_LANES_MAX     16
+#define MM_POINTS_MAX    65536
+
+int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
+                        mm_expr_point_t *pool, int pool_max)
+{
+    if (!raw && len) return -1;
+    int n = 0, used = 0;
+    size_t o = 0;
+    while (o < len) {
+        if (len - o < MM_NOTE_HEAD + 8 || n >= max) return -1;
+        const uint8_t *r = raw + o;
+        mm_note_t nt;
+        memset(&nt, 0, sizeof nt);
+        nt.pitch = (int32_t)be32(r);
+        nt.start = be_f64(r + 4);
+        nt.dur = be_f64(r + 12);
+        { uint32_t w = be32(r + 20); float f; memcpy(&f, &w, 4); nt.vel = f; }
+        nt.pressure_first = -1;
+        size_t p = o + MM_NOTE_HEAD;
+        const uint32_t lanes = be32(raw + p);
+        if (lanes == 0) {                                   /* a plain note: i64 id */
+            nt.id = (int64_t)be64(raw + p);
+            p += 8;
+        } else {
+            if (lanes > MM_LANES_MAX) return -1;
+            p += 4;
+            for (uint32_t l = 0; l < lanes; l++) {
+                if (len - p < 8) return -1;
+                const int32_t type = (int32_t)be32(raw + p);
+                const uint32_t cnt = be32(raw + p + 4);
+                p += 8;
+                if (cnt > MM_POINTS_MAX || (size_t)cnt * 16u > len - p) return -1;
+                if (type == MM_LANE_PITCH) {
+                    /* The pitch at the note's start: the point at t=0, else the first. */
+                    for (uint32_t k = 0; k < cnt; k++) {
+                        const uint8_t *pt = raw + p + 16u * k;
+                        if (k == 0 || be_f64(pt) == 0.0) nt.pitch_offset = be_f64(pt + 8) / MM_PITCH_SCALE;
+                        if (be_f64(pt) == 0.0) break;
+                    }
+                } else if (type == MM_LANE_PRESSURE) {
+                    if (pool) {
+                        if (cnt > (uint32_t)(pool_max - used)) return -1;
+                        nt.pressure_first = used;
+                        for (uint32_t k = 0; k < cnt; k++) {
+                            pool[used + k].time = be_f64(raw + p + 16u * k);
+                            pool[used + k].value = be_f64(raw + p + 16u * k + 8);
+                        }
+                        used += (int)cnt;
+                    }
+                    nt.pressure_count = (int)cnt;
+                } else {
+                    return -1;                              /* a lane we do not know */
+                }
+                p += 16u * cnt;
+            }
+            if (len - p < 4) return -1;
+            nt.id = (int64_t)be32(raw + p);
+            p += 4;
+        }
+        out[n++] = nt;
+        o = p;
+    }
+    return n;                                               /* landed exactly on the end */
+}
+
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)
 #include <elf.h>
 #include "unified_log.h"
@@ -861,31 +935,22 @@ static int snapshot(move_model_t *m)
 
 /* ---- the edited clip's notes, decoded (model thread only) -------------- */
 
-#define MM_NOTES_MAX 512
+#define MM_NOTES_MAX 1024
+#define MM_NOTES_RAW_MAX (256 * 1024)   /* bytes: records are variable-length */
+#define MM_PRESS_MAX 8192
 static mm_note_t g_notes[2][MM_NOTES_MAX];   /* [0] now, [1] the previous state */
+static mm_expr_point_t g_press[2][MM_PRESS_MAX];
 static int g_nnotes[2];
 static mm_clip_ref_t g_notes_ref[2];
 
-static int decode_notes(uint64_t vec, mm_note_t *out, int max)
+static int decode_notes(uint64_t vec, mm_note_t *out, int max, mm_expr_point_t *pool, int pool_max)
 {
     uint64_t be[2];
-    if (!vec || RD(vec, be, sizeof be) || be[1] < be[0] || be[1] - be[0] > 37u * MM_NOTES_MAX) return -1;
-    static uint8_t raw[37 * MM_NOTES_MAX];
+    if (!vec || RD(vec, be, sizeof be) || be[1] < be[0] || be[1] - be[0] > MM_NOTES_RAW_MAX) return -1;
+    static uint8_t raw[MM_NOTES_RAW_MAX];
     size_t len = (size_t)(be[1] - be[0]);
     if (len && RD(be[0], raw, len)) return -1;
-    int n = 0;
-    for (size_t o = 0; o + 37 <= len && n < max; o += 37) {
-        const uint8_t *r = raw + o;   /* {i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag, i64 id}, big-endian */
-        uint64_t u; uint32_t w; double dv; float fv;
-        w = (uint32_t)r[0] << 24 | (uint32_t)r[1] << 16 | (uint32_t)r[2] << 8 | r[3];
-        out[n].pitch = (int32_t)w;
-        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[4 + i];  memcpy(&dv, &u, 8); out[n].start = dv;
-        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[12 + i]; memcpy(&dv, &u, 8); out[n].dur = dv;
-        w = (uint32_t)r[20] << 24 | (uint32_t)r[21] << 16 | (uint32_t)r[22] << 8 | r[23]; memcpy(&fv, &w, 4); out[n].vel = fv;
-        u = 0; for (int i = 0; i < 8; i++) u = u << 8 | r[29 + i]; out[n].id = (int64_t)u;
-        n++;
-    }
-    return n;
+    return mm_decode_notes_buf(raw, len, out, max, pool, pool_max);
 }
 
 /* After a published walk: point the probe at the selected track's current
@@ -902,17 +967,23 @@ static void edited_clip_update(const move_model_t *m)
     g_probe_expect = c->content_hash;
     g_probe_valid = 1;
     if (g_notes_ref[0].clip_id == c->clip_id && g_notes_ref[0].content_hash == c->content_hash) return;
-    g_notes[1][0] = g_notes[0][0];
     memcpy(g_notes[1], g_notes[0], sizeof(mm_note_t) * (size_t)g_nnotes[0]);
+    memcpy(g_press[1], g_press[0], sizeof g_press[0]);
     g_nnotes[1] = g_nnotes[0];
     g_notes_ref[1] = g_notes_ref[0];
-    int n = decode_notes(g_probe.notes_vec, g_notes[0], MM_NOTES_MAX);
+    int n = decode_notes(g_probe.notes_vec, g_notes[0], MM_NOTES_MAX, g_press[0], MM_PRESS_MAX);
     g_nnotes[0] = n < 0 ? 0 : n;
     g_notes_ref[0].track = m->selected_track;
     g_notes_ref[0].slot = cs;
     g_notes_ref[0].clip_id = c->clip_id;
     g_notes_ref[0].content_hash = c->content_hash;
     g_notes_ref[0].valid = n >= 0;
+}
+
+int move_model_edited_pressure(int previous, const mm_expr_point_t **pts)
+{
+    if (pts) *pts = g_press[previous ? 1 : 0];
+    return MM_PRESS_MAX;
 }
 
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)

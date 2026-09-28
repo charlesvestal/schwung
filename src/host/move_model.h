@@ -141,7 +141,17 @@ static inline uint32_t mm_clip_state_hash(const mm_clip_t *c)
 
 /* ---- the clip being edited (model thread only: call from the listener) --- */
 
-typedef struct { int pitch; double start, dur; float vel; int64_t id; } mm_note_t;
+/* A note as Move stores it. `pitch` is the note it sounds on (on a drum track,
+ * the pad's own note); `pitch_offset` is its per-note PITCH lane at time 0, in
+ * semitones -- Move's 16 Pitches mode keeps the pitch there and nowhere else.
+ * `pressure_*` locate its PRESSURE lane (aftertouch, 0..127, stored as step
+ * pairs) in the point pool the decoder was given; count 0 = none. */
+typedef struct {
+    int pitch; double start, dur; float vel; int64_t id;
+    double pitch_offset;
+    int pressure_first, pressure_count;
+} mm_note_t;
+typedef struct { double time, value; } mm_expr_point_t;   /* time: beats from the note's start */
 typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash; } mm_clip_ref_t;
 
 /* The selected track's current clip, decoded from Move's notes blob: its
@@ -150,6 +160,24 @@ typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref);
 
 /* ---- pure pieces, exported for tests/host ---------------------------- */
+
+/* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
+ *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag
+ *   then EITHER  i64 id                         (first u32 of it is 0: a plain note)
+ *   OR           u32 lane_count, lane_count x { i32 type, u32 point_count,
+ *                point_count x {f64 time, f64 value} }, u32 id
+ * Lane types: -2 PITCH (value = semitones * 8191/48), -1 PRESSURE (0..127).
+ * Measured on hardware 2026-09-28 ("Lane Test", 16 Pitches + pressure).
+ * Pressure points go to `pool` (NULL: counted, not kept).
+ * Returns the count, or -1 if ANY record does not parse cleanly -- a lane type
+ * we do not know, a lane or point list running past the end, records not
+ * landing exactly on the end, more notes than `max`, more pressure points than
+ * `pool_max`. Never a partial list: -1 means "this clip's notes are unknown",
+ * the same three-answer rule as a param read. */
+int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
+                        mm_expr_point_t *pool, int pool_max);
+/* The edited clip's pressure points (the pool mm_note_t.pressure_first indexes). */
+int move_model_edited_pressure(int previous, const mm_expr_point_t **pts);
 
 /* "1/16" -> 0.25 beats, "1/8t" -> 1/3 and *trip = 1. 0 on success. */
 int mm_parse_resolution(const char *name, double *beats, uint8_t *trip);
