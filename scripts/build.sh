@@ -244,6 +244,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_sampler.c src/host/shadow_transport.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_metronome.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
+    src/host/shadow_scene_bus.c src/host/shadow_scene_bus.h src/host/scene_morph.h \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/step_strip.c src/host/step_strip.h \
     src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
@@ -289,6 +290,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_dbus.c \
         src/host/shadow_metronome.c \
         src/host/shadow_chain_mgmt.c \
+        src/host/shadow_scene_bus.c \
         src/host/shadow_link_audio.c \
         src/host/shadow_process.c \
         src/host/shadow_resample.c \
@@ -598,6 +600,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
+    src/modules/chain/dsp/chain_scene.c src/host/scene_morph.h \
     src/modules/chain/dsp/chain_lanes.c \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
@@ -630,6 +633,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_patch.c \
         src/modules/chain/dsp/chain_reorder.c \
         src/modules/chain/dsp/chain_bus.c \
+        src/modules/chain/dsp/chain_scene.c \
         src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \

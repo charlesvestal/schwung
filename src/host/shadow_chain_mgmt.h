@@ -215,6 +215,12 @@ extern int (*shadow_chain_synth_requires_continuous)(void *instance);
 extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
 /* One of Schwung's own automation edits was journaled (unified Undo). */
 extern int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind);
+/* Optional: the scene crossfader, pushed once per frame per slot before the
+ * idle gate (chain_scene.c). Returns the slot's scene revision (low 16) and a
+ * one-shot refusal code (bits 16-23). NULL on a chain DSP built before scenes;
+ * the caller null-checks and scenes simply do nothing on slots. */
+extern uint32_t (*shadow_chain_set_scene_morph)(void *instance, uint8_t a, uint8_t b,
+                                                float x, uint8_t edit, uint8_t edit_flags);
 /* Optional: pushed once per block per slot, BEFORE the idle gate, so a silent
  * slot's lane keeps playing. NULL on any chain DSP built before automation
  * lanes -- the caller must null-check, and a NULL degrades to "phase unknown"
@@ -315,6 +321,18 @@ extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 extern master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
 extern volatile int shadow_send_return_level[SEND_BUSES];  /* 0..127 */
 extern volatile int shadow_send_a_to_b;                    /* 0..127 */
+/* A SCENE's override of those two, -1 = none. Never written into the levels
+ * above: those are what the user set, and what every save reads. */
+extern volatile int shadow_scene_return_ov[SEND_BUSES];
+extern volatile int shadow_scene_a_to_b_ov;
+static inline int shadow_send_return_eff(int sb) {
+    const int o = shadow_scene_return_ov[sb];
+    return o >= 0 ? o : shadow_send_return_level[sb];
+}
+static inline int shadow_send_a_to_b_eff(void) {
+    const int o = shadow_scene_a_to_b_ov;
+    return o >= 0 ? o : shadow_send_a_to_b;
+}
 
 /* Drain each slot's per-bus send contributions into the shim's accumulators.
  * NULL until a chain DSP that exports chain_drain_sends is loaded, so every
@@ -421,7 +439,7 @@ void shadow_fx_load_worker_tick(void);
  * and no return level costs one pointer scan per frame and nothing else. */
 static inline int shadow_send_bus_active(int sb) {
     if (sb < 0 || sb >= SEND_BUSES) return 0;
-    if (shadow_send_return_level[sb] > 0) return 1;
+    if (shadow_send_return_eff(sb) > 0) return 1;
     for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
         const master_fx_slot_t *s = &shadow_send_fx_slots[sb][fx];
         if (s->instance && s->api && s->api->process_block) return 1;
@@ -461,14 +479,21 @@ extern FILE *shadow_midi_out_log;
  * Inline functions - used by both shim and chain_mgmt
  * ============================================================================ */
 
+/* The level a SCENE drives, else the user's. The user's is what every save,
+ * the UI and the dB readouts see; a scene only ever supplies an override. */
+static inline float shadow_slot_volume_eff(int slot) {
+    return shadow_chain_slots[slot].scene_volume_on ? shadow_chain_slots[slot].scene_volume
+                                                    : shadow_chain_slots[slot].volume;
+}
+
 /* Effective volume: combines volume, mute, and solo.
  * Solo wins over mute (matching Ableton/Move behavior). */
 static inline float shadow_effective_volume(int slot) {
     if (shadow_solo_count > 0) {
-        return shadow_chain_slots[slot].soloed ? shadow_chain_slots[slot].volume : 0.0f;
+        return shadow_chain_slots[slot].soloed ? shadow_slot_volume_eff(slot) : 0.0f;
     }
     if (shadow_chain_slots[slot].muted) return 0.0f;
-    return shadow_chain_slots[slot].volume;
+    return shadow_slot_volume_eff(slot);
 }
 
 /*
@@ -479,7 +504,8 @@ static inline float shadow_effective_volume(int slot) {
  * stem (so stems still sum to the master); sends stay pre-pan.
  */
 static inline void shadow_pan_gains(int slot, float *gl, float *gr) {
-    const float p = shadow_chain_slots[slot].pan;
+    const float p = shadow_chain_slots[slot].scene_pan_on ? shadow_chain_slots[slot].scene_pan
+                                                          : shadow_chain_slots[slot].pan;
     *gl = (p > 0.0f) ? cosf(p * 1.57079632679f) : 1.0f;
     *gr = (p < 0.0f) ? cosf(-p * 1.57079632679f) : 1.0f;
 }

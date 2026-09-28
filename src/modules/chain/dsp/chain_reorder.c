@@ -127,6 +127,27 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
             k->param[0] = '\0';
         }
     }
+    /* SCENE LOCKS follow their module too (a fourth table naming a position
+     * by string). A lock on a position that LEFT is dropped with it: the
+     * position is gone, and a dormant lock keyed to a renumbered index would
+     * wake on whatever module next lands there. */
+    int scenes_moved = 0;
+    for (int i = 0; i < inst->scenes.count; i++) {
+        scene_pair_t *p = &inst->scenes.pairs[i];
+        char before[SCENE_TARGET_LEN];
+        memcpy(before, p->target, sizeof(before));
+        if (chain_perm_retarget(p->target, sizeof(p->target), prefix, max, map, count) < 0) {
+            p->mask = 0;
+            scenes_moved = 1;
+        } else if (strcmp(before, p->target) != 0) {
+            scenes_moved = 1;
+        }
+    }
+    if (scenes_moved) {
+        scene_compact(&inst->scenes);
+        inst->scene_rev++;
+        inst->scene_dirty = 1;
+    }
 
     /* AND THE AUTOMATION LANES, which were the FOURTH table and were missed.
      *

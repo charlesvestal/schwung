@@ -1,0 +1,204 @@
+/*
+ * scene_doc.mjs -- the SCENE BANK as a document, and where each part of it
+ * lives. Pure: no host calls. The host reads and writes through the param
+ * channel; this only says what to ask and what the answers mean.
+ *
+ * THE DSP HOLDS THE LIVE BANK. Locks are made below the UI (the edit arm is
+ * decided in the chain host and the shim), so the UI is never the authority --
+ * it SAVES what the seven scopes report and LOADS a saved document back into
+ * them. A second model of the bank here would be a copy that drifts.
+ *
+ * A bank spans EIGHT SCOPES, each with its own table and verbs:
+ *   slot0..slot3   chain slot N           key "scenes:<verb>"            slot N
+ *                  (its modules, its two sends, its LFOs)
+ *   mfx            Master FX              key "master_fx:scenes:<verb>"  slot 0
+ *   send1, send2   the send buses         key "send<N>:scenes:<verb>"    slot 0
+ *   host           the shim's own settings: slot volume / pan, send
+ *                  returns, Send A->B, the Master FX LFOs
+ *                                         key "host:scenes:<verb>"       slot 0
+ *
+ * The wire line is "<n> <target> <param> <value> <module>" (scene_morph.h).
+ *
+ * Design: docs/superpowers/specs/2026-09-27-scene-morphing-design.md.
+ */
+
+/*
+ * TWO LAYERS.
+ *
+ *   SNAPSHOTS  32 saved sets of locks: A1-A16 and B1-B16. The DSP stores them
+ *              as HALVES -- A snapshot i is half i, B snapshot i half 16+i
+ *              (scene_morph.h knows nothing else).
+ *   SCENES     16 PAIRINGS on the steps: which A snapshot and which B
+ *              snapshot the fader runs between. Either end may be empty
+ *              ("none"), which makes that end the knobs as they are. Scenes
+ *              SHARE snapshots, so editing A1 changes every scene that uses A1.
+ *
+ * Scene k starts out paired with Ak and Bk, so a set that never re-pairs
+ * anything reads simply as "step 3 fades A3 to B3".
+ */
+export const SCENE_COUNT = 16;
+export const SNAP_COUNT = 16;
+export const HALF_COUNT = 32;
+export const DOC_VERSION = 3;
+
+export const halfA = (i) => i;
+export const halfB = (i) => SNAP_COUNT + i;
+
+export function defaultPairs() {
+    const out = [];
+    for (let k = 0; k < SCENE_COUNT; k++) out.push([k, k]);
+    return out;
+}
+
+/** The halves the fader runs between for the active scene, -1 = none. */
+export function endsFor(active, pairs) {
+    if (!Number.isInteger(active) || active < 0 || active >= SCENE_COUNT) return { a: -1, b: -1 };
+    const p = (pairs && pairs[active]) || [-1, -1];
+    return { a: p[0] >= 0 ? halfA(p[0]) : -1, b: p[1] >= 0 ? halfB(p[1]) : -1 };
+}
+
+export const SCOPES = [
+    { id: "slot0", slot: 0, prefix: "" },
+    { id: "slot1", slot: 1, prefix: "" },
+    { id: "slot2", slot: 2, prefix: "" },
+    { id: "slot3", slot: 3, prefix: "" },
+    { id: "mfx", slot: 0, prefix: "master_fx:" },
+    { id: "send1", slot: 0, prefix: "send1:" },
+    { id: "send2", slot: 0, prefix: "send2:" },
+    { id: "host", slot: 0, prefix: "host:" },
+];
+
+/** The param-channel address of a scope's verb. */
+export function scopeKey(scope, verb) {
+    return { slot: scope.slot, key: scope.prefix + "scenes:" + verb };
+}
+
+/**
+ * One scope's dump as locks, or null when the text is not a dump. `null` in
+ * means null out: a read that did not complete is not an empty bank.
+ */
+export function parseDump(text) {
+    if (text === null || text === undefined) return null;
+    const out = [];
+    for (const raw of String(text).split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const f = line.split(/\s+/);
+        if (f.length !== 5) return null;
+        const n = Number(f[0]);
+        const value = Number(f[3]);
+        if (!Number.isInteger(n) || n < 0 || n >= HALF_COUNT || !Number.isFinite(value)) return null;
+        out.push({ n, target: f[1], param: f[2], value, module: f[4] });
+    }
+    return out;
+}
+
+/** A lock as the wire line the DSP loads. */
+export function lockLine(l) {
+    return l.n + " " + l.target + " " + l.param + " " + l.value + " " + l.module;
+}
+
+const clampScene = (v) => (Number.isInteger(v) && v >= 0 && v < SCENE_COUNT) ? v : -1;
+
+const snapOrNone = (v) => (Number.isInteger(v) && v >= 0 && v < SNAP_COUNT) ? v : -1;
+
+function normPairs(p) {
+    const out = defaultPairs();
+    if (Array.isArray(p)) {
+        for (let k = 0; k < SCENE_COUNT; k++) {
+            if (Array.isArray(p[k])) out[k] = [snapOrNone(p[k][0]), snapOrNone(p[k][1])];
+        }
+    }
+    return out;
+}
+
+/**
+ * The document for a set: the active scene, the 16 pairings, and every
+ * scope's locks grouped by HALF (snapshot). `dumps` maps scope id -> dump text. ANY
+ * missing or unparsable scope makes the whole document null -- a save that
+ * silently dropped a scope would write a bank without it, and the next load
+ * would erase that scope's scenes.
+ */
+export function buildDoc({ active, pairs, dumps }) {
+    const halves = [];
+    for (let n = 0; n < HALF_COUNT; n++) halves.push({ n, locks: [] });
+    for (const scope of SCOPES) {
+        const locks = parseDump(dumps ? dumps[scope.id] : null);
+        if (!locks) return null;
+        for (const l of locks) {
+            halves[l.n].locks.push({ scope: scope.id, target: l.target, param: l.param,
+                                     module: l.module, value: l.value });
+        }
+    }
+    return {
+        v: DOC_VERSION,
+        active: clampScene(active),
+        pairs: normPairs(pairs),
+        halves: halves.filter((h) => h.locks.length > 0),
+    };
+}
+
+/**
+ * A saved document, or null. An UNKNOWN version is null and must be LEFT ON
+ * DISK by the caller: a later build's bank is not ours to overwrite.
+ */
+export function parseDoc(text) {
+    if (typeof text !== "string" || !text.trim()) return null;
+    let d;
+    try { d = JSON.parse(text); } catch (e) { return null; }
+    if (!d || typeof d !== "object") return null;
+    /* v1 and v2 were earlier shapes of this feature that never shipped; their
+     * halves meant something else, so they read as EMPTY rather than as files
+     * to protect. */
+    if (d.v === 1 || d.v === 2) return { v: DOC_VERSION, active: -1, pairs: defaultPairs(), halves: [], legacy: true };
+    if (d.v !== DOC_VERSION || !Array.isArray(d.halves)) return null;
+    return { v: DOC_VERSION, active: clampScene(d.active), pairs: normPairs(d.pairs), halves: d.halves };
+}
+
+/**
+ * What to load into each scope: scope id -> text (one lock per line). EVERY
+ * scope gets an entry, empty when it holds nothing, so loading a set also
+ * clears what the previous set left in a scope this one does not use.
+ */
+export function docToLoads(doc) {
+    const out = {};
+    for (const s of SCOPES) out[s.id] = [];
+    const ids = new Set(SCOPES.map((s) => s.id));
+    for (const sc of (doc && Array.isArray(doc.halves)) ? doc.halves : []) {
+        const n = Number(sc && sc.n);
+        if (!Number.isInteger(n) || n < 0 || n >= HALF_COUNT || !Array.isArray(sc.locks)) continue;
+        for (const l of sc.locks) {
+            if (!l || !ids.has(l.scope)) continue;
+            if (typeof l.target !== "string" || typeof l.param !== "string" ||
+                typeof l.module !== "string" || !Number.isFinite(Number(l.value))) continue;
+            if (/\s/.test(l.target + l.param + l.module) || !l.target || !l.param || !l.module) continue;
+            out[l.scope].push(lockLine({ n, target: l.target, param: l.param,
+                                         module: l.module, value: Number(l.value) }));
+        }
+    }
+    const loads = {};
+    for (const s of SCOPES) loads[s.id] = out[s.id].length ? out[s.id].join("\n") + "\n" : "";
+    return loads;
+}
+
+/** How many pairs a scope's load holds -- what `scenes:count` must read back. */
+export function expectedPairCount(loadText) {
+    const seen = new Set();
+    for (const line of String(loadText || "").split("\n")) {
+        const f = line.trim().split(/\s+/);
+        if (f.length === 5) seen.add(f[1] + " " + f[2]);
+    }
+    return seen.size;
+}
+
+/** Sum per-scope "n0,...,n31" answers into one per-HALF count. null in -> null. */
+export function sumLockCounts(answers) {
+    const total = new Array(HALF_COUNT).fill(0);
+    for (const a of answers) {
+        if (a === null || a === undefined) return null;
+        const parts = String(a).split(",");
+        if (parts.length !== HALF_COUNT) return null;
+        for (let i = 0; i < HALF_COUNT; i++) total[i] += Number(parts[i]) || 0;
+    }
+    return total;
+}

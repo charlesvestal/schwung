@@ -1,0 +1,229 @@
+/*
+ * SCENES on the shim's own buses, against fake FX plugins. What matters is
+ * what each plugin was SENT: a bus has no chain_mod to ask.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <unistd.h>
+
+#include "shadow_scene_bus.h"
+
+static int fails = 0;
+#define CHECK(c, ...) do { if (!(c)) { printf("FAIL: "); printf(__VA_ARGS__); \
+    printf("\n"); fails++; } else { printf("  ok  " __VA_ARGS__); printf("\n"); } } while (0)
+#define NEAR(a, b) (fabsf((float)(a) - (float)(b)) < 1e-3f)
+
+typedef struct {
+    char module[32];
+    char mix[32];
+    char mode[32];
+    int writes;
+} fake_fx_t;
+
+static fake_fx_t fx[3][8];
+static const char *PARAMS =
+    "[{\"key\":\"mix\",\"name\":\"Mix {wet}\",\"type\":\"float\",\"min\":0,\"max\":2,\"default\":0.5},"
+    "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"Hall\",\"Room\",\"Plate\"],\"default\":0},"
+    "{\"key\":\"taps\",\"type\":\"int\",\"min\":1,\"max\":8}]";
+
+static void *slot_at(int scope, int pos) { return fx[scope][pos].module[0] ? &fx[scope][pos] : NULL; }
+static int positions(int scope) { return scope == 0 ? 8 : 4; }
+static const char *module_id(void *s) { return ((fake_fx_t *)s)->module; }
+static const char *chain_params(void *s) { (void)s; return PARAMS; }
+static int get_param(void *s, const char *k, char *buf, int len) {
+    fake_fx_t *f = s;
+    if (!strcmp(k, "mix")) return snprintf(buf, len, "%s", f->mix);
+    if (!strcmp(k, "mode")) return snprintf(buf, len, "%s", f->mode);
+    return -1;
+}
+static void set_param(void *s, const char *k, const char *v) {
+    fake_fx_t *f = s;
+    f->writes++;
+    if (!strcmp(k, "mix")) snprintf(f->mix, sizeof(f->mix), "%s", v);
+    if (!strcmp(k, "mode")) snprintf(f->mode, sizeof(f->mode), "%s", v);
+}
+static const scene_bus_io_t io = { slot_at, positions, module_id, chain_params, get_param, set_param };
+
+static float mix(int sc, int p) { return (float)atof(fx[sc][p].mix); }
+
+/* ---- a fake HOST: its user values, and the override a scene supplies. */
+static float h_vol_base = 1.0f, h_ret_base = 64;
+static int h_vol_on = 0, h_ret_on = 0, h_applies = 0;
+static float h_vol_ov = 0, h_ret_ov = 0;
+static int h_get(const char *t, const char *p, float *out) {
+    if (!strcmp(t, "slot2") && !strcmp(p, "volume")) { *out = h_vol_base; return 1; }
+    if (!strcmp(t, "send1") && !strcmp(p, "return")) { *out = h_ret_base; return 1; }
+    return 0;
+}
+static void h_apply(const char *t, const char *p, int on, float v) {
+    h_applies++;
+    if (!strcmp(t, "slot2") && !strcmp(p, "volume")) { h_vol_on = on; h_vol_ov = v; }
+    if (!strcmp(t, "send1") && !strcmp(p, "return")) { h_ret_on = on; h_ret_ov = v; }
+}
+static const scene_host_io_t host_io = { h_get, h_apply };
+
+int main(void) {
+    scene_bus_meta_t m;
+    CHECK(scene_bus_param_meta(PARAMS, "mix", &m) && m.kind == SCENE_KIND_FLOAT && NEAR(m.max, 2) && NEAR(m.def, 0.5),
+          "meta: float with range and default (a brace inside a name does not end the object)");
+    CHECK(scene_bus_param_meta(PARAMS, "mode", &m) && m.kind == SCENE_KIND_ENUM && m.option_count == 3 && NEAR(m.max, 2),
+          "meta: enum from its options");
+    CHECK(scene_bus_param_meta(PARAMS, "taps", &m) && m.kind == SCENE_KIND_INT && NEAR(m.min, 1) && NEAR(m.max, 8),
+          "meta: int");
+    CHECK(!scene_bus_param_meta(PARAMS, "nope", &m), "meta: an undeclared key is not found");
+    CHECK(!scene_bus_param_meta(PARAMS, "mi", &m), "meta: a PREFIX of a key is not that key");
+    CHECK(scene_bus_option_index(PARAMS, "mode", "Plate") == 2 && scene_bus_option_index(PARAMS, "mode", "x") == -1,
+          "option name -> index");
+
+    shadow_scene_bus_bind(&io);
+    shadow_scene_bus_reset();
+    CHECK(shadow_scene_bus_scope("master_fx", 9) == 0 && shadow_scene_bus_scope("send2", 5) == 2 &&
+          shadow_scene_bus_scope("send3", 5) == -1, "scope names");
+
+    snprintf(fx[0][1].module, 32, "cloudseed"); snprintf(fx[0][1].mix, 32, "0.5"); snprintf(fx[0][1].mode, 32, "Hall");
+    snprintf(fx[1][0].module, 32, "cloudseed"); snprintf(fx[1][0].mix, 32, "1.0"); snprintf(fx[1][0].mode, 32, "0");
+
+    shadow_scene_bus_set_verb(0, "lock", "0 fx2 mix 0.1 cloudseed");
+    shadow_scene_bus_set_verb(0, "lock", "1 fx2 mix 1.9 cloudseed");
+    uint16_t rev0 = shadow_scene_bus_rev();
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.1), "MFX x=0 is scene A: %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 1.0), "MFX midpoint: %f", mix(0, 1));
+    CHECK(shadow_scene_bus_rev() == rev0, "a fader move is not a table change");
+
+    char buf[256];
+    CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 0.5),
+          "a plain read of a DRIVEN param answers the base: %s", buf);
+    CHECK(shadow_scene_bus_read(0, 1, "mode", buf, sizeof(buf)) < 0, "an undriven param falls through");
+
+    /* One end only: the knob is the other end, and it is LIVE. */
+    shadow_scene_bus_set_verb(0, "unlock", "1 fx2 mix");
+    shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.3), "A only: between A (0.1) and base (0.5): %f", mix(0, 1));
+    set_param(&fx[0][1], "mix", "1.1");             /* the knob, straight to the plugin */
+    shadow_scene_bus_note_write(0, 1, "mix", "1.1");
+    shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.9), "the turn (+0.6) is HEARD, from what was heard (0.3): %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.25f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.5), "toward A it morphs from the turn to A: %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.75f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 1.0), "toward B, from the turn to B (the knob, 1.1): %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.6), "an END lets it go: the scene's own morph, knob moved: %f", mix(0, 1));
+
+    /* Neither end: the knob comes back. */
+    shadow_scene_bus_tick(4, 5, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 1.1), "locked in neither end: back to the knob: %f", mix(0, 1));
+    CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) < 0, "and nothing drives it any more");
+
+    /* Dormant on a module swap, awake on its return. */
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    snprintf(fx[0][1].module, 32, "psxverb");
+    snprintf(fx[0][1].mix, 32, "0.7");
+    for (int i = 0; i < 40; i++) shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.7),
+          "swapped module: released, and the OLD module's base is NOT written into the new one: %f", mix(0, 1));
+    shadow_scene_bus_get_verb(0, "dump", buf, sizeof(buf));
+    CHECK(strncmp(buf, "0 fx2 mix 0.1", 13) == 0 && strstr(buf, " cloudseed\n") != NULL,
+          "...and the lock is kept: %s", buf);
+
+    /* Enum across 0.5 on a send, and the throttle does not drop it. */
+    shadow_scene_bus_set_verb(1, "lock", "2 fx1 mode 0 cloudseed");
+    shadow_scene_bus_set_verb(1, "lock", "3 fx1 mode 2 cloudseed");
+    shadow_scene_bus_tick(2, 3, 0.4f, SCENE_NONE, 0);
+    CHECK(atoi(fx[1][0].mode) == 0, "send enum below 0.5: A (%s)", fx[1][0].mode);
+    shadow_scene_bus_tick(2, 3, 0.6f, SCENE_NONE, 0);
+    usleep(60 * 1000);
+    shadow_scene_bus_tick(2, 3, 0.6f, SCENE_NONE, 0);
+    CHECK(atoi(fx[1][0].mode) == 2, "send enum past 0.5: B, even through the throttle (%s)", fx[1][0].mode);
+
+    /* The edit arm. */
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 7, 0);
+    snprintf(fx[0][1].module, 32, "cloudseed");
+    CHECK(shadow_scene_bus_edit_write(0, 1, "mix", "1.5") == 1, "armed write is consumed as a lock");
+    CHECK(NEAR(mix(0, 1), 1.5), "...and heard at once: %f", mix(0, 1));
+    CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 1.5),
+          "an armed read answers the lock: %s", buf);
+    CHECK(shadow_scene_bus_edit_write(0, 1, "mode", "Plate") == 1, "an enum by name locks");
+    shadow_scene_bus_get_verb(0, "dump", buf, sizeof(buf));
+    CHECK(strstr(buf, "7 fx2 mode 2 cloudseed") != NULL, "stored as its index");
+    CHECK(shadow_scene_bus_edit_write(0, 1, "bypassed", "1") == 0, "bypass never locks");
+    CHECK(shadow_scene_bus_edit_write(0, 1, "undeclared", "1") == 0 && shadow_scene_bus_take_flash() == SCENE_FLASH_NA,
+          "an undeclared param goes to the base and flashes N/A");
+    CHECK(shadow_scene_bus_take_flash() == SCENE_FLASH_NONE, "(one-shot)");
+    CHECK(shadow_scene_bus_edit_write(0, 5, "mix", "1") == 0, "an empty position never locks");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 7, SCENE_EDIT_UNLOCK);
+    CHECK(shadow_scene_bus_edit_write(0, 1, "mode", "Hall") == 1, "Delete+turn is consumed");
+    shadow_scene_bus_get_verb(0, "dump", buf, sizeof(buf));
+    CHECK(strstr(buf, "7 fx2 mode") == NULL && strstr(buf, "7 fx2 mix") != NULL, "...and unlocks only that param");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(shadow_scene_bus_edit_write(0, 1, "mix", "1") == 0, "disarmed: a write is not consumed");
+
+    /* A state read sees the base; the morph is back after it. */
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    float morphed = mix(0, 1);
+    shadow_scene_bus_state_begin(0, 1);
+    float during = mix(0, 1);
+    shadow_scene_bus_state_end(0, 1);
+    CHECK(fabsf(during - morphed) > 0.01f && NEAR(mix(0, 1), morphed),
+          "state read: plugin held the base (%f) and the morph (%f) returned", during, mix(0, 1));
+
+    shadow_scene_bus_get_verb(0, "locks", buf, sizeof(buf));
+    CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
+    CHECK(shadow_scene_bus_get_verb(3, "dump", buf, sizeof(buf)) == -1, "the host scope is refused until bound");
+    CHECK(shadow_scene_bus_get_verb(4, "dump", buf, sizeof(buf)) == -1, "an out-of-range scope is refused");
+
+    /* ---- THE HOST SCOPE: an override beside the user's value, never a write to it. */
+    shadow_scene_host_bind(&host_io);
+    CHECK(shadow_scene_bus_scope("host", 4) == SCENE_HOST_SCOPE, "\"host\" names the host scope");
+    CHECK(scene_host_meta("slot4", "pan", NULL) && !scene_host_meta("slot5", "pan", NULL) &&
+          scene_host_meta("send1", "to_send2", NULL) && !scene_host_meta("send2", "to_send2", NULL) &&
+          scene_host_meta("mfx_lfo2", "depth", NULL) && !scene_host_meta("mfx_lfo1", "target", NULL),
+          "the host table knows exactly its settings");
+    shadow_scene_bus_set_verb(SCENE_HOST_SCOPE, "lock", "0 slot2 volume 3 host");
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(h_vol_on && NEAR(h_vol_ov, 3.0f) && NEAR(h_vol_base, 1.0f), "A overrides the volume: %f", h_vol_ov);
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.0f), "half way to the user's level: %f", h_vol_ov);
+    h_vol_base = 2.0f;               /* the user moved the level mid-morph */
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.5f), "the unlocked end follows it the same frame: %f", h_vol_ov);
+    int before = h_applies;
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(h_applies == before, "an unchanged override is not re-applied");
+    /* a live turn on a host setting: heard from what is heard, then morphs */
+    shadow_scene_host_note_write("slot2", "volume", "2.5");   /* user 2.0 -> 2.5 */
+    h_vol_base = 2.5f;
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 3.0f), "the host turn is heard (2.5 + 0.5): %f", h_vol_ov);
+    shadow_scene_bus_tick(0, SCENE_NONE, 1.0f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.5f), "toward the unlocked end: the knob: %f", h_vol_ov);
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(!h_vol_on, "no scene: the override is switched OFF");
+
+    /* armed: a host write is a lock, and its read answers the lock */
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 5, 0);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "200") == 1, "an armed return write is consumed");
+    CHECK(h_ret_on && NEAR(h_ret_ov, 127), "... clamped and auditioned at once: %f", h_ret_ov);
+    CHECK(shadow_scene_host_read("send1", "return", buf, sizeof(buf)) > 0 && !strcmp(buf, "127"),
+          "an armed read answers the lock: %s", buf);
+    CHECK(shadow_scene_host_read("slot2", "volume", buf, sizeof(buf)) == -1,
+          "a setting not locked in the armed snapshot answers the host's own value");
+    CHECK(shadow_scene_host_edit_write("send2", "to_send2", "5") == 0, "a setting the host does not have is not a lock");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 5, SCENE_EDIT_UNLOCK);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "3") == 1 && !h_ret_on,
+          "Delete + turn removes it, and the override goes with it");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "3") == 0, "disarmed, a write is the host's");
+    shadow_scene_bus_set_verb(SCENE_HOST_SCOPE, "lock", "1 slot2 volume 0 host");
+    shadow_scene_bus_tick(1, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    shadow_scene_bus_reset();
+    CHECK(!h_vol_on, "a reset switches every host override off");
+
+    printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
+    return fails ? 1 : 0;
+}

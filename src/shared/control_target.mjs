@@ -35,7 +35,9 @@ const COMPONENT_RE = /^(synth|fx\d+|midi_fx\d+)$/;
  * others: an arbitrary slot key (a module swap, a preset load) is not a knob. */
 export const SLOT_SETTING_KEYS = ["slot:volume", "slot:pan", "slot:muted", "slot:soloed",
                                   "buses:main_send1", "buses:main_send2"];
-export const MASTER_SETTING_KEYS = ["master_fx:filter", "send1:return", "send2:return"];
+/* "scenes:xfade" is the SCENE CROSSFADER -- a byte in shared memory, served
+ * by the host's param io without IPC, so a controller fader can morph scenes. */
+export const MASTER_SETTING_KEYS = ["master_fx:filter", "send1:return", "send2:return", "scenes:xfade"];
 
 /* The settings a control may drive, declared as chain_params so they get the
  * same meta, stepping and formatting as any module parameter. */
@@ -49,6 +51,7 @@ export const SETTINGS_CHAIN_PARAMS = [
     { key: "master_fx:filter", name: "Filter", type: "float", min: -1, max: 1, step: 0.02 },
     { key: "send1:return", name: "Return A", type: "int", min: 0, max: 127 },
     { key: "send2:return", name: "Return B", type: "int", min: 0, max: 127 },
+    { key: "scenes:xfade", name: "Scene Fader", type: "float", min: 0, max: 1, step: 0.01 },
 ];
 
 /*
