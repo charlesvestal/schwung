@@ -585,6 +585,50 @@ static int parse_hierarchy_params(const char *json, chain_param_info_t *out_para
     return kept;
 }
 
+/* Append the chain_params entries the hierarchy did not declare. Through the
+ * same brace-aware parser the hierarchy uses: the flat legacy loop ends an
+ * object at its first '}', so an entry carrying nested objects (dr32's `kit`
+ * with its browser hooks) came out typed FLOAT and its hooks' keys became
+ * phantom parameters. Only the types C models are taken -- a filepath is not a
+ * knob. Anything past MAX_CHAIN_PARAMS is dropped with a log line. */
+static void merge_chain_params(const char *json, chain_param_info_t *params, int *count)
+{
+    const char *cp = strstr(json, "\"chain_params\"");
+    const char *a = cp ? strchr(cp, '[') : NULL;
+    if (!a) return;
+    const int declared = *count;
+    int dropped = 0;
+    const char *p = a + 1;
+    int depth = 0, in_str = 0;
+    const char *obj = NULL;
+    for (; *p; p++) {
+        if (in_str) { if (*p == '\\' && p[1]) p++; else if (*p == '"') in_str = 0; continue; }
+        if (*p == '"') { in_str = 1; continue; }
+        if (*p == ']' && depth == 0) break;
+        if (*p == '{') { if (depth++ == 0) obj = p; continue; }
+        if (*p != '}' || --depth != 0 || !obj) continue;
+        const char *end = p + 1;
+        const char *tp = bounded_strstr(obj, end, "\"type\"");
+        const char *tv = tp ? strchr(tp + 6, '"') : NULL;
+        if (!tv || tv >= end) continue;
+        tv++;
+        if (strncmp(tv, "float\"", 6) && strncmp(tv, "int\"", 4) && strncmp(tv, "enum\"", 5)) continue;
+        chain_param_info_t tmp;
+        if (parse_param_object(obj, &tmp) != 0 || !tmp.key[0]) continue;
+        int known = 0;
+        for (int k = 0; k < declared && !known; k++) known = !strcmp(params[k].key, tmp.key);
+        if (known) continue;
+        if (*count >= MAX_CHAIN_PARAMS) { dropped++; continue; }
+        memcpy(&params[(*count)++], &tmp, sizeof tmp);
+    }
+    if (dropped) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "chain_params merge: %d param(s) past the %d-entry table were dropped",
+                 dropped, MAX_CHAIN_PARAMS);
+        chain_log(msg);
+    }
+}
+
 /*
  * Parse parameter definitions from module.json.
  * First tries ui_hierarchy (new format), falls back to chain_params (legacy).
@@ -634,6 +678,11 @@ int parse_chain_params(const char *module_path, chain_param_info_t *params, int 
         *count = 0;
     }
     const int declared = *count;
+    if (declared > 0) {
+        merge_chain_params(json, params, count);
+        free(json);
+        return 0;
+    }
 
     /* Find chain_params array */
     const char *chain_params_str = strstr(json, "\"chain_params\"");
@@ -1158,7 +1207,9 @@ int parse_child_templates_json(const char *json, chain_child_tmpl_t *out, int ma
                 char prefix[40] = "";
                 const int has_tmpl = json_str_in(level, hi, "child_key_template", t.tmpl, sizeof t.tmpl);
                 const int has_pfx = json_str_in(level, hi, "child_prefix", prefix, sizeof prefix);
-                if (t.count > 0 && (has_tmpl || has_pfx)) {
+                /* An EMPTY prefix is not a rack -- child_key.mjs treats "" as
+                 * absent, and `{index}_{key}` would claim every "3_x" key. */
+                if (t.count > 0 && ((has_tmpl && t.tmpl[0]) || (has_pfx && prefix[0]))) {
                     if (!has_tmpl) snprintf(t.tmpl, sizeof t.tmpl, "%s{index}_{key}", prefix);
                     t.base = json_int_in(level, hi, "child_index_base", 0);
                     t.digits = json_int_in(level, hi, "child_index_digits", 0);
@@ -1237,21 +1288,38 @@ int chain_child_key_base(const chain_child_tmpl_t *t, int n, const char *key, ch
     return 0;
 }
 
-/* A key naming one instance of a declared rack, at one position: the base
- * key's metadata, cached by the full key so a lane on `pad7_transpose` does
- * not re-match the template every block. */
-static chain_param_info_t *child_param(chain_child_keys_t *ck, chain_param_info_t *params,
+static uint32_t key_hash(const char *k)
+{
+    uint32_t h = 2166136261u;
+    while (*k) { h ^= (uint8_t)*k++; h *= 16777619u; }
+    return h;
+}
+
+/* The resolved-alias fast path, checked BEFORE the full scan: a templated key
+ * never matches the scan, so putting the cache behind it paid O(N) per lane
+ * per block for nothing. The base is re-checked by hash, so a table replaced
+ * underneath (a reload, the runtime chain_params refresh) re-resolves. */
+static chain_param_info_t *child_alias(chain_child_keys_t *ck, chain_param_info_t *params,
                                        int count, const char *key)
 {
     if (!ck || !params || !ck->ntmpl) return NULL;
     for (int i = 0; i < ck->nalias; i++) {
         if (strcmp(ck->alias[i].key, key) != 0) continue;
         const int x = ck->alias[i].idx;
-        if (x < count && !strcmp(params[x].key, ck->alias[i].base)) return &params[x];
+        if (x < count && key_hash(params[x].key) == ck->alias[i].base_hash) return &params[x];
         ck->alias[i] = ck->alias[--ck->nalias];       /* the table moved: resolve again */
-        break;
+        return NULL;
     }
-    char base[sizeof ck->alias[0].base];
+    return NULL;
+}
+
+/* A key naming one instance of a declared rack: the base key's metadata,
+ * resolved through the position's templates and remembered. */
+static chain_param_info_t *child_param(chain_child_keys_t *ck, chain_param_info_t *params,
+                                       int count, const char *key)
+{
+    if (!ck || !params || !ck->ntmpl) return NULL;
+    char base[48];
     if (!chain_child_key_base(ck->tmpl, ck->ntmpl, key, base, sizeof base)) return NULL;
     for (int i = 0; i < count; i++) {
         if (strcmp(params[i].key, base) != 0) continue;
@@ -1260,7 +1328,7 @@ static chain_param_info_t *child_param(chain_child_keys_t *ck, chain_param_info_
             if (ck->nalias < CHAIN_PARAM_ALIAS_MAX) a = ck->nalias++;
             else { a = ck->next_evict; ck->next_evict = (a + 1) % CHAIN_PARAM_ALIAS_MAX; }
             snprintf(ck->alias[a].key, sizeof ck->alias[a].key, "%s", key);
-            snprintf(ck->alias[a].base, sizeof ck->alias[a].base, "%s", base);
+            ck->alias[a].base_hash = key_hash(base);
             ck->alias[a].idx = i;
         }
         return &params[i];
@@ -1285,6 +1353,9 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
     if (!inst || !target || !key || !key[0]) return NULL;
 
     if (strcmp(target, "synth") == 0) {
+        chain_param_info_t *hit = child_alias(&inst->synth_child_keys, inst->synth_params,
+                                              inst->synth_param_count, key);
+        if (hit) return hit;
         for (int i = 0; i < inst->synth_param_count; i++) {
             if (chain_param_key_matches(key, inst->synth_params[i].key)) {
                 return &inst->synth_params[i];
@@ -1296,6 +1367,9 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
     } else if (strncmp(target, "fx", 2) == 0) {
         int fx_slot = atoi(target + 2) - 1;
         if (fx_slot >= 0 && fx_slot < MAX_AUDIO_FX) {
+            chain_param_info_t *hit = child_alias(&inst->fx_child_keys[fx_slot], inst->fx_params[fx_slot],
+                                                  inst->fx_param_counts[fx_slot], key);
+            if (hit) return hit;
             for (int i = 0; i < inst->fx_param_counts[fx_slot]; i++) {
                 if (chain_param_key_matches(key, inst->fx_params[fx_slot][i].key)) {
                     return &inst->fx_params[fx_slot][i];
@@ -1312,6 +1386,10 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
             midi_fx_slot = atoi(target + 7) - 1;
         }
         if (midi_fx_slot >= 0 && midi_fx_slot < MAX_MIDI_FX) {
+            chain_param_info_t *hit = child_alias(&inst->midi_fx_child_keys[midi_fx_slot],
+                                                  inst->midi_fx_params[midi_fx_slot],
+                                                  inst->midi_fx_param_counts[midi_fx_slot], key);
+            if (hit) return hit;
             for (int i = 0; i < inst->midi_fx_param_counts[midi_fx_slot]; i++) {
                 if (chain_param_key_matches(key, inst->midi_fx_params[midi_fx_slot][i].key)) {
                     return &inst->midi_fx_params[midi_fx_slot][i];

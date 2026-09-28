@@ -121,6 +121,40 @@ static void follow_tests(void)
     edit_follow_on_change(&m0, &mX, NULL, NULL, 4030, cmd, NULL);
     CHECK(nlog == 1 && logged("undo 1"), "...but reaching the pre-state in a second tick still lands");
 
+    /* MOVE'S UNDO IS THE DOCUMENT'S: the paste was on T2's clip, the user has
+     * since selected T1 (the intent carries T1's clip, or none at all), and
+     * Move's Undo reverts T2's clip -- the lane paste must follow it. */
+    edit_follow_reset(); nlog = 0;
+    {
+        ef_intent_t pin = paste(0.0, 1.0, 0.25, st(0xA));
+        pin.t_ms = 20000;
+        edit_follow_intent(&pin);
+        edit_follow_on_change(&m1, &m0, &Q, &P, 20010, cmd, NULL);
+        CHECK(nlog == 1 && logged("paste_span"), "pasted");
+        nlog = 0;
+        ef_intent_t elsewhere = { EF_UNDO, 0, 0, 600, 0, 0, 0, 0, 21000 };   /* T1's clip, or nothing */
+        edit_follow_intent(&elsewhere);
+        edit_follow_on_change(&m0, &m1, NULL, NULL, 21010, cmd, NULL);
+        CHECK(nlog == 1 && logged("1 lanes:journal undo"), "undo followed the clip Move reverted, not the one selected: %s",
+              nlog ? log_[0] : "(none)");
+        /* The paste's "after" settles for a moment: Move landing its own
+         * automation a tick later must not strand the Redo. */
+        edit_follow_reset(); nlog = 0;
+        edit_follow_intent(&pin);
+        edit_follow_on_change(&m1, &m0, &Q, &P, 22010, cmd, NULL);
+        move_model_t m1b = model(0xD);                      /* Move's envelopes, a tick later */
+        edit_follow_tick(&m1b, &Q, &Q, 22030, cmd, NULL);
+        edit_follow_tick(&m1b, &Q, &Q, 22600, cmd, NULL);   /* settled */
+        nlog = 0;
+        ef_intent_t un = { EF_UNDO, 0, 0, 0, 0, 0, 0, 0, 23000 };
+        edit_follow_intent(&un);
+        edit_follow_on_change(&m0, &m1b, NULL, NULL, 23010, cmd, NULL);
+        ef_intent_t re = { EF_REDO, 0, 0, 0, 0, 0, 0, 0, 23100 };
+        edit_follow_intent(&re);
+        edit_follow_on_change(&m1b, &m0, NULL, NULL, 23110, cmd, NULL);
+        CHECK(nlog == 2 && logged("lanes:journal undo") && logged("lanes:journal redo"), "redo matches the SETTLED after-state (%d)", nlog);
+    }
+
     /* A declined paste (an "empty" source: Move changed nothing new) never
      * issues a command, and times out. */
     edit_follow_reset(); nlog = 0;

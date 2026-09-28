@@ -9346,7 +9346,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* ...and ONE UNDO (undo_timeline.h): an Undo press whose latest
              * step is Schwung's own automation edit undoes THAT, and Move
              * never sees the button (both edges). */
-            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B) &&
+            /* A MODULE THAT CLAIMED UNDO KEEPS IT. claims_edit_ccs (and the
+             * grid's child copy/clear/undo) decided this press earlier in the
+             * frame and withheld it from Move; offering it to the timeline as
+             * well made one press two undos -- the module's and the lanes'. */
+            const int module_owns_undo = (cin == 0x0B && type == 0xB0 && d1 == 56 &&
+                                          claim_press_blocked[56] != CLAIM_LATCH_NONE);
+            if (!overtake_active && !module_owns_undo && (cin == 0x08 || cin == 0x09 || cin == 0x0B) &&
                 move_model_sync_on_midi(status, d1, d2)) {
                 midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 continue;

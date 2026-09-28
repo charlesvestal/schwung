@@ -580,7 +580,10 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   node + tx number); each Schwung take/p-lock/clear is journaled by the chain
   and anchored to Move's top when made. Undo is swallowed and routed to ours
   only when our latest edit sits on Move's CURRENT top; an unreadable stack
-  claims nothing (`undo_timeline.h`, `docs/MOVE_MODEL.md`).
+  claims nothing (`undo_timeline.h`, `docs/MOVE_MODEL.md`). A p-lock GESTURE
+  (writes on one held step) is one step; a module that claimed Undo keeps it;
+  nothing is claimed while Record is armed; Move's Undo of a mirrored paste is
+  matched document-wide, not against the clip on screen.
 - **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
   Clip, loop, launch beat, step page and grid are READ; deletions and copies
   are diffs of it. Several bullets below describe the LED / step-strip /
@@ -589,8 +592,9 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   measurements. Orphans are not written to disk; Undo re-attaches in memory.
 - **A rack's templated keys (`pad7_transpose`) are typed by the CHAIN**, from
   the level's `child_key_template`/`child_prefix` -- the same rule as
-  `child_key.mjs`. A key listed on several levels is no longer a fatal
-  "duplicate"; that was why every dr32 pad param was `unknown_param`.
+  `child_key.mjs`, at every position; without it every dr32 pad param was
+  `unknown_param`. (A key on several levels also stopped being a fatal
+  "duplicate" -- that fixed kr106/pivot, not dr32.)
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.
