@@ -6,6 +6,10 @@
 #include <time.h>
 
 #include "move_model.h"
+#include "edit_follow.h"
+#include "edit_gesture.h"
+#include <stdio.h>
+#include <string.h>
 #include "shadow_chain_mgmt.h"
 #include "shadow_set_pages.h"
 
@@ -41,50 +45,148 @@ int move_model_sync_misaligned(void)
     return atomic_load(&g_active) && ctl && ctl->move_doc_gen != ctl->set_doc_gen;
 }
 
-/* shim_worker.c: the clip-event channels the lanes' push loop consumes. */
-void shim_worker_publish_clip_deleted(uint32_t mask);
-void shim_worker_publish_clip_copy(int track, int src, int dst);
+/* ---- AUTOMATION FOLLOWS MOVE'S EDITS ------------------------------------
+ *
+ * Two lock-free single-producer rings:
+ *   intents  SPI callback -> this thread (what the user asked Move to do);
+ *   commands this thread -> SPI callback (lane verbs for the chain, which only
+ *            the callback may touch).
+ * edit_follow.c decides; see edit_follow.h for the rules. */
+#define IQ_N 32
+#define CQ_N 64
+typedef struct { int slot; char key[24]; char val[104]; } cmd_t;
+static ef_intent_t g_iq[IQ_N];
+static atomic_uint g_iq_w, g_iq_r;
+static cmd_t g_cq[CQ_N];
+static atomic_uint g_cq_w, g_cq_r;
 
-/* A clip is "gone" from a slot when it no longer exists there or the object
- * there is a different one (deleted and remade within one tick). */
-static int clip_gone(const mm_clip_t *a, const mm_clip_t *b)
+static void push_intent(const ef_intent_t *in)          /* SPI thread */
 {
-    return a->exists && (!b->exists || b->clip_id != a->clip_id);
+    unsigned w = atomic_load_explicit(&g_iq_w, memory_order_relaxed);
+    if (w - atomic_load_explicit(&g_iq_r, memory_order_acquire) >= IQ_N) return;
+    g_iq[w % IQ_N] = *in;
+    atomic_store_explicit(&g_iq_w, w + 1, memory_order_release);
 }
-static int clip_arrived(const mm_clip_t *a, const mm_clip_t *b)
+static void drain_intents(void)                         /* model thread */
 {
-    return b->exists && (!a->exists || b->clip_id != a->clip_id);
-}
-/* Move's Copy: a new clip whose notes and geometry equal a clip already on
- * the track. Note-less clips never match -- two empty clips are not a copy. */
-static int clip_same_content(const mm_clip_t *x, const mm_clip_t *y)
-{
-    return x->notes_len > 0 && x->notes_len == y->notes_len && x->notes_hash == y->notes_hash &&
-           x->region_start == y->region_start && x->region_end == y->region_end &&
-           x->loop_start == y->loop_start && x->loop_end == y->loop_end && x->loop_on == y->loop_on;
-}
-
-/* Deletions and copies within one document, for the automation lanes: a
- * deleted clip ORPHANS its lanes (they must not play on whatever is made in
- * that slot next); a copied clip takes a copy of its source's lanes. */
-static void clip_events(const move_model_t *now, const move_model_t *prev)
-{
-    uint32_t deleted = 0;
-    for (int t = 0; t < MM_TRACKS; t++) {
-        for (int s = 0; s < MM_SLOTS; s++) {
-            const mm_clip_t *a = &prev->track[t].slot[s], *b = &now->track[t].slot[s];
-            if (clip_gone(a, b)) deleted |= 1u << (t * 8 + s);
-            if (!clip_arrived(a, b)) continue;
-            for (int src = 0; src < MM_SLOTS; src++) {
-                const mm_clip_t *p = &prev->track[t].slot[src];
-                if (src == s || !p->exists) continue;
-                if (!clip_same_content(p, b)) continue;
-                shim_worker_publish_clip_copy(t, src, s);
-                break;
-            }
-        }
+    unsigned r = atomic_load_explicit(&g_iq_r, memory_order_relaxed);
+    while (r != atomic_load_explicit(&g_iq_w, memory_order_acquire)) {
+        edit_follow_intent(&g_iq[r % IQ_N]);
+        atomic_store_explicit(&g_iq_r, ++r, memory_order_release);
     }
-    if (deleted) shim_worker_publish_clip_deleted(deleted);
+}
+static void enqueue_cmd(void *ctx, int slot, const char *key, const char *val)   /* model thread */
+{
+    (void)ctx;
+    unsigned w = atomic_load_explicit(&g_cq_w, memory_order_relaxed);
+    if (w - atomic_load_explicit(&g_cq_r, memory_order_acquire) >= CQ_N) return;
+    cmd_t *c = &g_cq[w % CQ_N];
+    c->slot = slot;
+    snprintf(c->key, sizeof c->key, "%s", key);
+    snprintf(c->val, sizeof c->val, "%s", val);
+    atomic_store_explicit(&g_cq_w, w + 1, memory_order_release);
+}
+int move_model_sync_pop_cmd(int *slot, char *key, int klen, char *val, int vlen)   /* SPI thread */
+{
+    unsigned r = atomic_load_explicit(&g_cq_r, memory_order_relaxed);
+    if (r == atomic_load_explicit(&g_cq_w, memory_order_acquire)) return 0;
+    const cmd_t *c = &g_cq[r % CQ_N];
+    *slot = c->slot;
+    snprintf(key, (size_t)klen, "%s", c->key);
+    snprintf(val, (size_t)vlen, "%s", c->val);
+    atomic_store_explicit(&g_cq_r, r + 1, memory_order_release);
+    return 1;
+}
+
+static void edited_notes(ef_notes_t *nn, ef_notes_t *pn)
+{
+    nn->n = move_model_edited_notes(0, &nn->notes, &nn->ref);
+    pn->n = move_model_edited_notes(1, &pn->notes, &pn->ref);
+}
+
+/* RT: one cable-0 MIDI_IN event Move is being given. The positions are taken
+ * NOW, from the model's last snapshot: the source's page may be scrolled away
+ * before the destination is pressed, and a paste of a clip's step from page 1
+ * to page 3 is the ordinary case, not an edge. */
+static edit_gesture_t g_gest = { 0, 0, 0, -1, 0 };
+static struct { int valid, track, slot; uint64_t clip_id; double phase, len; } g_src;
+
+static int button_phase(const move_model_t *m, int button, int page, int *track, int *slot,
+                        uint64_t *clip_id, uint32_t *content, double *phase, double *len)
+{
+    if (!m->valid || m->selected_track < 0 || !(m->step_beats > 0.0)) return 0;
+    const mm_track_t *T = &m->track[m->selected_track];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return 0;
+    const mm_clip_t *c = &T->slot[cs];
+    *track = m->selected_track;
+    *slot = cs;
+    *clip_id = c->clip_id;
+    *content = mm_clip_state_hash(c);
+    if (page) {
+        *len = (m->step_triplet ? 12 : 16) * m->step_beats;
+        *phase = button * *len;
+    } else {
+        if (c->scroll < 0.0) return 0;
+        int step = button;
+        if (m->step_triplet) {
+            if (button % 4 == 3) return 0;            /* Move's dead triplet button */
+            step = button - button / 4;
+        }
+        *len = m->step_beats;
+        *phase = c->scroll + step * m->step_beats;
+    }
+    return 1;
+}
+
+void move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2)
+{
+    if (!atomic_load_explicit(&g_active, memory_order_relaxed)) return;
+    eg_intent_t e;
+    if (!edit_gesture_on_event(&g_gest, status, d1, d2, &e)) return;
+    static move_model_t m;                               /* SPI thread only */
+    if (!move_model_get(&m)) return;
+    int t, s;
+    uint64_t id;
+    uint32_t content;
+    double ph, len;
+    ef_intent_t in;
+    memset(&in, 0, sizeof in);
+    in.t_ms = now_ms();
+    if (e.kind == EG_SOURCE) {
+        g_src.valid = button_phase(&m, e.src, e.page, &g_src.track, &g_src.slot, &g_src.clip_id,
+                                   &content, &g_src.phase, &g_src.len);
+        return;
+    }
+    if (e.kind == EG_PASTE) {
+        const int ok = g_src.valid && button_phase(&m, e.dst, e.page, &t, &s, &id, &content, &ph, &len);
+        g_src.valid = 0;
+        /* One clip: a paste across clips or tracks is not one this mirrors. */
+        if (!ok || t != g_src.track || s != g_src.slot || id != g_src.clip_id) return;
+        in.kind = EF_PASTE;
+        in.src = g_src.phase;
+        in.dst = ph;
+        in.len = len;
+    } else if (e.kind == EG_DOUBLE) {
+        /* Move's Double Loop is a paste of the loop onto the new half. */
+        if (!button_phase(&m, 0, 1, &t, &s, &id, &content, &ph, &len)) return;
+        const mm_clip_t *c = &m.track[t].slot[s];
+        const double ls = c->loop_on ? c->loop_start : c->region_start;
+        const double le = c->loop_on ? c->loop_end : c->region_end;
+        if (!(le - ls > 0.0)) return;
+        in.kind = EF_DOUBLE;
+        in.src = ls;
+        in.dst = le;
+        in.len = le - ls;
+    } else {
+        if (!button_phase(&m, 0, 1, &t, &s, &id, &content, &ph, &len)) return;
+        in.kind = (e.kind == EG_REDO) ? EF_REDO : EF_UNDO;
+    }
+    in.track = t;
+    in.slot = s;
+    in.clip_id = id;
+    in.pre_hash = content;
+    push_intent(&in);
 }
 
 static int mixer_complete(const move_model_t *m)
@@ -118,10 +220,16 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
          * polling every tick until the generations agree, which covers a read
          * that races Move's Settings.json rewrite. */
         shadow_poll_current_set();
+        edit_follow_on_change(now, prev, NULL, NULL, now_ms(), enqueue_cmd, NULL);   /* resets */
         return;
     }
 
-    clip_events(now, prev);
+    {   /* clips deleted, restored by Undo, copied; pastes and their undo */
+        ef_notes_t nn, pn;
+        drain_intents();
+        edited_notes(&nn, &pn);
+        edit_follow_on_change(now, prev, &nn, &pn, now_ms(), enqueue_cmd, NULL);
+    }
 
     /* Same document: edges only, so Schwung's own slot-mute controls hold
      * between Move gestures. Solo before mute is irrelevant -- Move's solo is
@@ -134,8 +242,18 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
     }
 }
 
+static void on_tick(const move_model_t *now)
+{
+    if (!atomic_load_explicit(&g_active, memory_order_relaxed)) return;
+    ef_notes_t nn, pn;
+    drain_intents();
+    edited_notes(&nn, &pn);
+    edit_follow_tick(now, &nn, &pn, now_ms(), enqueue_cmd, NULL);
+}
+
 void move_model_sync_init(shadow_control_t **control)
 {
     g_ctl = control;
+    move_model_set_tick_hook(on_tick);
     move_model_set_listener(on_change);
 }

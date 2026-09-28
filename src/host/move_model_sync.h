@@ -38,3 +38,9 @@ uint32_t move_model_sync_gen(void);        /* current doc generation, 0 if not a
 int      move_model_sync_settled(void);
 /* A set load the model saw has not been aligned yet (move_doc_gen != set_doc_gen). */
 int      move_model_sync_misaligned(void);
+
+/* AUTOMATION FOLLOWS MOVE'S EDITS (edit_follow.h).
+ * RT: feed every cable-0 MIDI_IN event Move is given (buttons, steps). */
+void     move_model_sync_on_midi(uint8_t status, uint8_t d1, uint8_t d2);
+/* RT: the next lane command for a slot's chain ("lanes:<verb>", value); 0 = none. */
+int      move_model_sync_pop_cmd(int *slot, char *key, int klen, char *val, int vlen);

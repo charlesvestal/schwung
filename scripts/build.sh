@@ -247,7 +247,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/step_strip.c src/host/step_strip.h \
     src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
-    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h \
+    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
@@ -300,6 +300,8 @@ if needs_rebuild build/schwung-shim.so \
         src/host/clip_regions.c \
         src/host/move_model.c \
         src/host/move_model_sync.c \
+        src/host/edit_follow.c \
+        src/host/edit_gesture.c \
         src/host/shadow_state.c \
         src/host/shadow_xmos_audio.c \
         src/host/usbc_out_gate.c \
@@ -603,7 +605,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h \
     src/host/split_voices_parse.h src/host/bus_mix.h src/host/bus_route.h \
     src/host/bus_voice_apply.h src/host/lane_store.c src/host/lane_store.h \
-    src/host/lane_serial.c src/host/lane_serial.h; then
+    src/host/lane_serial.c src/host/lane_serial.h src/host/lane_edit.c src/host/lane_edit.h; then
     echo "Building chain DSP..."
     # lane_store.c and lane_serial.c are plain host sources shared with
     # tests/host, so neither can wear chain_internal.h's CHAIN_INTERNAL.
@@ -616,6 +618,8 @@ if needs_rebuild build/modules/chain/dsp.so \
         -c src/host/lane_store.c -o build/modules/chain/lane_store.o -Isrc
     "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
         -c src/host/lane_serial.c -o build/modules/chain/lane_serial.o -Isrc
+    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
+        -c src/host/lane_edit.c -o build/modules/chain/lane_edit.o -Isrc -Isrc/host
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \
         src/modules/chain/dsp/chain_json.c \
@@ -629,6 +633,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
         build/modules/chain/lane_serial.o \
+        build/modules/chain/lane_edit.o \
         -o build/modules/chain/dsp.so \
         -Isrc \
         -lm -ldl -lpthread

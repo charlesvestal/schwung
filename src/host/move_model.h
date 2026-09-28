@@ -56,6 +56,10 @@ typedef struct {
     double   scroll;         /* step editor scroll position (beats); -1 = n/a */
     uint32_t notes_len;      /* bytes of Move's notes blob (0 = no notes / not MIDI) */
     uint32_t notes_hash;     /* FNV-1a of those bytes: a CONTENT fingerprint */
+    uint32_t content_hash;   /* notes AND Move's own automation envelopes: changes on
+                              * any edit Move makes to the clip, and returns to an
+                              * earlier value exactly when Move's Undo restores one */
+    int      n_envelopes;    /* Move's own automation lanes on this clip */
     int      ts_upper, ts_lower;
 } mm_clip_t;
 
@@ -101,11 +105,37 @@ uint32_t move_model_seq(void);            /* bumps on every published change */
  * One listener; set it before or after start. */
 typedef void (*move_model_listener_fn)(const move_model_t *now, const move_model_t *prev);
 void move_model_set_listener(move_model_listener_fn fn);
+/* Also on the reader thread, after EVERY tick (changed or not). */
+typedef void (*move_model_tick_fn)(const move_model_t *now);
+void move_model_set_tick_hook(move_model_tick_fn fn);
 
 /* Where the current clip of a track is, in CLIP time (beats), given the
  * transport clock. Plays region_start..loop_end once, then wraps inside the
  * loop. Returns -1 when it cannot say (no clip, degenerate loop). */
 double mm_clip_position(const mm_clip_t *c, double start_beats, double song_beats);
+
+/* A clip's whole editable STATE: its content (notes + Move's envelopes) and
+ * its loop geometry. Move's Undo returns a clip to an earlier state exactly,
+ * and a Double Loop on an empty clip changes only the geometry -- so this,
+ * not content_hash alone, is what undo/redo are matched on. */
+static inline uint32_t mm_clip_state_hash(const mm_clip_t *c)
+{
+    uint32_t h = c->content_hash ^ 0x9e3779b9u;
+    const double g[5] = { c->region_start, c->region_end, c->loop_start, c->loop_end, (double)c->loop_on };
+    const unsigned char *b = (const unsigned char *)g;
+    for (unsigned i = 0; i < sizeof g; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+
+/* ---- the clip being edited (model thread only: call from the listener) --- */
+
+typedef struct { int pitch; double start, dur; float vel; int64_t id; } mm_note_t;
+typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash; } mm_clip_ref_t;
+
+/* The selected track's current clip, decoded from Move's notes blob: its
+ * notes NOW (previous = 0) or in its previous content state (1). Returns the
+ * count, or -1 when unknown. The pointer stays valid until the next change. */
+int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref);
 
 /* ---- pure pieces, exported for tests/host ---------------------------- */
 
