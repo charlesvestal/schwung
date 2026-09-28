@@ -42,9 +42,13 @@ done
 # 8-12 s, ending the second Move writes Song.abl.
 grep -q 'STEP_PLOCK_CLIP_PENDING' src/host/step_plock.h \
   || fail "the pending-clip reason is gone -- a new clip refuses as though it were absent"
-grep -q 'cslot < 0 && !(clip_len > 0.0)) return STEP_PLOCK_CLIP_PENDING' src/host/shadow_chain_mgmt.c \
-  || fail "pending is no longer gated on having no row AND no length -- either it claims a clip on an EMPTY track, or it refuses a gesture that LANE_SLOT_PENDING can now land"
-grep -q 'LANE_SLOT_PENDING' src/host/shadow_chain_mgmt.c \
-  || fail "the host no longer reports a pending row -- the blind window refuses again"
+# "Pending" now means exactly one thing: Move's model shows NO current clip on
+# the track (an empty slot picked, or none ever). There is no blind window any
+# more -- a new clip is in the model on the step press that makes it -- so the
+# old "no row AND no length" gate and LANE_SLOT_PENDING reporting are gone.
+# Behaviour is driven in tests/host/test_slot_clip_phase.c ("pending rc").
+awk '/^static int shadow_lanes_step_phase\(/,/^\}/' src/host/shadow_chain_mgmt.c \
+  | grep -q 'return STEP_PLOCK_CLIP_PENDING' \
+  || fail "shadow_lanes_step_phase no longer reports a pending clip"
 
 echo "PASS: every plock refusal crosses all three tables ($(wc -w <<<"$enum") codes)"

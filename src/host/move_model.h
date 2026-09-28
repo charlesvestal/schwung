@@ -54,6 +54,8 @@ typedef struct {
     double   loop_start, loop_end;
     uint8_t  loop_on;
     double   scroll;         /* step editor scroll position (beats); -1 = n/a */
+    uint32_t notes_len;      /* bytes of Move's notes blob (0 = no notes / not MIDI) */
+    uint32_t notes_hash;     /* FNV-1a of those bytes: a CONTENT fingerprint */
     int      ts_upper, ts_lower;
 } mm_clip_t;
 

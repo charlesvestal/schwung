@@ -81,12 +81,14 @@ shadow_inprocess_load_chain"
 #    reads the resolver's BODY rather than the file.
 resolver=$(awk '/^int shadow_slot_clip_phase\(/,/^\}/' "$mgmt")
 [ -n "$resolver" ] || fail "could not find shadow_slot_clip_phase in $mgmt"
-printf '%s\n' "$resolver" | grep -q '!(r->loop_len > 0.0)' \
+#    Since the resolver reads Move's live model, the length is (le - ls) from
+#    the model's clip, and a torn model read is the NaN this guards against.
+printf '%s\n' "$resolver" | grep -q '!(le - ls > 0.0)' \
   || fail "shadow_slot_clip_phase does not spell its loop-length guard \
-!(r->loop_len > 0.0) — the <= 0.0 form is FALSE for a NaN, so a torn regions \
-read would reach clip_phase_beats() as a live length"
-if printf '%s\n' "$resolver" | grep -qE 'loop_len[[:space:]]*<=[[:space:]]*0'; then
-  fail "shadow_slot_clip_phase still carries a NaN-blind \`loop_len <= 0\` guard"
+!(le - ls > 0.0) — the <= 0.0 form is FALSE for a NaN, so a torn model read \
+would reach mm_clip_position() as a live length"
+if printf '%s\n' "$resolver" | grep -qE '(loop_len|le - ls)[[:space:]]*<=[[:space:]]*0'; then
+  fail "shadow_slot_clip_phase carries a NaN-blind \`<= 0\` loop-length guard"
 fi
 
 # 5. THE PUSH PRECEDES THE IDLE GATE, or a silent slot's lane freezes: the shim

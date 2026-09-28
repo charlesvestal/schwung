@@ -90,7 +90,7 @@ int main(void) {
         }
 
         /* What SHOULD survive: exactly the lanes that are neither shape of
-         * provisional. Recorded before serializing, from the same predicates
+         * provisional, nor orphaned. Recorded before serializing, from the same predicates
          * the writer uses -- if those predicates are the thing that is wrong,
          * assertion 3 below is what catches it, not this. */
         lane_t expect[LANE_MAX];
@@ -100,6 +100,7 @@ int main(void) {
             if (!ln->used) continue;
             if (lane_slot_is_pending(ln->slot) || lane_fp_absent(&ln->fp))
                 continue;
+            if (ln->orphaned) continue;   /* its clip was deleted: never written */
             expect[nexpect++] = *ln;
         }
 

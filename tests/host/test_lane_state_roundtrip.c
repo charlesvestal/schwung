@@ -123,7 +123,6 @@ int main(void) {
     lane_t *sl = lane_alloc(&a, "fx1", "mix", 1, 1, &fp);
     lane_write(sl, 0.0, 0.5f, 0);
     sl->stale = 1;
-    sl->orphaned = 1;
     sl->driving = 1;
     sl->punch_until_wrap = 1;
     n = lane_store_serialize(&a, buf, sizeof(buf));
@@ -135,6 +134,24 @@ int main(void) {
     CHECK(rs && rs->orphaned == 0, "orphaned was persisted");
     CHECK(rs && rs->driving == 0, "driving was persisted");
     CHECK(rs && rs->punch_until_wrap == 0, "punch_until_wrap was persisted");
+
+    /* ---- an ORPHAN is not written at all ---------------------------- */
+    /* Its clip was deleted. Written down, it came back looking live, and a new
+     * clip made in that slot after a reload read as an EDIT of the old one and
+     * inherited its automation. Undo can only restore it in memory, and Move's
+     * undo history does not survive a reload -- so the file never carries one. */
+    lane_store_reset(&a);
+    lane_t *live = lane_alloc(&a, "synth", "cutoff", 0, 0, &fp);
+    lane_write(live, 0.0, 0.25f, 0);
+    lane_t *dead = lane_alloc(&a, "synth", "bright", 0, 1, &fp);
+    lane_write(dead, 0.0, 0.75f, 0);
+    dead->orphaned = 1;
+    n = lane_store_serialize(&a, buf, sizeof(buf));
+    CHECK(n > 0, "serialize with an orphan returned %d", n);
+    lane_store_reset(&b);
+    CHECK(lane_store_deserialize(&b, buf) == 1, "deserialize failed");
+    CHECK(find_used(&b, "synth", "cutoff") != NULL, "the live lane was dropped with the orphan");
+    CHECK(find_used(&b, "synth", "bright") == NULL, "an orphaned lane was written to the file");
 
     /* ---- an empty store writes NOTHING ----------------------------- */
     /* This is what stops an empty document being written over a good file:
