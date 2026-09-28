@@ -26609,6 +26609,12 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         getParam: function(key) { return getSlotParam(slot, prefix + key); },
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
+        /* The module id behind a target component, for lfoTargetOptionsFor's
+         * names. Null for the other LFO and the sends. */
+        moduleIdOf: function(compKey) {
+            return /^(synth|fx\d+|midi_fx\d+)$/.test(compKey)
+                ? (getSlotParam(slot, compKey + "_module") || null) : null;
+        },
         getTargetComponents: function() {
             const comps = [];
             const synthModule = getSlotParam(slot, "synth_module");
@@ -26808,6 +26814,10 @@ function makeMfxLfoCtx(lfoIdx) {
         getParam: function(key) { return getSlotParam(0, prefix + key); },
         setParam: function(key, val) { setSlotParam(0, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
+        moduleIdOf: function(compKey) {
+            const m = /^fx(\d+)$/.exec(compKey);
+            return m ? (getMasterFxSlotModule(Number(m[1]) - 1) || null) : null;
+        },
         getTargetComponents: function() {
             const comps = [];
             /* The cap, not a published count: Master FX is a FIXED array of
@@ -26906,6 +26916,49 @@ function resetLfoTargetLabels() {
  * over a live routing would let the next detent replace it.
  */
 let _lfoTargetOptionsEpoch = 0;
+/*
+ * The knob list names a component by its module's CATALOGUE name, never by
+ * `<comp>:name`. A module may answer `name` with its current PATCH — minijv
+ * does (jv880_plugin.cpp) — so every routing read "Grand Piano Layered:
+ * Cutoff" and the param was pushed off the row. Only the knob's list: the
+ * picker's own component rows are left as they were.
+ */
+function catalogNamed(ctx, comps) {
+    if (!ctx.moduleIdOf) return comps;
+    return comps.map((c) => {
+        const id = c && c.key ? ctx.moduleIdOf(c.key) : null;
+        if (!id) return c;
+        const at = String(c.label || "").indexOf(": ");
+        const kind = at < 0 ? String(c.label || c.key) : c.label.slice(0, at);
+        return { key: c.key, label: kind + ": " + catalogModuleName(id) };
+    });
+}
+
+/* getModuleDisplayName, minus its two-letter fallback: moduleNameCache is
+ * filled by the module pickers' scans, so before one has run for that type a
+ * miss would name the synth "MI". A miss here reads the module's own
+ * module.json once (the list is built once per module change, never per
+ * frame) and caches it the way the scan would have. */
+function catalogModuleName(moduleId) {
+    let id = String(moduleId || "");
+    if (id.indexOf("/") >= 0) {
+        const parts = id.split("/").filter(Boolean);
+        const last = parts[parts.length - 1] || "";
+        id = (/\.[A-Za-z0-9]+$/.test(last) && parts.length >= 2) ? parts[parts.length - 2] : last;
+    }
+    if (!id) return String(moduleId || "");
+    if (!moduleNameCache[id.toLowerCase()]) {
+        for (const dir of ["sound_generators", "audio_fx", "midi_fx"]) {
+            try {
+                const content = std.loadFile(`${MODULES_ROOT}/${dir}/${id}/module.json`);
+                if (!content) continue;
+                cacheModuleAbbrev(JSON.parse(content));
+                break;
+            } catch (e) { /* the next directory, or the id itself */ }
+        }
+    }
+    return moduleNameCache[id.toLowerCase()] || id;
+}
 const _lfoTargetOptionsCache = Object.create(null);
 function lfoTargetOptionsFor(ctx, current) {
     if (!ctx) return null;
@@ -26916,7 +26969,7 @@ function lfoTargetOptionsFor(ctx, current) {
         return hit.value;
     }
     const value = lfoTargetOptions({
-        components: ctx.getTargetComponents ? ctx.getTargetComponents() : [],
+        components: catalogNamed(ctx, ctx.getTargetComponents ? ctx.getTargetComponents() : []),
         paramsFor: (key) => (ctx.getTargetParams ? ctx.getTargetParams(key) : []),
         current: current || { target: ctx.getParam("target") || "",
                               param: ctx.getParam("target_param") || "" },

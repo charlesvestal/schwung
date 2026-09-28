@@ -91,6 +91,9 @@ export function drawEnumList(ctx, o) {
         /* Both callers announce their own, richer string ("Room, 2 of 17"), so
          * the list must not also announce "Room: *". */
         announce: false,
+        /* An LFO Target lists routings as "Module: Param"; a long module
+         * name must not push the param off the row. */
+        shortenHead: true,
     });
     drawFooter(ctx, o.footer);
 }

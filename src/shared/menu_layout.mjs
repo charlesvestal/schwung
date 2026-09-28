@@ -15,7 +15,7 @@ import { drawHeader as drawMovyHeader,
  * measures inside a pixel width; drawMenuList asks it for a COUNT (see
  * fitCharCount) because truncateText and the marquee scroller are both
  * character-budgeted. There is no second copy of that loop in this file. */
-import { fitText } from './param_pages/render_page.mjs';
+import { fitText, fitHeadTail } from './param_pages/render_page.mjs';
 /* The geometry itself comes from the LEAF, ../list_geometry.mjs — the single
  * definition every screen shares. This file re-exports each name because ~41
  * call sites import them from here; chain_ui_views.mjs re-exports the same set
@@ -394,6 +394,11 @@ export function drawMenuList({
     /* THE LABEL FLOOR, and it applies to EVERY row — see the long note above
      * the reservation itself. 0 opts a caller out entirely. */
     minLabelChars = 8,
+    /* A "Head: Tail" label gives up its HEAD first when it does not fit
+     * (fitHeadTail) — for a list whose options are routings, where the tail
+     * is the thing being chosen. Off: the ordinary cut and selected-row
+     * scroller, for every existing caller. */
+    shortenHead = false,
     announce = true  /* set false when the caller emits its own richer
                         screen-reader announcements (e.g. file-browser) to
                         avoid double-announcing each selection move */
@@ -671,7 +676,11 @@ export function drawMenuList({
             maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         }
 
-        if (maxLabelChars > 0) {
+        if (shortenHead && fullLabel.indexOf(": ") > 0 && maxLabelChars < fullLabel.length) {
+            label = fitHeadTail({ textWidth: measure },
+                                fullLabel, Math.max(0, (displayValue ? resolvedValueX : indicatorX)
+                                                       - labelX - labelGap));
+        } else if (maxLabelChars > 0) {
             if (isSelected && fullLabel.length > maxLabelChars) {
                 /* Selected item with long text: use scroller */
                 label = labelScroller.getScrolledText(fullLabel, maxLabelChars);

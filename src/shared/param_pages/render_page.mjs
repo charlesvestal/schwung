@@ -205,6 +205,34 @@ export function fitText(ctx, text, maxWidth) {
     return s;
 }
 
+/**
+ * Fit a "Head: Tail" string by shortening the HEAD first.
+ *
+ * For a value whose tail is the specific thing and whose head only says where
+ * it lives — an LFO routing reads "Mini-JV: Cutoff" — cutting from the end
+ * keeps the part you already know and drops the part you were looking for.
+ * The head gives ground to a single character and a dot ("M.: Cutoff"), then
+ * goes entirely; a tail that does not fit on its own is cut like any text.
+ *
+ * MEASURED through the ctx that draws it, never counted in characters: the
+ * same string is set in the device face on Schwung and in movy's narrower
+ * 5px face, and a character budget right for one is wrong for the other.
+ * Text with no separator is fitText exactly.
+ */
+export function fitHeadTail(ctx, text, maxWidth, sep = ": ") {
+    const s = asciiFold(text);
+    if (ctx.textWidth(s) <= maxWidth) return s;
+    const at = s.indexOf(sep);
+    if (at <= 0) return fitText(ctx, s, maxWidth);
+    const tail = s.slice(at + sep.length);
+    if (ctx.textWidth(tail) > maxWidth) return fitText(ctx, tail, maxWidth);
+    for (let n = at - 1; n >= 1; n--) {
+        const t = s.slice(0, n).replace(/\s+$/, "") + "." + sep + tail;
+        if (ctx.textWidth(t) <= maxWidth) return t;
+    }
+    return tail;
+}
+
 /* Drop interior vowels from the end backwards ("Resonance" → "Rsnnc"). The
  * first character is never dropped. */
 function devowel(word, ctx, maxWidth) {
