@@ -289,7 +289,7 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_state.c ../../src/host/clip_state.c
 
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
+	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
 
 $(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c
