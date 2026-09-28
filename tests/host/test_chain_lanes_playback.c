@@ -1116,12 +1116,12 @@ int main(void) {
             CHECK(find_param_info(dr->synth_params, dr->synth_param_count, "kit") &&
                   find_param_info(dr->synth_params, dr->synth_param_count, "master"),
                   "chain_params' globals are merged in, not dropped");
-            dr->synth_child_tmpl_count = parse_child_templates("tests/fixtures/dr32", dr->synth_child_tmpl,
-                                                               CHAIN_CHILD_TMPL_MAX);
-            CHECK(dr->synth_child_tmpl_count == 1 && !strcmp(dr->synth_child_tmpl[0].tmpl, "pad{index}_{key}") &&
-                  dr->synth_child_tmpl[0].base == 1 && dr->synth_child_tmpl[0].count == 32,
-                  "one template, pads 1..32 (got %d: %s base %d count %d)", dr->synth_child_tmpl_count,
-                  dr->synth_child_tmpl[0].tmpl, dr->synth_child_tmpl[0].base, dr->synth_child_tmpl[0].count);
+            chain_child_keys_load(&dr->synth_child_keys, "tests/fixtures/dr32");
+            const chain_child_keys_t *ck = &dr->synth_child_keys;
+            CHECK(ck->ntmpl == 1 && !strcmp(ck->tmpl[0].tmpl, "pad{index}_{key}") &&
+                  ck->tmpl[0].base == 1 && ck->tmpl[0].count == 32,
+                  "one template, pads 1..32 (got %d: %s base %d count %d)", ck->ntmpl,
+                  ck->tmpl[0].tmpl, ck->tmpl[0].base, ck->tmpl[0].count);
 
             chain_param_info_t *t7 = find_param_by_key(dr, "synth", "pad7_transpose");
             CHECK(t7 && !strcmp(t7->key, "transpose") && t7->type == KNOB_TYPE_INT &&
@@ -1130,6 +1130,24 @@ int main(void) {
             chain_param_info_t *v32 = find_param_by_key(dr, "synth", "pad32_volume");
             CHECK(v32 && !strcmp(v32->key, "volume") && v32->min_val == -36.0f, "pad32_volume (a Mix-page key)");
             CHECK(find_param_by_key(dr, "synth", "pad7_transpose") == t7, "second lookup: the alias cache");
+            /* The table replaced underneath the cache (a reload, the runtime
+             * chain_params refresh): the alias re-checks its base, never
+             * answers with whatever now sits at its old index. */
+            {
+                int ti = (int)(t7 - dr->synth_params);
+                chain_param_info_t saved = dr->synth_params[ti];
+                snprintf(dr->synth_params[ti].key, sizeof dr->synth_params[ti].key, "not_transpose");
+                CHECK(find_param_by_key(dr, "synth", "pad7_transpose") == NULL,
+                      "a stale alias answered with another parameter");
+                dr->synth_params[ti] = saved;
+                CHECK(find_param_by_key(dr, "synth", "pad7_transpose") == t7, "and re-resolves once it is back");
+            }
+            /* Past the cache's size it evicts round-robin: still right. */
+            for (int pad = 1; pad <= 32; pad++) {
+                char k[32]; snprintf(k, sizeof k, "pad%d_pan", pad);
+                chain_param_info_t *pp = find_param_by_key(dr, "synth", k);
+                if (!pp || strcmp(pp->key, "pan")) { CHECK(0, "%s did not resolve past the cache size", k); break; }
+            }
             CHECK(!find_param_by_key(dr, "synth", "pad33_transpose"), "pad 33 is not an instance");
             CHECK(!find_param_by_key(dr, "synth", "pad0_transpose"), "nor is pad 0 (base 1)");
             CHECK(!find_param_by_key(dr, "synth", "pad7_nonsense"), "an undeclared base key is still unknown");
