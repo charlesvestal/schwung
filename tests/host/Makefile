@@ -52,6 +52,9 @@ BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_move_model \
+	$(BUILD_DIR)/test_lane_edit \
+	$(BUILD_DIR)/test_undo_timeline \
+	$(BUILD_DIR)/test_edit_follow \
 	$(BUILD_DIR)/test_move_model_sync \
 	$(BUILD_DIR)/test_editor_bar_announce \
 	$(BUILD_DIR)/test_clip_regions \
@@ -99,6 +102,11 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
 	$(BUILD_DIR)/test_audio_in_restore \
+	$(BUILD_DIR)/test_lane_trace \
+	$(BUILD_DIR)/test_lane_lookahead \
+	$(BUILD_DIR)/test_lane_store \
+	$(BUILD_DIR)/test_lane_state_roundtrip \
+	$(BUILD_DIR)/test_slot_clip_phase \
 	$(BUILD_DIR)/test_rec_arm
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -291,8 +299,17 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
 
-$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c
+$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c -lm
+
+$(BUILD_DIR)/test_undo_timeline: test_undo_timeline.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_undo_timeline.c ../../src/host/undo_timeline.c
+
+$(BUILD_DIR)/test_lane_edit: test_lane_edit.c ../../src/host/lane_edit.c ../../src/host/lane_store.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_edit.c ../../src/host/lane_edit.c ../../src/host/lane_store.c -lm
+
+$(BUILD_DIR)/test_edit_follow: test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c -lm
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
@@ -307,17 +324,27 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # lane_trace.c is LINKED, not stubbed: it owns the ring
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
+$(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_store.c ../../src/host/lane_store.c -lm
 
 # lane_trace — the ring the lane diagnostic records through. Header-only, so
 # the .c is the whole test; the header is named as a dependency.
+$(BUILD_DIR)/test_lane_trace: test_lane_trace.c ../../src/host/lane_trace.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_trace.c
 
 # lane_lookahead — the one block of lead a p-lock needs to beat its own note.
+$(BUILD_DIR)/test_lane_lookahead: test_lane_lookahead.c ../../src/host/lane_lookahead.h ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_lookahead.c -lm
 
 # lane_serial — the `lanes:state` document (Task 8). Links the real
 # lane_store.c rather than a fake: the document's whole job is to round-trip
 # lane_t, so a stand-in would inherit the test's own belief about its layout.
+$(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c ../../src/host/lane_serial.h ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c -lm
 
 # rec_arm — Move's Record button, decoded from its LED (Task 7 of automation
 # lanes). Header-only, so the .c is the whole test; the header is named as a

@@ -47,6 +47,9 @@
 #include "host/bus_mix.h"
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
+#include "host/lane_store.h"
+#include "host/lane_edit.h"
+#include "host/lane_serial.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -157,6 +160,33 @@ typedef struct {
                           * CC resolution, so a knob swept through a range that
                           * maps to one CC step emits once, not once per turn. */
 } knob_mapping_t;
+
+/* A CHILD LEVEL'S KEY TEMPLATE -- how a module that declares a rack of
+ * instances once (dr32: 32 pads, `pad{index}_{key}`) names each instance's
+ * parameters. The same rule src/shared/param_pages/child_key.mjs resolves on
+ * the UI side, so a key the grid writes is a key the chain can type. */
+#define CHAIN_CHILD_TMPL_MAX 4
+typedef struct {
+    char tmpl[48];          /* child_key_template, or "<child_prefix>{index}_{key}" */
+    int  base;              /* child_index_base */
+    int  count;             /* child_count */
+    int  digits;            /* child_index_digits, 0 = unpadded */
+} chain_child_tmpl_t;
+#define CHAIN_PARAM_ALIAS_MAX 32   /* == LANE_MAX: every lane on a templated key stays cached */
+/* One position's templates, plus the instance keys already resolved through
+ * them. An alias remembers its BASE key and is re-checked on every hit, so a
+ * parameter table replaced underneath it (a reload, the runtime chain_params
+ * refresh, an fx:move) can only cost a re-resolve, never a wrong answer. A
+ * VALUE type -- no pointers -- so the fx/midi_fx copies permute with their
+ * positions like fx_param_counts does, and so it must stay within
+ * CHAIN_PERM_MAX_ELEM (asserted in chain_reorder.c): a bigger element makes
+ * the permute REFUSE, i.e. every fx:move silently does nothing. */
+typedef struct {
+    chain_child_tmpl_t tmpl[CHAIN_CHILD_TMPL_MAX];
+    int ntmpl;
+    struct { char key[40]; uint32_t base_hash; int idx; } alias[CHAIN_PARAM_ALIAS_MAX];
+    int nalias, next_evict;   /* full: a ring, oldest out */
+} chain_child_keys_t;
 
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
@@ -530,6 +560,20 @@ static inline int bus_fx_ready(const slot_bus_t *bus)
 }
 
 /* Chain instance state - contains all per-instance data for v2 API */
+enum {
+    LANE_PLOCK_OK = 0,
+    LANE_PLOCK_BAD_REQUEST,
+    LANE_PLOCK_NO_CLIP,
+    LANE_PLOCK_UNKNOWN_PARAM,   /* the module has no such parameter */
+    LANE_PLOCK_STORE_FULL,
+    LANE_PLOCK_DISABLED,        /* the kill switch is off -- see lanes:enabled */
+    /* A COUNT, so the name table in lane_param_get cannot silently fall
+     * behind. The getter used to clamp against the LAST member, so a reason
+     * added here without a string landed out of range and was reported as
+     * "bad_request" -- a real refusal wearing another one's name. */
+    LANE_PLOCK_REASON_COUNT
+};
+
 typedef struct chain_instance {
     /* Module directory */
     char module_dir[MAX_PATH_LEN];
@@ -759,6 +803,11 @@ typedef struct chain_instance {
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
+    /* A rack's per-instance keys (`pad7_transpose` -> `transpose`), per
+     * position: see chain_child_keys_t. Set at every module load. */
+    chain_child_keys_t synth_child_keys;
+    chain_child_keys_t fx_child_keys[MAX_AUDIO_FX];
+    chain_child_keys_t midi_fx_child_keys[MAX_MIDI_FX];
     /*
      * POINTERS, not inline arrays, and the reason is the reorder.
      *
@@ -826,6 +875,176 @@ typedef struct chain_instance {
      * time signature -- only converting BARS does, which is the strip reader's
      * problem alone (quarters per bar = upper * 4 / lower). */
     double clip_phase_beats;      /* quarters from the clip's start */
+    /* The phase lane playback LOOKS AHEAD to, and why it must.
+     *
+     * Within one frame the shim renders first (shadow_mix_audio, which runs
+     * lane_tick) and delivers Move's MIDI second (shadow_inprocess_process_midi)
+     * -- both inside shim_pre_transfer, in that order. But `clip_phase_beats`
+     * has not yet advanced to the step when the render runs, so a p-lock whose
+     * rectangle starts exactly on a step is applied ONE BLOCK AFTER the note
+     * for that step is handed to the synth. A drum voice latches its pitch at
+     * note-on, so it reads the value the lock was meant to replace, and the
+     * lock appears to take effect on the NEXT hit.
+     *
+     * Measured 2026-09-17: Move's notes arrive at ph=0.000000, 1.000000,
+     * 1.500000, 3.000000 -- EXACTLY on the boundaries, no lag -- so this is a
+     * one-block ordering race and not a timing estimate that needs a constant.
+     *
+     * The lead is therefore the phase travelled per tick, remembered rather
+     * than computed: deriving it from tempo would need a BPM the lane code
+     * does not own, and would be wrong the moment the clock changed. */
+    double lane_prev_phase;       /* quarters, previous lane_tick */
+    int    lane_prev_phase_valid;
+    /* The last clip row we actually KNEW on this slot, held so that losing
+     * the row does not stop automation that is plainly still playing.
+     *
+     * `lane_clip_slot` goes to -1 for "we cannot currently name the row",
+     * which is NOT the same fact as "a different clip is playing" — and
+     * treating the two alike silenced a lane mid-playback with nothing else
+     * launched and the clip still audible. Reported exactly that way: "it's
+     * still playing, there has been no other clip — shouldn't we just leave
+     * it playing?"
+     *
+     * Same rule as the param channel's three answers (docs: null vs ""): an
+     * absent ANSWER must never be read as a negative answer.
+     *
+     * It is the LAST KNOWN row rather than "match anything", because one slot
+     * can hold lanes for several rows — matching anything would drive all of
+     * them at once and they would fight over the same parameter. */
+    int    lane_last_known_slot;  /* 0..7, or -1 before anything is known */
+    /* The row that newly appeared in Song.abl on this track, or -1. A blind
+     * take adopts onto it rather than onto the playing row. Consumed by the
+     * adoption that uses it. */
+    int    lane_new_row;
+    /* The kill switch, pushed by the shim from /data/UserData/schwung/lanes_on.
+     * 0 from calloc, so OFF is the default and a slot that is never told stays
+     * inert. See SHIM_FLAG_LANES_ON. */
+    int    lanes_enabled;
+    double clip_loop_start;       /* the window's start, same coordinate */
+    double clip_loop_len;         /* quarters */
+    /* Which clip the phase belongs to, and what it looks like right now. All
+     * pushed together in ONE call, deliberately: these are facts about one
+     * clip at one instant, and splitting them across calls lets a lane bind a
+     * fingerprint to a position it did not come from. */
+    int    lane_track;            /* Move track 0..3 (== the slot index) */
+    int    lane_clip_slot;        /* 0..7, or -1 for "nothing playing" */
+    int    clip_fp_valid;
+    lane_fingerprint_t clip_fp;   /* content fingerprint; note data in Task 6 */
+
+    /* The lanes themselves: ON THE INSTANCE, never inside patch_info_t. That
+     * struct is a STACK LOCAL on the SPI callback (v2_set_param's load_file)
+     * and also sits MAX_PATCHES deep in this instance -- which is why raising
+     * SLOT_BUSES from 4 to 8 took the callback frame from 194 KB to 232 KB.
+     * A lane_store_t is ~53 KB (measured; LANE_STORE_MAX_BYTES is the budget
+     * the build enforces) and must land in neither multiplier. This said
+     * 18 KB, which was true before LANE_MAX went 16 -> 32. */
+    lane_store_t lanes;
+    /* MAY A WRITE USE `lane_clip_slot`? Pushed by the shim on change.
+     *
+     * The row is the PLAYING clip; a p-lock wants the clip on SCREEN. 1 means
+     * Move's step strip says a clip is being edited whose bar count differs
+     * from the playing clip's -- positive evidence of a different clip -- so a
+     * write must key to the placeholder and adopt later instead of landing on
+     * a clip the user is not looking at. See g_write_unconfirmed in
+     * shadow_chain_mgmt.c for why the STRIP is the signal and the session pad
+     * decode is not. */
+    int    lane_edit_unconfirmed;
+    /* The EDITED clip's length in quarters, off the same strip. A write keyed
+     * to the placeholder needs the geometry of the clip it is being made on;
+     * `clip_loop_len` is the playing clip's and would key the take to the
+     * wrong length, which is what adoption compares. */
+    double lane_edit_len;
+    int    lane_armed;            /* pushed from the shim: Move's Record button */
+    /* How many lanes the last `lanes:clear` threw away, read back as
+     * `lanes:cleared`. The UI announces a NUMBER: a clear that reports
+     * success without one is indistinguishable from one that cleared
+     * nothing. */
+    int    lanes_last_cleared;
+    /* 1 if the last `lanes:plock` wrote a point, 0 if it was refused. A
+     * gesture that silently does nothing is indistinguishable from one that
+     * worked until the loop comes round, which is exactly the ambiguity the
+     * rest of this feature spends its instrumentation on. */
+    int    lanes_last_plocked;
+    int    lanes_last_undone;
+    /* Why the last lanes:plock was refused; see LANE_PLOCK_* and the comment
+     * at the plock verb. */
+    int    lanes_plock_refusal;
+    /* THE LAST `lanes:probe` ANSWER: what a lane holds at one phase.
+     *
+     * A GET cannot carry arguments -- a param key is one token, and the phase,
+     * target and param are three -- so the question is asked as a SET and the
+     * answer read back. Single-threaded on the SPI callback, one question at
+     * a time, which is what makes a stashed answer safe here.
+     *
+     * `have` distinguishes "no lane, or nothing to say at that phase" from the
+     * value 0.0, exactly as lane_eval's own return does. `exact` says a point
+     * sits AT that phase (within LANE_MIN_POINT_BEATS) rather than the curve
+     * merely passing through it -- a held step showing a value it does not own
+     * would invite editing the wrong point. */
+    int    lanes_probe_have;
+    int    lanes_probe_exact;
+    float  lanes_probe_value;
+    int    lanes_probe_stepped;
+    /* ONE-DEEP UNDO of the whole slot's automation, swapped rather than
+     * copied back so the same verb is redo. See lane_store_swap(). */
+    lane_store_t lanes_undo;
+    int    lanes_undo_valid;
+    /* Points copied by the last `lanes:double`. Reported for the same reason
+     * as the others: a gesture that silently did nothing is indistinguishable
+     * from one that worked until the second half comes round. */
+    int    lanes_last_doubled;
+    /* Lanes carried onto a duplicated clip by the last `lanes:copy_clip`. */
+    int    lanes_last_copied;
+    /* AUTOMATION FOLLOWS MOVE'S EDITS (host/lane_edit.h): the journal of
+     * mirrored step/page pastes, for Move's Undo/Redo, and the lanes of
+     * clips Move deleted, for its Undo. Rings, by id; in memory only --
+     * Move's own undo history does not survive a reload either. */
+    lane_journal_entry_t lanes_journal[LANE_JOURNAL_DEPTH];
+    lane_stash_t lanes_stash[LANE_STASH_DEPTH];
+    int    lanes_last_pasted;      /* lanes changed by the last paste_span, -1 refused */
+    int    lanes_last_journaled;   /* lanes restored by the last journal undo/redo */
+    int    lanes_last_stashed, lanes_last_unstashed;
+    /* WHICH PARAMETERS ARE WHICH VOICE'S, for a drum paste (Move copies only
+     * the selected voice's notes, so only that voice's automation may follow).
+     * Built in JS from the module's declared hierarchy (lane_voice_map.mjs),
+     * pushed here, and valid only for the synth it was built for -- a new
+     * synth invalidates it by name, so it can never scope a paste by another
+     * module's keys. "" with the name set means "known, not a rack". */
+    char   lanes_voice_map[16384];
+    char   lanes_voice_map_for[MAX_NAME_LEN];
+    int    lanes_last_paste_scoped;   /* 1 when the last paste_span was voice-scoped */
+    /* SCHWUNG'S OWN EDITS, for the unified Undo (host/undo_timeline.h): each
+     * take, p-lock and clear is diffed against the store as it was when the
+     * edit began (`lanes_edit_base`; a take begins when Record arms) and
+     * journaled as whole lanes. Ids carry the high bit so `lanes:journal`
+     * can tell them from Move-mirrored pastes, and the host is told of each
+     * through chain_take_lane_edit() -- it anchors the edit to Move's own
+     * undo stack at that moment. In memory only, like Move's history. */
+#define LANE_SJOURNAL_DEPTH 8
+    lane_journal_entry_t lanes_sjournal[LANE_SJOURNAL_DEPTH];
+    uint32_t lanes_sjournal_seq;
+    lane_store_t lanes_edit_base;
+    int    lanes_edit_open;           /* 0, or the LANE_EDIT_* kind being made */
+    /* A P-LOCK GESTURE is one step: every write on the same step while it is
+     * held (the grid sends one per 20 ms) folds into the open edit, which
+     * commits when a different step or verb arrives, Record changes, or the
+     * writes stop for LANE_PLOCK_GESTURE_MS. */
+    double   lanes_edit_plock_phase;
+    uint64_t lanes_edit_plock_ms;
+    struct { uint32_t jid; int kind; } lanes_edit_ev[8];
+    unsigned lanes_edit_ev_w, lanes_edit_ev_r;
+    int    lanes_last_sjournaled;     /* lanes in the last own-edit entry, -1 too many */
+    /* How many times an adopting lane DISPLACED a lane already holding its
+     * key. Counted rather than done silently, for the reason every other
+     * destructive step here is counted: it drops somebody's points, and "my
+     * automation vanished" needs a better answer than a shrug. Usually an
+     * orphan from a deleted clip whose row Move reused. */
+    int    lanes_adopt_displaced;
+    /* Provisional takes the last `lanes:state` replaced — ones no snapshot
+     * could have held. Counted for the reason lanes_last_cleared is: a
+     * restore that reports nothing is indistinguishable from one that
+     * worked. */
+    int    lanes_last_discarded;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
@@ -1206,9 +1425,37 @@ CHAIN_INTERNAL int chain_params_emit_json(const chain_param_info_t *params, int 
 CHAIN_INTERNAL int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 CHAIN_INTERNAL int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);
+CHAIN_INTERNAL int parse_child_templates(const char *module_path, chain_child_tmpl_t *out, int max);
+CHAIN_INTERNAL int parse_child_templates_json(const char *json, chain_child_tmpl_t *out, int max);
+CHAIN_INTERNAL void chain_child_keys_load(chain_child_keys_t *ck, const char *module_path);
+CHAIN_INTERNAL int chain_child_key_base(const chain_child_tmpl_t *t, int n, const char *key,
+                                        char *base, int base_len);
 CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
 CHAIN_INTERNAL void smoother_set_target(param_smoother_t *smoother, const char *key, float value);
 CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
+
+/* chain_lanes.c */
+CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
+/* Snapshot the store for one-deep undo/redo; see lane_store_swap(). */
+CHAIN_INTERNAL void lane_undo_take(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_punch_end_all(chain_instance_t *inst);
+CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst, const char *target, const char *param);
+CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
+                                     const char *param, const char *val);
+CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
+                                             lane_fingerprint_t *out);
+CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
+CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
+CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
+CHAIN_INTERNAL int  lane_take_edit_event(chain_instance_t *inst, uint32_t *jid, int *kind);
+/* ONE dispatch for every "lanes:" key -- `sub` is the key past the prefix.
+ * chain_host.c carries a single branch each way; every lane key lives here. */
+CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,
+                                   const char *val);
+CHAIN_INTERNAL int lane_param_get(chain_instance_t *inst, const char *sub,
+                                  char *buf, int buf_len);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

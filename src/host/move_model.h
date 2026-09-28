@@ -54,6 +54,12 @@ typedef struct {
     double   loop_start, loop_end;
     uint8_t  loop_on;
     double   scroll;         /* step editor scroll position (beats); -1 = n/a */
+    uint32_t notes_len;      /* bytes of Move's notes blob (0 = no notes / not MIDI) */
+    uint32_t notes_hash;     /* FNV-1a of those bytes: a CONTENT fingerprint */
+    uint32_t content_hash;   /* notes AND Move's own automation envelopes: changes on
+                              * any edit Move makes to the clip, and returns to an
+                              * earlier value exactly when Move's Undo restores one */
+    int      n_envelopes;    /* Move's own automation lanes on this clip */
     int      ts_upper, ts_lower;
 } mm_clip_t;
 
@@ -86,6 +92,15 @@ typedef struct {
     uint8_t  step_triplet;    /* triplet grid: 12 steps per page, every 4th button dead */
     int      selected_track; /* 0..3, or -1 */
     mm_track_t track[MM_TRACKS];
+    /* MOVE'S UNDO STACK -- flip's History<HistoryStoreMemory>, read in place.
+     * A step is its list node (nodes never move) plus its transaction number
+     * (a squash that rewrote the top in place still changes it). 0 = none.
+     * hist_valid 0 means the stack could not be read: nothing may assume
+     * anything about Move's undo then (undo_timeline.h claims no press). */
+    int      hist_valid;
+    uint64_t hist_undo_node, hist_undo_nbr;    /* last-undo step */
+    uint64_t hist_redo_node, hist_redo_nbr;    /* first-redo step */
+    uint32_t hist_size;
 } move_model_t;
 
 /* ---- runtime ---------------------------------------------------------- */
@@ -102,13 +117,67 @@ uint64_t move_model_last_publish_ms(void);
  * One listener; set it before or after start. */
 typedef void (*move_model_listener_fn)(const move_model_t *now, const move_model_t *prev);
 void move_model_set_listener(move_model_listener_fn fn);
+/* Also on the reader thread, after EVERY tick (changed or not). */
+typedef void (*move_model_tick_fn)(const move_model_t *now);
+void move_model_set_tick_hook(move_model_tick_fn fn);
 
 /* Where the current clip of a track is, in CLIP time (beats), given the
  * transport clock. Plays region_start..loop_end once, then wraps inside the
  * loop. Returns -1 when it cannot say (no clip, degenerate loop). */
 double mm_clip_position(const mm_clip_t *c, double start_beats, double song_beats);
 
+/* A clip's whole editable STATE: its content (notes + Move's envelopes) and
+ * its loop geometry. Move's Undo returns a clip to an earlier state exactly,
+ * and a Double Loop on an empty clip changes only the geometry -- so this,
+ * not content_hash alone, is what undo/redo are matched on. */
+static inline uint32_t mm_clip_state_hash(const mm_clip_t *c)
+{
+    uint32_t h = c->content_hash ^ 0x9e3779b9u;
+    const double g[5] = { c->region_start, c->region_end, c->loop_start, c->loop_end, (double)c->loop_on };
+    const unsigned char *b = (const unsigned char *)g;
+    for (unsigned i = 0; i < sizeof g; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+
+/* ---- the clip being edited (model thread only: call from the listener) --- */
+
+/* A note as Move stores it. `pitch` is the note it sounds on (on a drum track,
+ * the pad's own note); `pitch_offset` is its per-note PITCH lane at time 0, in
+ * semitones -- Move's 16 Pitches mode keeps the pitch there and nowhere else.
+ * `pressure_*` locate its PRESSURE lane (aftertouch, 0..127, stored as step
+ * pairs) in the point pool the decoder was given; count 0 = none. */
+typedef struct {
+    int pitch; double start, dur; float vel; int64_t id;
+    double pitch_offset;
+    int pressure_first, pressure_count;
+} mm_note_t;
+typedef struct { double time, value; } mm_expr_point_t;   /* time: beats from the note's start */
+typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash; } mm_clip_ref_t;
+
+/* The selected track's current clip, decoded from Move's notes blob: its
+ * notes NOW (previous = 0) or in its previous content state (1). Returns the
+ * count, or -1 when unknown. The pointer stays valid until the next change. */
+int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref);
+
 /* ---- pure pieces, exported for tests/host ---------------------------- */
+
+/* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
+ *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag
+ *   then EITHER  i64 id                         (first u32 of it is 0: a plain note)
+ *   OR           u32 lane_count, lane_count x { i32 type, u32 point_count,
+ *                point_count x {f64 time, f64 value} }, u32 id
+ * Lane types: -2 PITCH (value = semitones * 8191/48), -1 PRESSURE (0..127).
+ * Measured on hardware 2026-09-28 ("Lane Test", 16 Pitches + pressure).
+ * Pressure points go to `pool` (NULL: counted, not kept).
+ * Returns the count, or -1 if ANY record does not parse cleanly -- a lane type
+ * we do not know, a lane or point list running past the end, records not
+ * landing exactly on the end, more notes than `max`, more pressure points than
+ * `pool_max`. Never a partial list: -1 means "this clip's notes are unknown",
+ * the same three-answer rule as a param read. */
+int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
+                        mm_expr_point_t *pool, int pool_max);
+/* The edited clip's pressure points (the pool mm_note_t.pressure_first indexes). */
+int move_model_edited_pressure(int previous, const mm_expr_point_t **pts);
 
 /* "1/16" -> 0.25 beats, "1/8t" -> 1/3 and *trip = 1. 0 on success. */
 int mm_parse_resolution(const char *name, double *beats, uint8_t *trip);
@@ -132,3 +201,18 @@ int mm_sso_string(mm_read_fn rd, void *ctx, const uint8_t raw[24], char *out, si
  * wrapper's vtable. Returns the count, or -1 on a malformed tree. */
 int mm_tree_elems(mm_read_fn rd, void *ctx, uint64_t hdr, uint64_t img_lo, uint64_t img_hi,
                   uint64_t *out, int max);
+
+/* flip::History<HistoryStoreMemory> at `obj`, as libc++ lays it out:
+ *   +0x00 vptr (History)          +0x08 DocumentBase &
+ *   +0x10 vptr (HistoryStoreMemory) +0x18 max_size
+ *   +0x20 std::list<Transaction> sentinel {prev, next}, +0x30 size
+ *   +0x38 _it_redo (a node; == the sentinel when nothing is redoable)
+ * and a node is {prev, next, Transaction{vptr, TxId{vptr, user, actor, nbr}}},
+ * so a step's number is at node+0x30. last_undo is prev(_it_redo). Every
+ * vptr is checked against the resolved sets; any mismatch is invalid. */
+typedef struct {
+    const uint64_t *hist; int nh;
+    const uint64_t *store; int ns;
+    const uint64_t *tx; int nt;
+} mm_hist_vps_t;
+int mm_history_read(mm_read_fn rd, void *ctx, uint64_t obj, const mm_hist_vps_t *vps, move_model_t *m);

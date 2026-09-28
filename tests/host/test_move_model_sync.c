@@ -23,6 +23,11 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4])
 void shadow_apply_mute(int slot, int v) { n_mute++; last_slot = slot; last_val = v; }
 void shadow_apply_solo(int slot, int v) { n_solo++; last_slot = slot; last_val = v; }
 void shadow_poll_current_set(void) { n_poll++; }
+static move_model_tick_fn g_tick;
+void move_model_set_tick_hook(move_model_tick_fn fn) { g_tick = fn; }
+int move_model_get(move_model_t *out) { memset(out, 0, sizeof *out); return 0; }
+int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
+{ (void)previous; if (notes) *notes = NULL; if (ref) memset(ref, 0, sizeof *ref); return -1; }
 void shadow_log(const char *m) { (void)m; }
 uint64_t shadow_set_pages_last_publish_ms(void) { return 0; }
 /* The reader's liveness: "just published" unless a test says otherwise. */
@@ -38,7 +43,37 @@ uint64_t move_model_last_publish_ms(void)
  * listener call is followed by the drain, as the shim's frame would. */
 #define FIRE(a, b) do { g_fn((a), (b)); move_model_sync_apply_pending(); } while (0)
 
-static void reset(void) { n_mix = n_mute = n_solo = n_poll = 0; last_slot = last_val = -1; }
+/* Clip events now travel as lane COMMANDS through the ring the SPI callback
+ * drains: count what comes out. */
+static uint32_t del_mask; static int n_del, n_copy, cp_t, cp_src, cp_dst;
+static int n_jrn, jrn_slot; static char jrn_val[64];
+static void drain_cmds(void)
+{
+    int slot; char k[24], v[MMS_CMD_VAL];
+    while (move_model_sync_pop_cmd(&slot, k, sizeof k, v, sizeof v)) {
+        if (!strcmp(k, "lanes:journal")) { n_jrn++; jrn_slot = slot; snprintf(jrn_val, sizeof jrn_val, "%s", v); }
+        int t, s, a, b;
+        if (!strcmp(k, "lanes:stash") && sscanf(v, "%d %d", &t, &s) == 2) { n_del++; del_mask |= 1u << (t * 8 + s); }
+        if (!strcmp(k, "lanes:copy_clip") && sscanf(v, "%d %d", &a, &b) == 2) { n_copy++; cp_t = slot; cp_src = a; cp_dst = b; }
+    }
+}
+
+static void drain_cmds(void);
+static void reset(void)
+{
+    drain_cmds();
+    n_mix = n_mute = n_solo = n_poll = n_del = n_copy = 0;
+    last_slot = last_val = -1;
+    del_mask = 0;
+}
+static mm_clip_t clip(uint64_t id, uint32_t hash)
+{
+    mm_clip_t c;
+    memset(&c, 0, sizeof c);
+    c.exists = 1; c.clip_id = id; c.notes_len = hash ? 40 : 0; c.notes_hash = hash;
+    c.region_end = 4; c.loop_end = 4; c.loop_on = 1;
+    return c;
+}
 
 static move_model_t doc(uint32_t gen)
 {
@@ -133,6 +168,83 @@ int main(void)
     reset();
     FIRE(&bad, &h);
     CHECK(n_mix == 0 && n_poll == 0 && ctl.move_doc_gen == 3);
+
+    /* ---- clip events, within one document -------------------------------- */
+    move_model_t p = doc(3), q;
+    p.track[1].slot[0] = clip(100, 0xabc);
+    p.track[1].slot[2] = clip(101, 0x777);
+    /* delete track 2 slot 3 -> bit 1*8+2 */
+    q = p; memset(&q.track[1].slot[2], 0, sizeof(mm_clip_t));
+    reset(); FIRE(&q, &p); drain_cmds();
+    CHECK(n_del == 1 && del_mask == (1u << 10) && n_copy == 0);
+    /* deleted and REMADE in the same slot within one tick: still a deletion */
+    q = p; q.track[1].slot[2] = clip(202, 0x777);
+    reset(); FIRE(&q, &p); drain_cmds();
+    CHECK(n_del == 1 && del_mask == (1u << 10));
+    /* Move's Copy: slot 0 duplicated into slot 5 */
+    q = p; q.track[1].slot[5] = clip(300, 0xabc);
+    reset(); FIRE(&q, &p); drain_cmds();
+    CHECK(n_copy == 1 && cp_t == 1 && cp_src == 0 && cp_dst == 5 && n_del == 0);
+    /* a new clip with different notes is not a copy */
+    q = p; q.track[1].slot[5] = clip(301, 0x999);
+    reset(); FIRE(&q, &p); drain_cmds();
+    CHECK(n_copy == 0);
+    /* two EMPTY clips are not a copy either */
+    move_model_t r = p; r.track[2].slot[0] = clip(400, 0);
+    q = r; q.track[2].slot[1] = clip(401, 0);
+    reset(); FIRE(&q, &r); drain_cmds();
+    CHECK(n_copy == 0);
+    /* an edit in place (same id, new notes) is neither */
+    q = p; q.track[1].slot[0].notes_hash = 0xdef;
+    reset(); FIRE(&q, &p); drain_cmds();
+    CHECK(n_copy == 0 && n_del == 0);
+    /* a SET LOAD replaces every id: never read as deletions */
+    move_model_t z = doc(4);
+    z.track[1].slot[0] = clip(900, 0xabc);
+    reset(); FIRE(&z, &p); drain_cmds();
+    CHECK(n_del == 0 && n_copy == 0 && n_mix == 1);
+
+    /* ---- ONE UNDO: the press path, end to end ---------------------------
+     * Move's stack top is (0x10, 1); Schwung p-locks on slot 2; Undo is
+     * swallowed (both edges) and becomes that slot's journal undo. */
+    {
+        move_model_t u = z;
+        u.hist_valid = 1; u.hist_undo_node = 0x10; u.hist_undo_nbr = 1;
+        CHECK(g_tick != NULL);
+        reset(); n_jrn = 0;
+        g_tick(&u);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* nothing of ours yet */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+        move_model_sync_on_lane_edit(2, 0x80000001u, 1);
+        g_tick(&u);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);          /* ours: swallowed */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);            /* and its release */
+        g_tick(&u); drain_cmds();
+        CHECK(n_jrn == 1 && jrn_slot == 2 && strcmp(jrn_val, "undo 2147483649") == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* next Undo is Move's */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* Shift+Undo is Redo, and ours comes back first. */
+        CHECK(move_model_sync_on_midi(0xB0, 49, 127) == 0);          /* Shift reaches Move */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);
+        CHECK(move_model_sync_on_midi(0xB0, 49, 0) == 0);
+        g_tick(&u); drain_cmds();
+        CHECK(n_jrn == 2 && strcmp(jrn_val, "redo 2147483649") == 0);
+
+        /* Move makes an edit: Undo is Move's again. */
+        move_model_t v2 = u; v2.hist_undo_node = 0x20; v2.hist_undo_nbr = 2;
+        g_tick(&v2);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* An unreadable stack claims nothing, whatever the timeline holds. */
+        move_model_sync_on_lane_edit(1, 0x80000001u, 1);
+        move_model_t blind = v2; blind.hist_valid = 0;
+        g_tick(&blind);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+    }
 
     /* ---- the reader posts, the SPI thread applies ----------------------- */
     {

@@ -567,6 +567,34 @@ The `ui_hierarchy` and `chain_params` declarations (what a module must publish f
 the shadow UI to know its steps, ranges and enum options), the chain host's file
 layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 
+- **AUTOMATION FOLLOWS MOVE'S EDITS** -- step/page paste, Double Loop, Undo,
+  Redo, clip delete/undo/duplicate (`edit_gesture.c` → `edit_follow.c` →
+  `lane_edit.c`). Buttons give the INTENT, the model's per-note ids PROVE Move
+  did it; nothing is mirrored Move did not do. Rules were measured against
+  Move's OWN automation envelopes -- a paste REPLACES the destination step's
+  automation, Delete+step KEEPS it. See `docs/MOVE_MODEL.md`.
+  **A drum paste is VOICE-scoped**: the pitches that appeared name the voices,
+  the module's declared hierarchy names their keys (`lane_voice_map.mjs`,
+  keyed to the synth by NAME in the chain), and no map means whole-step.
+  **ONE UNDO**: Move's undo stack is READ (flip `History`, last-undo/first-redo
+  node + tx number); each Schwung take/p-lock/clear is journaled by the chain
+  and anchored to Move's top when made. Undo is swallowed and routed to ours
+  only when our latest edit sits on Move's CURRENT top; an unreadable stack
+  claims nothing (`undo_timeline.h`, `docs/MOVE_MODEL.md`). A p-lock GESTURE
+  (writes on one held step) is one step; a module that claimed Undo keeps it;
+  nothing is claimed while Record is armed; Move's Undo of a mirrored paste is
+  matched document-wide, not against the clip on screen.
+- **AUTOMATION LANES RESOLVE FROM MOVE'S LIVE MODEL** (`docs/MOVE_MODEL.md`).
+  Clip, loop, launch beat, step page and grid are READ; deletions and copies
+  are diffs of it. Several bullets below describe the LED / step-strip /
+  Song.abl resolver it replaced (blind takes, adoption, the strip's
+  bar count, `edit_unconfirmed`) -- they are history now, kept for the
+  measurements. Orphans are not written to disk; Undo re-attaches in memory.
+- **A rack's templated keys (`pad7_transpose`) are typed by the CHAIN**, from
+  the level's `child_key_template`/`child_prefix` -- the same rule as
+  `child_key.mjs`, at every position; without it every dr32 pad param was
+  `unknown_param`. (A key on several levels also stopped being a fatal
+  "duplicate" -- that fixed kr106/pivot, not dr32.)
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.

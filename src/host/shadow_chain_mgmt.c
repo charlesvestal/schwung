@@ -13,9 +13,12 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
+#include "lane_trace.h"
+#include "lane_store.h"   /* LANE_SLOT_PENDING */
 #include "playhead_anchor.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
+#include "step_plock.h"       /* a held step button -> a phase, in one place */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
 #include "param_slow.h"    /* attribute a serve that ate the frame — header-only */
@@ -33,6 +36,8 @@
 #include "unified_log.h"
 #include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
 #include "move_model_sync.h"
+#include "move_model.h"
+#include "shadow_transport.h"   /* shadow_transport_beat_position */
 
 
 /* Weak no-op for the RT-thread audit's module attribution.
@@ -81,6 +86,7 @@ void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
                                      int n_sends, const int16_t *post_fx,
                                      int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
+int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind) = NULL;
 /* Optional, and NULL on any chain built before automation lanes. A NULL here
  * is "phase unknown" for every slot: the call site is guarded, which is the
  * only degradation that is safe -- see the plan's ABI note for why this is a
@@ -117,6 +123,85 @@ static int shadow_chain_slot_recv_channel(void *instance) {
     return -2;
 }
 
+/* Slot N rides Move track N. That binding is not new: the shim already builds
+ * a slot as move_track[s] + synth[s], so the four slot stems ARE the four
+ * tracks.
+ *
+ * Returns 1 with *phase_beats (CLIP time, beats) and *loop_len filled, else 0
+ * for "phase UNKNOWN" -- which is NOT phase 0 and must never be substituted
+ * for one. *clip_slot and *fp_valid/fp answer IDENTITY and are filled even
+ * when the function returns 0 (stopped, say), because a p-lock is written with
+ * the transport stopped and must still know the clip.
+ *
+ * FROM MOVE'S LIVE SONG MODEL (move_model.h), not inferred. What this used to
+ * reconstruct from session-pad LEDs, step-strip pixels, a playhead anchor and
+ * a Song.abl ~10 s stale -- ~365 lines, still wrong for a brand-new clip -- is
+ * read: the track's current clip (PlayingState: the PLAYING clip, or with the
+ * transport stopped the SELECTED one, exactly what Move's step editor shows,
+ * including through a launch's queue window), its region and loop, and the
+ * transport beat it launched on (the quantised boundary itself).
+ *
+ * "Now" is the shim's own interpolated MIDI-clock position rather than the
+ * model's beat clock: the model's is refreshed by Move's UI thread about every
+ * 20 ms, far too coarse to drive a parameter per 2.9 ms block, while the
+ * clock is interpolated per block. Both restart at 0 on every Play.
+ *
+ * The fingerprint is {loop_start, loop_len, notes_len, notes_hash}: the
+ * content half is a hash of Move's own notes blob, so it is current to the
+ * edit too, and always valid -- there is no "provisional" take any more.
+ *
+ * RT: SPI callback. move_model_get() is a seqlock copy, no syscalls. */
+int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
+                           int *clip_slot, int *fp_valid, double *fp /* [4] */) {
+    if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
+        !clip_slot || !fp_valid || !fp) return 0;
+    *clip_slot = -1;
+    *fp_valid = 0;
+    /* Cleared HERE, at the top: every failure path below returns 0 without
+     * touching these, and NaN gives a caller that also misses the return
+     * value no usable number rather than a plausible one. */
+    *phase_beats = NAN;
+    *loop_len = NAN;
+    if (slot < SHADOW_CHAIN_INSTANCES) {
+        g_write_unconfirmed[slot] = 0;
+        g_write_edit_len_x100[slot] = 0;
+    }
+
+    static move_model_t m;          /* 2.5 KB: static, off the callback's stack */
+    /* A torn read leaves `m` as the last good snapshot (move_model_get): use
+     * it. Returning "unknown" here released every lane for a block and ended
+     * any recording pass on one preempted publish. */
+    move_model_get(&m);
+    if (!m.valid || !move_model_sync_active() || slot >= MM_TRACKS) return 0;   /* ...but not a DEAD one */
+    const mm_track_t *T = &m.track[slot];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || cs >= CLIP_SLOTS || !T->slot[cs].exists) return 0;
+    const mm_clip_t *c = &T->slot[cs];
+    const double ls = c->loop_on ? c->loop_start : c->region_start;
+    const double le = c->loop_on ? c->loop_end : c->region_end;
+    if (!(le - ls > 0.0)) return 0;
+
+    *clip_slot = cs;
+    fp[0] = ls;
+    fp[1] = le - ls;
+    fp[2] = (double)c->notes_len;
+    fp[3] = (double)(c->notes_hash & 0x7fffffffu);   /* the lane stores it as an int */
+    *fp_valid = 1;
+
+    /* THE PHASE IS SCHWUNG'S OWN CLOCK (MIDI clock since Start), measured
+     * against Move's launch beat; the model's transport only VETOES. Its
+     * run flag sits in a message whose offsets are pinned to one firmware
+     * build, so on any other build clock_valid is 0 -- and gating on it made
+     * automation silently stop playing after a Move update. Unknown: the
+     * shim's transport (negative when stopped) is the whole answer. */
+    const double now = shadow_transport_beat_position();
+    if (now < 0.0 || (m.clock_valid && !m.playing)) return 0;   /* stopped: no phase */
+    const double pos = mm_clip_position(c, T->start_beats, now);
+    if (!(pos >= 0.0)) return 0;                                /* a one-shot that ended */
+    *phase_beats = pos;
+    *loop_len = le - ls;
+    return 1;
+}
 
 int shadow_inprocess_ready = 0;
 
@@ -2547,6 +2632,8 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
+    shadow_chain_take_lane_edit = (int (*)(void *, uint32_t *, int *))
+        dlsym(shadow_dsp_handle, "chain_take_lane_edit");
     shadow_chain_set_clip_phase =
         (void (*)(void *, int, double, double, int, int, int, const double *))
         dlsym(shadow_dsp_handle, "chain_set_clip_phase");
@@ -3181,12 +3268,155 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  * indistinguishable from one that worked until the loop comes round.
  *
  * Returns 1 with `out` filled, else 0. */
+/* WHY THE LAST P-LOCK WAS REFUSED, per slot, readable as `lanes:plock_reason`.
+ *
+ * The refusal is SILENT BY CONSTRUCTION and the comment at the call site said
+ * "with the reason logged", which was not true and could not be: this runs on
+ * the SPI callback, where shadow_log() is a no-op. So a p-lock that did
+ * nothing offered exactly one bit -- `lanes:plocked` staying 0 -- and five
+ * different causes produce that bit. It cost a session: a p-lock refused for
+ * NO_BAR on every single-bar clip was indistinguishable, from outside, from
+ * one refused for MULTI_PAGE, and the first defect hid the second.
+ *
+ * Same argument as the always-on `param-slow` line naming its KEY rather than
+ * reporting that something was slow. Zero is STEP_PLOCK_OK, so a slot that has
+ * never refused reads 0 -- which is also what a success leaves, deliberately:
+ * the question this answers is "why did the one I just did not take", and a
+ * stale reason surviving a success is how that gets answered wrongly. */
+static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
+/* THE BLIND-WINDOW ANCHOR'S OWN REPORT. See the pending branch in
+ * shadow_slot_clip_phase; drained by shim_worker's 1 Hz line. */
+volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
+volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
+/* WHY THE ROW CAME BACK UNKNOWN, when it did. Diagnostic only, drained by the
+ * same 1 Hz line as the rest of the blind-window report.
+ *
+ * It exists because one refusal path had no name. With no step strip for this
+ * track, the file's answer is used only when it cannot be ambiguous -- which
+ * means exactly one clip on the track. On a MULTI-CLIP track with no strip
+ * there is nothing to disambiguate with, so the row stays unknown and the
+ * chain reports the generic `no_clip`: from outside, identical to a track
+ * with no clips at all, and to a slot with no chain. Two very different
+ * things to be told when a p-lock does nothing.
+ *
+ * Not a param key: nothing acts on it, and the review of this feature is
+ * clear that a getter with no consumer reads as plumbing that never landed.
+ * A line in the log is what a support question needs. */
+/* MAY A WRITE USE THE ROW THIS RESOLVER JUST ANSWERED?
+ *
+ * The row is the PLAYING clip, which is what playback asks for. A p-lock asks
+ * a different question -- which clip is on SCREEN -- and the two differ in
+ * exactly one situation: a clip is playing while the user step-edits another
+ * one. That situation is the wrong-clip bug, reproduced twice on hardware
+ * 2026-09-18, and it is invisible to every branch below `cslot < 0` because
+ * the live identity fills the row before they run.
+ *
+ * This is the shape of the removed `lane_edit_unconfirmed`, and the reason
+ * that one failed was its SIGNAL, not its shape: it read the session pad
+ * decode, which Move paints only in SESSION view, while p-locks happen in
+ * NOTE view -- so its answer was always a latch from whenever the user last
+ * visited Session, and it withheld the row from gestures aimed squarely at
+ * the playing clip.
+ *
+ * The step strip does not have that problem. Move draws it in Note view,
+ * which is when step editing happens, and it reports the edited clip's BAR
+ * COUNT. So the discriminator is a bar-count comparison at the strip's own
+ * resolution: a clip being edited whose bar count differs from the playing
+ * clip's is a DIFFERENT clip, established rather than guessed.
+ *
+ * Residue, stated here so nobody discovers it later: a clip whose bar count
+ * EQUALS the playing clip's is indistinguishable, so a write there still
+ * takes the playing row. Bar count is the only positive evidence Move gives
+ * us, which is the same reason two blind takes of equal length share a take.
+ *
+ * `edit_len` carries the EDITED clip's length off that same strip, because a
+ * write keyed to the placeholder needs the length of the clip it is being
+ * made on -- not the playing clip's, which is what `loop_len` reports. */
+volatile int g_write_unconfirmed[SHADOW_CHAIN_INSTANCES];
+volatile int g_write_edit_len_x100[SHADOW_CHAIN_INSTANCES];
+volatile int g_row_unknown_clips;   /* clips on the track, -1 = no answer */
+volatile int g_row_unknown_strip;   /* strip segments for the track */
+volatile int g_row_unknown_seen;
 
+/* The lock map's pending query, per slot. See lanes:step_locks_query. */
+static char g_step_locks_query[SHADOW_CHAIN_INSTANCES][544];
+/* Must equal LANE_MIN_POINT_BEATS (lane_store.h): "a point ON this step" has
+ * to mean the same thing to the map as it does to the write that made it. */
+#define STEP_LOCKS_POINT_WINDOW 0.01
 
+const char *shadow_lanes_plock_reason_name(int rc) {
+    switch (rc) {
+        case STEP_PLOCK_OK:           return "ok";
+        case STEP_PLOCK_NO_BAR:       return "no_bar";
+        case STEP_PLOCK_NO_GRID:      return "no_grid";
+        case STEP_PLOCK_BAD_INDEX:    return "bad_index";
+        case STEP_PLOCK_MULTI_PAGE:   return "multi_page";
+        case STEP_PLOCK_OUTSIDE_CLIP: return "outside_clip";
+        case STEP_PLOCK_CLIP_PENDING: return "clip_pending";
+        default:                      return "unknown";
+    }
+}
 
-/* Weak for the same reason: the tests/host units that compile this file
- * without the shim must still link. */
+/* WHERE IN THE CLIP IS A HELD STEP BUTTON, in quarters.
+ *
+ * Lifted whole out of the p-lock translate so that the WRITE and the READ
+ * cannot disagree about what step 5 means. Everything it needs is host-side
+ * and nowhere else: the displayed bar (the strip Move draws), the page origin
+ * (`stepEditorScrollPosition`), the grid, the signature and the clip's
+ * length. Returns a STEP_PLOCK_* code and writes *out_phase on OK.
+ *
+ * It exists because holding a step now asks a second question -- "what value
+ * is locked here" -- and answering that from a second copy of this
+ * arithmetic is how this feature has already been bitten twice. */
+static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
+                                   double *out_clip_len, double *out_step_len)
+{
+    /* A HELD STEP'S CLIP TIME, from the live model: the page's left edge
+     * (the clip's own step-editor scroll) plus the button, at the song's step
+     * grid. The strip decode, the bar/page arithmetic and the file's aged
+     * scroll it replaces each failed somewhere -- a one-bar clip draws no
+     * thickening, a new clip is in no file, 11/8 has no whole bar per page.
+     *
+     * The clip is the one Move's step editor shows: the track's PlayingState
+     * clip (the selected one while stopped). The button stays a BUTTON read --
+     * it is the user's finger, not an inference. */
+    if (!out_phase) return STEP_PLOCK_BAD_INDEX;
+    *out_phase = NAN;
+    static move_model_t m;
+    move_model_get(&m);                     /* torn: the last good snapshot */
+    if (!m.valid || !move_model_sync_active() || slot >= MM_TRACKS) return STEP_PLOCK_CLIP_PENDING;
+    const mm_track_t *T = &m.track[slot];
+    const int cs = (T->mode == 1) ? T->playing_slot : -1;
+    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return STEP_PLOCK_CLIP_PENDING;
+    const mm_clip_t *c = &T->slot[cs];
+    if (!(m.step_beats > 0.0)) return STEP_PLOCK_NO_GRID;
+    if (!(c->scroll >= 0.0)) return STEP_PLOCK_NO_BAR;          /* not a MIDI clip */
+    const double clip_len = c->loop_on ? c->loop_end : c->region_end;
+    double phase = 0.0;
+    const int rc = step_plock_phase_from_scroll(c->scroll, step, m.step_beats,
+                                                m.step_triplet, clip_len, &phase);
+    if (out_clip_len) *out_clip_len = clip_len;
+    if (out_step_len) *out_step_len = m.step_beats;
+    if (rc == STEP_PLOCK_OK) *out_phase = phase;
+    else if (slot < SHADOW_CHAIN_INSTANCES) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "lanes: step %d has no phase (reason %d, scroll %.3f grid %.4f%s len %.3f)",
+                 step, rc, c->scroll, m.step_beats, m.step_triplet ? "t" : "", clip_len);
+        shadow_log(msg);
+    }
+    return rc;
+}
 
+void shim_step_mark_used(int step);
+__attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
+
+/* WHICH KEY SPENT THE PRESS. "I tap a step and no note appears" was traced to
+ * presses being marked used by a p-lock, which only asks whether a component
+ * write arrived while a step was held -- it never recorded WHICH. Without the
+ * key, "a write landed" and "the write I expected landed" are the same line.
+ * Weak for the same reason as the mark itself. */
+void shim_step_note_plock_key(const char *key);
+__attribute__((weak)) void shim_step_note_plock_key(const char *key) { (void)key; }
 
 /* Moved ABOVE the translate that uses it, rather than forward-declared: a
  * declaration matching `^static int shadow_component_param_split` is a
@@ -3210,6 +3440,62 @@ static int shadow_component_param_split(const char *key)
     return 0;
 }
 
+static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
+                                             char *out, int out_len) {
+    char target[16] = {0}, param[32] = {0};
+    int step = -1, consumed = 0;
+    if (!value || !out || out_len <= 0 ||
+        sscanf(value, "%15s %31s %d %n", target, param, &step, &consumed) < 3 ||
+        consumed <= 0 || !value[consumed]) {
+        shadow_log("lanes: plock_step needs \"<target> <param> <step> <value>\"");
+        /* Never reached step_plock_phase, so it has no code of its own; it is
+         * still a refusal the caller is owed a name for. */
+        if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
+        return 0;
+    }
+    /* AND THE TARGET MUST BE A COMPONENT. The backstop to the UI's own gate,
+     * here because the cost of the UI being wrong is the user's step buttons:
+     * this translate marks the press SPENT, so a `lanes:step_locks_query`
+     * arriving as a p-lock took the note toggle away with nothing on screen to
+     * explain it. Same rule as shadow_component_param_split -- reused rather
+     * than restated, since a second copy is what let the UI disagree. */
+    {
+        char probe[64];
+        int pn = snprintf(probe, sizeof(probe), "%s:x", target);
+        if (pn <= 0 || (size_t)pn >= sizeof(probe) ||
+            shadow_component_param_split(probe) <= 0) {
+            shadow_log("lanes: plock_step target is not a chain component");
+            if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
+            return 0;
+        }
+    }
+    double phase = 0.0, step_len = 0.0;
+    int rc = shadow_lanes_step_phase(slot, step, &phase, NULL, &step_len);
+    if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
+    if (rc != STEP_PLOCK_OK) return 0;
+    /* THE PRESS IS SPENT, and it is marked HERE because this is the one place
+     * every p-lock passes through: the write-time gesture, the host's
+     * param-pages io writing `lanes:plock_step`, and the test bus all arrive
+     * at this translate. Marking it at the write-time site alone left the
+     * other two replaying the press to Move as a tap -- measured on hardware,
+     * a fast lock through `plock_step` still took the clip from 34 notes to
+     * 35, which is the defect this was supposed to fix, surviving in the paths
+     * the fix did not cover. */
+    /* AND IT NAMES ITSELF. A press marked used by THIS path with no write-time
+     * key was what separated "a p-lock spent the press" from "something else
+     * did" -- see shim_step_note_plock_key. The value carries target, param
+     * and step, which is what says whether the lock belonged to this press. */
+    shim_step_note_plock_key(value);
+    shim_step_mark_used(step);
+    /* THE SPAN RIDES WITH THE PHASE. A p-lock is an edit to ONE STEP: it ends
+     * where the step ends and the parameter goes back to whatever is
+     * underneath -- the recorded curve, or the knob. Without it a single lock
+     * stood for the rest of the loop AND backwards over everything before it,
+     * so one lock at step 4 was the whole bar. */
+    snprintf(out, (size_t)out_len, "%s %s %.17g %.17g %s", target, param, phase,
+             step_len > 0.0 ? step_len : 0.0, value + consumed);
+    return 1;
+}
 
 /* Defined in schwung_shim.c; see its comment for the two guards it owns.
  *
@@ -3218,6 +3504,8 @@ static int shadow_component_param_split(const char *key)
  * the gesture. The shim's definition is strong and wins wherever both are
  * present, so the device never sees this one. A test that wants the gesture
  * supplies its own. */
+int shim_plock_held_step(void);
+__attribute__((weak)) int shim_plock_held_step(void) { return -1; }
 
 /* IS THIS A CHAIN COMPONENT'S PARAMETER, and if so where does it split?
  *
@@ -3226,10 +3514,354 @@ static int shadow_component_param_split(const char *key)
  * general "has a colon" test: `lanes:`, `slot:`, `buses:` and the rest share
  * that shape and are not parameters of anything. */
 
+/* THE READ HALF OF THE P-LOCK GESTURE: what does the lane hold on the step
+ * currently under the user's finger?
+ *
+ * `key` is `<target>:<param>:held` and `split` is the offset of the FIRST
+ * colon, so the target and param are carved out of it exactly as the write
+ * path does. Writes "" or "<value> <exact>" into `out` and returns its length,
+ * or -1 for "this is not a key I serve" so the caller falls through to the
+ * plugin.
+ *
+ * EVERY "NO" IS THE EMPTY STRING, deliberately and at every step: no step
+ * held, more than one, a step the strip cannot place, no lane on that
+ * parameter, or a lane with nothing to say at that phase. Not one of those is
+ * the value 0.0, and a UI that turned any of them into a number would show an
+ * unautomated knob someone else's value the moment a step went down.
+ *
+ * The phase comes from shadow_lanes_step_phase -- the same function the WRITE
+ * uses -- so the value you see on a held step is by construction the one a
+ * turn would replace. */
+static int shadow_lanes_held_value(uint8_t slot, const char *key, int held_at,
+                                   char *out, int out_len)
+{
+    if (!key || !out || out_len <= 0 || held_at <= 0) return -1;
+    int split = shadow_component_param_split(key);
+    if (split <= 0 || split >= held_at) return -1;
+    if (slot >= SHADOW_CHAIN_INSTANCES) return -1;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param ||
+        !shadow_plugin_v2->get_param) return -1;
+    if (!shadow_chain_slots[slot].active || !shadow_chain_slots[slot].instance)
+        return -1;
 
+    out[0] = '\0';
+    int step = shim_plock_held_step();
+    if (step < 0) return 0;
+    double phase = 0.0, clip_len = 0.0;
+    if (shadow_lanes_step_phase(slot, step, &phase, &clip_len, NULL) != STEP_PLOCK_OK)
+        return 0;
 
+    /* A GET cannot carry three arguments, so the question is a SET and the
+     * answer is read back -- see the `probe` verb in chain_lanes.c. */
+    static char q[SHADOW_PARAM_KEY_LEN + 64];
+    /* THE WINDOW GOES WITH THE QUESTION. The chain's own live geometry is
+     * zero-length whenever the transport is stopped, and lane_eval answers
+     * nothing for a zero window -- so without this every p-lock on a stopped
+     * clip read as "nothing locked here", which is precisely the state this
+     * gesture is used in. [0, clip_len) rather than the loop window, because
+     * Move's strip shows bars outside the loop and a value stored on a step
+     * you can SEE should be shown on it. */
+    int n = snprintf(q, sizeof(q), "%.*s %.*s %.17g 0 %.17g",
+                     split, key,
+                     held_at - split - 1, key + split + 1, phase,
+                     clip_len > 0.0 ? clip_len : 0.0);
+    if (n <= 0 || (size_t)n >= sizeof(q)) return 0;
+    shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                "lanes:probe", q);
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                          "lanes:probe", out, out_len);
+    if (len < 0) { out[0] = '\0'; return 0; }
+    if (len >= out_len) len = out_len - 1;
+    out[len] = '\0';
+    return len;
+}
 
+/* WHICH OF THE SIXTEEN VISIBLE STEPS CARRY A LOCK -- the lock map.
+ *
+ * A lock is invisible until you hold its step, so finding one you made
+ * earlier meant holding all sixteen and watching for an inverted band, on a
+ * page that might not even be the page it lives on. This answers it in one
+ * read, as two 16-bit masks:
+ *
+ *   union   any lane of this clip has a point on that step
+ *   page    one of the parameters the UI named has a point on that step
+ *
+ * The second is what separates "there is a lock here" from "there is a lock
+ * here I can edit from where I am standing", which is the half that is
+ * missing entirely today.
+ *
+ * IT WALKS STEPS, NOT PHASES. Every step's phase comes from
+ * shadow_lanes_step_phase -- the same function the write and the `:held` read
+ * use -- so the map cannot disagree with them about which step is which. The
+ * alternative, inverting the grid arithmetic to turn a phase back into a step,
+ * is a second implementation of the one thing this feature has been bitten by
+ * duplicating.
+ *
+ * A step with no phase (outside the clip, a bar the strip cannot name) simply
+ * contributes no bit: absent, rather than guessed.
+ *
+ * Cost is one chain get_param for the phases plus 16 phase computations, none
+ * of which touch the param channel. Called on a gesture, not per frame. */
+static int shadow_lanes_step_locks(uint8_t slot, const char *query,
+                                   char *out, int out_len)
+{
+    if (!out || out_len <= 0) return -1;
+    out[0] = '\0';
+    if (slot >= SHADOW_CHAIN_INSTANCES) return -1;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) return -1;
+    if (!shadow_chain_slots[slot].active || !shadow_chain_slots[slot].instance) return -1;
 
+    /* "<target> <k1,k2,...>" -- the page's keys, so the second mask can be
+     * about what is under the user's hands. An empty query still answers the
+     * union, which is the useful half on its own. */
+    char qtarget[16] = {0}, qkeys[512] = {0};
+    if (query) sscanf(query, "%15s %511s", qtarget, qkeys);
+
+    static char phases[SHADOW_PARAM_VALUE_LEN];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                          "lanes:phases", phases, sizeof(phases));
+    if (len < 0) return -1;                      /* the read did not serve */
+    if (len >= (int)sizeof(phases)) len = (int)sizeof(phases) - 1;
+    phases[len] = '\0';
+
+    /* The sixteen step phases, once. */
+    double step_phase[16];
+    int step_ok[16];
+    for (int i = 0; i < 16; i++) {
+        double ph = 0.0;
+        step_ok[i] = (shadow_lanes_step_phase(slot, i, &ph, NULL, NULL) == STEP_PLOCK_OK);
+        step_phase[i] = ph;
+    }
+
+    unsigned uni = 0, pag = 0;
+    const char *line = phases;
+    while (*line) {
+        const char *eol = strchr(line, '\n');
+        if (!eol) eol = line + strlen(line);
+        char ltarget[16] = {0}, lparam[32] = {0};
+        int consumed = 0;
+        if (sscanf(line, "%15s %31s %n", ltarget, lparam, &consumed) == 2 && consumed > 0) {
+            /* Is this lane's parameter one the UI named? Compared as a whole
+             * token between commas, so `cut` cannot match `cutoff`. */
+            int on_page = 0;
+            if (qkeys[0] && strcmp(ltarget, qtarget) == 0) {
+                const char *p = qkeys;
+                const size_t n = strlen(lparam);
+                while (*p) {
+                    const char *c = strchr(p, ',');
+                    size_t seg = c ? (size_t)(c - p) : strlen(p);
+                    if (seg == n && strncmp(p, lparam, n) == 0) { on_page = 1; break; }
+                    if (!c) break;
+                    p = c + 1;
+                }
+            }
+            const char *cur = line + consumed;
+            while (cur < eol) {
+                char *end = NULL;
+                double ph = strtod(cur, &end);
+                if (end == cur) break;
+                for (int i = 0; i < 16; i++) {
+                    if (!step_ok[i]) continue;
+                    double d = ph - step_phase[i];
+                    if (d < 0) d = -d;
+                    /* The same window the chain replaces a point in, named
+                     * here rather than included: shadow_chain_mgmt.c does not
+                     * otherwise know the lane store, and pulling its header in
+                     * for one constant would drag the whole type in with it.
+                     * Pinned against the real one by tests/host. */
+                    if (d < STEP_LOCKS_POINT_WINDOW) {
+                        uni |= (1u << i);
+                        if (on_page) pag |= (1u << i);
+                        break;
+                    }
+                }
+                cur = end;
+            }
+        }
+        if (!*eol) break;
+        line = eol + 1;
+    }
+    return snprintf(out, (size_t)out_len, "%u %u", uni, pag);
+}
+
+/* SAY THAT ONE LANDED, so the UI can draw a mark.
+ *
+ * The gesture had no confirmation on any screen. It is silent by nature -- a
+ * p-lock changes nothing you can hear until the loop comes round to that step
+ * -- so "did that work?" had no answer, and eight correct p-locks on hardware
+ * were reported as the feature not working. That is a worse failure than a
+ * refusal, because a refusal at least has `lanes:plock_reason`.
+ *
+ * ASKED OF THE CHAIN, not assumed from "we forwarded it": the write can still
+ * be refused for a parameter the module does not declare or a full store, and
+ * a mark drawn for a p-lock that did not land is how a user learns to
+ * distrust the mark. `lanes:plocked` is the chain's own answer to exactly
+ * this question.
+ *
+ * The counter is never reset here. The UI compares it for INEQUALITY and owns
+ * the mark's lifetime; clearing it from this side would be the writer
+ * deciding how long the reader gets to look. */
+static void shadow_lanes_plock_confirm(uint8_t slot)
+{
+    if (slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) return;
+    if (!shadow_chain_slots[slot].instance) return;
+    char landed[8] = {0};
+    int n = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                        "lanes:plocked", landed, sizeof(landed));
+    if (n <= 0 || landed[0] != '1') return;
+    shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+    if (ctrl) ctrl->plock_seq++;
+}
+
+/* WHICH SLOTS ARE BEING DRIVEN BY A LANE, into the SHM lamp the UI reads.
+ *
+ * Polled rather than pushed because `driving` is a per-block property of the
+ * chain's own lanes and nothing edges it: a lane stops driving by simply not
+ * being asked again, so there is no event to publish from. The poll is bounded
+ * (LANE_MAX per slot, a flag test each) and runs at LANES_DRIVING_PUBLISH_FRAMES,
+ * not per frame -- it lights a lamp.
+ *
+ * Answers ZERO for a slot whose read fails, deliberately: the lamp must go out
+ * when we cannot say, never latch on. That is the opposite of the tri-state
+ * rule for a CONTRACT read -- a contract we cannot read must not produce a
+ * plan, while a lamp we cannot read must not keep claiming something is
+ * happening. */
+void shadow_lanes_publish_driving(void)
+{
+    shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+    if (!ctrl) return;
+    uint8_t mask = 0;
+    if (shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+        for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES && slot < 8; slot++) {
+            if (!shadow_chain_slots[slot].active ||
+                !shadow_chain_slots[slot].instance) continue;
+            char n[8] = {0};
+            int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                 "lanes:driving", n, sizeof(n));
+            if (rn > 0 && n[0] && n[0] != '0') mask |= (uint8_t)(1u << slot);
+        }
+    }
+    ctrl->lanes_driving_mask = mask;
+
+    /* AND WHILE WE ARE HERE, THE DIAGNOSTIC TRACE -- see lane_trace.h for why
+     * it is sampled in-process instead of polled over the param channel. This
+     * is the one place that already holds a slot's instance on the callback
+     * and already calls its get_param, so the trace costs one more bounded
+     * getter call per armed sample and no new walk.
+     *
+     * Armed by the worker (lane_trace_armed), never by an access() here: the
+     * callback does no file I/O. Silent and free when disarmed. */
+    if (lane_trace_armed() && shadow_plugin_v2 && shadow_plugin_v2->get_param &&
+        lane_trace_should_sample(ctrl->shim_counter)) {
+        for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES && slot < 8; slot++) {
+            if (!shadow_chain_slots[slot].active ||
+                !shadow_chain_slots[slot].instance) continue;
+            char line[LANE_TRACE_LINE_MAX];
+            line[0] = '\0';
+            int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                 "lanes:diag", line, sizeof(line));
+            if (rn <= 0) continue;
+            /* A getter answers snprintf-style, so `rn` can exceed the buffer.
+             * The buffer is already terminated either way; trusting `rn` is
+             * how a length becomes an over-read. */
+            line[sizeof(line) - 1] = '\0';
+            /* A slot with no lanes answers a head and nothing else. Recording
+             * those is 2.4 MB a minute of "nothing happened" across four
+             * slots, which buries the take. A lane appears in the answer the
+             * moment it is created, so nothing is missed by skipping them. */
+            if (!strchr(line, '\n')) continue;
+            lane_trace_push(lane_trace_ring(), ctrl->shim_counter,
+                            (uint32_t)slot, line);
+        }
+    }
+}
+
+/* A COMPONENT WRITE MADE WHILE A STEP IS HELD IS A P-LOCK.
+ *
+ * Decided here rather than in the UI because every UI's writes pass through
+ * here, and a module drawing its own screen from `ui_chain.js` has no host io
+ * to hook -- which is why 9W9 could record automation but never p-lock.
+ *
+ * The live write still happens: a p-lock sets the value AND stores it, exactly
+ * as turning the knob without a step held would sound. This only ADDS the
+ * breakpoint.
+ *
+ * `shim_plock_held_step()` owns both guards (exactly one step, shadow display
+ * up); see its comment. */
+static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
+                                         const char *value)
+{
+    if (!key || !value) return 0;
+    int step = shim_plock_held_step();
+    if (step < 0) return 0;
+    int split = shadow_component_param_split(key);
+    if (split <= 0) return 0;
+    if (slot >= SHADOW_CHAIN_INSTANCES) return 0;
+    if (!shadow_chain_slots[slot].active || !shadow_chain_slots[slot].instance)
+        return 0;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param) return 0;
+
+    /* A RECORDING PASS IS NEVER CONVERTED.
+     *
+     * A p-lock writes a RECTANGLE at one phase; a recorded sweep writes a
+     * slope across a span -- into the SAME lane. So while a take is running,
+     * a held step (stale, or simply still down from the p-lock before it)
+     * would punch stepped points through the sweep as it is being recorded,
+     * which is how this whole mechanism came out on its first attempt: not
+     * "the p-lock did nothing" but "the automation got worse".
+     *
+     * Asked of the chain rather than reconstructed here, because the answer
+     * is the record branch's own condition (`lane_is_recording`, chain_lanes.c)
+     * and a host-side copy of it would be free to disagree. A failed read is
+     * NOT a no -- `get_param` answering < 0 means the chain did not serve the
+     * key, and converting on the strength of that is exactly the tri-state
+     * mistake documented in CLAUDE.md -- so anything but a clear "0" refuses.
+     *
+     * Costs two nothing-calls per component write WHILE A STEP IS HELD, which
+     * is a gesture, not a stream. */
+    if (!shadow_plugin_v2->get_param) return 0;
+    char rec[8] = {0};
+    int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                         "lanes:recording", rec, sizeof(rec));
+    if (rn < 0 || rec[0] != '0') return 0;
+
+    /* STATIC for the same reason the plock_step forward is: a
+     * SHADOW_PARAM_VALUE_LEN buffer on the SPI callback's stack is what the
+     * param-contract raise had to undo once already. */
+    static char req[SHADOW_PARAM_VALUE_LEN];
+    static char fwd[SHADOW_PARAM_VALUE_LEN];
+    int n = snprintf(req, sizeof(req), "%.*s %s %d %s",
+                     split, key, key + split + 1, step, value);
+    if (n <= 0 || (size_t)n >= sizeof(req)) return 0;
+    if (!shadow_lanes_plock_step_translate(slot, req, fwd, sizeof(fwd))) return 0;
+    shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                "lanes:plock", fwd);
+    shadow_lanes_plock_confirm(slot);
+    /* DID IT LAND? The caller suppresses the live write on a 1, so a refused
+     * p-lock must never report one: an unknown parameter or a full store would
+     * otherwise turn a knob into a dead knob -- no lock, no sound, no reason.
+     * `lanes:plocked` is the chain's own answer, the same one the mark uses. */
+    char landed[8] = {0};
+    int ln = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                         "lanes:plocked", landed, sizeof(landed));
+    if (!(ln > 0 && landed[0] == '1')) return 0;
+
+    /* THE PRESS IS SPENT, AND ONLY NOW.
+     *
+     * It wrote a lock, so its release must not also be replayed to Move as a
+     * tap -- a gesture under STEP_TAP_MS otherwise both locked a value and
+     * toggled the note off. But these two ran BEFORE the answer above, so a
+     * REFUSED lock spent the press as well: the knob correctly kept working
+     * and the step silently did not toggle its note. One gesture, two
+     * consumers, and the half that failed took the other half's input with
+     * it. Every refusal now leaves the press to Move, which is what a
+     * disarmed build needs to be genuinely inert and what an unknown
+     * parameter or a full store needed all along. */
+    shim_step_note_plock_key(key);
+    shim_step_mark_used(step);
+    return 1;
+}
 
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
@@ -3272,14 +3904,39 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         return;
     }
 
-    
+    if (strcmp(key, "lanes:plock_step") == 0) {
+        /* STATIC, not a stack local: a SHADOW_PARAM_VALUE_LEN buffer on the
+         * SPI callback's stack is what the param-contract raise had to undo
+         * once already (a 1.2 MB frame), and tests/host pins it. Single
+         * writer, and the forward completes before the next request. */
+        static char fwd[SHADOW_PARAM_VALUE_LEN];
+        if (shadow_lanes_plock_step_translate(slot, value, fwd, sizeof(fwd)) &&
+            shadow_plugin_v2 && shadow_plugin_v2->set_param &&
+            slot < SHADOW_CHAIN_INSTANCES &&
+            shadow_chain_slots[slot].active &&
+            shadow_chain_slots[slot].instance) {
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                        "lanes:plock", fwd);
+            /* Same mark as the other two paths. All THREE confirm, or the
+             * gesture reports itself on some screens and not others -- which
+             * is the shape of the bug this whole feature keeps rediscovering. */
+            shadow_lanes_plock_confirm(slot);
+        }
+        return;
+    }
+
     /* Forward to plugin set_param */
     if (shadow_plugin_v2 && shadow_plugin_v2->set_param &&
         slot < SHADOW_CHAIN_INSTANCES &&
         shadow_chain_slots[slot].active &&
         shadow_chain_slots[slot].instance) {
-        shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, value);
-        if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        /* Same rule as the SHM path: while a step is held this write IS the
+         * p-lock, and the live value is left alone. Only a landed one
+         * suppresses the write. */
+        if (!shadow_lanes_plock_from_write(slot, key, value)) {
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, value);
+            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        }
     }
 }
 
@@ -5067,8 +5724,108 @@ void shadow_inprocess_handle_param_request(void) {
                 shim_rt_audit_note_module(value_copy[0] ? value_copy : "(unload)");
             }
 
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
-                                        key_copy, value_copy);
+            /* REMOVE WHAT IS LOCKED ON THE HELD STEP: "" for all of it, or
+             * "<target> <param>" for one parameter. Same translation as the
+             * write, through the same function, so the step a clear removes
+             * from is by construction the step a p-lock would have written to.
+             *
+             * Refused if no single step is held or the step has no phase --
+             * and a refusal forwards NOTHING, because `lanes:clear_point`
+             * with a missing phase would be read as phase 0 and take the
+             * downbeat's automation instead. */
+            /* The lock map's query: "<target> <k1,k2,...>", kept per slot
+             * until the next one. A GET cannot carry arguments, so the
+             * question is a SET and the answer is read back -- the same shape
+             * `lanes:probe` uses, for the same reason. */
+            if (strcmp(key_copy, "lanes:step_locks_query") == 0) {
+                if (slot < SHADOW_CHAIN_INSTANCES) {
+                    strncpy(g_step_locks_query[slot], value_copy,
+                            sizeof(g_step_locks_query[0]) - 1);
+                    g_step_locks_query[slot][sizeof(g_step_locks_query[0]) - 1] = '\0';
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (strcmp(key_copy, "lanes:clear_step") == 0) {
+                int cstep = shim_plock_held_step();
+                double cphase = 0.0;
+                if (cstep >= 0 &&
+                    shadow_lanes_step_phase(slot, cstep, &cphase, NULL, NULL) == STEP_PLOCK_OK) {
+                    /* Clearing is also something the press DID, so its release
+                     * must not toggle a note on the way out. */
+                    shim_step_mark_used(cstep);
+                    static char cfwd[SHADOW_PARAM_VALUE_LEN];
+                    snprintf(cfwd, sizeof(cfwd), "%.17g%s%s", cphase,
+                             value_copy[0] ? " " : "", value_copy);
+                    strncpy(key_copy, "lanes:clear_point", sizeof(key_copy) - 1);
+                    key_copy[sizeof(key_copy) - 1] = '\0';
+                    strncpy(value_copy, cfwd, SHADOW_PARAM_VALUE_LEN - 1);
+                    value_copy[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                } else {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
+            }
+
+            /* The gesture's key, translated before the forward: the chain
+             * serves `lanes:plock` (a phase) and not `plock_step` (a step
+             * button), so without this it falls through and is dropped. */
+            if (strcmp(key_copy, "lanes:plock_step") == 0) {
+                static char plock_fwd[SHADOW_PARAM_VALUE_LEN];
+                if (shadow_lanes_plock_step_translate(slot, value_copy,
+                                                      plock_fwd,
+                                                      sizeof(plock_fwd))) {
+                    strncpy(key_copy, "lanes:plock", sizeof(key_copy) - 1);
+                    key_copy[sizeof(key_copy) - 1] = '\0';
+                    strncpy(value_copy, plock_fwd, SHADOW_PARAM_VALUE_LEN - 1);
+                    value_copy[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                } else {
+                    /* Refused. The reason is NOT logged -- this is the SPI
+                     * callback and shadow_log() is a no-op here -- it is
+                     * recorded for `lanes:plock_reason`. Answer the request
+                     * rather than forwarding a key the chain will not serve:
+                     * `lanes:plocked` stays 0 and the caller can see it. */
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
+            }
+
+            /* A COMPONENT WRITE MADE WHILE A STEP IS HELD IS A P-LOCK AND
+             * NOTHING ELSE -- it does not also move the live value.
+             *
+             * This is the path a module's own `ui_chain.js` writes through,
+             * which is why the gesture is decided here and not in the host's
+             * param-pages io (see shadow_lanes_plock_from_write), and it runs
+             * BEFORE the live write so it can replace it. Elektron's rule:
+             * holding a trig and turning edits that step, and the track's own
+             * value is left where it was. Applying both -- which is what the
+             * first version did -- means one gesture silently changing two
+             * things, and the one you did not ask for is the one that plays
+             * on every other step.
+             *
+             * ONLY a p-lock that LANDED suppresses the write. A refusal
+             * (unknown param, full store, a step the strip cannot place)
+             * falls through to the ordinary write, so the knob still does
+             * something rather than going dead for a reason nothing states.
+             * A no-op for `lanes:*` keys, so the translated plock above
+             * cannot re-enter it. */
+            if (!shadow_lanes_plock_from_write(slot, key_copy, value_copy)) {
+                shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                            key_copy, value_copy);
+                /* The OTHER p-lock path -- the host's param-pages io, which
+                 * writes `lanes:plock_step` and had it translated above --
+                 * needs the same mark, and this is where its write lands.
+                 * Keyed off the TRANSLATED key, so a caller writing
+                 * `lanes:plock` directly is confirmed too. */
+                if (strcmp(key_copy, "lanes:plock") == 0)
+                    shadow_lanes_plock_confirm(slot);
+            }
             shadow_param->error = 0;
             shadow_param->result_len = 0;
 
@@ -5178,6 +5935,54 @@ void shadow_inprocess_handle_param_request(void) {
         }
     }
     else if (req_type == 2) {  /* GET param */
+        /* Host-side key: the translation that refuses lives here, not in the
+         * chain plugin, so the plugin cannot answer this one. Served ahead of
+         * the forward for that reason. */
+        if (strcmp(shadow_param->key, "lanes:step_locks") == 0) {
+            int n = shadow_lanes_step_locks(slot, g_step_locks_query[slot],
+                                            shadow_param->value,
+                                            SHADOW_PARAM_VALUE_LEN);
+            shadow_param->result_len = (n > 0) ? n : 0;
+            if (n < 0) shadow_param->value[0] = '\0';
+            shadow_param->error = 0;
+            shadow_param_publish_response(req_id);
+            return;
+        }
+        if (strcmp(shadow_param->key, "lanes:plock_reason") == 0) {
+            int rc = (slot < SHADOW_CHAIN_INSTANCES) ? g_plock_last_reason[slot] : 0;
+            int n = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d %s",
+                             rc, (rc == -1) ? "bad_request"
+                                            : shadow_lanes_plock_reason_name(rc));
+            shadow_param->result_len = (n > 0) ? n : 0;
+            shadow_param->error = 0;
+            shadow_param_publish_response(req_id);
+            return;
+        }
+        /* `<target>:<param>:held` -- WHAT IS LOCKED ON THE STEP UNDER YOUR
+         * FINGER, or empty.
+         *
+         * Also host-side, and for the same reason as plock_reason: the held
+         * step and the step->phase arithmetic both live here, and the chain
+         * knows only phases. This is the READ half of the p-lock gesture --
+         * the write half has worked for a while, which is what made the
+         * feature look absent: you could set a value on a step and never see
+         * one.
+         *
+         * Empty is the honest answer to every "no": no step held, two held,
+         * a step with no phase, no lane, or a lane with nothing to say there.
+         * The UI must not turn any of those into a number, or an unautomated
+         * knob would read someone else's value the moment a step went down. */
+        {
+            const char *h = strstr(shadow_param->key, ":held");
+            if (h && h[5] == '\0' && shadow_lanes_held_value(
+                        slot, shadow_param->key, (int)(h - shadow_param->key),
+                        shadow_param->value, SHADOW_PARAM_VALUE_LEN) >= 0) {
+                shadow_param->result_len = (int)strlen(shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
         if (shadow_plugin_v2->get_param) {
             memset(shadow_param->value, 0, 256);
             int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,

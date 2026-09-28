@@ -174,6 +174,233 @@ Pending ids also carry a per-boot token now: the sequence restarted at 1 every
 boot, so `__pending-26-1` named a different unsaved set each session and a new
 one silently loaded an old one's leftovers.
 
+## Automation lanes on the model
+
+`shadow_slot_clip_phase()` and `shadow_lanes_step_phase()`
+(`shadow_chain_mgmt.c`) answer from the model; the ~365-line LED / step-strip /
+Song.abl resolver they replaced is gone. The chain seam
+(`chain_set_clip_phase`) is unchanged.
+
+- **Clip** = the track's `PlayingState` clip; **loop** from its region;
+  **phase** = `mm_clip_position(clip, start_beats, now)` in CLIP time, where
+  `now` is the shim's per-block interpolated MIDI-clock position (the model's
+  own beat clock refreshes every ~20 ms, too coarse to drive a parameter).
+- **Fingerprint** `{loop_start, loop_len, notes_len, notes_hash}` — the content
+  half is a hash of Move's notes blob, so it is always valid: there is no
+  "blind take" and no adoption any more. A take lands on the clip it was made
+  on, at the moment it is made.
+- **A held step** is `scroll + step × step_beats` (triplets skip the dead
+  fourth button); refused past the clip's end, pending with no current clip.
+- **Deletions and copies** come from diffing the model (`move_model_sync.c` →
+  the worker's clip-event channels): a deleted clip ORPHANS its lanes at once
+  (it waited for Move's save before — long enough for a clip made in the same
+  slot to inherit them); a clip that arrives with the same notes and geometry
+  as one on its track is a COPY, and its lanes are copied.
+- **Orphans re-attach on Undo** — Move's Undo restores the same clip object
+  (measured: same flip id), its fingerprint matches, and the lane plays again.
+  They are **not written to disk**: undo history does not survive a reload,
+  and a written orphan came back looking live, so a new clip in that slot
+  inherited the dead clip's automation.
+
+Measured on hardware (hank on Set 5, T2, 117 BPM):
+- p-lock on a clip made one second earlier, stopped: accepted (`ok`), bound to
+  the new clip, and heard on step 5 every loop (0.9 for phase 1.00–1.25, base
+  elsewhere);
+- the model phase against Move's own step playhead: **143/143 LED events in the
+  right step**, offset +1 or +2 clock pulses (the LED's latency), including a
+  clip launched mid-playback at beat 8;
+- a recorded knob sweep (45 points) played back at median error 0.002 over two
+  loops;
+- delete → `orph=1` at once; Undo → re-attached and driving; Copy → the
+  duplicate got a 45-point copy of the lane.
+
+`move_model_on` also writes `phase_model.log`: one line per step-playhead LED
+with the model's position and the offset `d` from the lit step's start.
+
+## Automation follows Move's edits
+
+The rule: Schwung automation behaves as part of Move's clips, pages and steps.
+Whatever Move does to one of those, the automation on it does too -- and it
+must never be possible to see the two disagree.
+
+### What Move does to its OWN automation (the oracle)
+
+Move's per-step automation lives in the document too
+(`SessionClip.mClipEnvelopes` → `ClipEnvelope.mAutomation{mpParameter,
+mBreakpoints}`, breakpoints a blob of big-endian `(time, value)` doubles). So
+every rule below was measured by driving the gesture and watching what Move did
+to its OWN envelopes and notes (with per-note ids, see "The notes blob"):
+
+| Move edit | notes | Move's automation → ours |
+|---|---|---|
+| step paste (Copy, A, B) | per PITCH: a source note replaces a same-pitch note, else is added (melodic); drum tracks copy only the SELECTED voice | the destination step's automation is **replaced** by the source step's -- every parameter, including ones only the destination had |
+| page paste (Loop + Copy, pages) | same, per page | same, per page |
+| a source step with no notes | nothing | nothing -- automation-only steps count as empty |
+| Delete + step | removed | **kept** |
+| Double Loop (Shift + step 15) | duplicated (new ids) | duplicated |
+| Undo / Redo | exact previous note ids | exact previous automation |
+| clip delete / Undo | the SAME clip object returns | ours comes back with it |
+| clip duplicate (Copy in Note view) | new clip, same content | copied |
+
+Move's own step lock is a one-step RECTANGLE when pasted (the original can span
+to the next note: `(0,36)(0,41)(1,41)(1,36)`), the same shape as a Schwung
+p-lock.
+
+### How it is mirrored -- intent from the buttons, proof from the model
+
+`edit_gesture.c` (RT) reads Copy / Loop / Shift / step / Undo off the hardware
+buffer and reports INTENT -- pairing presses exactly as Move does (the source
+survives releasing Copy; Shift + Undo is Redo; Shift + step 15 is Double Loop)
+-- with positions taken at the moment of each press, from the model: a step is
+`scroll + step × grid`, a page is `page × 16 × grid` (12 on a triplet grid).
+
+`edit_follow.c` (model thread) issues a lane verb only when the MODEL confirms
+Move made that edit:
+- a **paste** when the notes that appeared in the destination span (ids new
+  since the clip's previous state) are exact copies of source-span notes --
+  pitch, relative start, length, velocity. Anything else is declined: Move
+  refusing an "empty" source, a range selection, an armed source Move had
+  cleared, a note the user played. The gesture model's unmeasured corners can
+  therefore only produce an intent that is not confirmed -- a no-op;
+- a **Double Loop** when the loop really doubled (geometry, since Move doubles a
+  clip with no notes too);
+- **Undo/Redo** when the clip returns EXACTLY to its state (`mm_clip_state_hash`:
+  notes + Move's envelopes + loop geometry) before/after a mirrored edit;
+- clip **delete → stash** under its id, **same id back → unstash**, **new id with
+  a sibling's content → copy** -- from identity alone, no intent needed.
+
+The chain verbs (`lanes:paste_span`, `lanes:journal undo|redo`, `lanes:stash`,
+`lanes:unstash`, `host/lane_edit.c`) journal what they replace, so undo and redo
+restore it exactly. Commands cross to the SPI callback through a lock-free ring.
+
+The edited clip is probed EVERY tick (its notes and envelope blobs re-hashed,
+a few hundred bytes): a paste onto an occupied step replaces a note without
+resizing Move's notes vector, so no structural guard moves.
+
+### Verified on hardware (Set 5, hank on T2, a throwaway clip)
+
+step paste to an empty step, onto a step holding only a Schwung lock (cleared,
+as Move does), Undo, Redo; Double Loop + Undo + Redo; page paste on a
+three-page clip + Undo; clip delete (stashed, nothing orphaned) + Undo (the same
+clip id, both lanes back); duplicate (both lanes copied); a paste Move declined
+(nothing changed). Every one matched Move's notes, and nothing was mirrored that
+Move did not do.
+
+### A drum paste is VOICE-scoped
+
+Move pastes only the selected voice's notes on a drum track, so only that
+voice's automation may follow -- copying the whole step would put a snare's
+lock on a step that received only a kick, and overwrite the destination's own
+snare lock with it.
+
+- **The voices come from the notes, not the buttons.** `edit_follow` appends the
+  distinct pitches of the notes that APPEARED to the command
+  (`lanes:paste_span ... v=36`). It does not need to know which voice is
+  selected, and on a melodic track it names pitches the chain simply ignores.
+- **Which parameter is whose comes from the module's declaration**, through
+  `voices.mjs` and `child_key.mjs` (`src/shared/lane_voice_map.mjs`), never a
+  C copy. A pad spread over several child levels (dr32: Sample, Shape, Mix,
+  where only Sample declares notes) is merged by the shared
+  `child_index_param`. A key EVERY voice lists (`ui_current_pad`, `link`) is
+  the track's, and a voice paste leaves it -- and every lane on a non-voice
+  parameter or an FX -- where it is.
+- **The map is keyed to the synth by NAME on the chain side.** The UI asks
+  `lanes:voice_map_need` (one read per ~45 ticks, one slot per pass) and reads
+  the hierarchy only when a synth has no map -- once per load. A push naming a
+  synth that is no longer loaded is refused, a stale map never scopes, and a
+  failed hierarchy read pushes nothing rather than "not a rack".
+- No map, an empty map, or a map too big to carry (>16 KB, whole or not at
+  all) is a **whole-step** paste. Double Loop is always whole.
+- `lanes:paste_scoped` reports whether the last paste was scoped.
+
+## One Undo for Move's edits and Schwung's
+
+Move's Undo undid Move's last edit, and a take or p-lock made in Schwung is not
+one -- so Undo after recording automation undid the NOTE edit before it and
+left the automation. There is one instrument, so there is one history.
+
+**Move's side is read, not modelled.** Move's undo stack is flip's own
+`History<HistoryStoreMemory>` (the strings name `mTransactionHub.mHistory`):
+a libc++ `std::list<Transaction>` plus a redo iterator. The reader finds it
+once by its two vptrs (History at +0, its store at +0x10) and each tick reads
+the last-undo and first-redo NODES with their transaction numbers
+(`mm_history_read`; node+0x10 is vptr-checked as a `flip::Transaction` every
+time). List nodes never move, so a node plus its number IS a step's identity.
+Every change of that pair is exactly one of: Move UNDO (the new first-redo is
+the old last-undo), Move REDO (the reverse), or a NEW step -- which covers
+every kind of Move edit, including device knobs and anything else this reader
+never models.
+
+**Schwung's side is journaled by the chain** (`lane_journal_diff`): a take is
+everything recorded between Record going solid and going out, a p-lock and
+each clear verb are one step each, all stored as whole lanes before/after in
+`lanes_sjournal` (ids with the high bit) and announced once through the
+dlsym'd `chain_take_lane_edit`. An empty take announces nothing. A
+Move-mirrored edit (paste, its undo, a stash) landing mid-take commits the take
+first, so undoing the take can never revert Move's paste.
+
+**The decision** (`undo_timeline.c`): each Schwung edit is ANCHORED to Move's
+last-undo step when it was made. An Undo press is Schwung's iff the latest
+live Schwung edit is anchored at Move's CURRENT last-undo -- nothing of Move's
+came after it. Then the shim swallows the press AND its release
+(`midi_in_swallow`, latched) and the slot gets `lanes:journal undo <jid>`.
+Otherwise the press reaches Move untouched. Shift+Undo mirrors it for Redo. A
+new edit on either side ends the other's redo branch where it can (ours; Move's
+own stays Move's).
+
+**A take recorded while Move recorded notes is ONE step.** If Move pushed a new
+step between arm and 600 ms after the take ended, the take is LINKED to that
+step: the press goes to Move, and the take follows Move's undo and redo of it
+(observed from the stack, no press needed). Re-linking follows Move squashing
+its recording into a fresh top node.
+
+Fails closed: an unreadable stack (`hist_valid = 0`, unknown firmware, object
+not found) claims no press, so Undo is exactly Move's as before. The chain keeps
+8 own-edits per slot, and the timeline never claims one older than that.
+Not hardware-verified yet -- the History candidates are logged to
+`move_model_status.txt`, and `move_model.json` carries `history`.
+
+### Review fixes to the undo and edit-follow paths (2026-09-28)
+
+- **A p-lock GESTURE is one Undo step.** The grid writes `lanes:plock_step`
+  every 20 ms while a step is held; each write was journaled on its own, so
+  Undo walked back one detent at a time and the 9th press fell through to
+  Move. Writes on the same step now fold into the open edit, which commits on
+  a different step, any other verb, a Record edge, or 300 ms of silence.
+- **A module that claimed Undo keeps it** (`claims_edit_ccs`, the grid's child
+  copy/clear/undo): the timeline is not offered that press, on either edge.
+- **Nothing is claimed while Record is armed**: the take is not in the
+  timeline until Record goes out, and undoing an earlier edit's whole-lane
+  snapshot then erased the take being recorded.
+- **Move's Undo is the document's.** A mirrored paste is undone when ITS clip
+  (found by id on its track) returns to its pre-paste state, whatever clip is
+  on screen -- the press no longer names a clip at all. The paste's "after"
+  state keeps settling for 300 ms, since Move lands notes and envelopes a
+  tick apart.
+- **Linked takes are undone newest-first** (redone oldest-first): a mirrored
+  edit splits a take into two whole-lane snapshots on one Move step.
+- **A Schwung edit leaves a linked take's redo alone**; only a Move edit (which
+  flushes Move's own redo) ends it.
+- **A restore voids the journal**: `lanes:state` (a set load, a snapshot
+  recall) and Slot Settings' swap Undo announce `RESET`, and the timeline drops
+  that slot's entries -- undoing one would splice pre-restore content in.
+- **An empty commit never touches the ring** (counted first), so it cannot
+  destroy the oldest still-claimable entry.
+
+### Known limits
+
+- **Undo depth for Schwung's own edits is 8 per slot** (the chain's journal);
+  older ones fall out of the button's reach, and Slot Settings' one-level Undo
+  is still there. An edit touching more than 16 lanes (clearing a busy slot)
+  is not journaled at all, so the button passes it to Move.
+- **Cross-track clip copies** are not mirrored (a different slot, usually a
+  different module).
+- **Page copy** is Loop held + Copy + page, then RELEASE Copy before touching
+  the destination page. Holding Copy through both presses is not the gesture
+  (an earlier note here called page copy a no-op on two pages from exactly
+  that mistake).
+- Injected test presses reach Schwung's decoders only with
+  `inject_as_hardware` set (offset 108) -- see `docs/DIAGNOSTICS.md`.
 ### Review fixes (2026-09-28)
 
 - **The ack names the generation the UI HANDLED.** `active_set` answers
@@ -240,8 +467,15 @@ the shape changed and the next tick walks again. A full walk also runs every
   toolchain.
 - **Pinned to one build:** the transport run flag and beat clock (a Move
   message struct, not a flip member). Gated on MoveOriginal's GNU build-id; on
-  any other build `clock_valid = 0` and phase must come from the MIDI-clock
-  pulse counter the shim already keeps.
+  any other build `clock_valid = 0`. Lanes do not need it: their phase has
+  always been Schwung's own MIDI-clock transport against Move's launch beat,
+  and the model's run flag only VETOES. Gating on it outright made every lane
+  go silent on an unknown build; now an unknown build falls back to the shim's
+  transport alone (`shadow_slot_clip_phase`, pinned in `test_slot_clip_phase`).
+- **Move 2.1.1 (checked 2026-09-28 against the decrypted image):** every one of
+  the 59 class, member and RTTI names the reader resolves is present; the binary
+  grew ~200 KB, so only the pinned transport offsets are in doubt, and those no
+  longer gate anything.
 - **Fails clean:** a missing class or member name leaves `valid = 0` and says
   which one in `move_model_status.txt`. It never reports a guessed value.
 - Checkable before installing an update: decrypt the new image with
@@ -264,13 +498,37 @@ straddling the unmapped gap between ELF segments, which is exactly where
 `.data.rel.ro` (the typeinfo) begins; scans now walk mapped segments, never the
 image span.
 
+## The notes blob is variable-length
+
+`MidiClipContent.mNotes`, big-endian, measured 2026-09-28 on "Lane Test"
+(16 Pitches notes, notes played with pressure): every record is a 29-byte head
+-- `i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag` -- then EITHER
+an `i64 id` (its first u32 is 0: a plain note, 37 bytes) OR
+`u32 lane_count`, `lane_count x {i32 type, u32 point_count, point_count x
+{f64 time, f64 value}}`, `u32 id`.
+
+| lane type | what | value |
+|---|---|---|
+| -2 | PITCH (16 Pitches) | semitones x 8191/48 (170.6458) -- +1 st is 170.65, +10 is 1706.46 |
+| -1 | PRESSURE (aftertouch) | 0..127, stored as STEP pairs (two points per change), time in beats from the note's start |
+
+In 16 Pitches mode `pitch` is the PAD's own note and the pitch lives only in
+the lane, which is why a fixed 37-byte stride decoded every note after the
+first such record as garbage -- including the ids paste/undo mirroring keys on.
+`mm_decode_notes_buf` walks the records, exposes `pitch_offset` (semitones at
+t=0) and the pressure lane (a point pool), and is ALL OR NOTHING: an unknown
+lane type, a list past the end, or records not landing exactly on the end is
+-1, "this clip's notes are unknown" -- never a partial list. The raw buffer is
+bounded in bytes (256 KB). `tests/host/test_move_model.c` carries the real
+1853-byte recording and sweeps every truncation of it. Paste confirmation
+compares `pitch_offset` too.
+
 ## Not yet known
 
-- **The notes blob.** `MidiClipContent.mNotes` is a flip Blob; small clips
-  decode as 40-byte big-endian records `{i32 note, pad, f64 start, f64 dur,
-  f32 vel, f32 offvel, i64 id}`, but larger ones do not — likely a different
-  (compressed or chunked) encoding. Lanes do not need notes (identity is the
-  object id), so it is left.
+- ~~The notes blob~~ -- now KNOWN, see "The notes blob is variable-length"
+  below. (The "40-byte records that fail on larger clips" note here was two
+  mistakes: records are 37 bytes, and the ones that "failed" carry expression
+  lanes.)
 - **Audio clips' content** (`AudioClipContent`) — scroll is reported as `-1`.
 - **Persistence across reloads.** Object ids are per load; a lane saved to disk
   still needs a position + fingerprint key, and the model is what makes that

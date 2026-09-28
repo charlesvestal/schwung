@@ -68,6 +68,10 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     chain_instance_t *inst = calloc(1, sizeof(chain_instance_t));
     if (!inst) return NULL;
 
+    /* 0 is a VALID row; this must mean "none known yet" (chain_internal.h). */
+    inst->lane_last_known_slot = -1;
+    inst->lane_new_row = -1;
+
     /*
      * Per-position metadata storage, allocated EAGERLY for every position.
      *
@@ -227,6 +231,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_instance = NULL;
     inst->current_synth_module[0] = '\0';
     inst->synth_param_count = 0;
+    chain_child_keys_load(&inst->synth_child_keys, NULL);
     inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
@@ -455,6 +460,7 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_count = slot + 1;
     }
 
+    chain_child_keys_load(&inst->fx_child_keys[slot], fx_dir);
     snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)", fx_name, slot, inst->fx_param_counts[slot]);
     v2_chain_log(inst, msg);
     return 0;
@@ -653,6 +659,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
             strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
             
             parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+            chain_child_keys_load(&inst->synth_child_keys, synth_path);
             inst->mod_param_refresh_ms_synth = 0;
             return 0;
         }
@@ -676,6 +683,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         inst->current_synth_module[0] = '\0';
         return -1;
     }
+    chain_child_keys_load(&inst->synth_child_keys, synth_path);   /* `pad7_transpose` -> `transpose` */
     inst->mod_param_refresh_ms_synth = 0;
 
     /* Parse default_forward_channel from capabilities in module.json */
@@ -884,6 +892,7 @@ int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
 
     inst->fx_count++;
 
+    chain_child_keys_load(&inst->fx_child_keys[slot], fx_dir);
     snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)", fx_name, slot, inst->fx_param_counts[slot]);
     v2_chain_log(inst, msg);
     return 0;
@@ -944,6 +953,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
         int frames = val ? atoi(val) : 128;
         lfo_tick(inst, frames);
+        lane_tick(inst);
         chain_idle_tick_mark(&inst->idle_tick, v2_tick_midi_fx(inst, frames));
         return;
     }
@@ -954,6 +964,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /* Every automation-lane key, in ONE dispatch (chain_lanes.c). One branch
+     * rather than one per key: this file is pinned at 2900 lines, so a ladder
+     * here makes the next lane key a choice between the pin and the feature. */
+    if (key && strncmp(key, "lanes:", 6) == 0) {
+        lane_param_set(inst, key + 6, val);
+        return;
+    }
 
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
@@ -1242,6 +1259,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
+            lane_on_set_param(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
                 chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
@@ -1289,6 +1307,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
              * exists is an ordinary event, not a bug to be recovered from. */
             char fx_id[16];
             chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+            lane_on_set_param(inst, fx_id, subkey, val);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -1333,6 +1352,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             /* Dropped if the slot holds nothing — see the audio FX branch. */
             char mfx_id[16];
             chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+            lane_on_set_param(inst, mfx_id, subkey, val);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
@@ -1608,6 +1628,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
     }
 
+    /* Every automation-lane key, in ONE dispatch (chain_lanes.c). -1 comes
+     * back for a key it does not serve, so an unknown "lanes:" subkey reads
+     * as a FAILED read rather than as an empty answer. */
+    if (strncmp(key, "lanes:", 6) == 0)
+        return lane_param_get(inst, key + 6, buf, buf_len);
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we return our cached flag instead of forwarding to the sub-plugin. */
@@ -2399,6 +2424,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
      * this exact block with a generated note. Never advance it twice. */
     if (chain_idle_tick_consume(&inst->idle_tick)) {
         lfo_tick(inst, frames);
+        lane_tick(inst);
         v2_tick_midi_fx(inst, frames);
     }
 
@@ -2891,6 +2917,16 @@ int chain_synth_requires_continuous(void *instance) {
  * means a timer-generated MIDI message has already reached the synth, so the
  * current audio block must render instead of remaining parked. One-shot; see
  * chain_idle_tick.h for why a "no" clears the double-tick guard here. */
+/* One of Schwung's own automation edits was journaled (a take, a p-lock, a
+ * clear -- see chain_internal.h). The shim drains these each frame and hands
+ * them to the unified Undo timeline. One-shot per event. */
+__attribute__((visibility("default")))
+int chain_take_lane_edit(void *instance, uint32_t *jid, int *kind) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !jid || !kind) return 0;
+    return lane_take_edit_event(inst, jid, kind);
+}
+
 __attribute__((visibility("default")))
 int chain_take_midi_tick_wake(void *instance) {
     chain_instance_t *inst = (chain_instance_t *)instance;
