@@ -1094,6 +1094,67 @@ int main(void) {
         }
     }
 
+    /* ========== A RACK'S TEMPLATED KEYS ARE TYPED BY THE CHAIN ==========
+     *
+     * dr32 (its real module.json, tests/fixtures/dr32) declares each pad
+     * parameter ONCE per level, and each instance's key comes from the level's
+     * template: `pad{index}_{key}`, pads 1..32. The chain refused every one
+     * ("unknown_param"): a key listed on several levels (`ui_current_pad`,
+     * `link`) failed the whole hierarchy parse, and nothing resolved
+     * `pad7_transpose` to `transpose` anyway.
+     */
+    {
+        chain_instance_t *dr = calloc(1, sizeof(*dr));
+        CHECK(dr != NULL, "calloc for the rack instance");
+        if (dr) {
+            dr->lanes_enabled = 1;
+            setup_fake_synth(dr);
+            CHECK(parse_chain_params("tests/fixtures/dr32", dr->synth_params, &dr->synth_param_count) == 0 &&
+                  dr->synth_param_count > 20,
+                  "dr32's hierarchy parsed (%d params) -- a key on several levels is not fatal",
+                  dr->synth_param_count);
+            CHECK(find_param_info(dr->synth_params, dr->synth_param_count, "kit") &&
+                  find_param_info(dr->synth_params, dr->synth_param_count, "master"),
+                  "chain_params' globals are merged in, not dropped");
+            dr->synth_child_tmpl_count = parse_child_templates("tests/fixtures/dr32", dr->synth_child_tmpl,
+                                                               CHAIN_CHILD_TMPL_MAX);
+            CHECK(dr->synth_child_tmpl_count == 1 && !strcmp(dr->synth_child_tmpl[0].tmpl, "pad{index}_{key}") &&
+                  dr->synth_child_tmpl[0].base == 1 && dr->synth_child_tmpl[0].count == 32,
+                  "one template, pads 1..32 (got %d: %s base %d count %d)", dr->synth_child_tmpl_count,
+                  dr->synth_child_tmpl[0].tmpl, dr->synth_child_tmpl[0].base, dr->synth_child_tmpl[0].count);
+
+            chain_param_info_t *t7 = find_param_by_key(dr, "synth", "pad7_transpose");
+            CHECK(t7 && !strcmp(t7->key, "transpose") && t7->type == KNOB_TYPE_INT &&
+                  t7->min_val == -48.0f && t7->max_val == 48.0f,
+                  "pad7_transpose has transpose's metadata");
+            chain_param_info_t *v32 = find_param_by_key(dr, "synth", "pad32_volume");
+            CHECK(v32 && !strcmp(v32->key, "volume") && v32->min_val == -36.0f, "pad32_volume (a Mix-page key)");
+            CHECK(find_param_by_key(dr, "synth", "pad7_transpose") == t7, "second lookup: the alias cache");
+            CHECK(!find_param_by_key(dr, "synth", "pad33_transpose"), "pad 33 is not an instance");
+            CHECK(!find_param_by_key(dr, "synth", "pad0_transpose"), "nor is pad 0 (base 1)");
+            CHECK(!find_param_by_key(dr, "synth", "pad7_nonsense"), "an undeclared base key is still unknown");
+            CHECK(!find_param_by_key(dr, "synth", "padx_transpose"), "the index is digits");
+
+            char base[48];
+            chain_child_tmpl_t alt[2] = { { "{key}_v{index}", 0, 4, 0 }, { "p{index}{key}", 0, 16, 2 } };
+            CHECK(chain_child_key_base(alt, 2, "cutoff_v3", base, sizeof base) && !strcmp(base, "cutoff"),
+                  "key-first templates");
+            CHECK(!chain_child_key_base(alt, 2, "cutoff_v4", base, sizeof base), "count bounds it");
+            CHECK(chain_child_key_base(alt, 2, "p07decay", base, sizeof base) && !strcmp(base, "decay"),
+                  "zero-padded, no separator");
+            CHECK(!chain_child_key_base(alt, 2, "p7decay", base, sizeof base), "digits must be padded when declared");
+
+            /* And a p-lock on a pad parameter now LANDS. */
+            dr->clip_phase_valid = 1;
+            dr->clip_loop_len = 8.0;
+            lane_param_set(dr, "plock", "synth pad7_transpose 2.0 0.25 12");
+            CHECK(strcmp(lane_get(dr, "plocked"), "1") == 0, "the p-lock on pad7_transpose was refused");
+            lane_t *pl = lane_find(&dr->lanes, "synth", "pad7_transpose", 0, 0);
+            CHECK(pl && pl->n >= 1, "and made a lane");
+            free(dr);
+        }
+    }
+
     /* ========== SCHWUNG'S OWN EDITS ARE ONE UNDO STEP EACH ===========
      *
      * A take (Record armed -> out), a p-lock and a clear are each journaled

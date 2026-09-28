@@ -231,6 +231,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_instance = NULL;
     inst->current_synth_module[0] = '\0';
     inst->synth_param_count = 0;
+    chain_synth_child_keys_load(inst, NULL);
     inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
@@ -657,6 +658,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
             strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
             
             parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+            chain_synth_child_keys_load(inst, synth_path);
             inst->mod_param_refresh_ms_synth = 0;
             return 0;
         }
@@ -680,6 +682,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         inst->current_synth_module[0] = '\0';
         return -1;
     }
+    chain_synth_child_keys_load(inst, synth_path);   /* `pad7_transpose` -> `transpose` */
     inst->mod_param_refresh_ms_synth = 0;
 
     /* Parse default_forward_channel from capabilities in module.json */
