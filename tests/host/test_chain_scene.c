@@ -253,6 +253,45 @@ int main(void) {
     chain_scene_set_param(inst, "clear", "4");
     CHECK(inst->scene_rev != r0, "a clear is");
 
+    /* ---- THE LIVE TAKEOVER on a module knob, measured at the module. */
+    setup(inst);
+    chain_scene_set_param(inst, "lock", "0 synth cutoff 20 obxd");
+    chain_scene_set_param(inst, "lock", "1 synth cutoff 100 obxd");
+    frame(inst, 0, 1, 1.0f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 100), "at 100%% B the module plays B: %f", cutoff());
+    /* the UI's knob works from the knob (10): one turn of +5 */
+    chain_scene_route_set(inst, "synth:cutoff", "15");
+    knob_write(inst, "cutoff", "15");
+    CHECK(NEAR(cutoff(), 105), "the turn is HEARD at once, from what was playing: %f", cutoff());
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 62.5f), "toward A: from the turn (105) to A (20): %f", cutoff());
+    frame(inst, 0, 1, 0.0f, SCENE_NONE);
+    frame(inst, 0, 1, 1.0f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 100), "reaching A let it go: back at B, B again: %f", cutoff());
+
+    /* two knobs, two anchors: cutoff turned at 75%%, wave at 25%% */
+    chain_scene_set_param(inst, "lock", "0 synth wave 0 obxd");
+    chain_scene_set_param(inst, "lock", "1 synth wave 3 obxd");
+    frame(inst, 0, 1, 0.75f, SCENE_NONE);                          /* cutoff 80 */
+    chain_scene_route_set(inst, "synth:cutoff", "25");             /* knob 15 -> 25: +10 */
+    knob_write(inst, "cutoff", "25");
+    frame(inst, 0, 1, 0.25f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 20 + 70.0f / 3), "cutoff, anchored at 75%% (90), at 25%%: a third of A..90: %f", cutoff());
+    chain_scene_route_set(inst, "synth:wave", "2");
+    knob_write(inst, "wave", "2");
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    usleep(60000);                   /* past the enum write throttle */
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    CHECK(wave() == 2 && NEAR(cutoff(), 20 + 70.0f * 2 / 3),
+          "each keeps its OWN anchor: wave 2 (anchored 25%%), cutoff 2/3 of A..90: wave=%d cutoff=%f",
+          wave(), cutoff());
+    frame(inst, 2, 17, 0.5f, SCENE_NONE);
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    usleep(60000);
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 60) && wave() == 3, "another scene lets EVERY anchor go: cutoff=%f wave=%d",
+          cutoff(), wave());
+
     /* ---- SLOT SETTINGS: the two slot sends ride an offset, never the level. */
     setup(inst);
     inst->main_send_level[0] = 40;
@@ -290,11 +329,20 @@ int main(void) {
     CHECK(chain_scene_get_around_state(inst, "lfo1:depth", buf, sizeof(buf), state_impl) > 0 &&
           NEAR((float)atof(buf), 0.2f), "a read of a driven field answers the KNOB: %s", buf);
 
-    /* a knob turn while driven is the new base; the morph re-applies over it */
+    /* THE LIVE TAKEOVER. A (lock) 1.0, B none = the knob 0.2; at x=0.5 we hear
+     * 0.6. A turn of +0.2 is HEARD from there (0.8), and becomes the knob. */
     CHECK(chain_scene_route_set(inst, "lfo1:depth", "0.4") == 0, "an unarmed LFO write is not consumed");
     inst->lfos[0].depth = 0.4f;      /* what v2_set_param then does */
     frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
-    CHECK(NEAR(inst->lfos[0].depth, 0.7f), "... and the morph runs from the new base: %f", inst->lfos[0].depth);
+    CHECK(NEAR(inst->lfos[0].depth, 0.8f), "the turn is heard, from what was heard: %f", inst->lfos[0].depth);
+    frame(inst, 0, SCENE_NONE, 0.25f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.9f), "toward A it morphs from the turn to A: %f", inst->lfos[0].depth);
+    frame(inst, 0, SCENE_NONE, 0.75f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.6f), "toward B, from the turn to B (the knob): %f", inst->lfos[0].depth);
+    frame(inst, 0, SCENE_NONE, 1.0f, SCENE_NONE);
+    frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.7f), "an END lets the anchor go: the scene's own morph again: %f",
+          inst->lfos[0].depth);
 
     /* a patch save reads the base, and the morph is back straight after */
     {
