@@ -51,10 +51,10 @@ def main():
     print("SCHWUNG LANES REPORT   %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
     print("=" * 70)
 
-    armed = os.path.exists(os.path.join(D, "lanes_on"))
+    armed = not os.path.exists(os.path.join(D, "lanes_off"))
     print("\nARMED: %s   (%s)" % (
         "yes" if armed else "NO",
-        "touch %s/lanes_on to arm" % D if not armed else "rm %s/lanes_on to disarm" % D))
+        "rm %s/lanes_off to arm" % D if not armed else "touch %s/lanes_off to disarm" % D))
     print("logging: %s" % ("on" if os.path.exists(os.path.join(D, "debug_log_on"))
                            else "OFF -- touch %s/debug_log_on for the lines below" % D))
 
