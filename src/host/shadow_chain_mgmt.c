@@ -1097,6 +1097,30 @@ void shadow_apply_mute(int slot, int is_muted) {
     shadow_request_save_state();
 }
 
+/* Set a slot's volume to Move's track volume (linear), as the model reports
+ * it. SPI thread only (move_model_sync_apply_pending). */
+void shadow_apply_volume(int slot, float linear) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (linear < 0.0f) linear = 0.0f;
+    if (shadow_chain_slots[slot].volume == linear) return;
+    /* THROUGH THE SCENE HOOKS, exactly as a slot:volume write is: Move's
+     * track volume is a live turn like any other. While a scene is being
+     * edited it becomes that scene's lock; otherwise it TAKES OVER a locked
+     * volume (anchored, and the fader morphs on from it). Writing the base
+     * directly left a lock on the current scene masking every change Move
+     * made -- "on B I can change it, on A I can't". */
+    {
+        char t[8], v[24];
+        snprintf(t, sizeof(t), "slot%d", slot + 1);
+        snprintf(v, sizeof(v), "%.6f", linear);
+        if (shadow_scene_host_edit_write(t, "volume", v)) return;
+        shadow_scene_host_note_write(t, "volume", v);
+    }
+    shadow_chain_slots[slot].volume = linear;
+    shadow_ui_state_update_slot(slot);
+    shadow_request_save_state();
+}
+
 /* Set a slot's solo to a known state, as Move reported it. Exclusive, like
  * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
  * and Move announces only the track it soloed. */

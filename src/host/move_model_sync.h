@@ -59,3 +59,10 @@ void     move_model_sync_apply_pending(void);
 /* Shim worker, every tick: publish liveness to the UI (move_model_ready) and
  * expire a set misalignment nothing can resolve. */
 void     move_model_sync_housekeep(void);
+
+/* SPI thread: Move's master volume (the knob) as a linear gain, from the
+ * model. 0 = not known (no model, or it cannot read the output mixer): the
+ * caller keeps its fallback. */
+int      move_model_sync_master_volume(float *lin);
+/* SPI thread: the track Move just selected (0..3), once; -1 = no change. */
+int      move_model_sync_take_selected(void);
