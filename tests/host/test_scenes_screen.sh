@@ -111,7 +111,7 @@ cc(56, 127);
 {
   scene.active = 2; scene.pairs[2] = [8, 2]; state.edit = -1;
   leds.clear(); scr.paintLeds(true);
-  eq("the active scene step is white", leds.get(16 + 2), S.COLORS.stepActive);
+  eq("the active scene step is yellow", leds.get(16 + 2), 7);
   eq("a paired scene is lit", leds.get(16 + 5), S.COLORS.stepPaired);
   eq("an empty pairing is dark", leds.get(16 + 9), S.COLORS.stepEmpty);
   eq("the scene A (A9) is bright", leds.get(A(8)), S.COLORS.a.inScene);

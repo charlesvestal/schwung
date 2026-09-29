@@ -73,7 +73,7 @@ export const COLORS = {
     a: { inScene: 16, locked: 95, empty: 96 },   /* AzureBlue / DarkAzure / VeryDarkAzure */
     b: { inScene: 3, locked: 72, empty: 68 },    /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
     edit: 120,                                   /* White */
-    stepActive: 120,                             /* White */
+    stepActive: 7,                               /* VividYellow: the active scene */
     stepPaired: 118,                             /* LightGrey: pairs something */
     stepEmpty: 0,
 };
