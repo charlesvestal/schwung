@@ -1060,9 +1060,10 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
      * lock landed on the playing clip, silently, which is the last of the
      * new-clip defects. 1 = the two cannot be confirmed equal, so a write
      * keys to the PENDING placeholder and adopts when Song.abl names a row. */
-    /* THE KILL SWITCH. Off by default (the field is 0 from calloc), so a build
-     * carrying this feature cannot mis-key anybody's automation until they
-     * arm it — see SHIM_FLAG_LANES_ON for the failure that forced it. */
+    /* THE KILL SWITCH. The shim pushes it every slot on its first frame --
+     * ON unless /data/UserData/schwung/lanes_off exists (SHIM_FLAG_LANES_OFF).
+     * An instance is 0 from calloc until told, so a slot the shim never
+     * reaches stays inert rather than guessing. */
     if (strcmp(sub, "enabled") == 0) {
         inst->lanes_enabled = (val && atoi(val) != 0) ? 1 : 0;
         return;
