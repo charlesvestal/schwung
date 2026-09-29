@@ -61,6 +61,23 @@ o.observe(0.5, L, false); ok(o.busy(), "moved again");
 o.observe(0.6, L, true);
 ok(!o.busy() && o.frame() === null, "the Scenes screen draws its own fader: dropped at once");
 
+/* A TURN AT AN END changes nothing, and must still show the fader: Shift+Vol
+ * clockwise at 100% B is clamped, and a gesture that answers with nothing
+ * reads as broken. */
+t += 5000;
+const c = O.createSceneFaderOverlay({ now: () => t });
+c.observe(1, L, false);
+c.observe(1, L, false);
+ok(!c.busy(), "at B, untouched: nothing");
+c.observe(1, L, false, true);
+ok(c.busy(), "at B, turned further clockwise: it shows anyway");
+t += 500; c.observe(1, L, false);
+const atB = c.frame();
+ok(atB && atB.payload.x === 1, "... showing the fader at B");
+t += 5000; c.observe(1, L, false); c.frame(); t += 500; c.frame();
+c.observe(1, L, true, true);
+ok(!c.busy(), "a turn on the Scenes screen still raises nothing -- it draws its own");
+
 /* ---- pictures, over a real footer ---- */
 function render(name, x, label, y, offEdgeOk = false) {
   const fb = createFramebuffer();

@@ -667,6 +667,22 @@ export function createController(io = {}) {
                 ? globalThis.shadow_get_delete_held() === 1 : false;
         } catch (e) { return false; }
     });
+    /*
+     * A SCENE SNAPSHOT IS ARMED FOR EDITING. Delete + knob then means "take
+     * this knob OUT OF THE SNAPSHOT" (the shim turns the armed write into an
+     * unlock, SCENE_EDIT_UNLOCK) -- and the lane clear below fires on the
+     * TOUCH that precedes that turn, so without this the one gesture did
+     * both: the knob left the scene AND its clip automation was erased. The
+     * armed edit is the more specific context, so it owns Delete; disarm to
+     * clear automation. Same SHM-default shape as the two above.
+     */
+    const sceneArmedOf = io.sceneArmed || (() => {
+        try {
+            if (typeof globalThis.shadow_get_scene_state !== "function") return false;
+            const st = globalThis.shadow_get_scene_state();
+            return !!st && Number.isInteger(st.edit) && st.edit >= 0;
+        } catch (e) { return false; }
+    });
     const heldStepIsHoldOf = io.heldStepIsHold || (() => {
         try {
             return (typeof globalThis.shadow_get_held_step_is_hold === "function")
@@ -4455,7 +4471,7 @@ export function createController(io = {}) {
          *
          * The step branch below runs after, so the two can never both fire: a
          * held step always means "on this step". */
-        if (down && deleteHeldOf() &&
+        if (down && deleteHeldOf() && !sceneArmedOf() &&
             !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
             if (clearParamLane(slot)) return;
         }
