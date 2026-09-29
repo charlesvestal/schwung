@@ -3015,6 +3015,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
+    /* MASTER VOLUME GLIDES, per frame. mv is read off Move's on-screen volume
+     * bar, so it arrives in coarse jumps; applied as one constant per block it
+     * stepped audibly on every knob detent -- and under Move->Schwung it scales
+     * Move's whole rebuilt mix, not only ours. One ramp per block, shared by
+     * every loop below that applies mv to audio. */
+    static float mv_glide = -1.0f;
+    float mv_ramp[FRAMES_PER_BLOCK];
+    if (mv_glide < 0.0f) mv_glide = mv;
+    for (int f = 0; f < FRAMES_PER_BLOCK; f++) {
+        mv_glide += (mv - mv_glide) * SHADOW_MIX_SMOOTH;
+        mv_ramp[f] = mv_glide;
+    }
     (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
     /* Always build the mix at unity level so sampler/skipback capture audio
      * at full gain (independent of master volume).  Apply mv at the end. */
@@ -3125,7 +3137,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         const int16_t *jack_audio = schwung_jack_bridge_read_audio(g_jack_shm);
         if (jack_audio) {
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t scaled_jack = (int32_t)lroundf((float)jack_audio[i] * mv);
+                int32_t scaled_jack = (int32_t)lroundf((float)jack_audio[i] * mv_ramp[i >> 1]);
                 int32_t mixed = (int32_t)mailbox_audio[i] + scaled_jack;
                 if (mixed > 32767) mixed = 32767;
                 if (mixed < -32768) mixed = -32768;
@@ -3773,7 +3785,7 @@ skip_la_rebuild:
      * Skipped under rebuild_from_la — that path has already composited into mailbox. */
     if (!rebuild_from_la) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            int32_t scaled_me = (int32_t)lroundf((float)me_unity_i16[i] * mv);
+            int32_t scaled_me = (int32_t)lroundf((float)me_unity_i16[i] * mv_ramp[i >> 1]);
             int32_t summed = (int32_t)mailbox_audio[i] + scaled_me;
             if (summed > 32767) summed = 32767;
             if (summed < -32768) summed = -32768;
@@ -3894,9 +3906,9 @@ skip_la_rebuild:
     /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
      * no master vol). Apply master volume now so DAC output respects the knob.
      * Non-rebuild path already applied mv in the final ME-sum above. */
-    if (rebuild_from_la && mv < 0.9999f) {
+    if (rebuild_from_la && (mv < 0.9999f || mv_ramp[0] < 0.9999f)) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            float scaled = (float)mailbox_audio[i] * mv;
+            float scaled = (float)mailbox_audio[i] * mv_ramp[i >> 1];
             if (scaled > 32767.0f) scaled = 32767.0f;
             if (scaled < -32768.0f) scaled = -32768.0f;
             mailbox_audio[i] = (int16_t)lroundf(scaled);
