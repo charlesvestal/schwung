@@ -325,6 +325,7 @@ int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) 
         inst->current_midi_fx_modules[slot][0] = '\0';
         return -1;
     }
+    chain_child_keys_load(&inst->midi_fx_child_keys[slot], fx_dir);
 
     parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
 

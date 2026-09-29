@@ -33,16 +33,19 @@ for f in "${!expect_fn[@]}"; do
   fi
 done
 
-# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2920 lines).
-#    Was 2900, with ONE line of headroom left. Scenes added one-line call
-#    sites that must sit IN the entry points (a set route ahead of the
-#    component routes, a get route, an armed read in each of the three
-#    component get routes, the init, the tick, and the get_param wrapper that
-#    makes a `:state` read save the knob rather than the morph); everything
-#    else lives in chain_scene.c. Raise this only for call sites of that kind.
+# 3. chain_host.c keeps only lifecycle/params-entry/render/entry (< 2950 lines).
+#    2900 until the automation lanes returned: main had grown the file to 2899
+#    meanwhile, and the lanes add ~21 lines that are exactly params-entry and
+#    render (one "lanes:" dispatch each way, lane_tick beside lfo_tick, and the
+#    record hook at the three component writes) -- everything else of theirs
+#    lives in chain_lanes.c. Scenes add ~10 more of the same kind (a set route
+#    ahead of the component routes, a get route, an armed read in each of the
+#    three component get routes, the init, the tick, and the get_param wrapper
+#    that makes a `:state` read save the knob rather than the morph); the rest
+#    is chain_scene.c. A split regression is a jump of hundreds.
 lines=$(wc -l < "$dsp/chain_host.c")
-if [ "$lines" -ge 2920 ]; then
-  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2920)" >&2
+if [ "$lines" -ge 2950 ]; then
+  echo "FAIL: chain_host.c is $lines lines — split regressed (expected < 2950)" >&2
   exit 1
 fi
 
@@ -71,9 +74,11 @@ done
 #    is the other half of that seam: a clip's deletion is discovered on the
 #    worker thread, and a worker must not call a module entry point (which IS
 #    the SPI callback), so it publishes a mask + generation and the callback
-#    pushes it through here. chain_set_scene_morph is the scene crossfader:
-#    the shim pushes A, B, the fader and the armed scene to every slot each
-#    frame (chain_scene.c).
+#    pushes it through here. chain_take_lane_edit hands the host each of
+#    Schwung's own automation edits as the chain journals it, for the unified
+#    Undo (host/undo_timeline.h); one-shot, like chain_take_midi_tick_wake.
+#    chain_set_scene_morph is the scene crossfader: the shim pushes A, B, the
+#    fader and the armed scene to every slot each frame (chain_scene.c).
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -82,7 +87,8 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_fx_requires_continuous chain_synth_requires_continuous \
     chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
-    chain_take_midi_tick_wake chain_set_scene_morph \
+    chain_take_midi_tick_wake chain_take_lane_edit chain_set_scene_morph \
+    chain_set_clip_phase chain_set_clip_deleted \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then

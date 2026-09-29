@@ -213,6 +213,8 @@ extern int (*shadow_chain_synth_requires_continuous)(void *instance);
  * tick answers about the previous frame. NULL when the loaded chain DSP is
  * older than v1.2.1 — caller must null-check. */
 extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
+/* One of Schwung's own automation edits was journaled (unified Undo). */
+extern int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind);
 /* Optional: the scene crossfader, pushed once per frame per slot before the
  * idle gate (chain_scene.c). Returns the slot's scene revision (low 16) and a
  * one-shot refusal code (bits 16-23). NULL on a chain DSP built before scenes;
