@@ -46,33 +46,36 @@ const scr = S.createScenesScreen(io);
 scr.enter();
 const cc = (d1, d2, shift = false) => scr.onMidi(0xB0, d1, d2, shift);
 const step = (k) => { scr.onMidi(0x90, 16 + k, 100, false); scr.onMidi(0x80, 16 + k, 0, false); };
-const padA = 92, padB = 70;
 const pad = (note, on) => scr.onMidi(on ? 0x90 : 0x80, note, on ? 100 : 0, false);
 const tapPad = (note) => { pad(note, 1); t += 100; pad(note, 0); };
 const holdPad = (note) => { pad(note, 1); t += 501; scr.tick(); pad(note, 0); };
 
-eq("pad halves", [S.padSide(99), S.padSide(84), S.padSide(83), S.padSide(68), S.padSide(20)], ["a", "a", "b", "b", null]);
+eq("pad map: pad k is scene k, A on top, B below",
+   [S.padHalf(92), S.padHalf(91), S.padHalf(76), S.padHalf(75), S.padHalf(20)],
+   [{ side: "a", k: 0 }, { side: "a", k: 15 }, { side: "b", k: 0 }, { side: "b", k: 15 }, null]);
+for (const side of ["a", "b"]) for (let k = 0; k < 16; k++) {
+  const h = S.padHalf(S.halfPad(side, k)); if (!h || h.side !== side || h.k !== k) fail("round trip " + side + k);
+}
+const A = (k) => S.halfPad("a", k), B = (k) => S.halfPad("b", k);
 
-tapPad(padA);
-eq("a pad with no scene picked does nothing", scene.active, -1);
 step(2);
 eq("a step picks the active scene", scene.active, 2);
-tapPad(padA);
-eq("tap A: A off", scene.enables[2], [false, true]);
-tapPad(padA);
-eq("tap A again: A on", scene.enables[2], [true, true]);
+tapPad(A(4));
+eq("tap another scene pad: it becomes active, nothing switched", [scene.active, scene.enables[4]], [4, [true, true]]);
+tapPad(A(4));
+eq("tap the active scene A: A off", scene.enables[4], [false, true]);
+tapPad(A(4));
+eq("tap again: A on", scene.enables[4], [true, true]);
+scene.active = 2;
 
 /* editing */
-holdPad(padB);
-eq("hold B: editing scene 3 B (half 5), latched past the release", state.edit, D.halfB(2));
-tapPad(padA);
-eq("a tap on the OTHER side while editing toggles it, and editing stays on B", [scene.enables[2][0], state.edit], [false, 5]);
-tapPad(padA);
-tapPad(padB);
-eq("a tap on the side being edited stops editing (and does not switch it off)", [state.edit, scene.enables[2][1]], [-1, true]);
-scene.enables[2][0] = false;
-holdPad(padA);
-eq("hold A while A is off: switches it ON and edits it", [scene.enables[2][0], state.edit], [true, 4]);
+holdPad(B(2));
+eq("hold B of the active scene: editing half 5, latched past the release", state.edit, D.halfB(2));
+tapPad(B(2));
+eq("tap the side being edited: done, and it stays on", [state.edit, scene.enables[2][1]], [-1, true]);
+scene.enables[7][0] = false;
+holdPad(A(7));
+eq("hold another scene pad: selects it, switches the side on, edits it", [scene.active, scene.enables[7][0], state.edit], [7, true, 14]);
 step(5);
 eq("picking another scene stops editing", [scene.active, state.edit], [5, -1]);
 
@@ -100,7 +103,7 @@ eq("copy scene: both halves", applied.splice(-2), ["copy 10 18", "copy 11 19"]);
 cc(119, 127); step(9); cc(119, 0);
 eq("delete + step clears both halves", applied.splice(-2), ["clear 18", "clear 19"]);
 scene.active = 9;
-cc(119, 127); pad(padB, 1); pad(padB, 0); cc(119, 0);
+cc(119, 127); pad(B(9), 1); pad(B(9), 0); cc(119, 0);
 eq("delete + pad clears that side only", applied.pop(), "clear 19");
 const before = bank;
 cc(56, 127); cc(56, 127);
@@ -108,17 +111,18 @@ eq("undo twice is redo", bank, before);
 
 /* LEDs */
 {
-  scene.active = 2; scene.enables[2] = [true, false]; state.edit = -1;
+  scene.active = 2; scene.enables = D.defaultEnables(); scene.enables[2] = [true, false]; state.edit = -1;
   leds.clear(); scr.paintLeds(true);
   eq("the active scene step is white", leds.get(16 + 2), S.COLORS.stepActive);
-  eq("a scene with locks is lit", leds.get(16 + 5), S.COLORS.stepLocked);
-  eq("an empty scene is dark", leds.get(16 + 7), S.COLORS.stepEmpty);
-  eq("A on with no locks: dim", leds.get(padA), S.COLORS.a.onEmpty);
-  eq("B off: darkest", leds.get(padB), S.COLORS.b.off);
+  eq("a scene with locks: step lit", leds.get(16 + 5), S.COLORS.stepLocked);
+  eq("the active scene A pad is bright", leds.get(A(2)), S.COLORS.a.active);
+  eq("the active scene B, switched off: dark", leds.get(B(2)), S.COLORS.b.off);
+  eq("another scene A with locks: dim", leds.get(A(5)), S.COLORS.a.locked);
+  eq("another scene with nothing: darkest", leds.get(B(7)), S.COLORS.b.empty);
   const n0 = sends; scr.paintLeds(); eq("nothing changed, nothing sent", sends, n0);
   state.edit = D.halfA(2); scr.paintLeds();
-  eq("the side being edited is white on all 16 of its pads", S.PADS_A.every(n => leds.get(n) === 120), true);
-  eq("...and only those were sent", sends - n0, 16);
+  eq("the side being edited is white", leds.get(A(2)), 120);
+  eq("...and only that pad was sent", sends - n0, 1);
   state.edit = -1;
 }
 eq("badge", [S.editLabel(D.halfB(2)), S.editLabel(-1)], ["S3 B", ""]);
