@@ -240,6 +240,9 @@ typedef struct mod_source_contribution {
     float morph_a;
     float morph_b;
     float morph_x;
+    /* A knob turned while this morph drives the param: the LIVE TAKEOVER
+     * (scene_morph.h). Zeroed with the contribution. */
+    scene_takeover_t takeover;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -887,6 +890,7 @@ typedef struct chain_instance {
      * written -- and the LFO fields are written with their base kept here,
      * so a read and a save still see the knob. */
     int scene_send_mod[BUS_MIX_SENDS];
+    scene_takeover_t scene_send_takeover[BUS_MIX_SENDS];   /* a live turn, scene_morph.h */
     struct {
         int active;
         int lfo;               /* 0 or 1 */
@@ -894,6 +898,7 @@ typedef struct chain_instance {
         float base;
         float last;
         int has_last;
+        scene_takeover_t takeover;
     } scene_lfo_drive[16];
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
@@ -1511,6 +1516,8 @@ CHAIN_INTERNAL int chain_mod_emit_morph(chain_instance_t *inst, const char *sour
 CHAIN_INTERNAL void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id);
 CHAIN_INTERNAL void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry);
+CHAIN_INTERNAL int chain_mod_scene_takeover(chain_instance_t *inst, const char *source_id, const char *target, const char *param, float new_base);
+CHAIN_INTERNAL void chain_mod_clear_takeovers(chain_instance_t *inst, const char *source_id);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

@@ -377,6 +377,70 @@ static inline float scene_morph_value(int has_a, float va, int has_b, float vb,
     return v;
 }
 
+/*
+ * THE LIVE TAKEOVER. A knob turned on a parameter a scene is driving must be
+ * HEARD -- at 100% B with B locking noise, the knob otherwise changes a value
+ * nobody hears until the fader moves. So the turn ANCHORS the parameter: at
+ * the fader position it was made (x0) the value is the knob's (k), and from
+ * there the fader morphs toward whichever END it heads for -- three points,
+ * (0, A) (x0, k) (1, B), joined by straight lines. Nothing jumps: not on the
+ * turn, not when the fader moves.
+ *
+ * At either END the value is exactly that end's, so the anchor is released
+ * there (scene_takeover_expired) and the next pass is the scene's own morph.
+ * Changing scene, arming an edit, or turning the knob again (a new anchor)
+ * are the other ways out. Nothing saved is touched: the anchor lives beside
+ * the morph, never in a snapshot.
+ *
+ * `a` / `b` are the END VALUES, already resolved -- a lock, or the base where
+ * that end holds none.
+ */
+typedef struct {
+    uint8_t on;
+    float x0;
+    float k;
+} scene_takeover_t;
+
+static inline float scene_takeover_value(const scene_takeover_t *t, float a, float b, float x,
+                                         int kind) {
+    x = scene_clamp01(x);
+    float from, to, u;
+    if (x <= t->x0) {
+        from = a; to = t->k;
+        u = t->x0 > 0.0f ? x / t->x0 : 1.0f;
+    } else {
+        from = t->k; to = b;
+        u = t->x0 < 1.0f ? (x - t->x0) / (1.0f - t->x0) : 0.0f;
+    }
+    if (kind == SCENE_KIND_ENUM) return u < 0.5f ? from : to;
+    float v = from + (to - from) * u;
+    if (kind == SCENE_KIND_INT) v = roundf(v);
+    return v;
+}
+
+/*
+ * The anchor's value for a knob write. The UI's knob works from the KNOB's
+ * value (a plain read answers the base, #276), not from what is heard, so the
+ * write is taken as a CHANGE applied to what is heard: at 100% B with B
+ * locking 0.8 and the knob at 0.2, one detent is 0.8 + 0.01, never 0.21. An
+ * enum has no "change", so it takes the written option.
+ */
+static inline float scene_takeover_k(float heard, float old_base, float new_base, int kind,
+                                     float lo, float hi) {
+    if (kind == SCENE_KIND_ENUM) return new_base;
+    float v = heard + (new_base - old_base);
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    return kind == SCENE_KIND_INT ? roundf(v) : v;
+}
+
+/* At an end the value IS that end's: nothing left for the anchor to do. An
+ * anchor MADE at an end holds there, and goes at the OTHER end. */
+static inline int scene_takeover_expired(const scene_takeover_t *t, float x) {
+    if (!t->on) return 0;
+    return (x <= 0.0f && t->x0 > 0.0f) || (x >= 1.0f && t->x0 < 1.0f);
+}
+
 /* Fader position <-> the uint16 the control struct carries. */
 static inline float scene_xfade_from_q(uint16_t q) { return (float)q / 65535.0f; }
 static inline uint16_t scene_xfade_to_q(float x) {

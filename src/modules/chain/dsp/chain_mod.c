@@ -186,9 +186,15 @@ static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     if (morph) {
         int kind = entry->type == KNOB_TYPE_ENUM ? SCENE_KIND_ENUM
                  : entry->type == KNOB_TYPE_INT  ? SCENE_KIND_INT : SCENE_KIND_FLOAT;
-        base = scene_morph_value(morph->morph_has_a, morph->morph_a,
-                                 morph->morph_has_b, morph->morph_b,
-                                 base, morph->morph_x, kind);
+        if (morph->takeover.on) {
+            const float va = morph->morph_has_a ? morph->morph_a : base;
+            const float vb = morph->morph_has_b ? morph->morph_b : base;
+            base = scene_takeover_value(&morph->takeover, va, vb, morph->morph_x, kind);
+        } else {
+            base = scene_morph_value(morph->morph_has_a, morph->morph_a,
+                                     morph->morph_has_b, morph->morph_b,
+                                     base, morph->morph_x, kind);
+        }
     }
 
     float effective = chain_mod_clampf(base + sum, entry->min_val, entry->max_val);
@@ -673,6 +679,7 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
             se->morph_a = chain_mod_clampf(a, entry->min_val, entry->max_val);
             se->morph_b = chain_mod_clampf(b, entry->min_val, entry->max_val);
             se->morph_x = x;
+            if (scene_takeover_expired(&se->takeover, x)) se->takeover.on = 0;
             chain_mod_apply_effective_value(inst, entry, 0);
             return 0;
         }
@@ -710,6 +717,52 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
     entry->enabled = chain_mod_has_active_sources(entry);
     chain_mod_apply_effective_value(inst, entry, 0);
     return 0;
+}
+
+/*
+ * THE LIVE TAKEOVER (scene_morph.h): a knob write to a param `source_id`'s
+ * MORPH is driving anchors it at the fader position. Called BEFORE the base
+ * takes the write, so the old base is still here to measure the turn against.
+ * Returns 1 when an anchor was set.
+ */
+int chain_mod_scene_takeover(chain_instance_t *inst, const char *source_id,
+                             const char *target, const char *param, float new_base) {
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (!entry || !entry->active) return 0;
+    mod_source_contribution_t *se = chain_mod_find_source_contribution(entry, source_id);
+    if (!se || !se->is_morph) return 0;
+    const int kind = entry->type == KNOB_TYPE_ENUM ? SCENE_KIND_ENUM
+                   : entry->type == KNOB_TYPE_INT  ? SCENE_KIND_INT : SCENE_KIND_FLOAT;
+    /* What is heard, less the LFO offsets that sum on top of it. */
+    float heard_base = entry->base_value;
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++)
+        if (entry->sources[i].active && entry->sources[i].is_override)
+            heard_base = entry->sources[i].contribution;
+    const float va = se->morph_has_a ? se->morph_a : heard_base;
+    const float vb = se->morph_has_b ? se->morph_b : heard_base;
+    const float heard = se->takeover.on
+        ? scene_takeover_value(&se->takeover, va, vb, se->morph_x, kind)
+        : scene_morph_value(se->morph_has_a, se->morph_a, se->morph_has_b, se->morph_b,
+                            heard_base, se->morph_x, kind);
+    se->takeover.k = scene_takeover_k(heard, entry->base_value,
+                                      chain_mod_clampf(new_base, entry->min_val, entry->max_val),
+                                      kind, entry->min_val, entry->max_val);
+    se->takeover.x0 = se->morph_x;
+    se->takeover.on = 1;
+    return 1;
+}
+
+/* Every anchor `source_id` holds goes: the scene changed, or an edit armed. */
+void chain_mod_clear_takeovers(chain_instance_t *inst, const char *source_id) {
+    for (int t = 0; t < inst->mod_target_count && t < MAX_MOD_TARGETS; t++) {
+        mod_target_state_t *entry = &inst->mod_targets[t];
+        if (!entry->active) continue;
+        mod_source_contribution_t *se = chain_mod_find_source_contribution(entry, source_id);
+        if (se && se->takeover.on) {
+            se->takeover.on = 0;
+            chain_mod_apply_effective_value(inst, entry, 1);
+        }
+    }
 }
 
 /* Put the KNOB's value (the base) into the module without touching the entry:

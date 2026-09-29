@@ -3258,6 +3258,7 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         char t[8];
         snprintf(t, sizeof(t), "slot%d", slot + 1);
         if (shadow_scene_host_edit_write(t, key + 5, value)) return 1;
+        shadow_scene_host_note_write(t, key + 5, value);   /* a live turn: anchor it */
     }
     if (strcmp(key, "slot:pan") == 0) {
         float p = (float)atof(value);
@@ -4963,6 +4964,7 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_param->result_len = is_set ? 0 : scene_n;
                 } else if (strcmp(send_param, "return") == 0) {
                     if (is_set) {
+                        shadow_scene_host_note_write(scene_t, send_param, shadow_param->value);
                         int v = atoi(shadow_param->value);
                         if (v < 0) v = 0;
                         if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
@@ -4976,6 +4978,7 @@ void shadow_inprocess_handle_param_request(void) {
                         shadow_param->result_len = strlen(shadow_param->value);
                     }
                 } else if (send_idx == 0 && strcmp(send_param, "to_send2") == 0) {
+                    if (is_set) shadow_scene_host_note_write(scene_t, send_param, shadow_param->value);
                     /* The A->B feed, named from its SOURCE end because that is
                      * where it is taken — post send A's chain, at A's return
                      * level. The _Static_assert beside the mix-path special
@@ -5325,6 +5328,8 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_param->error = 0;
                 shadow_param->result_len = strlen(shadow_param->value);
             } else if (req_type == 1) {  /* SET */
+                /* A live turn on a field a scene drives: anchor it. */
+                if (scene_driven) shadow_scene_host_note_write(scene_t, lfo_param, shadow_param->value);
                 if (strcmp(lfo_param, "enabled") == 0) {
                     lfo->enabled = atoi(shadow_param->value);
                     if (lfo->enabled) {

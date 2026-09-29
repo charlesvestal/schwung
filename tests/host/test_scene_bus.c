@@ -106,7 +106,14 @@ int main(void) {
     set_param(&fx[0][1], "mix", "1.1");             /* the knob, straight to the plugin */
     shadow_scene_bus_note_write(0, 1, "mix", "1.1");
     shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
-    CHECK(NEAR(mix(0, 1), 0.6), "turning the knob moves the unlocked end: %f", mix(0, 1));
+    CHECK(NEAR(mix(0, 1), 0.9), "the turn (+0.6) is HEARD, from what was heard (0.3): %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.25f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.5), "toward A it morphs from the turn to A: %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.75f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 1.0), "toward B, from the turn to B (the knob, 1.1): %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    shadow_scene_bus_tick(0, 1, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.6), "an END lets it go: the scene's own morph, knob moved: %f", mix(0, 1));
 
     /* Neither end: the knob comes back. */
     shadow_scene_bus_tick(4, 5, 0.5f, SCENE_NONE, 0);
@@ -188,6 +195,13 @@ int main(void) {
     int before = h_applies;
     shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
     CHECK(h_applies == before, "an unchanged override is not re-applied");
+    /* a live turn on a host setting: heard from what is heard, then morphs */
+    shadow_scene_host_note_write("slot2", "volume", "2.5");   /* user 2.0 -> 2.5 */
+    h_vol_base = 2.5f;
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 3.0f), "the host turn is heard (2.5 + 0.5): %f", h_vol_ov);
+    shadow_scene_bus_tick(0, SCENE_NONE, 1.0f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.5f), "toward the unlocked end: the knob: %f", h_vol_ov);
     shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
     CHECK(!h_vol_on, "no scene: the override is switched OFF");
 

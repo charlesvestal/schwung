@@ -47,6 +47,10 @@ typedef struct {
 void shadow_scene_host_bind(const scene_host_io_t *io);
 /* The edit arm for a host setting: 1 when consumed as a lock. */
 int  shadow_scene_host_edit_write(const char *target, const char *param, const char *val);
+/* A write about to land on a host setting (call BEFORE it lands, so the old
+ * value is still readable): if a scene drives it, the LIVE TAKEOVER anchors
+ * it at the fader (scene_morph.h). */
+void shadow_scene_host_note_write(const char *target, const char *param, const char *val);
 /* Armed and locked: the lock, else -1 (the host answers its base). */
 int  shadow_scene_host_read(const char *target, const char *param, char *buf, int len);
 
