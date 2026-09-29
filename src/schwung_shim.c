@@ -2303,11 +2303,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                     unconf_seen[s] = 1;
                 }
                 /* THE KILL SWITCH, pushed on change like everything else
-                 * here. Off by default: see SHIM_FLAG_LANES_ON. */
+                 * here. ON unless lanes_off exists: see SHIM_FLAG_LANES_OFF. */
                 if (shadow_plugin_v2->set_param) {
                     static int8_t last_en[SHADOW_CHAIN_INSTANCES];
                     static int8_t en_seen[SHADOW_CHAIN_INSTANCES];
-                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_ON) ? 1 : 0;
+                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_OFF) ? 0 : 1;
                     if (s < SHADOW_CHAIN_INSTANCES &&
                         (!en_seen[s] || last_en[s] != en)) {
                         last_en[s] = (int8_t)en;
