@@ -98,6 +98,28 @@ static void test_tree(int keyfloat)
     CHECK(mm_tree_elems(fake_read, NULL, hdr, IMG_LO, IMG_HI, out, 8) == -1);
 }
 
+/* A KeyRandom is 20 random bytes, so its third word carries 4 bytes of
+ * stale PADDING above them -- often the high half of an old pointer. On
+ * hardware one landed inside the image range (0x55706e6073), the walker took
+ * it for the wrapper's vptr, read the real vptr as the element, refused, and
+ * every walk of that container failed until the next set load: the model
+ * stalled with mute/solo follow, lanes and Undo off. Each set load mints new
+ * keys, so it struck every few loads. */
+static void test_tree_key_looks_like_vptr(void)
+{
+    memset(mem, 0, sizeof mem);
+    uint64_t hdr = FAKE_BASE + 0x40;
+    uint64_t A = FAKE_BASE + 0x8000, B = FAKE_BASE + 0x9000, C = FAKE_BASE + 0xa000;
+    make_node(0, 0, 0, node_at(1), 0, A);
+    make_node(1, node_at(0), node_at(2), hdr + 8, 0, B);
+    make_node(2, 0, 0, node_at(1), 0, C);
+    put(node_at(1) + 0x38, IMG_LO + 0x6e6073);   /* the random key's tail, in the image */
+    put(hdr, node_at(0)); put(hdr + 8, node_at(1)); put(hdr + 16, 3);
+    uint64_t out[8];
+    int n = mm_tree_elems(fake_read, NULL, hdr, IMG_LO, IMG_HI, out, 8);
+    CHECK(n == 3 && out[0] == A && out[1] == B && out[2] == C);
+}
+
 static void test_position(void)
 {
     mm_clip_t c = { .exists = 1, .region_start = 0, .region_end = 8, .loop_start = 0, .loop_end = 8, .loop_on = 1 };
@@ -324,8 +346,33 @@ static void test_notes_lanes(void)
     CHECK(mm_decode_notes_buf(buf, 0, nt, 64, pool, 256) == 0);   /* an empty clip is not unknown */
 }
 
+/* The reader's tear check must not treat a moving scalar as a torn read:
+ * tempo moving under Link made every pair disagree and the model never
+ * published again (hardware, 2026-09-29). Structure must still tear. */
+static void test_pair_consistent(void)
+{
+    static move_model_t a, b;
+    memset(&a, 0, sizeof a);
+    a.valid = 1; a.tempo = 120.0; a.master_db = -6.0;
+    a.track[0].volume = -2.0; a.track[0].pan = 0.1;
+    a.track[0].slot[0].exists = 1; a.track[0].slot[0].clip_id = 42;
+    b = a;
+    CHECK(mm_pair_consistent(&a, &b) == 1);
+    b.tempo = 120.0000001; b.song_beats = 3.5; b.master_db = -6.5;
+    b.track[0].volume = -2.1; b.track[0].pan = 0.2;
+    b.track[0].speaker_value = 0.5; b.track[0].solo_value = 0.5;
+    CHECK(mm_pair_consistent(&a, &b) == 1);      /* values moved, shape did not */
+    b.track[0].slot[0].clip_id = 43;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* a different clip IS a tear */
+    b = a; b.track[0].muted = 1;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* derived flags stay compared */
+    b = a; b.doc_id = 7;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* a set load mid-read is a tear */
+}
+
 int main(void)
 {
+    test_pair_consistent();
     test_notes_lanes();
     test_history();
     test_resolution();
@@ -333,6 +380,7 @@ int main(void)
     test_sso();
     test_tree(1);
     test_tree(0);
+    test_tree_key_looks_like_vptr();
     test_position();
     if (fails) { printf("test_move_model: %d FAILED\n", fails); return 1; }
     printf("test_move_model: PASS\n");

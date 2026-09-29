@@ -219,10 +219,17 @@ typedef struct {
 #define MOD_PARAM_CACHE_REFRESH_MS 250
 #define MOD_FLOAT_CHANGE_EPSILON 0.000001f
 #define MOD_INT_ENUM_MIN_INTERVAL_MS 50
+/* A source id is "lfo1", "scene", or an automation lane's
+ * "lane:<target>:<param>" -- up to 5 + 15 + 1 + 31 = 52 characters (lane_t's
+ * target[16] and param[32]). It was 32, which cut every lane on a param key
+ * of ~21+ characters (about 400 minijv keys), and a truncated id never matches
+ * itself again: see chain_mod_source_id_fits. Internal to chain_mod, never
+ * crosses the ABI. chain_lanes.c asserts the lane id fits. */
+#define MOD_SOURCE_ID_LEN 64
 
 typedef struct mod_source_contribution {
     int active;
-    char source_id[32];
+    char source_id[MOD_SOURCE_ID_LEN];
     float contribution;
     /* An OVERRIDE carries an absolute value in `contribution` and replaces the
      * base rather than adding to it. That is what an automation lane is: the
@@ -870,6 +877,11 @@ typedef struct chain_instance {
     /* Runtime modulation bus state */
     mod_target_state_t mod_targets[MAX_MOD_TARGETS];
     int mod_target_count;
+    /* Emits REFUSED because the source id did not fit MOD_SOURCE_ID_LEN.
+     * Counted, never truncated: a truncated id never matches itself again,
+     * so every block allocates a fresh source until the entry is full and
+     * the release can never find it -- a parameter frozen for good. */
+    int mod_source_id_refused;
 
     /* SCENES (chain_scene.c). This slot's share of the set's scene bank, and
      * the crossfader state the shim pushes every frame through the dlsym'd
@@ -1516,6 +1528,10 @@ CHAIN_INTERNAL int chain_mod_emit_morph(chain_instance_t *inst, const char *sour
 CHAIN_INTERNAL void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id);
 CHAIN_INTERNAL void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry);
+CHAIN_INTERNAL int chain_mod_state_swap_in(chain_instance_t *inst, const char *target);
+CHAIN_INTERNAL void chain_mod_state_swap_out(chain_instance_t *inst, const char *target);
+CHAIN_INTERNAL void chain_mod_rebase_target(chain_instance_t *inst, const char *target);
+CHAIN_INTERNAL void chain_mod_after_set_param(void *ctx, const char *key);
 CHAIN_INTERNAL int chain_mod_scene_takeover(chain_instance_t *inst, const char *source_id, const char *target, const char *param, float new_base);
 CHAIN_INTERNAL void chain_mod_clear_takeovers(chain_instance_t *inst, const char *source_id);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);

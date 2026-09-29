@@ -1437,6 +1437,7 @@ Guidelines:
 - `enabled=0` or `mod_clear_source(...)`: clears that source's contribution.
 - Missing/stale targets should fail silently (do not crash or spam logs).
 - Multiple sources can target the same parameter; the host sums contributions and clamps to target range.
+- A `state` read (autosave, snapshot, User Preset) is taken with every modulated parameter put back at its base, whatever the source (LFO, automation lane, scene), so `get_param("state")` must serialise what you currently hold rather than a cached copy.
 
 ### Scenes: what a module must do to be morphed (nothing new)
 
@@ -1451,8 +1452,10 @@ more here:
   once per audio block while it moves -- on the SPI callback, like every entry
   point.
 - **`state` must describe what you currently hold.** Around a `state` read the
-  host briefly puts the knob's value back so a save records the knob and not
-  the morph; a module that caches its state blob elsewhere defeats that.
+  host briefly puts the knob's value back -- under ANY modulation source: a
+  scene, an automation lane or an LFO -- so a save, snapshot or User Preset
+  records the knob and not where the modulation happened to be; a module that
+  caches its state blob elsewhere defeats that.
 - **Keys that are not knobs should not be in `chain_params`.** Anything
   declared there can be locked by an armed scene.
 - **Your knob stays live under a scene.** A write to a parameter a scene is

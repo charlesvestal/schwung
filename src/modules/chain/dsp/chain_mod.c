@@ -131,6 +131,10 @@ static mod_source_contribution_t *chain_mod_find_source_contribution(mod_target_
 static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mod_target_state_t *entry,
                                                                                const char *source_id) {
     if (!entry || !source_id || !source_id[0]) return NULL;
+    /* Never truncate: a stored prefix fails every later strcmp against the
+     * full id. The emitters refuse (and count) before reaching here; this is
+     * the backstop for any caller that does not. */
+    if (strnlen(source_id, MOD_SOURCE_ID_LEN) >= MOD_SOURCE_ID_LEN) return NULL;
 
     mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
     if (source_entry) return source_entry;
@@ -140,7 +144,7 @@ static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mo
         if (source_entry->active) continue;
         memset(source_entry, 0, sizeof(*source_entry));
         source_entry->active = 1;
-        strncpy(source_entry->source_id, source_id, sizeof(source_entry->source_id) - 1);
+        memcpy(source_entry->source_id, source_id, strlen(source_id) + 1);
         return source_entry;
     }
 
@@ -521,6 +525,20 @@ int chain_mod_get_effective_for_subkey(chain_instance_t *inst,
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 
+/* DOES THIS SOURCE ID FIT THE BUS? A refusal is COUNTED
+ * (inst->mod_source_id_refused) and the emit fails -- never a truncation.
+ * Truncating was the defect: the stored prefix never matched the full id
+ * again, so each block allocated a new source until all
+ * MAX_MOD_SOURCES_PER_TARGET were taken, the parameter froze, and the release
+ * could not find its own source, leaving the knob dead until the module was
+ * unloaded. Checked BEFORE the target entry is allocated, so a refused id
+ * leaves nothing behind. */
+static int chain_mod_source_id_fits(chain_instance_t *inst, const char *source_id) {
+    if (strnlen(source_id, MOD_SOURCE_ID_LEN) < MOD_SOURCE_ID_LEN) return 1;
+    inst->mod_source_id_refused++;
+    return 0;
+}
+
 /* Runtime modulation callback (initial stateful implementation).
  * Applies non-destructive contribution math and stores effective values. */
 int chain_mod_emit_value(void *ctx,
@@ -539,6 +557,7 @@ int chain_mod_emit_value(void *ctx,
         chain_mod_clear_source(inst, source_id);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
@@ -609,6 +628,7 @@ int chain_mod_emit_override(void *ctx,
         chain_mod_clear_source(inst, source_id);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
@@ -664,6 +684,7 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
         chain_mod_clear_source_at(inst, source_id, target, param);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     /* FAST PATH: already engaged. A fader sweep re-emits every locked pair on
      * every block, and the param lookup below is a scan of the component's
@@ -777,6 +798,88 @@ void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry) {
     else
         snprintf(val_str, sizeof(val_str), "%.6f", entry->base_value);
     chain_mod_set_param_string(inst, entry->target, entry->param, val_str);
+}
+
+/*
+ * A `<comp>:state` READ SAVES THE KNOB, WHATEVER IS DRIVING THE PARAM.
+ *
+ * A module serialises what it holds, and a modulated param holds the
+ * modulation: a lane's value, a scene's morph, an LFO's swing. Every save path
+ * (slot autosave, User Presets, the snapshot) reads that blob, so without this
+ * the file records automation instead of the knob -- and after a reload the
+ * knob "returns" to a snapshot of wherever the lane was. This used to exist
+ * for scene sources only, and only while a scene bank was loaded.
+ *
+ * swap_in puts every modulated param's BASE into the module and returns how
+ * many it touched; the caller reads, then swap_out re-applies the effective
+ * values with a forced write. Same call, same thread (the SPI callback), no
+ * audio block in between, so nothing is heard.
+ */
+int chain_mod_state_swap_in(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return 0;
+    int n = 0;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || !e->enabled || strcmp(e->target, target) != 0) continue;
+        if (!chain_mod_has_active_sources(e)) continue;
+        chain_mod_write_base(inst, e);
+        n++;
+    }
+    return n;
+}
+
+void chain_mod_state_swap_out(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || !e->enabled || strcmp(e->target, target) != 0) continue;
+        if (!chain_mod_has_active_sources(e)) continue;
+        chain_mod_apply_effective_value(inst, e, 1);
+    }
+}
+
+/*
+ * A BULK WRITE landed on `target` (scene_write_is_bulk: a state blob, a preset,
+ * a file load) and replaced its knobs wholesale. Every base captured from it is
+ * the knob as it stood BEFORE, so a later release, or the swap above on the
+ * next save, would write the old value back over the one just loaded. Re-read
+ * each modulated param's base from the module -- which holds the load, nothing
+ * having re-applied since -- and put the modulation back on top of it. A live
+ * takeover anchored the old knob, so it goes too.
+ */
+void chain_mod_rebase_target(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || strcmp(e->target, target) != 0) continue;
+        char vb[64];
+        if (chain_mod_get_param_string(inst, e->target, e->param, vb, sizeof(vb)) > 0) {
+            chain_param_info_t *pinfo = find_param_by_key(inst, e->target, e->param);
+            float base = e->base_value;
+            if (pinfo) {
+                base = dsp_value_to_float(vb, pinfo, base);
+            } else {
+                char *end = NULL;
+                float v = strtof(vb, &end);
+                if (end && end != vb) base = v;
+            }
+            e->base_value = chain_mod_clampf(base, e->min_val, e->max_val);
+        }
+        for (int k = 0; k < MAX_MOD_SOURCES_PER_TARGET; k++) e->sources[k].takeover.on = 0;
+        chain_mod_apply_effective_value(inst, e, 1);
+    }
+}
+
+/* The set_param wrapper's half: "<component>:<bulk>" rebases that component. */
+void chain_mod_after_set_param(void *ctx, const char *key) {
+    const char *c = key ? strchr(key, ':') : NULL;
+    if (!ctx || !c || !scene_write_is_bulk(c + 1)) return;
+    char target[16];
+    const size_t n = (size_t)(c - key);
+    if (n == 0 || n >= sizeof(target)) return;
+    memcpy(target, key, n);
+    target[n] = '\0';
+    chain_mod_rebase_target((chain_instance_t *)ctx, target);
 }
 
 int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id) {

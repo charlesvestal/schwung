@@ -154,6 +154,13 @@ int main(void) {
     CHECK(NEAR(mix(0, 1), 1.5), "...and heard at once: %f", mix(0, 1));
     CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 1.5),
           "an armed read answers the lock: %s", buf);
+    /* ...but a SAVE reads `:base`, and that is the knob. Sharing the plain
+     * key, send_levels.json / the MFX params fallback recorded the lock as the
+     * user's value, indistinguishable from it after a reload. */
+    CHECK(shadow_scene_bus_read_base(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 0.7),
+          "armed, :base answers the KNOB (0.7), not the lock: %s", buf);
+    CHECK(shadow_scene_bus_read_base(0, 1, "mode", buf, sizeof(buf)) < 0,
+          "an undriven param's :base falls through to the plugin");
     CHECK(shadow_scene_bus_edit_write(0, 1, "mode", "Plate") == 1, "an enum by name locks");
     shadow_scene_bus_get_verb(0, "dump", buf, sizeof(buf));
     CHECK(strstr(buf, "7 fx2 mode 2 cloudseed") != NULL, "stored as its index");
@@ -177,6 +184,23 @@ int main(void) {
     shadow_scene_bus_state_end(0, 1);
     CHECK(fabsf(during - morphed) > 0.01f && NEAR(mix(0, 1), morphed),
           "state read: plugin held the base (%f) and the morph (%f) returned", during, mix(0, 1));
+
+    /* A STATE WRITE (preset load, set restore) re-captures the base. It used
+     * to leave the drive holding the pre-load knob, so a save and the next
+     * release both wrote the OLD value back over the one just loaded. */
+    snprintf(fx[0][1].mix, 32, "0.4");               /* what the loaded state set */
+    shadow_scene_bus_note_write(0, 1, "state", "{\"mix\":0.4}");
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.1), "after a state load the scene still drives its lock: %f", mix(0, 1));
+    CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 0.4),
+          "... and a plain read answers the LOADED knob (0.4): %s", buf);
+    shadow_scene_bus_state_begin(0, 1);
+    during = mix(0, 1);
+    shadow_scene_bus_state_end(0, 1);
+    CHECK(NEAR(during, 0.4), "a state save records the loaded knob: %f", during);
+    shadow_scene_bus_tick(4, 5, 0.0f, SCENE_NONE, 0);
+    CHECK(NEAR(mix(0, 1), 0.4), "released, the plugin gets the LOADED knob back, not the old one: %f", mix(0, 1));
+    shadow_scene_bus_tick(0, 1, 0.0f, SCENE_NONE, 0);
 
     shadow_scene_bus_get_verb(0, "locks", buf, sizeof(buf));
     CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);

@@ -18,7 +18,8 @@ type ShmConfig struct {
 	mu   sync.Mutex
 }
 
-// Byte offsets into shadow_control_t (64 bytes total).
+// Byte offsets into shadow_control_t. tests/host/test_manager_shm_offsets.sh
+// compiles offsetof() for every off* constant here and fails on drift.
 // Derived from the C struct layout (ARM64, naturally aligned).
 const (
 	offDisplayMode    = 0  // uint8
@@ -55,7 +56,7 @@ const (
 	// ... more fields follow but not needed for config
 	offSkipbackReqVol  = 52 // uint8
 	offOpenToolCmd     = 56 // uint8 — 0=none, 1=open tool
-	offSkipbackSeconds = 60 // uint16 — 30/60/120/180/240/300
+	offSkipbackSeconds = 62 // uint16 — 30/60/120/180/240/300 (after sampler_source_request, sampler_silent; pinned by tests/host/test_manager_shm_offsets.sh)
 	offStayInShadow    = 85 // uint8 — "Keep Schwung": a Track tap switches slot
 	// The mapping is capped here, not sized to the struct: CONTROL_BUFFER_SIZE
 	// is 256 for a struct that uses ~86, and mapping the declared cap means a

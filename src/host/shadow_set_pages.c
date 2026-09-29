@@ -451,6 +451,15 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     /* Signal shadow UI to handle ALL file I/O (active_set.txt, config,
      * tempo read, etc.) — zero file ops on the audio thread. */
     if (*host.shadow_control_ptr) {
+        /* DISARM an armed scene snapshot first. The UI is about to restore
+         * the incoming set -- slot volumes and pans, Master FX params and LFOs,
+         * send levels -- and armed, each of those writes is taken as a LOCK in
+         * the OUTGOING bank (which the bank load then discards), so the new set
+         * would play at the old set's levels. Here, at detection, as an
+         * invariant: no write made after the set changed -- by the UI's
+         * handler or by any other client -- can be taken as a lock. */
+        (*host.shadow_control_ptr)->scene_edit = SCENE_NONE;
+        (*host.shadow_control_ptr)->scene_unlock = 0;
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 }
@@ -481,14 +490,13 @@ static uint64_t set_pages_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-static volatile uint64_t s_last_publish_ms;
-uint64_t shadow_set_pages_last_publish_ms(void) { return s_last_publish_ms; }
+static volatile uint64_t s_last_read_ms;
+uint64_t shadow_set_pages_last_read_ms(void) { return s_last_read_ms; }
 
-static void shadow_set_pages_publish(const char *name, const char *uuid)
+void shadow_set_pages_publish(const char *name, const char *uuid)
 {
     uint32_t gen = move_model_sync_gen();
     int settled = move_model_sync_settled();
-    s_last_publish_ms = set_pages_now_ms();
     /* A REPUBLISH OF THE SAME READ KEEPS ITS AGE. The worker republishes
      * every ~200 ms while misaligned; restamping read_ms each time meant a
      * read never reached the 300 ms the consume waits for, and the switch
@@ -505,6 +513,7 @@ static void shadow_set_pages_publish(const char *name, const char *uuid)
     set_snapshot.gen = gen;
     set_snapshot.settled = settled;
     set_snapshot.read_ms = set_pages_now_ms();
+    s_last_read_ms = set_snapshot.read_ms;
     __sync_synchronize();
     set_snapshot.seq++;            /* even: stable */
 }

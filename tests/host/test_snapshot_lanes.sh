@@ -45,11 +45,13 @@ import { src } from "./snapshot_lanes.mjs";
 let calls = [];
 let files = {};
 const lastWrittenLaneJson = [null, null, null, null];
+const lastWrittenLaneRev = [null, null, null, null];
 const g = {
   host_read_file: (p) => files[p],
   setSlotParam: (i, k, v) => calls.push([i, k, v]),
-  clearSlotLanesQuietly: (i) => { calls.push([i, "lanes:clear", "1"]); lastWrittenLaneJson[i] = null; },
+  clearSlotLanesQuietly: (i) => { calls.push([i, "lanes:reset", "1"]); lastWrittenLaneJson[i] = null; },
   lastWrittenLaneJson,
+  lastWrittenLaneRev,
 };
 const api = new Function(...Object.keys(g), src + "; return { snapshotFileNames, recallLanes };")(...Object.values(g));
 
@@ -79,7 +81,7 @@ check(lastWrittenLaneJson[1] === files["/snap/lanes_1.json"],
 /* 3. AND AN ABSENT FILE CLEARS -- the half that makes this an A/B rather than
  *    an accumulation. A snapshot taken before any automation existed must take
  *    the automation away when recalled. */
-const cleared = calls.filter(c => c[1] === "lanes:clear").map(c => c[0]);
+const cleared = calls.filter(c => c[1] === "lanes:reset").map(c => c[0]);
 check(cleared.length === 3 && cleared.includes(0) && cleared.includes(2) && cleared.includes(3),
       "slots with no lane file in the snapshot were not cleared: " + JSON.stringify(cleared));
 
@@ -88,8 +90,18 @@ calls = [];
 files = { "/snap/lanes_0.json": "" };
 api.recallLanes("/snap");
 check(calls.filter(c => c[1] === "lanes:state").length === 0 &&
-      calls.filter(c => c[1] === "lanes:clear").length === 4,
+      calls.filter(c => c[1] === "lanes:reset").length === 4,
       "an empty lane file was not treated as absent: " + JSON.stringify(calls));
+
+/* 5. "{}" -- the marker snapshotCopyFrom writes for a slot with NO lanes
+ *    file -- is absent too. Pushed as `lanes:state` it was refused by the
+ *    parser, so a recall never took later automation away. */
+calls = [];
+files = { "/snap/lanes_0.json": "{}\n", "/snap/lanes_1.json": "{}" };
+api.recallLanes("/snap");
+check(calls.filter(c => c[1] === "lanes:state").length === 0 &&
+      calls.filter(c => c[1] === "lanes:reset").length === 4,
+      "a \"{}\" lane file was not treated as absent: " + JSON.stringify(calls));
 
 if (fails) { console.log(fails + " failure(s)"); process.exit(1); }
 console.log("PASS: a snapshot carries the automation with the sound");

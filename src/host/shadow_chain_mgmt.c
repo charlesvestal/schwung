@@ -1077,14 +1077,42 @@ void shadow_ui_state_refresh(void) {
  * Mute / Solo
  * ============================================================================ */
 
+/* The mutators below run on the SPI CALLBACK -- Move's model edges arrive
+ * there (move_model_sync_apply_pending), as do the Mute+Track combo and the
+ * slot:muted param serve -- and shadow_log() is unified_log(), which with
+ * debug_log_on armed is fopen/fprintf/fflush. So they only COUNT a change;
+ * the shim worker logs the resulting state (shadow_mix_log_service), the same
+ * split as shadow_request_save_state / shadow_save_state_service. */
+static volatile uint32_t mix_log_seq = 0;
+static uint32_t mix_log_seen = 0;   /* worker only */
+
+static inline void mix_log_note(void) {
+    __atomic_fetch_add(&mix_log_seq, 1, __ATOMIC_RELEASE);
+}
+
+void shadow_mix_log_service(void) {
+    uint32_t seq = __atomic_load_n(&mix_log_seq, __ATOMIC_ACQUIRE);
+    if (seq == mix_log_seen) return;
+    uint32_t changes = seq - mix_log_seen;
+    mix_log_seen = seq;
+    int mu[4] = {0}, so[4] = {0};
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
+        mu[i] = shadow_chain_slots[i].muted ? 1 : 0;
+        so[i] = shadow_chain_slots[i].soloed ? 1 : 0;
+    }
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Mix: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d] (%u change%s)",
+             mu[0], mu[1], mu[2], mu[3], so[0], so[1], so[2], so[3],
+             changes, changes == 1 ? "" : "s");
+    shadow_log(msg);
+}
+
 void shadow_apply_mute(int slot, int is_muted) {
     if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
     if (is_muted == shadow_chain_slots[slot].muted) return;
     shadow_chain_slots[slot].muted = is_muted;
     shadow_ui_state_update_slot(slot);
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
-    shadow_log(msg);
+    mix_log_note();
     shadow_request_save_state();
 }
 
@@ -1131,9 +1159,7 @@ void shadow_apply_solo(int slot, int is_soloed) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
         if (shadow_chain_slots[i].soloed) n++;
     shadow_solo_count = n;
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Solo: slot %d %s", slot, is_soloed ? "soloed" : "unsoloed");
-    shadow_log(msg);
+    mix_log_note();
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
         shadow_ui_state_update_slot(i);
     shadow_request_save_state();
@@ -1151,10 +1177,7 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
     shadow_solo_count = n;
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
         shadow_ui_state_update_slot(i);
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Move mix state: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
-             muted[0], muted[1], muted[2], muted[3], soloed[0], soloed[1], soloed[2], soloed[3]);
-    shadow_log(msg);
+    mix_log_note();
     shadow_request_save_state();
 }
 
@@ -5273,13 +5296,22 @@ void shadow_inprocess_handle_param_request(void) {
                             shadow_param->result_len = -1;
                         }
                     } else {
-                        int n = shadow_scene_bus_read(send_idx + 1, send_fx, send_param,
-                                                      shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                        /* `<param>:base` is the knob -- what a save reads --
+                         * even armed, when the plain read answers the lock. */
+                        char base_param[64];
+                        const int is_base = mfx_param_strip_suffix(send_param, ":base", base_param,
+                                                                   sizeof(base_param));
+                        const char *read_param = is_base ? base_param : send_param;
+                        int n = is_base
+                            ? shadow_scene_bus_read_base(send_idx + 1, send_fx, base_param,
+                                                         shadow_param->value, SHADOW_PARAM_VALUE_LEN)
+                            : shadow_scene_bus_read(send_idx + 1, send_fx, send_param,
+                                                    shadow_param->value, SHADOW_PARAM_VALUE_LEN);
                         const int is_state = strcmp(send_param, "state") == 0;
                         if (is_state) shadow_scene_bus_state_begin(send_idx + 1, send_fx);
                         if (n < 0)
                             n = sfx->api->get_param
-                              ? sfx->api->get_param(sfx->instance, send_param,
+                              ? sfx->api->get_param(sfx->instance, read_param,
                                                     shadow_param->value,
                                                     SHADOW_PARAM_VALUE_LEN)
                               : -1;
@@ -5770,6 +5802,19 @@ void shadow_inprocess_handle_param_request(void) {
                         shadow_param->result_len = strlen(shadow_param->value);
                         shadow_param_publish_response(req_id);
                         return;
+                    }
+
+                    /* A SCENE-driven param: the plugin holds the morph (or,
+                     * armed, the audition), and :base is what a save reads. */
+                    {
+                        int n = shadow_scene_bus_read_base(0, mfx_slot, bare_param, shadow_param->value,
+                                                           SHADOW_PARAM_VALUE_LEN);
+                        if (n >= 0) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = n;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
                     }
 
                     if (mfx->api && mfx->instance && mfx->api->get_param) {

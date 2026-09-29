@@ -129,7 +129,8 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
 import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
-import { buildFlatTargetRows, moveFlatCursor, indexOfFlatRoute } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
+import { buildFlatTargetRows, moveFlatCursor, planFlatTargetOpen, flatTargetCommitRow } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
+import { planFileFlatOpen, fileFlatPick, createRefusalLatch } from '/data/UserData/schwung/shared/file_flat.mjs';
 /* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
  * context a widget and a card get, so a module author writes one thing. */
 import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
@@ -864,6 +865,12 @@ let laneRestoreConfirmed = [false, false, false, false];
  * free -- without it the autosave pass gained a second eMMC write every five
  * seconds forever, which is the defect the slot cache above was added for. */
 let lastWrittenLaneJson = [null, null, null, null];
+/* The chain's `lanes:rev` (a hash of the store's content) at the moment
+ * lastWrittenLaneJson was last VERIFIED against the slot. While the two agree
+ * the autosave skips `lanes:state` entirely -- serialising a full store is
+ * milliseconds on the SPI callback, every slot, every pass. Only
+ * persistSlotLanes sets it; every other path that touches the cache nulls it. */
+let lastWrittenLaneRev = [null, null, null, null];
 
 /* Have we already said that this slot is holding a take it cannot save?
  *
@@ -875,6 +882,7 @@ let laneStallAnnounced = [false, false, false, false];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
     lastWrittenLaneJson = [null, null, null, null];
+    lastWrittenLaneRev = [null, null, null, null];
     /* A stall belongs to the set that was loaded. Carrying the latch across a
      * set change would swallow the announcement for the incoming set's first
      * stuck take, which is the one worth hearing. */
@@ -9723,13 +9731,22 @@ function saveChainConfigToDir(dir) {
     const path = dir + "/shadow_chain_config.json";
     try {
         const cfgSlots = [];
+        /* `:base` -- the KNOB. While a snapshot is armed the plain read
+         * answers its LOCK (so the knob on screen shows what a turn changes),
+         * and a save sharing that key wrote the lock into the set as the
+         * user's level. The plain read stays as the fallback for a shim that
+         * does not serve :base. */
+        const knob = (i, key) => {
+            const b = getSlotParam(i, key + ":base");
+            return (b !== null && b !== undefined && b !== "") ? b : getSlotParam(i, key);
+        };
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-            const vol = parseFloat(getSlotParam(i, "slot:volume") || "1");
+            const vol = parseFloat(knob(i, "slot:volume") || "1");
             const ch = parseInt(getSlotParam(i, "slot:receive_channel") || "0");
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            const pan = parseFloat(knob(i, "slot:pan") || "0") || 0;
             /* The sends the shim keeps for a slot with no module (a slot with
              * one saves its sends in its own state). */
             const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
@@ -9941,6 +9958,42 @@ function moveModelOwnsMix() {
 function setAlignmentPending() {
     const st = moveModelState();
     return !!(st && st[0] && st[1] !== st[2]);
+}
+
+/* THE `set_aligned` ACK IS RETRIED UNTIL THE SHIM REPORTS IT.
+ *
+ * It was sent once with its result ignored, right behind the set change's
+ * dozens of slot writes -- where the one-slot param channel is busiest. One
+ * lost write left set_doc_gen behind for the whole session: the shim's
+ * same-set path refuses an unacked set, the cleared flag is never raised
+ * again, and setAlignmentPending() kept periodic autosave off until the next
+ * set load. So the handler ARMS this, and it resends -- one short write per
+ * ALIGN_ACK_INTERVAL_MS, never a loop inside a tick -- until the shim says
+ * set_doc_gen is the handled generation, or the two generations agree some
+ * other way (a same-set reload aligning in C, the shim's 15 s give-up).
+ * Bounded; the give-up is the backstop past it. */
+const ALIGN_ACK_INTERVAL_MS = 500;
+const ALIGN_ACK_TRIES = 20;
+let alignAck = null;          /* { gen, tries, nextAt } while unconfirmed */
+function armAlignAck(gen, now) {
+    alignAck = { gen: gen, tries: 0, nextAt: now + ALIGN_ACK_INTERVAL_MS };
+}
+function alignAckTick(now) {
+    if (!alignAck) return;
+    const st = moveModelState();
+    if (!st || st[2] === alignAck.gen || st[1] === st[2]) { alignAck = null; return; }
+    if (now < alignAck.nextAt) return;
+    if (alignAck.tries >= ALIGN_ACK_TRIES) {
+        debugLog("set_aligned " + alignAck.gen + " never confirmed after " +
+                 ALIGN_ACK_TRIES + " resends; leaving it to the shim's give-up");
+        alignAck = null;
+        return;
+    }
+    alignAck.tries++;
+    alignAck.nextAt = now + ALIGN_ACK_INTERVAL_MS;
+    debugLog("set_aligned " + alignAck.gen + " not confirmed (shim has " + st[2] +
+             "); resend " + alignAck.tries + "/" + ALIGN_ACK_TRIES);
+    setSlotParamWithTimeout(0, "set_aligned", String(alignAck.gen), 100);
 }
 
 function loadChainConfigFromDir(dir) {
@@ -10423,7 +10476,16 @@ function persistSlotLanes(i) {
      * nothing about the slot -- writing on it would truncate a good file with
      * whatever a timeout produced. `""` is served-and-empty: this slot has no
      * automation, so the file must GO rather than be left behind to reload
-     * lanes the user cleared. Only a non-empty document is written. */
+     * lanes the user cleared. Only a non-empty document is written.
+     *
+     * UNCHANGED SINCE THE LAST VERIFIED WRITE: skip the document. `lanes:rev`
+     * is a small read; `lanes:state` makes the chain serialise the whole
+     * store on the SPI callback (~1 ms on a Mac, several on the device, for
+     * a full one). Only a NON-EMPTY cached document is trusted this way -- the
+     * empty branch below also reports stalled takes, which it must keep
+     * seeing -- and a rev that did not answer (null) never skips. */
+    const rev = getSlotParam(i, "lanes:rev");
+    if (rev && rev === lastWrittenLaneRev[i] && lastWrittenLaneJson[i]) return;
     const doc = getSlotStateWithRetry(i, "lanes:state");
     const path = lanePathForSlot(i);
     if (doc === null) return;
@@ -10501,26 +10563,39 @@ function persistSlotLanes(i) {
             debugLog("autosave: slot " + i + " has no lanes — cleared " + path);
         }
         lastWrittenLaneJson[i] = "";
+        lastWrittenLaneRev[i] = null;
         return;
     }
-    if (lastWrittenLaneJson[i] === doc) return;
+    /* `rev` was read BEFORE `doc`, so a change landing between the two makes
+     * the stored rev older than the document: the next pass re-reads, never
+     * skips a change. */
+    if (lastWrittenLaneJson[i] === doc) { lastWrittenLaneRev[i] = rev; return; }
     if (host_write_file(path, doc)) {
         lastWrittenLaneJson[i] = doc;
+        lastWrittenLaneRev[i] = rev;
     } else {
         lastWrittenLaneJson[i] = null;   /* force a retry next pass */
+        lastWrittenLaneRev[i] = null;
         debugLog("autosave: failed to write lanes_" + i + ".json — " +
                  "will retry next autosave");
     }
 }
 
 /* Empty a slot's lanes with no announcement and no file write -- the restore
- * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:reset`
  * releases every override the store held, which is why this is not just a
  * matter of forgetting the document: leaving them asserted would strand the
- * parameters they were driving with no gesture that hands them back. */
+ * parameters they were driving with no gesture that hands them back.
+ *
+ * NOT `lanes:clear`, which is the USER's verb: it saves the outgoing store as
+ * undo and journals a clear, so after a set change "Undo automation" swapped
+ * the PREVIOUS set's lanes into this one (and the autosave then wrote them into
+ * this set's file). `lanes:reset` is a restore: it drops the undo buffer and
+ * journals nothing. */
 function clearSlotLanesQuietly(i) {
-    setSlotParam(i, "lanes:clear", "1");
+    setSlotParam(i, "lanes:reset", "1");
     lastWrittenLaneJson[i] = null;
+    lastWrittenLaneRev[i] = null;
 }
 
 /* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
@@ -10545,6 +10620,7 @@ function clearSlotLanesQuietly(i) {
 function restoreSlotLanes(i) {
     const path = lanePathForSlot(i);
     laneRestoreConfirmed[i] = false;
+    lastWrittenLaneRev[i] = null;
     if (!host_file_exists(path)) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
     const raw = host_read_file(path);
     if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
@@ -11089,13 +11165,18 @@ function snapshotRecall() {
      * rather than an accumulation: if the snapshot was taken before any
      * automation existed, recalling it must take the automation away again.
      * `lanes:clear` also releases the overrides, so no parameter is left
-     * stranded where a lane stopped driving it. */
+     * stranded where a lane stopped driving it.
+     *
+     * "{}" IS ABSENT. snapshotCopyFrom writes that marker for a slot with no
+     * lanes file, and pushing it as `lanes:state` was refused by the parser,
+     * so the automation recorded since the snapshot survived the recall. */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         let laneDoc = null;
         try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
-        if (laneDoc && laneDoc.length > 0) {
+        if (laneDoc && laneDoc.trim().length > 0 && laneDoc.trim() !== "{}") {
             setSlotParam(i, "lanes:state", laneDoc);
             lastWrittenLaneJson[i] = laneDoc;
+            lastWrittenLaneRev[i] = null;
         } else {
             clearSlotLanesQuietly(i);
         }
@@ -11911,6 +11992,12 @@ function sceneApplyAll(verb, value) {
 let sceneActive = -1;
 let scenePairs = sceneDefaultPairs();
 function scenePushEnds() {
+    /* A Program Change the shim applied since our last tick is ADOPTED FIRST.
+     * It wrote the ends and scene_active on the frame it arrived; pushing
+     * from a stale sceneActive (a pairing edit, an undo) in the same tick
+     * overwrote them, and scenesAdoptPc then adopted our own stale scene --
+     * the PC silently reverted. */
+    scenesAdoptPc(sceneState());
     const e = sceneEndsFor(sceneActive, scenePairs);
     if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
     /* ...and the whole pairing table, so the shim can apply a Program Change
@@ -11942,7 +12029,9 @@ function scenesAdoptPc(st) {
 const scenesScreen = createScenesScreen({
     state: () => sceneState(),
     scene: () => ({ active: sceneActive, pairs: scenePairs }),
-    setActive: (k) => { sceneActive = k; scenePushEnds(); },
+    /* The tap comes after any PC already applied: consume that first, so the
+     * push below cannot adopt it over the scene the user just chose. */
+    setActive: (k) => { scenesAdoptPc(sceneState()); sceneActive = k; scenePushEnds(); },
     setPair: (k, p) => {
         if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
         scenePairs[k] = [p[0], p[1]];
@@ -12196,7 +12285,9 @@ function scenesLoadFrom(dir, adoptLive) {
             return false;
         }
     }
-    /* The active scene and the on/offs are JS state: from the file either way. */
+    /* The active scene and the on/offs are JS state: from the file either way.
+     * A set load wins over a PC still pending from the outgoing set. */
+    scenePcSeqSeen = null;
     sceneActive = doc.active;
     scenePairs = doc.pairs;
     if (adoptLive) {
@@ -12249,6 +12340,10 @@ function scenesTick() {
     if (key === sceneSavedKey) { sceneDirtyAt = 0; return; }
     if (!sceneDirtyAt) sceneDirtyAt = now;
     if (now - sceneDirtyAt >= SCENE_SAVE_DEBOUNCE_MS) {
+        /* Gated like the slot autosave: while Move's loaded set is not yet
+         * the one activeSlotStateDir names, a save lands in the OUTGOING
+         * set's folder. Stays dirty, and saves once aligned. */
+        if (setAlignmentPending()) return;
         if (scenesSaveTo(activeSlotStateDir)) sceneDirtyAt = 0;
         else sceneDirtyAt = now;     /* a failed read: try again, never write a partial bank */
     }
@@ -14872,7 +14967,12 @@ function saveMasterFxChainConfigOnMaster() {
                         const chainParams = getMasterFxChainParams(slotIdx);
                         if (chainParams && chainParams.length > 0) {
                             for (const p of chainParams) {
-                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                /* `:base`: a scene-driven param's KNOB (armed,
+                                 * the plain read answers the lock). */
+                                let val = shadow_get_param(0, `master_fx:${key}:${p.key}:base`);
+                                if (val === null || val === undefined || val === "") {
+                                    val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                }
                                 if (val !== null && val !== undefined && val !== "") {
                                     paramsObj[p.key] = val;
                                 }
@@ -15107,7 +15207,12 @@ function saveSendLevels() {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
             let v = null;
-            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            /* `:base`, the knob: armed, the plain key answers the snapshot's
+             * LOCK, and this file is what the set reloads as the level. */
+            try { v = shadow_get_param(0, bus.prefix + k + ":base"); } catch (e) {}
+            if (v === null || v === undefined || v === "") {
+                try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            }
             if (v === null || v === undefined || v === "") continue;
             const n = parseInt(v, 10);
             if (!Number.isFinite(n)) continue;
@@ -24717,7 +24822,8 @@ function handleSelect() {
             const items = getLfoItems();
             const item = items[selectedLfoItem];
             if (item.key === "target") {
-                /* Open target picker */
+                /* Open target picker -- from the LIST, never the grid. */
+                lfoTargetFromGrid = false;
                 enterLfoTargetPicker();
             } else if (item.type === "action") {
                 /* Other actions - ignore */
@@ -27226,18 +27332,35 @@ function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
         ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
         : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
     if (!m) return false;
-    lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
-                      : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    /* The rest of a spin whose first detent was refused: say nothing, read
+     * nothing -- the refusal already spoke. */
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const ctx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                         : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    /* Read the routing BEFORE opening anything. A null is a read that did
+     * not complete, not "no target": opening on None would let the release
+     * switch a working LFO off (planFlatTargetOpen). */
+    const storedTarget = ctx.getParam("target");
+    const storedParam = storedTarget === null ? null : ctx.getParam("target_param");
+    if (storedTarget === null || storedParam === null) {
+        flatRefusal.refuse(fullKey, now);
+        announce("Target unavailable");
+        return true;
+    }
+    lfoCtx = ctx;
     lfoTargetFromGrid = true;
     clearParamPagesTouch();
     enterLfoTargetPicker();
     lfoTargetKnob = listKnobInit();
     /* The caption's room: from the label column to the scrollbar gutter,
      * less the rule stubs either side. */
-    lfoTargetFlatRows = buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf,
-        { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 });
-    lfoTargetFlatStored = indexOfFlatRoute(lfoTargetFlatRows,
-        lfoCtx.getParam("target") || "", lfoCtx.getParam("target_param") || "");
+    const fit = { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 };
+    const plan = planFlatTargetOpen(
+        buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf, fit),
+        storedTarget, storedParam, fit);
+    lfoTargetFlatRows = plan.rows;
+    lfoTargetFlatStored = plan.stored;
     lfoTargetFlatIndex = lfoTargetFlatStored;
     setView(VIEWS.LFO_TARGET_FLAT);
     lfoTargetKnobCommit = knob;
@@ -27252,10 +27375,14 @@ function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
 function lfoTargetFlatCommit() {
     lfoTargetKnobCommit = -1;
     lfoTargetKnobHeld = false;
-    const r = lfoTargetFlatRows[lfoTargetFlatIndex];
-    if (r && r.route && lfoCtx) {
+    /* Only a row the user MOVED to is written; the stored row is not a
+     * choice (flatTargetCommitRow). */
+    const r = flatTargetCommitRow(lfoTargetFlatRows, lfoTargetFlatIndex, lfoTargetFlatStored);
+    if (r && lfoCtx) {
         commitLfoTargetFromGrid(lfoCtx, r.route.target ? r.route : null);
         announce(r.route.target ? "Target set: " + r.label : "Target cleared");
+    } else {
+        announce("Target unchanged");
     }
     if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
     needsRedraw = true;
@@ -27270,6 +27397,10 @@ function lfoTargetFlatCancel() {
 }
 
 function lfoTargetKnobTick() {
+    /* The grid hand-off flag outlives every exit that is not a commit or
+     * Back (a Track tap, a Menu dismiss). Left set, the LIST editor's next
+     * pick would take the grid's commit path and write `enabled`. */
+    if (lfoTargetFromGrid && !isLfoTargetView(view)) lfoTargetFromGrid = false;
     if (lfoTargetKnobCommit < 0) return;
     if (view !== VIEWS.LFO_TARGET_FLAT) { lfoTargetKnobCommit = -1; return; }
     if (!lfoTargetKnobHeld &&
@@ -27323,22 +27454,41 @@ let fileFlatKnobState = listKnobInit();
 let fileFlatKnob = -1;
 let fileFlatHeld = false;
 let fileFlatLastMs = 0;
+/* Set only by a cursor move: a release that never moved loads nothing. */
+let fileFlatMoved = false;
+let fileFlatSlot = -1;
+let fileFlatFullKey = "";
+let fileFlatMeta = null;
+/* One refusal per spin, shared by the file cell and the LFO Target cell. */
+const flatRefusal = createRefusalLatch(LFO_TARGET_KNOB_IDLE_COMMIT_MS);
 
 function fileFlatEnter(slotIndex, fullKey, knob, held, info) {
     const meta = info && info.meta;
     if (!meta || meta.type !== "filepath" || !info.key) return false;
-    const current = getSlotParam(slotIndex, fullKey) || "";
-    const st = buildFilepathBrowserState(meta, current);
-    refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
-    const files = (st.items || []).filter((it) => it && it.kind === "file");
-    if (!files.length) {
-        announce("No files in this folder");
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const current = getSlotParam(slotIndex, fullKey);
+    let files = [];
+    let st = null;
+    if (current !== null) {
+        st = buildFilepathBrowserState(meta, current);
+        refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
+        files = (st.items || []).filter((it) => it && it.kind === "file");
+    }
+    const plan = planFileFlatOpen(current, files);
+    if (plan.refuse) {
+        flatRefusal.refuse(fullKey, now);
+        announce(plan.refuse === "empty" ? "No files in this folder" : "File unavailable");
         return true;
     }
     fileFlatRows = files;
-    fileFlatStored = files.findIndex((f) => f.path === current);
-    fileFlatIndex = fileFlatStored >= 0 ? fileFlatStored : 0;
+    fileFlatStored = plan.stored;
+    fileFlatIndex = plan.index;
+    fileFlatMoved = false;
     fileFlatKey = info.key;
+    fileFlatSlot = slotIndex;
+    fileFlatFullKey = String(fullKey || "");
+    fileFlatMeta = meta;
     const dir = String(st.currentDir || "").replace(/\/+$/, "");
     fileFlatFolder = dir.slice(dir.lastIndexOf("/") + 1) || (meta.name || info.key);
     fileFlatKnobState = listKnobInit();
@@ -27356,7 +27506,10 @@ function fileFlatMove(n) {
     if (!n || !fileFlatRows.length) return;
     const before = fileFlatIndex;
     fileFlatIndex = Math.max(0, Math.min(fileFlatRows.length - 1, fileFlatIndex + n));
-    if (fileFlatIndex !== before) announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    if (fileFlatIndex !== before) {
+        fileFlatMoved = true;
+        announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    }
     needsRedraw = true;
 }
 
@@ -27373,12 +27526,36 @@ function fileFlatClose() {
 }
 
 function fileFlatCommit() {
-    const f = fileFlatRows[fileFlatIndex];
-    if (f && fileFlatIndex !== fileFlatStored) {
+    const f = fileFlatPick(fileFlatRows, fileFlatIndex, fileFlatStored, fileFlatMoved);
+    if (f) {
         commitParamPagesValue(fileFlatKey, f.path);
+        fileFlatAfterCommit(f.path);
         announce("Loaded " + f.label);
     }
     fileFlatClose();
+}
+
+/*
+ * What the file BROWSER does after writing a pick, so the knob list is not
+ * a lesser commit: the module's browser_hooks.on_commit actions, then the
+ * linked wav_position end-marker default. Hooks marked `restore` are undone
+ * by the browser at close, so they are skipped here rather than set and
+ * immediately put back. The wav default reads the hierarchy editor's state,
+ * so it runs only when that state describes THIS cell.
+ */
+function fileFlatAfterCommit(path) {
+    const fullKey = fileFlatFullKey;
+    const key = fileFlatKey;
+    const prefix = fullKey.endsWith(":" + key) ? fullKey.slice(0, -(key.length + 1)) : "";
+    const hooks = buildFilepathBrowserHooks(fileFlatMeta, prefix);
+    for (const action of hooks.onCommit) {
+        if (!action || !action.key || action.restore) continue;
+        setSlotParam(fileFlatSlot, action.key, resolveFilepathHookValue(action.value, { path }));
+    }
+    if (hierEditorSlot === fileFlatSlot && hierEditorSlot >= 0 &&
+        buildHierarchyParamKey(key) === fullKey) {
+        applyLinkedWavEndDefaultsForFilepath(key);
+    }
 }
 
 function fileFlatCancel() {
@@ -28377,6 +28554,13 @@ globalThis.tick = function() {
         if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
 
+            /* 0. Disarm any armed scene snapshot BEFORE anything is restored.
+             *    Armed, every restore write below (volumes, pans, Master FX
+             *    params and LFOs, send levels) is taken as a lock in the
+             *    OUTGOING bank, which 8c's bank load then discards. The shim
+             *    already disarms at detection; this is the UI's own half. */
+            sceneSetEdit(-1);
+
             /* 1. Save current state to outgoing directory */
             autosaveAllSlots();
             saveMasterFxChainConfig();
@@ -28384,6 +28568,11 @@ globalThis.tick = function() {
             saveChainConfigToDir(activeSlotStateDir);
             /* Save current RNBO graph (if RNBO is running) */
             saveRnboGraphToDir(activeSlotStateDir);
+            /* The outgoing set's scenes, while the DSP still holds them -- HERE,
+             * with the other outgoing saves: step 3b may move this folder
+             * (a pending set's first save) and a later save would write into
+             * the deleted path, then 8c load the stale copy over the bank. */
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
 
             /* 2. Get UUID and set name from shim (in-memory, no file I/O on audio thread) */
             const activeSetRaw = getSlotParam(0, "active_set");
@@ -28547,9 +28736,6 @@ globalThis.tick = function() {
                         JSON.stringify(defaultCfg, null, 2) + "\n");
                 }
             }
-
-            /* 4b. The outgoing set's scenes, while the DSP still holds them. */
-            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
 
             /* 5. Switch directory and load chain config (volumes/channels/mute/solo) */
             const oldDir = activeSlotStateDir;
@@ -28802,6 +28988,7 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
             }
             setSlotParamWithTimeout(0, "set_aligned", String(handledGen), 500);
+            armAlignAck(handledGen, Date.now());   /* verified, and resent if lost */
             if (uuid.indexOf("__pending-") === 0) {
                 const st = moveModelState();
                 pendingSetDocGen = (st && st[0]) ? handledGen : -1;
@@ -28965,6 +29152,8 @@ globalThis.tick = function() {
     if (!isOvertakeActive && refreshCounter % 120 === 0) {
         refreshSlots();
     }
+
+    if (!isOvertakeActive) alignAckTick(Date.now());
 
     /* Periodic autosave (suppressed briefly after set change, and for as long
      * as a set load the model saw is not yet aligned) */

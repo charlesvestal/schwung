@@ -68,6 +68,7 @@
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_scene_bus.h"
 #include "host/shadow_link_audio.h"
+#include "host/link_audio_conceal.h"
 #include "host/align_capture.h"
 
 /* Defined further down with the other shim globals; used from the mixer,
@@ -448,6 +449,9 @@ static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 /* Read-only consumer of Move audio written by link-subscriber sidecar.
  * Sidecar may not have started yet — retry from non-RT context if missing. */
 static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
+
+/* Per-frame rebuild-vs-native decision across all tracks (SPI thread only). */
+static la_rebuild_gate_t shim_la_gate = { -1, 0 };
 static int try_attach_in_audio_shm(void);
 static void *link_in_attach_retry_thread(void *arg);
 
@@ -956,6 +960,11 @@ static uint8_t step2_longpress_fired;
 static struct timespec step3_press_time;
 static uint8_t step3_longpress_pending;
 static uint8_t step3_longpress_fired;
+/* Shift+Vol+Step 3 swallowed the PRESS, so the release is owed a swallow
+ * too: a lone step-up reaching Move for a press it never saw. Latched on the
+ * press, cleared by the release -- never gated on Shift or Vol still being
+ * held, since both are usually let go first. */
+static uint8_t step3_release_owed;
 
 static struct timespec step13_press_time;
 static uint8_t step13_longpress_pending;
@@ -2945,6 +2954,15 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * the first rebuild frame can leave a stale backlog that lands under
          * the 70 ms catch-up threshold and leaves one slot permanently
          * offset — audible as pitch/sample-rate drift on that track. */
+        if (entering_rebuild) {
+            /* The snap below makes the first read a starve; concealing it
+             * from a block last heard before the rebuild disengaged would
+             * replay stale audio at full amplitude. Start the tracks and the
+             * frame gate from nothing: the gate stays on Move's native mix
+             * until real audio lands, then crossfades into the rebuild. */
+            link_audio_conceal_reset();
+            la_rebuild_gate_reset(&shim_la_gate);
+        }
         if (entering_rebuild && shadow_in_audio_shm) {
             /* Acquire/release pair against sidecar write_pos updates
              * so ring writes are visible before we publish read_pos. */
@@ -3005,6 +3023,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int16_t la_cache[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
     int la_cache_valid[SHADOW_CHAIN_INSTANCES];
     memset(la_cache_valid, 0, sizeof(la_cache_valid));
+    /* Move's native mailbox, kept for the first rebuilt frame after a
+     * starve fallback: it is faded out under the tracks' fade-in. */
+    int16_t la_native_xfade[FRAMES_PER_BLOCK * 2];
+    int la_native_xfade_valid = 0;
 
     if (rebuild_from_la) {
         /* Read all Link Audio channels FIRST so we can decide whether to
@@ -3014,22 +3036,36 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * to the legacy non-rebuild path so Move's native audio (already in
          * the mailbox from Move's own write) survives. */
         int la_channel_count = shim_move_channel_count();
-        int any_la_valid = 0;
+        int la_real = 0, la_concealed = 0;
         /* Line the tracks up at the shallowest one's depth before reading
          * any of them -- a decision across slots, so not per read. */
         link_audio_align_tick(shadow_in_audio_shm, la_channel_count);
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
-            la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
-            if (la_cache_valid[s]) any_la_valid = 1;
+            int r = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+            la_cache_valid[s] = (r != 0);
+            if (r == LA_READ_REAL) la_real++;
+            else if (r == LA_READ_CONCEALED) la_concealed++;
         }
-        if (!any_la_valid) {
-            /* SHM is empty across all slots — sidecar isn't producing fast
-             * enough this frame. Skip the rebuild; treat this frame like
-             * the non-rebuild path so we don't drop into silence. */
+        /* Every track starving at once (a Move publisher stall, a set
+         * change) is NOT the same as one track starving: Move's own mix is
+         * sitting in the mailbox, so after the first concealed block (a
+         * faded mirror, which carries the join) play THAT instead of
+         * concealed silence -- ramped in, since the tracks just faded out.
+         * See la_rebuild_gate in link_audio_conceal.h. */
+        int la_gate = la_rebuild_gate(&shim_la_gate, la_real, la_concealed);
+        if (!la_gate_is_rebuild(la_gate)) {
             extern volatile uint32_t shim_la_starve_fallback_count;
+            extern volatile uint32_t shim_la_conceal_fallback_count;
             shim_la_starve_fallback_count++;
+            if (la_concealed) shim_la_conceal_fallback_count++;
+            if (la_gate == LA_GATE_FALLBACK_RAMP_IN)
+                la_ramp_in(mailbox_audio, FRAMES_PER_BLOCK);
             rebuild_from_la = 0;
             goto skip_la_rebuild;
+        }
+        if (la_gate == LA_GATE_REBUILD_XFADE) {
+            memcpy(la_native_xfade, mailbox_audio, sizeof(la_native_xfade));
+            la_native_xfade_valid = 1;
         }
 
         /* Zero the mailbox — all audio reconstructed from Link Audio */
@@ -3812,6 +3848,14 @@ skip_la_rebuild:
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
+    }
+
+    /* First rebuilt frame after a starve fallback: the tracks faded in from
+     * zero (la_conceal_real), so fade Move's native mix -- already at master
+     * volume and through Move's own enhancer, hence added here, after both --
+     * out across the same block. A crossfade instead of a step down. */
+    if (la_native_xfade_valid) {
+        la_mix_ramp_out(mailbox_audio, la_native_xfade, FRAMES_PER_BLOCK);
     }
 
     /* Stream 3: the finished mailbox — master volume and speaker EQ applied,
@@ -6320,6 +6364,9 @@ align_capture_t g_align_capture;
 
 volatile uint32_t shim_la_rebuild_flip_count = 0;
 volatile uint32_t shim_la_starve_fallback_count = 0;
+/* Of those, the frames where every track was CONCEALED rather than empty --
+ * i.e. a shared stall the frame gate handed to Move's native mix. */
+volatile uint32_t shim_la_conceal_fallback_count = 0;
 
 /* Granular pre-ioctl timing */
 static struct timespec spi_section_start, spi_section_end;
@@ -10003,7 +10050,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();
                         midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        step3_release_owed = 1;
                     }
+                }
+                if (d1 == 18 && step3_release_owed && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    step3_release_owed = 0;
                 }
 
                 /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
@@ -11396,8 +11448,10 @@ static void *spi_timing_logger_thread(void *arg)
         if (shadow_in_audio_shm) {
             uint32_t flips = shim_la_rebuild_flip_count;
             uint32_t fallback = shim_la_starve_fallback_count;
+            uint32_t conceal_fb = shim_la_conceal_fallback_count;
             shim_la_rebuild_flip_count = 0;
             shim_la_starve_fallback_count = 0;
+            shim_la_conceal_fallback_count = 0;
 
             int any_nonzero = (flips || fallback);
             {
@@ -11472,9 +11526,10 @@ static void *spi_timing_logger_thread(void *arg)
                      * lining a deeper track up with the shallowest. */
                     unified_log("link_audio", LOG_LEVEL_DEBUG,
                         "path: rebuild_flips=%u la_starve_fallback=%u "
+                        "conceal_fallback=%u "
                         "backlog_trims=%u trim_dropped_ms=%u "
                         "concealed=%u aligns=%u align_dropped_ms=%u",
-                        flips, fallback, tc, (unsigned)(td / 2 / 44),
+                        flips, fallback, conceal_fb, tc, (unsigned)(td / 2 / 44),
                         cc, ac, (unsigned)(ad / 2 / 44));
                 }
             }
