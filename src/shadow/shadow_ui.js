@@ -865,6 +865,12 @@ let laneRestoreConfirmed = [false, false, false, false];
  * free -- without it the autosave pass gained a second eMMC write every five
  * seconds forever, which is the defect the slot cache above was added for. */
 let lastWrittenLaneJson = [null, null, null, null];
+/* The chain's `lanes:rev` (a hash of the store's content) at the moment
+ * lastWrittenLaneJson was last VERIFIED against the slot. While the two agree
+ * the autosave skips `lanes:state` entirely -- serialising a full store is
+ * milliseconds on the SPI callback, every slot, every pass. Only
+ * persistSlotLanes sets it; every other path that touches the cache nulls it. */
+let lastWrittenLaneRev = [null, null, null, null];
 
 /* Have we already said that this slot is holding a take it cannot save?
  *
@@ -876,6 +882,7 @@ let laneStallAnnounced = [false, false, false, false];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
     lastWrittenLaneJson = [null, null, null, null];
+    lastWrittenLaneRev = [null, null, null, null];
     /* A stall belongs to the set that was loaded. Carrying the latch across a
      * set change would swallow the announcement for the incoming set's first
      * stuck take, which is the one worth hearing. */
@@ -10424,7 +10431,16 @@ function persistSlotLanes(i) {
      * nothing about the slot -- writing on it would truncate a good file with
      * whatever a timeout produced. `""` is served-and-empty: this slot has no
      * automation, so the file must GO rather than be left behind to reload
-     * lanes the user cleared. Only a non-empty document is written. */
+     * lanes the user cleared. Only a non-empty document is written.
+     *
+     * UNCHANGED SINCE THE LAST VERIFIED WRITE: skip the document. `lanes:rev`
+     * is a small read; `lanes:state` makes the chain serialise the whole
+     * store on the SPI callback (~1 ms on a Mac, several on the device, for
+     * a full one). Only a NON-EMPTY cached document is trusted this way -- the
+     * empty branch below also reports stalled takes, which it must keep
+     * seeing -- and a rev that did not answer (null) never skips. */
+    const rev = getSlotParam(i, "lanes:rev");
+    if (rev && rev === lastWrittenLaneRev[i] && lastWrittenLaneJson[i]) return;
     const doc = getSlotStateWithRetry(i, "lanes:state");
     const path = lanePathForSlot(i);
     if (doc === null) return;
@@ -10502,26 +10518,39 @@ function persistSlotLanes(i) {
             debugLog("autosave: slot " + i + " has no lanes — cleared " + path);
         }
         lastWrittenLaneJson[i] = "";
+        lastWrittenLaneRev[i] = null;
         return;
     }
-    if (lastWrittenLaneJson[i] === doc) return;
+    /* `rev` was read BEFORE `doc`, so a change landing between the two makes
+     * the stored rev older than the document: the next pass re-reads, never
+     * skips a change. */
+    if (lastWrittenLaneJson[i] === doc) { lastWrittenLaneRev[i] = rev; return; }
     if (host_write_file(path, doc)) {
         lastWrittenLaneJson[i] = doc;
+        lastWrittenLaneRev[i] = rev;
     } else {
         lastWrittenLaneJson[i] = null;   /* force a retry next pass */
+        lastWrittenLaneRev[i] = null;
         debugLog("autosave: failed to write lanes_" + i + ".json — " +
                  "will retry next autosave");
     }
 }
 
 /* Empty a slot's lanes with no announcement and no file write -- the restore
- * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:reset`
  * releases every override the store held, which is why this is not just a
  * matter of forgetting the document: leaving them asserted would strand the
- * parameters they were driving with no gesture that hands them back. */
+ * parameters they were driving with no gesture that hands them back.
+ *
+ * NOT `lanes:clear`, which is the USER's verb: it saves the outgoing store as
+ * undo and journals a clear, so after a set change "Undo automation" swapped
+ * the PREVIOUS set's lanes into this one (and the autosave then wrote them into
+ * this set's file). `lanes:reset` is a restore: it drops the undo buffer and
+ * journals nothing. */
 function clearSlotLanesQuietly(i) {
-    setSlotParam(i, "lanes:clear", "1");
+    setSlotParam(i, "lanes:reset", "1");
     lastWrittenLaneJson[i] = null;
+    lastWrittenLaneRev[i] = null;
 }
 
 /* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
@@ -10546,6 +10575,7 @@ function clearSlotLanesQuietly(i) {
 function restoreSlotLanes(i) {
     const path = lanePathForSlot(i);
     laneRestoreConfirmed[i] = false;
+    lastWrittenLaneRev[i] = null;
     if (!host_file_exists(path)) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
     const raw = host_read_file(path);
     if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
@@ -11090,13 +11120,18 @@ function snapshotRecall() {
      * rather than an accumulation: if the snapshot was taken before any
      * automation existed, recalling it must take the automation away again.
      * `lanes:clear` also releases the overrides, so no parameter is left
-     * stranded where a lane stopped driving it. */
+     * stranded where a lane stopped driving it.
+     *
+     * "{}" IS ABSENT. snapshotCopyFrom writes that marker for a slot with no
+     * lanes file, and pushing it as `lanes:state` was refused by the parser,
+     * so the automation recorded since the snapshot survived the recall. */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         let laneDoc = null;
         try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
-        if (laneDoc && laneDoc.length > 0) {
+        if (laneDoc && laneDoc.trim().length > 0 && laneDoc.trim() !== "{}") {
             setSlotParam(i, "lanes:state", laneDoc);
             lastWrittenLaneJson[i] = laneDoc;
+            lastWrittenLaneRev[i] = null;
         } else {
             clearSlotLanesQuietly(i);
         }

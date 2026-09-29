@@ -101,11 +101,16 @@ static inline int lane_write_slot(const chain_instance_t *inst) {
 static void lane_source_id(const lane_t *ln, char *buf, int len) {
     snprintf(buf, len, "lane:%s:%s", ln->target, ln->param);
 }
+/* The widest lane id must fit the mod bus, or chain_mod refuses it and the
+ * lane never drives. sizeof counts each NUL, which pays for the ':'s. */
+_Static_assert(sizeof("lane:") + sizeof(((lane_t *)0)->target) +
+               sizeof(((lane_t *)0)->param) <= MOD_SOURCE_ID_LEN,
+               "a lane's mod source id does not fit MOD_SOURCE_ID_LEN");
 
 /* Hand the parameter back to the user's knob. chain_mod_emit_override with
  * enabled=0 drops this source and restores the base with a forced write. */
 static void lane_release_one(chain_instance_t *inst, lane_t *ln) {
-    char sid[64];
+    char sid[MOD_SOURCE_ID_LEN];
     lane_source_id(ln, sid, sizeof(sid));
     chain_mod_emit_override(inst, sid, ln->target, ln->param, 0.0f, 0);
     ln->driving = 0;
@@ -170,6 +175,10 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
 CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
                                         const char *target, const char *param) {
     if (!inst || !target || !param) return 0;
+    /* DISARMED (lanes_off): lane_tick releases and drives nothing, so no
+     * parameter is automated -- claiming otherwise made the grid read
+     * `:effective` every tick for a value that can never change. */
+    if (!inst->lanes_enabled) return 0;
     /* THE SAME ROW PLAYBACK USES. lane_tick matches on lane_effective_slot --
      * an unknown row falls back to the last one we had an answer for -- while
      * this asked with the RAW row, so during those windows the lane kept
@@ -181,7 +190,7 @@ CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
     if (inst->lane_track < 0 || !lane_slot_usable(row)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &inst->lanes.lanes[i];
-        if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
+        if (!ln->used || ln->stale || ln->orphaned || ln->module_gone || ln->n <= 0) continue;
         if (lane_is_for_param(ln, inst->lane_track, row, target, param))
             return 1;
     }
@@ -336,6 +345,11 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
         lane_t *twin = lane_find(&inst->lanes, ln->target, ln->param,
                                  inst->lane_track, adopt_row);
         if (twin && twin != ln) {
+            /* RELEASE BEFORE FREEING. A driving twin holds an override, and
+             * lane_release_all skips unused lanes -- so if the arriving take
+             * does not drive on the next block, nothing would ever hand the
+             * parameter back. */
+            if (twin->driving) lane_release_one(inst, twin);
             twin->used = 0;                 /* exactly one lane on the key */
             inst->lanes_adopt_displaced++;
         }
@@ -628,7 +642,7 @@ void lane_tick(chain_instance_t *inst) {
             continue;
         }
 
-        char sid[64];
+        char sid[MOD_SOURCE_ID_LEN];
         lane_source_id(ln, sid, sizeof(sid));
         chain_mod_emit_override(inst, sid, ln->target, ln->param, v, 1);
         ln->driving = 1;
@@ -774,9 +788,10 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * does. Gated on fp_valid, a take recorded into an orphaned lane
          * during Move's save window stayed orphaned, so lane_eval refused it
          * and the take was silent forever. */
-        if (ln->orphaned && !ln->rec_active) {
+        if ((ln->orphaned || ln->module_gone) && !ln->rec_active) {
             ln->n = 0;                    /* the dead clip's points go, once */
             ln->orphaned = 0;
+            ln->module_gone = 0;          /* recording onto the module that IS there */
             if (!inst->clip_fp_valid) ln->origin_pending = 1;
         }
         if (inst->clip_fp_valid) {
@@ -867,6 +882,60 @@ void lane_set_armed(chain_instance_t *inst, int armed) {
     inst->lane_armed = armed ? 1 : 0;
 }
 
+/* A CONTENT REVISION of the store, so the autosave can skip `lanes:state`
+ * when nothing changed. Serialising a full store costs ~1 ms on Apple silicon
+ * (several on the A53) and runs on the SPI callback, every slot, every ~5 s
+ * pass -- whether or not anything was recorded.
+ *
+ * A HASH, not a counter bumped at every mutation site: there are dozens of
+ * those (writes, p-locks, adoption, re-stamping in lane_tick, the edit
+ * verbs), and one that forgot to bump would mean automation that is silently
+ * never saved. Hashing what the store HOLDS cannot miss a site. It covers
+ * every field of a used lane except the per-block runtime churn (`driving`,
+ * the punch pair, the recording pass, `pending_blocks`), which the serializer
+ * never writes -- so playback alone does not move it, and anything it
+ * over-covers merely costs one unneeded serialise. Field by field, never the
+ * raw struct, so padding cannot make two equal stores hash differently.
+ * FNV-1a over <=~40 KB: tens of microseconds, against milliseconds. */
+static uint64_t lane_rev_mix(uint64_t h, const void *p, size_t n) {
+    const unsigned char *b = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ull; }
+    return h;
+}
+#define LANE_REV_MIX(h, f) ((h) = lane_rev_mix((h), &(f), sizeof(f)))
+
+static uint64_t lane_store_rev(const lane_store_t *st) {
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < LANE_MAX; i++) {
+        const lane_t *ln = &st->lanes[i];
+        if (!ln->used) continue;
+        LANE_REV_MIX(h, i);
+        h = lane_rev_mix(h, ln->target, strnlen(ln->target, sizeof(ln->target)));
+        h = lane_rev_mix(h, "", 1);
+        h = lane_rev_mix(h, ln->param, strnlen(ln->param, sizeof(ln->param)));
+        LANE_REV_MIX(h, ln->track);
+        LANE_REV_MIX(h, ln->slot);
+        LANE_REV_MIX(h, ln->fp.loop_start);
+        LANE_REV_MIX(h, ln->fp.loop_len);
+        LANE_REV_MIX(h, ln->fp.note_count);
+        LANE_REV_MIX(h, ln->fp.first_note);
+        LANE_REV_MIX(h, ln->stale);
+        LANE_REV_MIX(h, ln->orphaned);
+        LANE_REV_MIX(h, ln->module_gone);
+        LANE_REV_MIX(h, ln->origin_pending);
+        LANE_REV_MIX(h, ln->pending_len);
+        LANE_REV_MIX(h, ln->n);
+        const int n = ln->n < LANE_POINTS_MAX ? ln->n : LANE_POINTS_MAX;
+        for (int k = 0; k < n; k++) {
+            LANE_REV_MIX(h, ln->pts[k].phase);
+            LANE_REV_MIX(h, ln->pts[k].value);
+            LANE_REV_MIX(h, ln->pts[k].hold);
+            LANE_REV_MIX(h, ln->pts[k].span);
+        }
+    }
+    return h;
+}
+
 int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
     if (!inst || !buf || buf_len <= 0) return -1;
     return lane_store_serialize(&inst->lanes, buf, buf_len);
@@ -905,7 +974,34 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
      * indistinguishable from one that worked. */
     inst->lanes_last_discarded = lane_store_provisional_count(&inst->lanes);
     lane_release_all(inst);
-    lane_store_deserialize(&inst->lanes, doc);
+    /* "NO LANES" IS A DOCUMENT TOO. The snapshot writes "{}" for a slot that
+     * had no lanes file, and the parser refused it, so a recall never took
+     * automation away -- Shift+Delete left every lane recorded since the
+     * snapshot playing. A "{}" document empties the store (so does
+     * `lanes:reset`, which sends one); a MALFORMED one still changes nothing
+     * (all-or-nothing, below), and so does a bare EMPTY string: that is what
+     * a lost or truncated write looks like, and wiping a slot's automation on
+     * it is the wrong direction to fail in. */
+    const char *q = doc;
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    int is_empty_doc = 0;
+    if (q[0] == '{' && q[1] == '}') {
+        q += 2;
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+        is_empty_doc = (*q == '\0');
+    }
+    int applied;
+    if (is_empty_doc) {
+        lane_store_reset(&inst->lanes);
+        applied = 1;
+    } else {
+        applied = lane_store_deserialize(&inst->lanes, doc);
+    }
+    /* AND THE UNDO BUFFER IS THE OUTGOING SET'S. This is the set-change and
+     * snapshot hook, and the buffer held whatever the last clear or edit
+     * saved -- so "Undo automation" in the new set swapped the PREVIOUS set's
+     * lanes in, and the autosave then wrote them into this set's file. */
+    if (applied) inst->lanes_undo_valid = 0;
 
     /* AND THE REMEMBERED ROWS GO WITH THE OUTGOING SET.
      *
@@ -989,7 +1085,7 @@ static int lane_edit_kind_of(const char *sub) {
         return LANE_EDIT_CLEAR;
     if (!strcmp(sub, "paste_span") || !strcmp(sub, "journal") || !strcmp(sub, "stash") ||
         !strcmp(sub, "unstash") || !strcmp(sub, "double") || !strcmp(sub, "copy_clip") ||
-        !strcmp(sub, "state") || !strcmp(sub, "undo"))
+        !strcmp(sub, "state") || !strcmp(sub, "reset") || !strcmp(sub, "undo"))
         return -1;
     return 0;
 }
@@ -1025,12 +1121,13 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * recall, Slot Settings' swap Undo): every entry journaled before it
      * describes lanes that are gone, and undoing one would splice pre-restore
      * content into the restored state. Void them here and tell the host. */
-    if (!strcmp(sub, "state") || !strcmp(sub, "undo")) {
+    const int restore = !strcmp(sub, "state") || !strcmp(sub, "reset");
+    if (restore || !strcmp(sub, "undo")) {
         for (int k = 0; k < LANE_SJOURNAL_DEPTH; k++) inst->lanes_sjournal[k].id = 0;
         lane_edit_event(inst, 0, LANE_EDIT_RESET);
     }
     /* ...and the take that was open is about another set's lanes. */
-    if (inst->lane_armed && strcmp(sub, "state") != 0) lane_edit_mark(inst, LANE_EDIT_TAKE);
+    if (inst->lane_armed && !restore) lane_edit_mark(inst, LANE_EDIT_TAKE);
 }
 
 /* The host takes each journaled own-edit once (chain_take_lane_edit). */
@@ -1049,6 +1146,16 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
     /* The whole store as one opaque document. */
     if (strcmp(sub, "state") == 0) {
         lane_apply_state(inst, val ? val : "");
+        return;
+    }
+    /* A RESTORE OF "NO LANES" -- the set change or snapshot recall for a slot
+     * with no lanes file. It used to be `lanes:clear`, which is the USER's
+     * verb: it saved the outgoing set's whole store as undo (so Undo in the
+     * new set brought the old set's lanes back) and journaled a CLEAR into
+     * the unified history. This is lanes:state with an empty document:
+     * releases, empties, drops the undo buffer, journals nothing. */
+    if (strcmp(sub, "reset") == 0) {
+        if (val && atoi(val) != 0) lane_apply_state(inst, "{}");
         return;
     }
 
@@ -1447,10 +1554,13 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
          *
          * The restart rule is unchanged and still applies: an orphan does not
          * come back to life with the dead clip's points. */
-        if (ln->orphaned) {
+        if (ln->orphaned || ln->module_gone) {
             ln->n = 0;                       /* the dead clip's points go */
             lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
             ln->orphaned = 0;
+            /* A lane whose module LEFT restarts the same way: the lock is on
+             * the module now at this position, not on the departed one. */
+            ln->module_gone = 0;
             /* With no fingerprint to take, this take is a blind one: mark it
              * so lane_tick can re-origin and identify it when the clip
              * lands, exactly as a first blind write on a fresh lane is. */
@@ -1508,7 +1618,7 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
         int total = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!ln->used || ln->stale || ln->orphaned) continue;
+            if (!ln->used || ln->stale || ln->orphaned || ln->module_gone) continue;
             if (ln->track != inst->lane_track || ln->slot != lane_write_slot(inst))
                 continue;
             total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
@@ -1585,6 +1695,9 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
              * and copying the ABSENT fingerprint would plant a lane that can
              * never match anything. */
             if (from->n <= 0 || lane_fp_absent(&from->fp)) continue;
+            /* A lane whose module LEFT names a position a different module
+             * now holds; a copy would drive that stranger. */
+            if (from->module_gone) continue;
             lane_t *to = lane_alloc(&inst->lanes, from->target, from->param,
                                     track, dst, &from->fp);
             if (!to) break;          /* store full: as many as fit, in order */
@@ -1813,6 +1926,11 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * was too small, which the UI must not mistake for empty or it truncates
      * a good lanes_<i>.json with half a document. */
     if (strcmp(sub, "state") == 0) return lane_serve_state(inst, buf, buf_len);
+    /* The store's content revision (lane_store_rev), so the autosave can skip
+     * the serialise above when nothing changed. */
+    if (strcmp(sub, "rev") == 0)
+        return snprintf(buf, buf_len, "%016llx",
+                        (unsigned long long)lane_store_rev(&inst->lanes));
 
     /* WHICH CLIP this slot is bound to, as "<track> <slot>" 0-based, or empty
      * when it is bound to none. The UI needs it to NAME what a clip-scoped
@@ -1867,7 +1985,7 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
              * invisible now, and the first write starts the lane over -- so it
              * BEHAVES deleted from every angle the user has, while an undo can
              * still bring it back. */
-            if (ln->orphaned) continue;
+            if (ln->orphaned || ln->module_gone) continue;
             int n = snprintf(buf + off, (size_t)(buf_len - off), "%s %s",
                              ln->target, ln->param);
             if (n <= 0 || off + n >= buf_len) return off;      /* truncated: stop clean */
@@ -2066,13 +2184,17 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
          * defect class this file keeps finding in itself. */
         int off = snprintf(buf, buf_len,
                            "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d "
-                           "disp=%d prov=%d",
+                           "disp=%d prov=%d sidref=%d",
                            inst->clip_phase_beats, inst->clip_phase_valid ? 1 : 0,
                            inst->clip_loop_start, inst->clip_loop_len,
                            inst->lane_armed ? 1 : 0,
                            lane_is_recording(inst) ? 1 : 0,
                            inst->lanes_adopt_displaced,
-                           lane_store_provisional_count(&inst->lanes));
+                           lane_store_provisional_count(&inst->lanes),
+                           /* mod-bus emits refused for an id too long to
+                            * store (chain_mod_source_id_fits) -- nonzero
+                            * means a source silently never drove. */
+                           inst->mod_source_id_refused);
         for (int i = 0; i < LANE_MAX && off > 0 && off < buf_len; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used) continue;
@@ -2082,14 +2204,14 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             off += snprintf(buf + off, buf_len - off,
                             "\nL%d %s:%s t=%d row=%d pend=%d plen=%.3f "
                             "n=%d drv=%d punch=%d pph=%.4f "
-                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d "
+                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d gone=%d "
                             "opend=%d adopt=%d reorig=%d evict=%d full=%d",
                             i, ln->target, ln->param, ln->track, ln->slot,
                             lane_slot_is_pending(ln->slot), ln->pending_len,
                             ln->n, ln->driving,
                             ln->punch_until_wrap, ln->punch_phase,
                             ln->rec_active, ln->rec_last_phase, live,
-                            ln->stale, ln->orphaned,
+                            ln->stale, ln->orphaned, ln->module_gone,
                             ln->origin_pending, ln->adopted, ln->reorigined,
                             ln->evicted_orphan, ln->full_hits);
         }
