@@ -1097,6 +1097,17 @@ void shadow_apply_mute(int slot, int is_muted) {
     shadow_request_save_state();
 }
 
+/* Set a slot's volume to Move's track volume (linear), as the model reports
+ * it. SPI thread only (move_model_sync_apply_pending). */
+void shadow_apply_volume(int slot, float linear) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (linear < 0.0f) linear = 0.0f;
+    if (shadow_chain_slots[slot].volume == linear) return;
+    shadow_chain_slots[slot].volume = linear;
+    shadow_ui_state_update_slot(slot);
+    shadow_request_save_state();
+}
+
 /* Set a slot's solo to a known state, as Move reported it. Exclusive, like
  * shadow_toggle_solo and like Move itself: soloing one track unsolos the rest,
  * and Move announces only the track it soloed. */
