@@ -62,7 +62,11 @@ static void h_apply(const char *t, const char *p, int on, float v) {
     if (!strcmp(t, "slot2") && !strcmp(p, "volume")) { h_vol_on = on; h_vol_ov = v; }
     if (!strcmp(t, "send1") && !strcmp(p, "return")) { h_ret_on = on; h_ret_ov = v; }
 }
-static const scene_host_io_t host_io = { h_get, h_apply };
+static int h_peek(const char *t, const char *p, float *out) {
+    if (!strcmp(t, "slot2") && !strcmp(p, "volume") && h_vol_on) { *out = h_vol_ov; return 1; }
+    return 0;
+}
+static const scene_host_io_t host_io = { h_get, h_apply, h_peek };
 
 int main(void) {
     scene_bus_meta_t m;
@@ -97,6 +101,8 @@ int main(void) {
     char buf[256];
     CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 0.5),
           "a plain read of a DRIVEN param answers the base: %s", buf);
+    CHECK(shadow_scene_bus_get_verb(0, "driven", buf, sizeof(buf)) > 0 && !strncmp(buf, "fx2 mix 1.0", 11),
+          "... while `driven` asks the PLUGIN, and it holds the morph: %s", buf);
     CHECK(shadow_scene_bus_read(0, 1, "mode", buf, sizeof(buf)) < 0, "an undriven param falls through");
 
     /* One end only: the knob is the other end, and it is LIVE. */
@@ -202,6 +208,8 @@ int main(void) {
     CHECK(NEAR(h_vol_ov, 3.0f), "the host turn is heard (2.5 + 0.5): %f", h_vol_ov);
     shadow_scene_bus_tick(0, SCENE_NONE, 1.0f, SCENE_NONE, 0);
     CHECK(NEAR(h_vol_ov, 2.5f), "toward the unlocked end: the knob: %f", h_vol_ov);
+    CHECK(shadow_scene_bus_get_verb(SCENE_HOST_SCOPE, "driven", buf, sizeof(buf)) > 0 &&
+          !strcmp(buf, "slot2 volume 2.5000\n"), "driven: the override the host APPLIED: %s", buf);
     shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
     CHECK(!h_vol_on, "no scene: the override is switched OFF");
 

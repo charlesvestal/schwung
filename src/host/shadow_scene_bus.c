@@ -572,6 +572,27 @@ int shadow_scene_bus_get_verb(int scope, const char *verb, char *buf, int len) {
     if (strcmp(verb, "dump") == 0) return scene_dump(t, buf, len);
     if (strcmp(verb, "count") == 0) return snprintf(buf, len, "%d", t->count);
     if (strcmp(verb, "rev") == 0) return snprintf(buf, len, "%u", (unsigned)s_bus[scope].rev);
+    if (strcmp(verb, "driven") == 0) {
+        int off = 0;
+        buf[0] = '\0';
+        for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+            const scene_drive_t *d = &s_bus[scope].drives[i];
+            if (!d->active) continue;
+            char val[64] = "";
+            if (scope == SCENE_HOST_SCOPE) {
+                float v;
+                if (!s_host->peek || !s_host->peek(d->target, d->param, &v)) continue;
+                snprintf(val, sizeof(val), "%.4f", v);
+            } else {
+                void *slot = slot_for(scope, d->target);
+                if (!slot || s_io->get_param(slot, d->param, val, sizeof(val)) <= 0) continue;
+            }
+            int w = snprintf(buf + off, (size_t)(len - off), "%s %s %s\n", d->target, d->param, val);
+            if (w < 0 || w >= len - off) break;
+            off += w;
+        }
+        return off;
+    }
     if (strcmp(verb, "locks") == 0) {
         int off = 0;
         for (int n = 0; n < SCENE_COUNT; n++) {
