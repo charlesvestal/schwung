@@ -33,7 +33,9 @@ int move_model_get(move_model_t *out) { memset(out, 0, sizeof *out); return 0; }
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
 { (void)previous; if (notes) *notes = NULL; if (ref) memset(ref, 0, sizeof *ref); return -1; }
 void shadow_log(const char *m) { (void)m; }
-uint64_t shadow_set_pages_last_publish_ms(void) { return 0; }
+/* When the published set read last CHANGED (0 = never read). */
+static uint64_t fake_read_ms = 0;
+uint64_t shadow_set_pages_last_read_ms(void) { return fake_read_ms; }
 /* The reader's liveness: "just published" unless a test says otherwise. */
 #include <time.h>
 static long long fake_pub_age_ms = 0;   /* -1: never published */
@@ -248,6 +250,30 @@ int main(void)
         g_tick(&blind);
         CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
         CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* A STALLED READER CLAIMS NOTHING. The claim it last published is
+         * about a Move history it has stopped reading: Move edits made
+         * meanwhile are invisible to it, so swallowing Undo would undo the
+         * wrong thing and leave Move's own Undo undone. */
+        g_tick(&v2);
+        move_model_sync_on_lane_edit(3, 0x80000002u, 1);
+        g_tick(&v2);
+        fake_pub_age_ms = 5000;                                      /* reader stopped */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* Move gets it */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);            /* and its release */
+        fake_pub_age_ms = 0;
+
+        /* A CLAIM MOVE OUTRAN: swallowed, then refused by the timeline
+         * because Move pushed an edit between the claim and the take. It is
+         * counted (and logged) rather than vanishing. */
+        const unsigned refused0 = move_model_sync_undo_refused();
+        const int jrn0 = n_jrn;
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);          /* live again: ours */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);
+        move_model_t v3 = v2; v3.hist_undo_node = 0x30; v3.hist_undo_nbr = 3;
+        g_tick(&v3); drain_cmds();
+        CHECK(n_jrn == jrn0);
+        CHECK(move_model_sync_undo_refused() == refused0 + 1);
     }
 
     /* ---- the reader posts, the SPI thread applies ----------------------- */
@@ -276,6 +302,54 @@ int main(void)
     fake_pub_age_ms = -1;
     CHECK(!move_model_sync_active());                     /* never published */
     fake_pub_age_ms = 0;
+
+    /* ---- THE MISALIGNMENT GIVE-UP CANNOT BE STARVED ----------------------
+     * The give-up keys on "no NEW read since the load", never on "nothing
+     * published": the worker republishes the same read every tick while
+     * misaligned, so a publish clock never goes quiet. The case that needs
+     * it: the UI's one `set_aligned` ack was lost. Every consume re-reads the
+     * set it already switched to, the same-set path refuses (no ack), the
+     * flag is clear -- and before this, autosave stayed off for the session. */
+    {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        const uint64_t e0 = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+        move_model_t la = doc(50);
+        FIRE(&la, &h);                                     /* the load edge, at ~e0 */
+        ctl.set_doc_gen = 49;                              /* the ack never landed */
+        ctl.ui_flags = 0;                                  /* the UI cleared the flag */
+
+        /* No read at all: the original give-up, 15 s after the edge. */
+        fake_read_ms = 0;
+        move_model_sync_housekeep_at(e0 + 14000);
+        CHECK(ctl.set_doc_gen == 49);
+        move_model_sync_housekeep_at(e0 + 15500);
+        CHECK(ctl.set_doc_gen == 50);
+
+        /* The lost ack: the new set's read landed 300 ms after the edge and
+         * has been republished unchanged ever since. */
+        ctl.set_doc_gen = 49;
+        fake_read_ms = e0 + 300;
+        move_model_sync_housekeep_at(e0 + 10000);
+        CHECK(ctl.set_doc_gen == 49);                      /* still inside the window */
+        move_model_sync_housekeep_at(e0 + 16000);
+        CHECK(ctl.set_doc_gen == 50);                      /* it gives up */
+
+        /* A read that CHANGED recently is pending, and is never forced over. */
+        ctl.set_doc_gen = 49;
+        fake_read_ms = e0 + 15500;
+        move_model_sync_housekeep_at(e0 + 16000);
+        CHECK(ctl.set_doc_gen == 49);
+        move_model_sync_housekeep_at(e0 + 15500 + 15001);
+        CHECK(ctl.set_doc_gen == 50);
+
+        /* SET_CHANGED up means the UI has work to do: never. */
+        ctl.set_doc_gen = 49;
+        ctl.ui_flags = SHADOW_UI_FLAG_SET_CHANGED;
+        move_model_sync_housekeep_at(e0 + 60000);
+        CHECK(ctl.set_doc_gen == 49);
+        ctl.ui_flags = 0;
+        fake_read_ms = 0;
+    }
 
     /* ---- MIXER AND TRANSPORT FACTS from the model ------------------------ */
     {

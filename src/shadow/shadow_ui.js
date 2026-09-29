@@ -9951,6 +9951,42 @@ function setAlignmentPending() {
     return !!(st && st[0] && st[1] !== st[2]);
 }
 
+/* THE `set_aligned` ACK IS RETRIED UNTIL THE SHIM REPORTS IT.
+ *
+ * It was sent once with its result ignored, right behind the set change's
+ * dozens of slot writes -- where the one-slot param channel is busiest. One
+ * lost write left set_doc_gen behind for the whole session: the shim's
+ * same-set path refuses an unacked set, the cleared flag is never raised
+ * again, and setAlignmentPending() kept periodic autosave off until the next
+ * set load. So the handler ARMS this, and it resends -- one short write per
+ * ALIGN_ACK_INTERVAL_MS, never a loop inside a tick -- until the shim says
+ * set_doc_gen is the handled generation, or the two generations agree some
+ * other way (a same-set reload aligning in C, the shim's 15 s give-up).
+ * Bounded; the give-up is the backstop past it. */
+const ALIGN_ACK_INTERVAL_MS = 500;
+const ALIGN_ACK_TRIES = 20;
+let alignAck = null;          /* { gen, tries, nextAt } while unconfirmed */
+function armAlignAck(gen, now) {
+    alignAck = { gen: gen, tries: 0, nextAt: now + ALIGN_ACK_INTERVAL_MS };
+}
+function alignAckTick(now) {
+    if (!alignAck) return;
+    const st = moveModelState();
+    if (!st || st[2] === alignAck.gen || st[1] === st[2]) { alignAck = null; return; }
+    if (now < alignAck.nextAt) return;
+    if (alignAck.tries >= ALIGN_ACK_TRIES) {
+        debugLog("set_aligned " + alignAck.gen + " never confirmed after " +
+                 ALIGN_ACK_TRIES + " resends; leaving it to the shim's give-up");
+        alignAck = null;
+        return;
+    }
+    alignAck.tries++;
+    alignAck.nextAt = now + ALIGN_ACK_INTERVAL_MS;
+    debugLog("set_aligned " + alignAck.gen + " not confirmed (shim has " + st[2] +
+             "); resend " + alignAck.tries + "/" + ALIGN_ACK_TRIES);
+    setSlotParamWithTimeout(0, "set_aligned", String(alignAck.gen), 100);
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -12285,6 +12321,10 @@ function scenesTick() {
     if (key === sceneSavedKey) { sceneDirtyAt = 0; return; }
     if (!sceneDirtyAt) sceneDirtyAt = now;
     if (now - sceneDirtyAt >= SCENE_SAVE_DEBOUNCE_MS) {
+        /* Gated like the slot autosave: while Move's loaded set is not yet
+         * the one activeSlotStateDir names, a save lands in the OUTGOING
+         * set's folder. Stays dirty, and saves once aligned. */
+        if (setAlignmentPending()) return;
         if (scenesSaveTo(activeSlotStateDir)) sceneDirtyAt = 0;
         else sceneDirtyAt = now;     /* a failed read: try again, never write a partial bank */
     }
@@ -28492,6 +28532,11 @@ globalThis.tick = function() {
             saveChainConfigToDir(activeSlotStateDir);
             /* Save current RNBO graph (if RNBO is running) */
             saveRnboGraphToDir(activeSlotStateDir);
+            /* The outgoing set's scenes, while the DSP still holds them -- HERE,
+             * with the other outgoing saves: step 3b may move this folder
+             * (a pending set's first save) and a later save would write into
+             * the deleted path, then 8c load the stale copy over the bank. */
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
 
             /* 2. Get UUID and set name from shim (in-memory, no file I/O on audio thread) */
             const activeSetRaw = getSlotParam(0, "active_set");
@@ -28655,9 +28700,6 @@ globalThis.tick = function() {
                         JSON.stringify(defaultCfg, null, 2) + "\n");
                 }
             }
-
-            /* 4b. The outgoing set's scenes, while the DSP still holds them. */
-            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
 
             /* 5. Switch directory and load chain config (volumes/channels/mute/solo) */
             const oldDir = activeSlotStateDir;
@@ -28910,6 +28952,7 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
             }
             setSlotParamWithTimeout(0, "set_aligned", String(handledGen), 500);
+            armAlignAck(handledGen, Date.now());   /* verified, and resent if lost */
             if (uuid.indexOf("__pending-") === 0) {
                 const st = moveModelState();
                 pendingSetDocGen = (st && st[0]) ? handledGen : -1;
@@ -29073,6 +29116,8 @@ globalThis.tick = function() {
     if (!isOvertakeActive && refreshCounter % 120 === 0) {
         refreshSlots();
     }
+
+    if (!isOvertakeActive) alignAckTick(Date.now());
 
     /* Periodic autosave (suppressed briefly after set change, and for as long
      * as a set load the model saw is not yet aligned) */
