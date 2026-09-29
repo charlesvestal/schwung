@@ -28396,6 +28396,13 @@ globalThis.tick = function() {
         if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
 
+            /* 0. Disarm any armed scene snapshot BEFORE anything is restored.
+             *    Armed, every restore write below (volumes, pans, Master FX
+             *    params and LFOs, send levels) is taken as a lock in the
+             *    OUTGOING bank, which 8c's bank load then discards. The shim
+             *    already disarms at detection; this is the UI's own half. */
+            sceneSetEdit(-1);
+
             /* 1. Save current state to outgoing directory */
             autosaveAllSlots();
             saveMasterFxChainConfig();

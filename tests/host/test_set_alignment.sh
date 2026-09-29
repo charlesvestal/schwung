@@ -16,3 +16,14 @@ mkdir -p "$(dirname "$bin")"
 cc -std=gnu11 -Wall -Wno-unused-function -I"$work" -Isrc -Isrc/host \
   tests/host/test_set_alignment.c src/host/shadow_set_pages.c -o "$bin"
 "$bin"
+
+# The UI's half of the set-change disarm: sceneSetEdit(-1) ahead of the first
+# save / restore in the SET_CHANGED handler (the shim half is checked above).
+ui=src/shadow/shadow_ui.js
+start=$(grep -n 'if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {' "$ui" | head -1 | cut -d: -f1)
+[ -n "$start" ] || { echo "FAIL: SET_CHANGED handler not found"; exit 1; }
+disarm=$(awk -v s="$start" 'NR>s && /sceneSetEdit\(-1\);/ {print NR; exit}' "$ui")
+save=$(awk -v s="$start" 'NR>s && /autosaveAllSlots\(\);/ {print NR; exit}' "$ui")
+[ -n "$disarm" ] && [ -n "$save" ] && [ "$disarm" -lt "$save" ] \
+  || { echo "FAIL: SET_CHANGED must disarm the scene snapshot before it saves or restores"; exit 1; }
+echo "test_set_alignment: UI disarms on set change"

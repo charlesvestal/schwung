@@ -1879,6 +1879,11 @@ Nothing is written for a set until its bank is CONFIRMED loaded (every scope's
 happen; a file this build cannot read is left alone and the set never saved
 over (v1/v2 were earlier shapes that never shipped and read as empty). A
 shadow_ui RESTART adopts a non-empty live bank instead of reloading the file.
+**A set change DISARMS an armed snapshot** -- in the shim at detection
+(`shadow_handle_set_loaded`) and first thing in the UI's SET_CHANGED handler --
+because armed, the incoming set's restore writes (volumes, pans, Master FX
+params and LFOs, send levels) were taken as locks in the outgoing bank and
+discarded with it, and the new set played at the old set's levels.
 Verified on hardware: a set switch loads that set's bank, a lock made in one
 set is saved to its file only, and returning restores the first set exactly.
 The fader is live-only and starts at A.

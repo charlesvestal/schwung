@@ -78,15 +78,30 @@ int main(void)
     /* Move RELOADING the same set, after it was acked: aligns in C, no UI switch. */
     shadow_set_pages_ack_aligned(shadow_set_pages_published_gen());
     ctl->move_doc_gen = 5;
+    ctl->scene_edit = 3;
     read_set("D", 5);
     CHECK(ctl->set_doc_gen == 5 && !raised(), "same-set reload aligns quietly (%u)", ctl->set_doc_gen);
+    CHECK(ctl->scene_edit == 3, "...and leaves an armed snapshot armed: nothing is restored");
+
+    /* A SET CHANGE DISARMS THE SNAPSHOT, here, at detection. The incoming set's
+     * restore writes volumes, pans, Master FX params and send levels -- and
+     * armed, every one of them became a LOCK in the outgoing bank, which the
+     * bank load then discarded: the new set played at the old set's levels. */
+    ctl->scene_edit = 3;
+    ctl->scene_unlock = 1;
+    ctl->move_doc_gen = 6;
+    read_set("D2", 6);
+    CHECK(raised(), "D2 raises SET_CHANGED");
+    CHECK(ctl->scene_edit == SCENE_NONE && ctl->scene_unlock == 0,
+          "a set change disarms the snapshot (edit=%d unlock=%d)", ctl->scene_edit, ctl->scene_unlock);
+    ui_clear(); shadow_set_pages_ack_aligned(shadow_set_pages_published_gen());
 
     /* A READ YOUNGER THAN 300 ms, or one the model's generation has since
      * moved past, is not consumed. */
-    m_gen = 6;
-    CHECK(!shadow_set_pages_consume_read("E", "E", 6, 1, 50), "a 50 ms read waits");
-    CHECK(!shadow_set_pages_consume_read("E", "E", 5, 1, 1000), "a read from the old generation is dropped");
-    CHECK(shadow_set_pages_consume_read("E", "E", 6, 1, 1000), "the settled read lands");
+    m_gen = 7;
+    CHECK(!shadow_set_pages_consume_read("E", "E", 7, 1, 50), "a 50 ms read waits");
+    CHECK(!shadow_set_pages_consume_read("E", "E", 6, 1, 1000), "a read from the old generation is dropped");
+    CHECK(shadow_set_pages_consume_read("E", "E", 7, 1, 1000), "the settled read lands");
 
     /* No model: every read is consumed, generations are all 0 (pre-model). */
     m_active = 0;
