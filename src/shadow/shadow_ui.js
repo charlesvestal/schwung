@@ -11307,6 +11307,26 @@ function setSceneShiftVol(on) {
     sceneShiftVol = !!on;
     if (typeof shadow_scene_shift_vol_set === "function") shadow_scene_shift_vol_set(sceneShiftVol ? 1 : 0);
 }
+/*
+ * Program Change on this channel (0 = off, 1..16; default 16) selects scene
+ * 1..16 -- applied by the shim on the frame it arrives, adopted here from
+ * scene_pc_seq (scenesAdoptPc).
+ */
+let scenePcChannel = 16;
+function setScenePcChannel(ch) {
+    ch = Number.isInteger(ch) && ch >= 0 && ch <= 16 ? ch : 16;
+    scenePcChannel = ch;
+    if (typeof shadow_scene_pc_channel_set === "function") shadow_scene_pc_channel_set(ch);
+}
+function loadScenePcChannel() {
+    let ch = 16;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_pc_channel"\s*:\s*(\d+)/.exec(raw) : null;
+        if (m) ch = parseInt(m[1], 10);
+    } catch (e) { debugLog("scene_pc_channel read failed: " + e); }
+    setScenePcChannel(ch);
+}
 function loadSceneShiftVol() {
     let on = true;
     try {
@@ -11883,7 +11903,30 @@ let scenePairs = sceneDefaultPairs();
 function scenePushEnds() {
     const e = sceneEndsFor(sceneActive, scenePairs);
     if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
+    /* ...and the whole pairing table, so the shim can apply a Program Change
+     * on the frame it arrives without asking us (scene_pc_select). */
+    if (typeof shadow_set_scene_pairs === "function") {
+        const flat = [];
+        for (const p of scenePairs) flat.push(p[0], p[1]);
+        shadow_set_scene_pairs(flat, sceneActive);
+    }
     needsRedraw = true;
+}
+
+/* A Program Change the shim applied: adopt its scene. The ends are already
+ * pushed; this is the UI catching up -- the active step, the saved file, and
+ * the fader slider saying which scene it now is. */
+let scenePcSeqSeen = null;
+function scenesAdoptPc(st) {
+    if (!st || !Number.isInteger(st.pcSeq)) return;
+    if (scenePcSeqSeen === null) { scenePcSeqSeen = st.pcSeq; return; }
+    if (st.pcSeq === scenePcSeqSeen) return;
+    scenePcSeqSeen = st.pcSeq;
+    if (Number.isInteger(st.active) && st.active >= 0 && st.active < scenePairs.length) {
+        sceneActive = st.active;
+        sceneFaderOverlay.raise();
+        needsRedraw = true;
+    }
 }
 
 const scenesScreen = createScenesScreen({
@@ -12179,6 +12222,7 @@ function scenesTick() {
         scenesScreen.clearLearnPending();
         needsRedraw = true;
     }
+    scenesAdoptPc(sceneState());
     const now = Date.now();
     if (!sceneLoadConfirmed) {
         if (!sceneLoadRefused && sceneLoadDir && now >= sceneLoadNextTry) scenesLoadFrom(sceneLoadDir, false);
@@ -16624,6 +16668,8 @@ function globalGridIoFor() {
                 return String(recallQuantizeValue);
             case "scene_shift_vol":
                 return bit(sceneShiftVol);
+            case "scene_pc_channel":
+                return String(scenePcChannel);
             case "metronome_mode":
                 return String(metronomeMode);
             case "metronome_level":
@@ -16764,6 +16810,9 @@ function globalGridIoFor() {
                 break;
             case "scene_shift_vol":
                 setSceneShiftVol(on);
+                return;
+            case "scene_pc_channel":
+                setScenePcChannel(parseInt(value, 10));
                 return;
             case "metronome_mode":
                 setMetronome(parseInt(value, 10) || 0, metronomeLevel);
@@ -27351,6 +27400,7 @@ globalThis.init = function() {
     try { scenesLoadFrom(activeSlotStateDir, true); } catch (e) { debugLog("scenes load failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
     try { loadSceneShiftVol(); } catch (e) { debugLog("scene_shift_vol load failed: " + e); }
+    try { loadScenePcChannel(); } catch (e) { debugLog("scene_pc_channel load failed: " + e); }
     try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
     try { loadSpeakerEq(); } catch (e) { debugLog("speaker_eq load failed: " + e); }

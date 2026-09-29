@@ -24,4 +24,12 @@ grep -q 'shadow_scene_bus_bind(' "$mgmt" || fail "bus io never bound"
 grep -q 'shadow_scene_bus_set_verb(' "$mgmt" || fail "bus verbs not routed"
 grep -q 'shadow_scene_bus_read(' "$mgmt" || fail "a driven bus param must read back its base / lock"
 grep -q 'src/host/shadow_scene_bus.c' scripts/build.sh || fail "shadow_scene_bus.c not built into the shim"
+# PROGRAM CHANGE: applied in the shim's external walk, and withheld from the
+# slots and Move, or a slot receiving All changes preset on the same message.
+pc_body=$(grep -n 'scene_pc_select(shadow_control->scene_pc_channel' src/schwung_shim.c | head -1 | cut -d: -f1 || true)
+[ -n "$pc_body" ] || fail "the shim never applies a scene Program Change"
+sed -n "${pc_body},$((pc_body + 10))p" src/schwung_shim.c | grep -q 'midi_in_swallow(sh_midi, hw_midi, j)' \
+  || fail "a scene PC must be taken out of BOTH buffers"
+grep -q 'shadow_set_scene_pairs(flat, sceneActive)' src/shadow/shadow_ui.js || fail "the UI never mirrors its pairings to the shim"
+grep -q 'scenesAdoptPc(sceneState())' src/shadow/shadow_ui.js || fail "the UI never adopts a PC's scene"
 echo "PASS: scene bus wiring"

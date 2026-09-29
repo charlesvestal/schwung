@@ -441,6 +441,31 @@ static inline int scene_takeover_expired(const scene_takeover_t *t, float x) {
     return (x <= 0.0f && t->x0 > 0.0f) || (x >= 1.0f && t->x0 < 1.0f);
 }
 
+/*
+ * PROGRAM CHANGE SELECTS A SCENE, so a sequencer can drive the whole feature:
+ * PC picks the scene, a mapped CC plays the fader. PC 0..15 on `channel`
+ * (1..16; 0 = off) is scene 1..16; anything else is not ours.
+ *
+ * `pairs` is the UI's pairing table as the shim holds it: pairs[2k] is scene
+ * k's A SNAPSHOT (0..15) and pairs[2k+1] its B, SCENE_NONE for "none". Out:
+ * the scene and the two HALVES the fader runs between. Applied on the frame
+ * the PC arrives, so a PC on the downbeat is heard on the downbeat.
+ * Returns 1 when the message was a scene select.
+ */
+#define SCENE_SNAPS 16
+static inline int scene_pc_select(int channel, uint8_t status, uint8_t program,
+                                  const volatile uint8_t *pairs,
+                                  uint8_t *scene, uint8_t *half_a, uint8_t *half_b) {
+    if (channel < 1 || channel > 16) return 0;
+    if (status != (uint8_t)(0xC0 | (channel - 1))) return 0;
+    if (program >= SCENE_SNAPS || !pairs) return 0;
+    const uint8_t sa = pairs[program * 2], sb = pairs[program * 2 + 1];
+    *scene = program;
+    *half_a = sa < SCENE_SNAPS ? sa : SCENE_NONE;
+    *half_b = sb < SCENE_SNAPS ? (uint8_t)(SCENE_SNAPS + sb) : SCENE_NONE;
+    return 1;
+}
+
 /* Fader position <-> the uint16 the control struct carries. */
 static inline float scene_xfade_from_q(uint16_t q) { return (float)q / 65535.0f; }
 static inline uint16_t scene_xfade_to_q(float x) {

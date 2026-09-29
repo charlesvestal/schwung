@@ -283,6 +283,46 @@ static JSValue js_shadow_scene_shift_vol_set(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+/* shadow_scene_pc_channel_set(ch) -> void   (0 = off, 1..16)
+ *
+ * The channel whose Program Change 0..15 selects scene 1..16, applied by the
+ * shim on the frame it arrives. Persisted here like the fader toggle. */
+static JSValue js_shadow_scene_pc_channel_set(JSContext *ctx, JSValueConst this_val,
+                                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0 || v > 16) v = 0;
+    shadow_control->scene_pc_channel = (uint8_t)v;
+    char num[8];
+    snprintf(num, sizeof(num), "%d", v);
+    features_json_set("scene_pc_channel", num);
+    return JS_UNDEFINED;
+}
+
+/* shadow_set_scene_pairs(flat32, active) -> bool
+ *
+ * Mirror the UI's pairing table and active scene into shadow_control_t, so a
+ * Program Change can be applied by the shim without asking the UI. `flat32`
+ * is [a0, b0, a1, b1, ...], a snapshot 0..15 or -1 for none. */
+static JSValue js_shadow_set_scene_pairs(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_FALSE;
+    for (int i = 0; i < 32; i++) {
+        JSValue e = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);
+        int v = -1;
+        if (JS_ToInt32(ctx, &v, e)) v = -1;
+        JS_FreeValue(ctx, e);
+        shadow_control->scene_pairs[i] = (v >= 0 && v < 16) ? (uint8_t)v : 0xFF;
+    }
+    int a = -1;
+    JS_ToInt32(ctx, &a, argv[1]);
+    shadow_control->scene_active = (a >= 0 && a < 16) ? (uint8_t)a : 0xFF;
+    return JS_TRUE;
+}
+
 /* shadow_metronome_set(mode, level) -> void   (mode 0=off, 1=follow, 2=on)
  *
  * Writes shadow_control_t.metronome_mode / metronome_level, which the shim
@@ -730,6 +770,8 @@ static JSValue js_shadow_get_scene_state(JSContext *ctx, JSValueConst this_val, 
     JS_SetPropertyStr(ctx, o, "flash", JS_NewInt32(ctx, shadow_control->scene_flash));
     JS_SetPropertyStr(ctx, o, "xfade", JS_NewFloat64(ctx, scene_xfade_from_q(shadow_control->scene_xfade_q)));
     JS_SetPropertyStr(ctx, o, "rev", JS_NewInt32(ctx, shadow_control->scene_rev));
+    JS_SetPropertyStr(ctx, o, "active", JS_NewInt32(ctx, scene_int(shadow_control->scene_active)));
+    JS_SetPropertyStr(ctx, o, "pcSeq", JS_NewInt32(ctx, shadow_control->scene_pc_seq));
     return o;
 }
 
@@ -3642,6 +3684,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_scene_shift_vol_set", JS_NewCFunction(ctx, js_shadow_scene_shift_vol_set, "shadow_scene_shift_vol_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_scene_pc_channel_set", JS_NewCFunction(ctx, js_shadow_scene_pc_channel_set, "shadow_scene_pc_channel_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_pairs", JS_NewCFunction(ctx, js_shadow_set_scene_pairs, "shadow_set_scene_pairs", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_set", JS_NewCFunction(ctx, js_shadow_metronome_set, "shadow_metronome_set", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_save_stems_set", JS_NewCFunction(ctx, js_shadow_save_stems_set, "shadow_save_stems_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_speaker_eq_set", JS_NewCFunction(ctx, js_shadow_speaker_eq_set, "shadow_speaker_eq_set", 1));

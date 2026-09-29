@@ -159,6 +159,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   scene_shift_vol        | (js) sceneShiftVol      | setSceneShiftVol         | -       | -                      | -
+ *   scene_pc_channel       | (js) scenePcChannel     | setScenePcChannel        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   speaker_eq             | (js) speakerEqMode      | setSpeakerEq             | -       | -                      | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
@@ -235,6 +236,8 @@ export const GLOBAL_ROUTING = {
     /* persist: null -- shadow_scene_shift_vol_set writes features.json, for the
      * same reason as recall_quantize: its register lives in SHM. */
     scene_shift_vol:        { read: "scene_shift_vol.get",    write: "scene_shift_vol.set",    persist: null,   cache: null,                     modal: null },
+    /* persist: null -- shadow_scene_pc_channel_set writes features.json. */
+    scene_pc_channel:       { read: "scene_pc_channel.get",   write: "scene_pc_channel.set",   persist: null,   cache: null,                     modal: null },
 
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
     /* persist: "own" -- the surface is a JS-side feature, so the toggle is
@@ -582,6 +585,16 @@ export const SHORTCUTS_PARAMS = [
      * Move's included. On by default; Off gives Shift+Volume back to Move.
      */
     bool("scene_shift_vol", "Scene Fader", 1),
+    /*
+     * Program Change 0-15 on this channel selects scene 1-16, so a sequencer
+     * can drive scenes (and a mapped CC the fader). A channel of its own,
+     * default 16: synths already take PC on theirs as a preset change, and
+     * the scene channel's PCs are withheld from the slots and Move.
+     */
+    { key: "scene_pc_channel", name: "Scene PC Ch", type: "enum",
+      options: ["Off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"],
+      short_options: ["OFF", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"],
+      default: 16 },
     /*
      * Both Skipback rows moved here from Audio to make room for the metronome.
      *

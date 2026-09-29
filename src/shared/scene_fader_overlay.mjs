@@ -46,10 +46,13 @@ export function createSceneFaderOverlay(io) {
         want = t - lastMove < HOLD_MS ? { x, label } : null;
     }
 
+    /* Show it without a fader move: a Program Change just changed the scene. */
+    function raise() { lastMove = io.now(); }
+
     function frame() { return panel.update(io.now(), want); }
     function busy() { return want !== null || panel.busy(); }
 
-    return { observe, frame, busy };
+    return { observe, frame, busy, raise };
 }
 
 /**

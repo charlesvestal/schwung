@@ -171,6 +171,23 @@ int main(void) {
         CHECK(NEAR(scene_takeover_k(3, 0, 2, SCENE_KIND_ENUM, 0, 3), 2), "an enum takes the written option");
     }
 
+    /* PROGRAM CHANGE SELECTS A SCENE. */
+    {
+        uint8_t pairs[32];
+        for (int k = 0; k < 16; k++) { pairs[k * 2] = (uint8_t)k; pairs[k * 2 + 1] = (uint8_t)k; }
+        pairs[4] = 8; pairs[5] = SCENE_NONE;          /* scene 3 = A9 + none */
+        uint8_t k = 99, a = 99, b = 99;
+        CHECK(scene_pc_select(16, 0xCF, 2, pairs, &k, &a, &b) && k == 2 && a == 8 && b == SCENE_NONE,
+              "PC 2 on ch 16 = scene 3, its pairing: A9 (half 8), B none");
+        CHECK(scene_pc_select(16, 0xCF, 5, pairs, &k, &a, &b) && k == 5 && a == 5 && b == 16 + 5,
+              "PC 5 = scene 6 = A6 + B6 (halves 5, 21)");
+        CHECK(!scene_pc_select(16, 0xC0, 2, pairs, &k, &a, &b), "another channel is not ours");
+        CHECK(!scene_pc_select(16, 0xCF, 16, pairs, &k, &a, &b), "PC 16 and up is not a scene");
+        CHECK(!scene_pc_select(0, 0xCF, 2, pairs, &k, &a, &b), "channel 0 is OFF");
+        CHECK(!scene_pc_select(1, 0xB0, 2, pairs, &k, &a, &b) && scene_pc_select(1, 0xC0, 0, pairs, &k, &a, &b) && k == 0,
+              "only a Program Change, on the channel set");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }
