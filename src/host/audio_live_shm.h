@@ -76,9 +76,15 @@ static inline void audio_live_push(audio_live_shm_t *s, const int16_t *src, int 
     __atomic_store_n(&s->write_pos, pos + (uint64_t)frames, __ATOMIC_RELEASE);
 }
 
+/* The most frames one push writes before publishing write_pos. The shim
+ * pushes one 128-frame block per SPI frame; this leaves room for more. */
+#define AUDIO_LIVE_PUSH_MAX   1024
+
 /* Reader: copy the frames in [from, to) into `out` (interleaved), where the
  * caller got `to` from an acquire load of write_pos and has already clamped
- * the span to at most AUDIO_LIVE_FRAMES / 2. Returns the frames copied. */
+ * the span well inside the ring. Returns the frames copied. The copy is NOT
+ * safe on its own -- a reader preempted mid-copy can be lapped by the writer;
+ * follow it with audio_live_lapped(). */
 static inline int audio_live_read(const audio_live_shm_t *s, uint64_t from, uint64_t to, int16_t *out) {
     int n = (int)(to - from);
     for (int f = 0; f < n; f++) {
@@ -87,6 +93,23 @@ static inline int audio_live_read(const audio_live_shm_t *s, uint64_t from, uint
         out[f * 2 + 1] = s->ring[at + 1];
     }
     return n;
+}
+
+/* After audio_live_read(s, from, ...): how many of the copied frames, counted
+ * from `from`, may have been overwritten while they were being copied. The
+ * writer has published everything below write_pos and may already be writing
+ * up to AUDIO_LIVE_PUSH_MAX frames past it, each landing on the slot of the
+ * frame one ring earlier -- so any frame below write_pos + PUSH_MAX - FRAMES
+ * is suspect. The caller drops that many leading frames (the page then sees a
+ * gap in `pos`, which it already treats as one) rather than sending a copy
+ * labelled contiguous that is not. No lock, no writer cooperation: the
+ * standard SPSC lap check, re-reading the writer's position after the copy. */
+static inline uint64_t audio_live_lapped(const audio_live_shm_t *s, uint64_t from) {
+    uint64_t wp2 = __atomic_load_n(&s->write_pos, __ATOMIC_ACQUIRE);
+    uint64_t safe = wp2 + AUDIO_LIVE_PUSH_MAX;
+    if (safe <= AUDIO_LIVE_FRAMES) return 0;
+    safe -= AUDIO_LIVE_FRAMES;          /* the oldest frame still intact */
+    return safe > from ? safe - from : 0;
 }
 
 #endif /* AUDIO_LIVE_SHM_H */
