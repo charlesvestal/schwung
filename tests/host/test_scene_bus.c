@@ -154,6 +154,13 @@ int main(void) {
     CHECK(NEAR(mix(0, 1), 1.5), "...and heard at once: %f", mix(0, 1));
     CHECK(shadow_scene_bus_read(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 1.5),
           "an armed read answers the lock: %s", buf);
+    /* ...but a SAVE reads `:base`, and that is the knob. Sharing the plain
+     * key, send_levels.json / the MFX params fallback recorded the lock as the
+     * user's value, indistinguishable from it after a reload. */
+    CHECK(shadow_scene_bus_read_base(0, 1, "mix", buf, sizeof(buf)) > 0 && NEAR(atof(buf), 0.7),
+          "armed, :base answers the KNOB (0.7), not the lock: %s", buf);
+    CHECK(shadow_scene_bus_read_base(0, 1, "mode", buf, sizeof(buf)) < 0,
+          "an undriven param's :base falls through to the plugin");
     CHECK(shadow_scene_bus_edit_write(0, 1, "mode", "Plate") == 1, "an enum by name locks");
     shadow_scene_bus_get_verb(0, "dump", buf, sizeof(buf));
     CHECK(strstr(buf, "7 fx2 mode 2 cloudseed") != NULL, "stored as its index");

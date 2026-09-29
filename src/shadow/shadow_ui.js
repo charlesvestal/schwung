@@ -9723,13 +9723,22 @@ function saveChainConfigToDir(dir) {
     const path = dir + "/shadow_chain_config.json";
     try {
         const cfgSlots = [];
+        /* `:base` -- the KNOB. While a snapshot is armed the plain read
+         * answers its LOCK (so the knob on screen shows what a turn changes),
+         * and a save sharing that key wrote the lock into the set as the
+         * user's level. The plain read stays as the fallback for a shim that
+         * does not serve :base. */
+        const knob = (i, key) => {
+            const b = getSlotParam(i, key + ":base");
+            return (b !== null && b !== undefined && b !== "") ? b : getSlotParam(i, key);
+        };
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-            const vol = parseFloat(getSlotParam(i, "slot:volume") || "1");
+            const vol = parseFloat(knob(i, "slot:volume") || "1");
             const ch = parseInt(getSlotParam(i, "slot:receive_channel") || "0");
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            const pan = parseFloat(knob(i, "slot:pan") || "0") || 0;
             /* The sends the shim keeps for a slot with no module (a slot with
              * one saves its sends in its own state). */
             const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
@@ -14872,7 +14881,12 @@ function saveMasterFxChainConfigOnMaster() {
                         const chainParams = getMasterFxChainParams(slotIdx);
                         if (chainParams && chainParams.length > 0) {
                             for (const p of chainParams) {
-                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                /* `:base`: a scene-driven param's KNOB (armed,
+                                 * the plain read answers the lock). */
+                                let val = shadow_get_param(0, `master_fx:${key}:${p.key}:base`);
+                                if (val === null || val === undefined || val === "") {
+                                    val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                }
                                 if (val !== null && val !== undefined && val !== "") {
                                     paramsObj[p.key] = val;
                                 }
@@ -15107,7 +15121,12 @@ function saveSendLevels() {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
             let v = null;
-            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            /* `:base`, the knob: armed, the plain key answers the snapshot's
+             * LOCK, and this file is what the set reloads as the level. */
+            try { v = shadow_get_param(0, bus.prefix + k + ":base"); } catch (e) {}
+            if (v === null || v === undefined || v === "") {
+                try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            }
             if (v === null || v === undefined || v === "") continue;
             const n = parseInt(v, 10);
             if (!Number.isFinite(n)) continue;

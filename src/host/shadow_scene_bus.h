@@ -87,6 +87,11 @@ int  shadow_scene_bus_edit_write(int scope, int pos, const char *param, const ch
 /* A plain read of a DRIVEN param answers the lock while armed, else the base.
  * Bytes written, or -1 to fall through to the plugin. */
 int  shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int len);
+/* `<param>:base` -- the KNOB, armed or not: what a SAVE must read. The plain
+ * read answers the lock while armed (for the knob on screen), and a save that
+ * shares its key records the lock as the user's value. -1 = not driven, ask
+ * the plugin (which then holds the knob). */
+int  shadow_scene_bus_read_base(int scope, int pos, const char *param, char *buf, int len);
 /* A write that reached the plugin: if the param is driven, it is the new base. */
 void shadow_scene_bus_note_write(int scope, int pos, const char *param, const char *val);
 

@@ -1783,7 +1783,10 @@ a change -- in the chain host for slots, in the shim for the buses and host
 settings. Below the UI because a module that draws its own screen (9W9) never
 passes the host's write wrapper. Identity, state, bypass, presets and every
 suffixed view are never locked (`scene_edit_subkey_eligible`). Armed, the
-snapshot auditions at 100% and **a read answers the lock**. **Delete held
+snapshot auditions at 100% and **a read answers the lock** -- which is why
+every SAVE reads `<key>:base` instead (slot volume/pan, the send returns, a
+stateless Master FX module's params): sharing the plain key, a save made while
+armed wrote the lock into the set as the user's value. **Delete held
 while armed** turns the write into an UNLOCK (`SCENE_EDIT_UNLOCK`); Delete is
 claimed while armed, because a lone Delete reaching Move deletes a clip.
 **Armed, the scene OWNS Delete + knob.** Unarmed, the same gesture clears the

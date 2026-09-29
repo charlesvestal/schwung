@@ -660,7 +660,14 @@ int shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int 
     }
     /* A DRIVEN param answers its base: the plugin holds the morph, which is
      * not what the user set (#276, the same rule the chain follows). */
-    scene_drive_t *d = find_drive(bus, target, param);
+    return shadow_scene_bus_read_base(scope, pos, param, buf, len);
+}
+
+int shadow_scene_bus_read_base(int scope, int pos, const char *param, char *buf, int len) {
+    if (!valid_bus_scope(scope) || !param || !buf || len < 2) return -1;
+    char target[SCENE_TARGET_LEN];
+    snprintf(target, sizeof(target), "fx%d", pos + 1);
+    scene_drive_t *d = find_drive(&s_bus[scope], target, param);
     if (!d) return -1;
     return d->kind == SCENE_KIND_FLOAT ? snprintf(buf, len, "%.6f", d->base)
                                        : snprintf(buf, len, "%d", (int)lroundf(d->base));
