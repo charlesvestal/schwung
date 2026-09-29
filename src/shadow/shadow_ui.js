@@ -129,7 +129,8 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
 import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
-import { buildFlatTargetRows, moveFlatCursor, indexOfFlatRoute } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
+import { buildFlatTargetRows, moveFlatCursor, planFlatTargetOpen, flatTargetCommitRow } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
+import { planFileFlatOpen, fileFlatPick, createRefusalLatch } from '/data/UserData/schwung/shared/file_flat.mjs';
 /* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
  * context a widget and a card get, so a module author writes one thing. */
 import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
@@ -24717,7 +24718,8 @@ function handleSelect() {
             const items = getLfoItems();
             const item = items[selectedLfoItem];
             if (item.key === "target") {
-                /* Open target picker */
+                /* Open target picker -- from the LIST, never the grid. */
+                lfoTargetFromGrid = false;
                 enterLfoTargetPicker();
             } else if (item.type === "action") {
                 /* Other actions - ignore */
@@ -27226,18 +27228,35 @@ function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
         ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
         : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
     if (!m) return false;
-    lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
-                      : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    /* The rest of a spin whose first detent was refused: say nothing, read
+     * nothing -- the refusal already spoke. */
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const ctx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                         : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    /* Read the routing BEFORE opening anything. A null is a read that did
+     * not complete, not "no target": opening on None would let the release
+     * switch a working LFO off (planFlatTargetOpen). */
+    const storedTarget = ctx.getParam("target");
+    const storedParam = storedTarget === null ? null : ctx.getParam("target_param");
+    if (storedTarget === null || storedParam === null) {
+        flatRefusal.refuse(fullKey, now);
+        announce("Target unavailable");
+        return true;
+    }
+    lfoCtx = ctx;
     lfoTargetFromGrid = true;
     clearParamPagesTouch();
     enterLfoTargetPicker();
     lfoTargetKnob = listKnobInit();
     /* The caption's room: from the label column to the scrollbar gutter,
      * less the rule stubs either side. */
-    lfoTargetFlatRows = buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf,
-        { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 });
-    lfoTargetFlatStored = indexOfFlatRoute(lfoTargetFlatRows,
-        lfoCtx.getParam("target") || "", lfoCtx.getParam("target_param") || "");
+    const fit = { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 };
+    const plan = planFlatTargetOpen(
+        buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf, fit),
+        storedTarget, storedParam, fit);
+    lfoTargetFlatRows = plan.rows;
+    lfoTargetFlatStored = plan.stored;
     lfoTargetFlatIndex = lfoTargetFlatStored;
     setView(VIEWS.LFO_TARGET_FLAT);
     lfoTargetKnobCommit = knob;
@@ -27252,10 +27271,14 @@ function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
 function lfoTargetFlatCommit() {
     lfoTargetKnobCommit = -1;
     lfoTargetKnobHeld = false;
-    const r = lfoTargetFlatRows[lfoTargetFlatIndex];
-    if (r && r.route && lfoCtx) {
+    /* Only a row the user MOVED to is written; the stored row is not a
+     * choice (flatTargetCommitRow). */
+    const r = flatTargetCommitRow(lfoTargetFlatRows, lfoTargetFlatIndex, lfoTargetFlatStored);
+    if (r && lfoCtx) {
         commitLfoTargetFromGrid(lfoCtx, r.route.target ? r.route : null);
         announce(r.route.target ? "Target set: " + r.label : "Target cleared");
+    } else {
+        announce("Target unchanged");
     }
     if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
     needsRedraw = true;
@@ -27270,6 +27293,10 @@ function lfoTargetFlatCancel() {
 }
 
 function lfoTargetKnobTick() {
+    /* The grid hand-off flag outlives every exit that is not a commit or
+     * Back (a Track tap, a Menu dismiss). Left set, the LIST editor's next
+     * pick would take the grid's commit path and write `enabled`. */
+    if (lfoTargetFromGrid && !isLfoTargetView(view)) lfoTargetFromGrid = false;
     if (lfoTargetKnobCommit < 0) return;
     if (view !== VIEWS.LFO_TARGET_FLAT) { lfoTargetKnobCommit = -1; return; }
     if (!lfoTargetKnobHeld &&
@@ -27323,22 +27350,41 @@ let fileFlatKnobState = listKnobInit();
 let fileFlatKnob = -1;
 let fileFlatHeld = false;
 let fileFlatLastMs = 0;
+/* Set only by a cursor move: a release that never moved loads nothing. */
+let fileFlatMoved = false;
+let fileFlatSlot = -1;
+let fileFlatFullKey = "";
+let fileFlatMeta = null;
+/* One refusal per spin, shared by the file cell and the LFO Target cell. */
+const flatRefusal = createRefusalLatch(LFO_TARGET_KNOB_IDLE_COMMIT_MS);
 
 function fileFlatEnter(slotIndex, fullKey, knob, held, info) {
     const meta = info && info.meta;
     if (!meta || meta.type !== "filepath" || !info.key) return false;
-    const current = getSlotParam(slotIndex, fullKey) || "";
-    const st = buildFilepathBrowserState(meta, current);
-    refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
-    const files = (st.items || []).filter((it) => it && it.kind === "file");
-    if (!files.length) {
-        announce("No files in this folder");
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const current = getSlotParam(slotIndex, fullKey);
+    let files = [];
+    let st = null;
+    if (current !== null) {
+        st = buildFilepathBrowserState(meta, current);
+        refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
+        files = (st.items || []).filter((it) => it && it.kind === "file");
+    }
+    const plan = planFileFlatOpen(current, files);
+    if (plan.refuse) {
+        flatRefusal.refuse(fullKey, now);
+        announce(plan.refuse === "empty" ? "No files in this folder" : "File unavailable");
         return true;
     }
     fileFlatRows = files;
-    fileFlatStored = files.findIndex((f) => f.path === current);
-    fileFlatIndex = fileFlatStored >= 0 ? fileFlatStored : 0;
+    fileFlatStored = plan.stored;
+    fileFlatIndex = plan.index;
+    fileFlatMoved = false;
     fileFlatKey = info.key;
+    fileFlatSlot = slotIndex;
+    fileFlatFullKey = String(fullKey || "");
+    fileFlatMeta = meta;
     const dir = String(st.currentDir || "").replace(/\/+$/, "");
     fileFlatFolder = dir.slice(dir.lastIndexOf("/") + 1) || (meta.name || info.key);
     fileFlatKnobState = listKnobInit();
@@ -27356,7 +27402,10 @@ function fileFlatMove(n) {
     if (!n || !fileFlatRows.length) return;
     const before = fileFlatIndex;
     fileFlatIndex = Math.max(0, Math.min(fileFlatRows.length - 1, fileFlatIndex + n));
-    if (fileFlatIndex !== before) announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    if (fileFlatIndex !== before) {
+        fileFlatMoved = true;
+        announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    }
     needsRedraw = true;
 }
 
@@ -27373,12 +27422,36 @@ function fileFlatClose() {
 }
 
 function fileFlatCommit() {
-    const f = fileFlatRows[fileFlatIndex];
-    if (f && fileFlatIndex !== fileFlatStored) {
+    const f = fileFlatPick(fileFlatRows, fileFlatIndex, fileFlatStored, fileFlatMoved);
+    if (f) {
         commitParamPagesValue(fileFlatKey, f.path);
+        fileFlatAfterCommit(f.path);
         announce("Loaded " + f.label);
     }
     fileFlatClose();
+}
+
+/*
+ * What the file BROWSER does after writing a pick, so the knob list is not
+ * a lesser commit: the module's browser_hooks.on_commit actions, then the
+ * linked wav_position end-marker default. Hooks marked `restore` are undone
+ * by the browser at close, so they are skipped here rather than set and
+ * immediately put back. The wav default reads the hierarchy editor's state,
+ * so it runs only when that state describes THIS cell.
+ */
+function fileFlatAfterCommit(path) {
+    const fullKey = fileFlatFullKey;
+    const key = fileFlatKey;
+    const prefix = fullKey.endsWith(":" + key) ? fullKey.slice(0, -(key.length + 1)) : "";
+    const hooks = buildFilepathBrowserHooks(fileFlatMeta, prefix);
+    for (const action of hooks.onCommit) {
+        if (!action || !action.key || action.restore) continue;
+        setSlotParam(fileFlatSlot, action.key, resolveFilepathHookValue(action.value, { path }));
+    }
+    if (hierEditorSlot === fileFlatSlot && hierEditorSlot >= 0 &&
+        buildHierarchyParamKey(key) === fullKey) {
+        applyLinkedWavEndDefaultsForFilepath(key);
+    }
 }
 
 function fileFlatCancel() {
