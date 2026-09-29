@@ -14,6 +14,8 @@
 #include <string.h>
 #include "shadow_chain_mgmt.h"
 #include "shadow_set_pages.h"
+#include "shadow_dbus.h"          /* shadow_metronome_on */
+#include <math.h>
 
 /* Move rewrites Settings.json within ~12 ms of the document swap completing
  * (measured 2026-09-28). A dedupe ("same set as before") is only trusted from
@@ -64,8 +66,8 @@ int move_model_sync_misaligned(void)
  * Move's changes from this reader thread as well raced it: shadow_solo_count
  * could disagree with the flags. So the reader only POSTS; the SPI thread,
  * the one writer, applies (move_model_sync_apply_pending). */
-enum { MOP_LEVELS = 1, MOP_MUTE, MOP_SOLO };
-typedef struct { int op, t, v; int mu[4], so[4]; } mop_t;
+enum { MOP_LEVELS = 1, MOP_MUTE, MOP_SOLO, MOP_VOLUME };
+typedef struct { int op, t, v; float f; int mu[4], so[4]; } mop_t;
 #define MQ_N 16
 static mop_t g_mq[MQ_N];
 static atomic_uint g_mq_w, g_mq_r;
@@ -84,6 +86,7 @@ void move_model_sync_apply_pending(void)                /* SPI thread */
         if (m->op == MOP_LEVELS) shadow_apply_mix_state(m->mu, m->so);
         else if (m->op == MOP_SOLO) shadow_apply_solo(m->t, m->v);
         else if (m->op == MOP_MUTE) shadow_apply_mute(m->t, m->v);
+        else if (m->op == MOP_VOLUME) shadow_apply_volume(m->t, m->f);
         atomic_store_explicit(&g_mq_r, ++r, memory_order_release);
     }
 }
@@ -363,11 +366,64 @@ static int mixer_complete(const move_model_t *m)
     return 1;
 }
 
+/* ---- MIXER AND TRANSPORT FACTS the model now answers ----------------------
+ *
+ * Each of these used to be INFERRED: master volume from Move's on-screen
+ * volume bar (coarse, only while the overlay shows, and a misattributed frame
+ * was an audible jump), track volume from the spoken "Track Volume X dB"
+ * while a Track button was held, the metronome from "Metronome On/Off", the
+ * selected track from Track presses Schwung happened to see. The document
+ * holds each exactly. The old paths stay as the fallback on a firmware the
+ * model cannot resolve, and stand down while it is live. */
+
+/* dB as Move stores it -> the linear gain Schwung mixes with. Move's knob
+ * bottoms out at -70 dB, which is silence, not -70 dB of signal. */
+static float db_to_lin(double db)
+{
+    if (!(db > -69.9)) return 0.0f;
+    float v = powf(10.0f, (float)db / 20.0f);
+    return v > 4.0f ? 4.0f : v;
+}
+
+static atomic_uint g_master_bits;       /* the float, as bits; valid only with g_master_ok */
+static atomic_int  g_master_ok;
+static atomic_int  g_selected_pending = -1;
+
+int move_model_sync_master_volume(float *lin)
+{
+    if (!lin || !atomic_load(&g_master_ok) || !move_model_sync_active()) return 0;
+    const unsigned b = atomic_load(&g_master_bits);
+    memcpy(lin, &b, sizeof *lin);
+    return 1;
+}
+
+int move_model_sync_take_selected(void)
+{
+    return atomic_exchange(&g_selected_pending, -1);
+}
+
+static void levels_from_model(const move_model_t *now, const move_model_t *prev, int edge)
+{
+    if (now->master_valid) {
+        const float v = db_to_lin(now->master_db);
+        unsigned b; memcpy(&b, &v, sizeof b);
+        atomic_store(&g_master_bits, b);
+        atomic_store(&g_master_ok, 1);
+    } else {
+        atomic_store(&g_master_ok, 0);
+    }
+    if (edge || now->metronome_on != prev->metronome_on)
+        shadow_metronome_on = now->metronome_on ? 1 : 0;
+    if (now->selected_track >= 0 && (edge || now->selected_track != prev->selected_track))
+        atomic_store(&g_selected_pending, now->selected_track);
+}
+
 static void on_change(const move_model_t *now, const move_model_t *prev)
 {
     if (!now->valid) return;
     shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
     int edge = !prev->valid || now->doc_gen != prev->doc_gen;
+    levels_from_model(now, prev, edge);
 
     if (edge) {
         atomic_store(&g_edge_ms, now_ms());
@@ -409,6 +465,13 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
         if (!a->mixer_valid || !b->mixer_valid) continue;
         if (a->soloed != b->soloed) { mop_t m = { .op = MOP_SOLO, .t = t, .v = b->soloed }; post_mix(&m); }
         if (a->muted != b->muted) { mop_t m = { .op = MOP_MUTE, .t = t, .v = b->muted }; post_mix(&m); }
+        /* Track volume follows Move's EDGES, as mute does, so Schwung's own
+         * slot volume holds between Move gestures (and a set's saved slot
+         * levels are not overwritten on load). */
+        if (a->volume != b->volume) {
+            mop_t m = { .op = MOP_VOLUME, .t = t, .f = db_to_lin(b->volume) };
+            post_mix(&m);
+        }
     }
 }
 
