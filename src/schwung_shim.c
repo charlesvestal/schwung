@@ -3015,6 +3015,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * the mailbox from Move's own write) survives. */
         int la_channel_count = shim_move_channel_count();
         int any_la_valid = 0;
+        /* Line the tracks up at the shallowest one's depth before reading
+         * any of them -- a decision across slots, so not per read. */
+        link_audio_align_tick(shadow_in_audio_shm, la_channel_count);
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
             la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
             if (la_cache_valid[s]) any_la_valid = 1;
@@ -11400,7 +11403,10 @@ static void *spi_timing_logger_thread(void *arg)
             {
                 extern volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
                 for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++)
-                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED)) any_nonzero = 1;
+                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_conceal_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_align_count[s], __ATOMIC_RELAXED))
+                        any_nonzero = 1;
             }
             uint32_t slot_starve[LINK_AUDIO_IN_SLOT_COUNT];
             uint32_t slot_catchup[LINK_AUDIO_IN_SLOT_COUNT];
@@ -11453,12 +11459,23 @@ static void *spi_timing_logger_thread(void *arg)
                         tc += __atomic_exchange_n(&la_trim_count[s], 0, __ATOMIC_RELAXED);
                         td += __atomic_exchange_n(&la_trim_dropped[s], 0, __ATOMIC_RELAXED);
                     }
+                    uint32_t cc = 0, ac = 0, ad = 0;
+                    for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                        cc += __atomic_exchange_n(&la_conceal_count[s], 0, __ATOMIC_RELAXED);
+                        ac += __atomic_exchange_n(&la_align_count[s], 0, __ATOMIC_RELAXED);
+                        ad += __atomic_exchange_n(&la_align_dropped[s], 0, __ATOMIC_RELAXED);
+                    }
                     /* backlog_trims counts sustained backlogs removed;
-                     * trim_dropped_ms is the latency reclaimed. */
+                     * trim_dropped_ms is the latency reclaimed. concealed is
+                     * starved blocks played as a faded mirror instead of
+                     * silence; aligns / align_dropped_ms is latency removed
+                     * lining a deeper track up with the shallowest. */
                     unified_log("link_audio", LOG_LEVEL_DEBUG,
                         "path: rebuild_flips=%u la_starve_fallback=%u "
-                        "backlog_trims=%u trim_dropped_ms=%u",
-                        flips, fallback, tc, (unsigned)(td / 2 / 44));
+                        "backlog_trims=%u trim_dropped_ms=%u "
+                        "concealed=%u aligns=%u align_dropped_ms=%u",
+                        flips, fallback, tc, (unsigned)(td / 2 / 44),
+                        cc, ac, (unsigned)(ad / 2 / 44));
                 }
             }
         }
