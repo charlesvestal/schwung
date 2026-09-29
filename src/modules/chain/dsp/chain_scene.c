@@ -84,6 +84,19 @@ static float lfo_field_get(const lfo_state_t *l, const char *p) {
     return 0.0f;
 }
 
+/* A plain assignment and nothing else: for a read that puts the struct back. */
+static void lfo_field_put(lfo_state_t *l, const char *p, float v) {
+    const int iv = (int)lroundf(v);
+    if (!strcmp(p, "enabled")) l->enabled = iv ? 1 : 0;
+    else if (!strcmp(p, "shape")) l->shape = iv;
+    else if (!strcmp(p, "rate_hz")) l->rate_hz = v;
+    else if (!strcmp(p, "rate_div")) l->rate_div = iv;
+    else if (!strcmp(p, "sync")) l->sync = iv ? 1 : 0;
+    else if (!strcmp(p, "depth")) l->depth = v;
+    else if (!strcmp(p, "polarity")) l->bipolar = iv ? 1 : 0;
+    else if (!strcmp(p, "phase_offset")) l->phase_offset = v;
+}
+
 /* Written directly, NOT through v2_set_param: that path stats a debug flag
  * file every 64th call, and a sweep writes every block. The side effects that
  * matter are mirrored: switching an LFO off takes its contribution down. */
@@ -619,21 +632,24 @@ int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *
         if (r >= 0) return r;
     }
     /* The LFO config a patch saves: the driven fields go back to their base
-     * for the read, exactly as a module's state does below. Plain struct
-     * writes, so nothing is heard. */
+     * for the read, exactly as a module's state does below -- and the WHOLE
+     * struct comes back straight after, byte for byte. Through lfo_field_set
+     * this had side effects: a scene driving `enabled` (base off) took the
+     * LFO's modulation down and force-wrote the knob on every save, a blip
+     * the next tick then undid. Plain assignments, nothing heard. */
     if (inst && key && strcmp(key, "lfo_config") == 0) {
+        lfo_state_t held[LFO_COUNT];
         int any = 0;
         for (int d = 0; d < 16; d++) {
             if (!inst->scene_lfo_drive[d].active) continue;
-            lfo_field_set(inst, inst->scene_lfo_drive[d].lfo, inst->scene_lfo_drive[d].param,
-                          inst->scene_lfo_drive[d].base);
+            const int li = inst->scene_lfo_drive[d].lfo;
+            if (li < 0 || li >= LFO_COUNT) continue;
+            if (!any) memcpy(held, inst->lfos, sizeof(held));
             any = 1;
+            lfo_field_put(&inst->lfos[li], inst->scene_lfo_drive[d].param, inst->scene_lfo_drive[d].base);
         }
         int r = impl(inst, key, buf, buf_len);
-        if (any) {
-            for (int d = 0; d < 16; d++) inst->scene_lfo_drive[d].has_last = 0;
-            inst->scene_dirty = 1;
-        }
+        if (any) memcpy(inst->lfos, held, sizeof(held));
         return r;
     }
     /* A `<comp>:state` read: every modulated param's BASE goes into the

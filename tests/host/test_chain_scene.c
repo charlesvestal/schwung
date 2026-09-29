@@ -66,6 +66,14 @@ static int lfo_cfg_impl(void *i, const char *k, char *b, int n) {
     return snprintf(b, n, "{}");
 }
 
+/* ...and the enabled flag it saw. */
+static int saw_enabled;
+static int lfo_cfg_enabled_impl(void *i, const char *k, char *b, int n) {
+    (void)k;
+    saw_enabled = ((chain_instance_t *)i)->lfos[0].enabled;
+    return snprintf(b, n, "{}");
+}
+
 static void setup(chain_instance_t *inst) {
     snprintf(v_cutoff, sizeof(v_cutoff), "10");
     snprintf(v_wave, sizeof(v_wave), "0");
@@ -432,6 +440,34 @@ int main(void) {
         CHECK(NEAR(saw_depth, 0.4f), "lfo_config saves the knob, not the morph: %f", saw_depth);
         frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
         CHECK(NEAR(inst->lfos[0].depth, 0.7f), "... and the morph returns: %f", inst->lfos[0].depth);
+    }
+
+    /* A scene driving an LFO's ENABLED flag (knob off, scene on): the save
+     * sees "off", and the read has NO side effect -- it used to switch the
+     * LFO off through lfo_field_set, which took its modulation down and
+     * force-wrote the knob into the module on every save. */
+    {
+        chain_instance_t *li = calloc(1, sizeof(*li));
+        setup(li);
+        knob_write(li, "cutoff", "40");
+        li->lfos[0].enabled = 0;
+        li->lfos[0].depth = 0.1f;
+        snprintf(li->lfos[0].target, sizeof(li->lfos[0].target), "synth");
+        snprintf(li->lfos[0].param, sizeof(li->lfos[0].param), "cutoff");
+        chain_scene_set_param(li, "lock", "0 lfo1 enabled 1 chain");
+        frame(li, 0, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(li->lfos[0].enabled == 1 && li->lfos[0].active == 1, "the scene switches LFO 1 on");
+        chain_mod_emit_value(li, "lfo1", "synth", "cutoff", 1.0f, 0.1f, 0.0f, 1, 1);  /* its tick */
+        const float swung = cutoff();
+        const int w0 = writes;
+        saw_enabled = -1;
+        chain_scene_get_around_state(li, "lfo_config", buf, sizeof(buf), lfo_cfg_enabled_impl);
+        CHECK(saw_enabled == 0, "lfo_config saves the knob (off): %d", saw_enabled);
+        CHECK(li->lfos[0].enabled == 1 && li->lfos[0].active == 1, "...and the LFO is still on after the read");
+        CHECK(chain_mod_is_target_active(li, "synth", "cutoff") && writes == w0 && NEAR(cutoff(), swung),
+              "...with its modulation untouched: no write to the module (%d), cutoff %f", writes - w0, cutoff());
+        chain_mod_emit_value(li, "lfo1", "synth", "cutoff", 0, 0, 0, 1, 0);
+        free(li);
     }
 
     /* enum fields switch at the midpoint; unlocking hands the field back */
