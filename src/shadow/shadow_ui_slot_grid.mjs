@@ -429,6 +429,12 @@ export function allSlotGridParams() {
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
+/* A key's modulation VIEW, the three reads a driven knob draws from. */
+const MOD_VIEW_SUFFIX = /:(modulated|effective|base)$/;
+/* The slot-level settings a scene can drive (the host scope and the chain's
+ * slot sends). The LFO params are matched by prefix. */
+const SCENE_DRIVEN_SLOT_KEYS = new Set(["volume", "pan", "send_a", "send_b"]);
+
 export function realKeyFor(gridKey) {
     if (gridKey === "mpe_mode") return null;            /* derived, see below */
     if (gridKey === "midi_fx_pre_mode") return "midi_fx_pre_mode";  /* bare */
@@ -499,6 +505,15 @@ export function createSlotGridIo(io) {
                 const v = Number.isFinite(raw) ? raw : -1;
                 return String(v + FWD_OFFSET);
             }
+            /* The modulation VIEW of a key -- `:modulated`, `:effective`,
+             * `:base` -- maps like the key and keeps its suffix, or a send
+             * would be asked for as "slot:send_a:effective", which nobody
+             * serves, and never draw the value a scene is driving. */
+            const view = MOD_VIEW_SUFFIX.exec(k);
+            if (view) {
+                const realBase = realKeyFor(k.slice(0, view.index));
+                return realBase ? io.readSlotParam(realBase + view[0]) : "";
+            }
             const real = realKeyFor(k);
             return real ? io.readSlotParam(real) : "";
         },
@@ -521,7 +536,11 @@ export function createSlotGridIo(io) {
          */
         isModulated(fullKey) {
             const k = bare(fullKey);
-            if (!/^lfo[12]:/.test(k)) return false;
+            /* The LFO params (the other LFO can drive them), and the four a
+             * SCENE drives: volume, pan and the two sends. Everything else on
+             * this page is never driven, and asking would cost the round trip
+             * this answer exists to avoid. */
+            if (!/^lfo[12]:/.test(k) && !SCENE_DRIVEN_SLOT_KEYS.has(k)) return false;
             if (!io.isModulated) return false;
             /* The REAL key: the grid addresses these as "slot:lfo1:depth" and
              * the device knows them as "lfo1:depth". */

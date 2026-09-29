@@ -470,6 +470,35 @@ static int scene_host_peek(const char *t, const char *p, float *out) {
 }
 static const scene_host_io_t scene_host_io = { scene_host_get, scene_host_apply, scene_host_peek };
 
+/*
+ * THE KNOB GRID'S VIEW of a host setting a scene drives: `<param>:modulated`,
+ * `:effective`, `:base`, the three reads a module param answers, so volume,
+ * pan, the returns and the MFX LFO fields draw the pointer on the knob and the
+ * dot riding the value like every other driven knob. `param` carries the
+ * suffix. Returns bytes written, or -1 when it is not one of these reads.
+ */
+static int scene_host_view(const char *target, const char *param, char *buf, int len) {
+    const char *sfx = param ? strrchr(param, ':') : NULL;
+    if (!sfx) return -1;
+    const int which = !strcmp(sfx, ":modulated") ? 0 : !strcmp(sfx, ":effective") ? 1
+                    : !strcmp(sfx, ":base") ? 2 : -1;
+    if (which < 0) return -1;
+    char p[32];
+    const size_t n = (size_t)(sfx - param);
+    if (n == 0 || n >= sizeof(p)) return -1;
+    memcpy(p, param, n);
+    p[n] = '\0';
+    scene_bus_meta_t m;
+    if (!scene_host_meta(target, p, &m)) return -1;
+    float base = 0.0f, eff;
+    if (!scene_host_get(target, p, &base)) return -1;
+    const int on = scene_host_peek(target, p, &eff);
+    if (which == 0) return snprintf(buf, len, "%d", on ? 1 : 0);
+    const float v = (which == 1 && on) ? eff : base;
+    return m.kind == SCENE_KIND_FLOAT ? snprintf(buf, len, "%.4f", v)
+                                      : snprintf(buf, len, "%d", (int)lroundf(v));
+}
+
 void chain_mgmt_init(const chain_mgmt_host_t *h) {
     host = *h;
     shadow_scene_host_bind(&scene_host_io);
@@ -3385,6 +3414,12 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
         int n = shadow_scene_host_read(t, key + 5, buf, buf_len);
         if (n >= 0) return n;
     }
+    if (!strncmp(key, "slot:volume:", 12) || !strncmp(key, "slot:pan:", 9)) {
+        char t[8];
+        snprintf(t, sizeof(t), "slot%d", slot + 1);
+        int n = scene_host_view(t, key + 5, buf, buf_len);
+        if (n >= 0) return n;
+    }
     if (strcmp(key, "slot:volume") == 0) {
         /* Four places, not two: a surface stepping the level in dB (the E16
          * Mixer) re-reads it, and two decimals put -30 dB half a dB off. */
@@ -4978,6 +5013,14 @@ void shadow_inprocess_handle_param_request(void) {
                 char scene_t[8];
                 snprintf(scene_t, sizeof(scene_t), "send%d", send_idx + 1);
                 int scene_n = 0;
+                if (!is_set && (!strncmp(send_param, "return:", 7) || !strncmp(send_param, "to_send2:", 9)) &&
+                    (scene_n = scene_host_view(scene_t, send_param, shadow_param->value,
+                                               SHADOW_PARAM_VALUE_LEN)) >= 0) {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = scene_n;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
                 if ((strcmp(send_param, "return") == 0 || strcmp(send_param, "to_send2") == 0) &&
                     (is_set ? shadow_scene_host_edit_write(scene_t, send_param, shadow_param->value)
                             : (scene_n = shadow_scene_host_read(scene_t, send_param, shadow_param->value,
@@ -5338,7 +5381,13 @@ void shadow_inprocess_handle_param_request(void) {
                 }
             }
 
-            if (req_type == 1 && shadow_scene_host_edit_write(scene_t, lfo_param, shadow_param->value)) {
+            int scene_view_n;
+            if (req_type == 2 &&
+                (scene_view_n = scene_host_view(scene_t, lfo_param, shadow_param->value,
+                                                SHADOW_PARAM_VALUE_LEN)) >= 0) {
+                shadow_param->error = 0;
+                shadow_param->result_len = scene_view_n;
+            } else if (req_type == 1 && shadow_scene_host_edit_write(scene_t, lfo_param, shadow_param->value)) {
                 /* Armed: a scene lock, not a change. */
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;

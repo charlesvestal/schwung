@@ -562,6 +562,33 @@ function makeSlot(over) {
 
 /* ======================================================================== */
 /* MASTER FX SETTINGS — the same contract, one bus over                      */
+/* ---- S-MOD. What a SCENE drives shows as modulated -------------------- */
+{
+  /* Volume, pan and the two sends are driven by scenes, so the grid must ask
+   * about them, and their modulation VIEWS (:effective, :base, :modulated)
+   * must map like the key and keep the suffix -- "send_a:effective" is
+   * "buses:main_send1:effective", never "slot:send_a:effective". */
+  const reads = [];
+  const store = {
+    "slot:volume:modulated": "1", "slot:volume:effective": "0.6250",
+    "buses:main_send1:modulated": "1", "buses:main_send1:effective": "90",
+    "slot:transpose:modulated": "1",
+  };
+  const io = SG.createSlotGridIo({
+    readSlotParam: (k) => { reads.push(k); return k in store ? store[k] : ""; },
+    writeSlotParam: () => {}, isMpeMode: () => false, hasPreset: () => false,
+    isModulated: (real) => store[real + ":modulated"] === "1",
+  });
+  if (!io.isModulated("slot:volume")) fail("a scene-driven Volume must read as modulated");
+  if (!io.isModulated("slot:send_a")) fail("a scene-driven Send A must read as modulated");
+  if (io.isModulated("slot:transpose")) fail("Transpose is never driven: the grid must not even ask");
+  if (io.getParam("slot:send_a:effective") !== "90")
+    fail("send_a:effective must map to buses:main_send1:effective, read " + JSON.stringify(reads.slice(-1)));
+  if (io.getParam("slot:volume:effective") !== "0.6250") fail("volume:effective must map to slot:volume:effective");
+  if (!reads.includes("buses:main_send1:effective") || reads.includes("slot:send_a:effective"))
+    fail("the view kept its suffix through the key map: " + JSON.stringify(reads));
+}
+
 /* ======================================================================== */
 
 function makeMaster(over) {
