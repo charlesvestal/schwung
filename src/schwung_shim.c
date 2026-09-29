@@ -8953,7 +8953,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * recall, handled and swallowed in the post-ioctl
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
-                                /* Shift+Up / Shift+Down: SCENE EDIT A / B
+                                /* Shift+- / Shift++ (Down / Up): SCENE EDIT A / B
                                  * (tap = latch, hold + turn = momentary; the
                                  * UI decides). Move gives Shift+Up/Down no
                                  * meaning of its own -- measured: it is the

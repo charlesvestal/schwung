@@ -182,7 +182,7 @@ export function createScenesScreen(io) {
         io.announce("Editing " + snapName(side, i) + ". Turn knobs on any page to lock them.");
     }
 
-    /* Shift+Up / Shift+Down: edit the ACTIVE scene's A / B. A scene with no
+    /* Shift+- (Down) / Shift++ (Up): edit the ACTIVE scene's A / B. A scene with no
      * snapshot on that end gets the one matching its own number first. */
     function toggleEdit(side) {
         let k = scn().active;
@@ -237,7 +237,7 @@ export function createScenesScreen(io) {
             io.announce(k >= 0 ? "Scenes. Scene " + (k + 1) : "Scenes. Pick a scene with the steps.");
         },
 
-        /* Called by the host for Shift+Up / Down. */
+        /* Called by the host for Shift+- / Shift++. */
         toggleEdit,
 
         tick() {
