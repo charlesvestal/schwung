@@ -965,9 +965,9 @@ typedef struct chain_instance {
      * take adopts onto it rather than onto the playing row. Consumed by the
      * adoption that uses it. */
     int    lane_new_row;
-    /* The kill switch, pushed by the shim from /data/UserData/schwung/lanes_on.
-     * 0 from calloc, so OFF is the default and a slot that is never told stays
-     * inert. See SHIM_FLAG_LANES_ON. */
+    /* The kill switch, pushed by the shim: ON unless
+     * /data/UserData/schwung/lanes_off exists. 0 from calloc until told, so a
+     * slot that is never told stays inert. See SHIM_FLAG_LANES_OFF. */
     int    lanes_enabled;
     double clip_loop_start;       /* the window's start, same coordinate */
     double clip_loop_len;         /* quarters */

@@ -35,25 +35,26 @@
  * reusing the bit would make a stale build read one trigger as another. */
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 /*
- * AUTOMATION LANES ARE OFF UNLESS ARMED — /data/UserData/schwung/lanes_on.
+ * AUTOMATION LANES ARE ON UNLESS DISARMED — /data/UserData/schwung/lanes_off.
  *
- * Not a diagnostic like the flags above: it is a KILL SWITCH, and it exists
- * because the feature can attach automation to the wrong clip and that is
- * SILENT. The case that forced it: Schwung believed the active set was one the
- * user had deleted, so p-locks were written into the outgoing set's lane file
- * at a row that set happened to have — the locks simply never played, and
- * nothing said why.
+ * A KILL SWITCH, not a diagnostic. It was an opt-in (`lanes_on`) while the
+ * feature could attach automation to the wrong clip SILENTLY: Schwung once
+ * believed the active set was one the user had deleted, so p-locks went into
+ * the outgoing set's lane file at a row that set happened to have, and never
+ * played. The live model (#552) closed that -- set identity is read from
+ * Move's own document and autosave waits until Schwung has switched to it --
+ * so lanes are on by default and the file only turns them OFF.
  *
- * Off by default, so a build carrying this feature cannot mis-key anybody's
- * automation until they ask for it. Armed, everything behaves as it does on
- * the development branch.
+ * An opt-in hidden in a file also failed the other way: a reinstall that did
+ * not carry `lanes_on` turned the feature off with nothing on screen but
+ * "NOT LOCKED: DISABLED".
  *
  * When DISARMED the chain releases whatever it is driving and then does
  * nothing: no writes, no playback. It must not merely stop ticking, or a lane
  * that was driving would leave its override asserted and the parameter stuck
  * where the clip left it, with no gesture that hands it back.
  */
-#define SHIM_FLAG_LANES_ON       (1u << 11) /* lanes_on -- the kill switch */
+#define SHIM_FLAG_LANES_OFF      (1u << 11) /* lanes_off -- the kill switch */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
 #include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
