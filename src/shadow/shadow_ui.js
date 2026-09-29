@@ -11920,6 +11920,12 @@ function sceneApplyAll(verb, value) {
 let sceneActive = -1;
 let scenePairs = sceneDefaultPairs();
 function scenePushEnds() {
+    /* A Program Change the shim applied since our last tick is ADOPTED FIRST.
+     * It wrote the ends and scene_active on the frame it arrived; pushing
+     * from a stale sceneActive (a pairing edit, an undo) in the same tick
+     * overwrote them, and scenesAdoptPc then adopted our own stale scene --
+     * the PC silently reverted. */
+    scenesAdoptPc(sceneState());
     const e = sceneEndsFor(sceneActive, scenePairs);
     if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
     /* ...and the whole pairing table, so the shim can apply a Program Change
@@ -11951,7 +11957,9 @@ function scenesAdoptPc(st) {
 const scenesScreen = createScenesScreen({
     state: () => sceneState(),
     scene: () => ({ active: sceneActive, pairs: scenePairs }),
-    setActive: (k) => { sceneActive = k; scenePushEnds(); },
+    /* The tap comes after any PC already applied: consume that first, so the
+     * push below cannot adopt it over the scene the user just chose. */
+    setActive: (k) => { scenesAdoptPc(sceneState()); sceneActive = k; scenePushEnds(); },
     setPair: (k, p) => {
         if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
         scenePairs[k] = [p[0], p[1]];
@@ -12205,7 +12213,9 @@ function scenesLoadFrom(dir, adoptLive) {
             return false;
         }
     }
-    /* The active scene and the on/offs are JS state: from the file either way. */
+    /* The active scene and the on/offs are JS state: from the file either way.
+     * A set load wins over a PC still pending from the outgoing set. */
+    scenePcSeqSeen = null;
     sceneActive = doc.active;
     scenePairs = doc.pairs;
     if (adoptLive) {
