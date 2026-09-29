@@ -20,7 +20,7 @@ cd "$(dirname "$0")/../.."
 #        resample bridge will ever see is fixed at this point.
 #   2. shadow_metronome_render(mailbox_audio, ...)
 #        the click goes into the DAC mailbox only.
-#   3. rebuild_from_la && mv < 0.9999f
+#   3. rebuild_from_la && (mv < 0.9999f ...
 #        master volume is applied, so the click tracks the knob.
 #
 # Move 2 above 1 and the click lands in recordings. Move it below 3 and it
@@ -32,7 +32,7 @@ failures=0
 read -r snap mix vol <<<"$(awk '
     /native_capture_total_mix_snapshot_from_buffer\(unity_view\)/ { snap = NR }
     /shadow_metronome_render\(mailbox_audio/                      { mix  = NR }
-    /rebuild_from_la && mv < 0\.9999f/                            { vol  = NR }
+    /rebuild_from_la && \(?mv < 0\.9999f/                           { vol  = NR }
     END { print snap+0, mix+0, vol+0 }' "$SRC")"
 
 for pair in "snap:$snap:the unity_view capture snapshot" \
