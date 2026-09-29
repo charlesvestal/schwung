@@ -11973,7 +11973,7 @@ function scenesHandleMidi(status, d1, d2) {
 }
 
 /*
- * SHIFT+UP / SHIFT+DOWN: edit the active scene's A / B, from any Schwung
+ * SHIFT+- / SHIFT++ (Down / Up): edit the active scene's A / B, from any Schwung
  * screen (the shim claims both edges while our screen is up; Move gives the
  * combo no meaning beyond the bare arrows' octave shift).
  *
@@ -11988,7 +11988,7 @@ const SCENE_EDIT_HOLD_MS = 500;
 const sceneEditKey = {};   /* cc -> { at, rev, wasOn } */
 function scenesHandleEditKey(status, d1, d2) {
     if ((status & 0xF0) !== 0xB0 || (d1 !== 55 && d1 !== 54)) return false;
-    const side = d1 === 55 ? "a" : "b";
+    const side = d1 === 54 ? "a" : "b";   /* Shift+- = A, Shift++ = B */
     if (d2 > 0) {
         if (!isShiftHeld()) return false;          /* a bare arrow is not ours */
         const st = sceneState() || { edit: -1, rev: 0 };
