@@ -257,6 +257,54 @@ position empty while the perf snapshot shows measured time for it — the
 hot-swap window where the on-disk mirror is momentarily stale relative to
 what is actually running. Every other refresh is disk-only.
 
+## The web mirror: `/mirror` (screen + device)
+
+`move.local:7700/mirror` shows the OLED large and, under it, the whole control
+surface: every LED as the hardware was last told to light it and every control
+as it is held. **Save PNG** / **Record** capture screen, device or both — the
+cheapest way to show a bug report what the hands and the lights were doing.
+Gated by the same Mirror Display setting as the screen.
+
+- **Two tap points, each the only place its half is true.** LEDs are read from
+  the FINAL MIDI_OUT at the end of `shim_pre_transfer` (beside the `PREEND`
+  log) — Move's writes, the LED queue and an overtake module's merged, i.e.
+  what the XMOS receives. `move_note_led_state[]` is NOT that: it holds Move's
+  writes only and stops during overtake, so it would draw Move's intent under a
+  Schwung screen. Presses are read from the RAW hardware MIDI_IN at the top of
+  `shim_post_transfer`, before any blocking site, so a press Schwung withholds
+  from Move still shows. `src/host/surface_live_shm.h`; always tracked (a
+  few byte compares a frame, no store to the page unless something changed),
+  because an LED is written once and a viewer arriving later must see it.
+- **The byte after `3B` in Move's RGB LED SysEx is a CHANNEL**, not a
+  subcommand: `00` addresses a NOTE (pads, steps), `10` a CC (tracks, knob
+  rings, transport). Decoding only `10` misses every pad. Latest write wins
+  between a palette write and an RGB write to the same LED. The palette,
+  layout and this reading follow Cycling '74's MIT `move_midi_emulator.html`
+  (rnbo.move.templates) — see `THIRD_PARTY_LICENSES.md`.
+- **The page freezing for good was three bugs, not flaky Wi-Fi alone.**
+  (1) Frames are sent only on change and the keepalive was an SSE *comment*,
+  invisible to JS, so a half-open link after a Wi-Fi blip (no FIN, no
+  `onerror`) was indistinguishable from a still screen. The heartbeat is now
+  `event: hb` every 2 s and the page rebuilds its connection after 6 s of
+  silence. (2) A non-200 (display-server restarting, slots full → the proxy's
+  502) closes `EventSource` PERMANENTLY while the old page said
+  "reconnecting"; the page now reconnects itself, with backoff. (3) Full slots
+  refused new connections, and a half-open one holds its slot for minutes — a
+  new stream now evicts the oldest. Separately, every stream write was one
+  non-blocking `write()`: `EAGAIN` dropped the client and a short write spliced
+  half an event into the next. Output now goes through a per-client queue of
+  WHOLE events; a backed-up client skips frames and is resynced with full
+  snapshots. `tests/host/test_display_server_streams.sh` builds it with a 2 KB
+  socket buffer to force that path — on default loopback buffers even a 20 s
+  stall never touched the queue.
+- **One connection per page**: `/stream-auto?v=2` carries frames, `surface`,
+  `e16` and `hb`. A bare `/stream-auto` (older pages) is unchanged. The page
+  decodes the struct by byte offset; `tests/host/test_mirror_page_layout.sh`
+  asks the compiler for every offset and fails on a mismatch.
+- Animation (status channel 6-10 pulse, 11-15 blink; ch 16 is the steps' and
+  white buttons' normal channel) is drawn at an assumed 120 BPM: no tempo
+  reaches the page.
+
 ## Driving Move's own controls: `tools/inject/schwung_inject.c`
 
 Cross-compile it (`aarch64-linux-gnu-gcc -Isrc/host tools/inject/schwung_inject.c

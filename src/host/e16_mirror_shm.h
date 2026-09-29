@@ -19,7 +19,9 @@
 #include <stdint.h>
 
 #define E16_MIRROR_SHM_NAME   "/schwung-e16-live"
+#ifndef E16_MIRROR_SHM_PATH   /* tests point it at a plain file */
 #define E16_MIRROR_SHM_PATH   "/dev/shm/schwung-e16-live"
+#endif
 #define E16_MIRROR_MAGIC      "E16MIR1"
 #define E16_MIRROR_FRAME_SIZE 1024        /* 128 x 64, SSD1306 pages, as Move's */
 #define E16_MIRROR_RINGS      16
