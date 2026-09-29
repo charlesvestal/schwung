@@ -150,7 +150,7 @@ int main(void) {
           "state read: plugin held the base (%f) and the morph (%f) returned", during, mix(0, 1));
 
     shadow_scene_bus_get_verb(0, "locks", buf, sizeof(buf));
-    CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
+    CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
     CHECK(shadow_scene_bus_get_verb(3, "dump", buf, sizeof(buf)) == -1, "an out-of-range scope is refused");
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
