@@ -45,11 +45,13 @@ import { src } from "./snapshot_lanes.mjs";
 let calls = [];
 let files = {};
 const lastWrittenLaneJson = [null, null, null, null];
+const lastWrittenLaneRev = [null, null, null, null];
 const g = {
   host_read_file: (p) => files[p],
   setSlotParam: (i, k, v) => calls.push([i, k, v]),
   clearSlotLanesQuietly: (i) => { calls.push([i, "lanes:reset", "1"]); lastWrittenLaneJson[i] = null; },
   lastWrittenLaneJson,
+  lastWrittenLaneRev,
 };
 const api = new Function(...Object.keys(g), src + "; return { snapshotFileNames, recallLanes };")(...Object.values(g));
 

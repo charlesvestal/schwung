@@ -466,6 +466,7 @@ int main(void) {
     copies_follow_permutation();
     undo_does_not_cross_restores();
     empty_marker_clears();
+    rev_tracks_content();
     adoption_releases_twin();
     modulated_honours_kill_switch();
     if (fails) { printf("%d failure(s)\n", fails); return 1; }

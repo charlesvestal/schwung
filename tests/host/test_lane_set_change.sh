@@ -43,6 +43,7 @@ import { src } from "./lane_set_change.mjs";
 let calls = [];
 let files = {};
 const lastWrittenLaneJson = [null, null, null, null];
+const lastWrittenLaneRev = [null, null, null, null];
 const laneRestoreConfirmed = [false, false, false, false];
 /* What the SLOT says when asked back. `null` is a read that did not complete,
  * "" is served-and-empty; the restore has to tell those apart from a document,
@@ -56,6 +57,7 @@ const g = {
   lanePathForSlot: (i) => "/state/lanes_" + i + ".json",
   debugLog: () => {},
   lastWrittenLaneJson,
+  lastWrittenLaneRev,
   laneRestoreConfirmed,
 };
 const fn = new Function(...Object.keys(g), src + "; return { restoreSlotLanes, clearSlotLanesQuietly };");

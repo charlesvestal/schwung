@@ -882,6 +882,60 @@ void lane_set_armed(chain_instance_t *inst, int armed) {
     inst->lane_armed = armed ? 1 : 0;
 }
 
+/* A CONTENT REVISION of the store, so the autosave can skip `lanes:state`
+ * when nothing changed. Serialising a full store costs ~1 ms on Apple silicon
+ * (several on the A53) and runs on the SPI callback, every slot, every ~5 s
+ * pass -- whether or not anything was recorded.
+ *
+ * A HASH, not a counter bumped at every mutation site: there are dozens of
+ * those (writes, p-locks, adoption, re-stamping in lane_tick, the edit
+ * verbs), and one that forgot to bump would mean automation that is silently
+ * never saved. Hashing what the store HOLDS cannot miss a site. It covers
+ * every field of a used lane except the per-block runtime churn (`driving`,
+ * the punch pair, the recording pass, `pending_blocks`), which the serializer
+ * never writes -- so playback alone does not move it, and anything it
+ * over-covers merely costs one unneeded serialise. Field by field, never the
+ * raw struct, so padding cannot make two equal stores hash differently.
+ * FNV-1a over <=~40 KB: tens of microseconds, against milliseconds. */
+static uint64_t lane_rev_mix(uint64_t h, const void *p, size_t n) {
+    const unsigned char *b = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ull; }
+    return h;
+}
+#define LANE_REV_MIX(h, f) ((h) = lane_rev_mix((h), &(f), sizeof(f)))
+
+static uint64_t lane_store_rev(const lane_store_t *st) {
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < LANE_MAX; i++) {
+        const lane_t *ln = &st->lanes[i];
+        if (!ln->used) continue;
+        LANE_REV_MIX(h, i);
+        h = lane_rev_mix(h, ln->target, strnlen(ln->target, sizeof(ln->target)));
+        h = lane_rev_mix(h, "", 1);
+        h = lane_rev_mix(h, ln->param, strnlen(ln->param, sizeof(ln->param)));
+        LANE_REV_MIX(h, ln->track);
+        LANE_REV_MIX(h, ln->slot);
+        LANE_REV_MIX(h, ln->fp.loop_start);
+        LANE_REV_MIX(h, ln->fp.loop_len);
+        LANE_REV_MIX(h, ln->fp.note_count);
+        LANE_REV_MIX(h, ln->fp.first_note);
+        LANE_REV_MIX(h, ln->stale);
+        LANE_REV_MIX(h, ln->orphaned);
+        LANE_REV_MIX(h, ln->module_gone);
+        LANE_REV_MIX(h, ln->origin_pending);
+        LANE_REV_MIX(h, ln->pending_len);
+        LANE_REV_MIX(h, ln->n);
+        const int n = ln->n < LANE_POINTS_MAX ? ln->n : LANE_POINTS_MAX;
+        for (int k = 0; k < n; k++) {
+            LANE_REV_MIX(h, ln->pts[k].phase);
+            LANE_REV_MIX(h, ln->pts[k].value);
+            LANE_REV_MIX(h, ln->pts[k].hold);
+            LANE_REV_MIX(h, ln->pts[k].span);
+        }
+    }
+    return h;
+}
+
 int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
     if (!inst || !buf || buf_len <= 0) return -1;
     return lane_store_serialize(&inst->lanes, buf, buf_len);
@@ -1872,6 +1926,11 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * was too small, which the UI must not mistake for empty or it truncates
      * a good lanes_<i>.json with half a document. */
     if (strcmp(sub, "state") == 0) return lane_serve_state(inst, buf, buf_len);
+    /* The store's content revision (lane_store_rev), so the autosave can skip
+     * the serialise above when nothing changed. */
+    if (strcmp(sub, "rev") == 0)
+        return snprintf(buf, buf_len, "%016llx",
+                        (unsigned long long)lane_store_rev(&inst->lanes));
 
     /* WHICH CLIP this slot is bound to, as "<track> <slot>" 0-based, or empty
      * when it is bound to none. The UI needs it to NAME what a clip-scoped
