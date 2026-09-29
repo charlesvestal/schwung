@@ -4840,6 +4840,16 @@ static uint16_t snapshot_recall_gesture(void)
     return SHADOW_UI_FLAG_SNAPSHOT_QUEUED;
 }
 
+/* A RECALL asked for by Program Change (PC 127 on the scene channel). As the
+ * gesture, Recall Quantize included -- but never a toggle: a sequencer
+ * repeating PC 127 while a recall waits for its boundary must not CANCEL it,
+ * which is what a second Shift+Delete means. 0 = nothing to raise. */
+static uint16_t snapshot_recall_pc(void)
+{
+    if (recall_pending_target >= 0) return 0;
+    return snapshot_recall_gesture();
+}
+
 /*
  * Fire an armed recall, slightly EARLY.
  *
@@ -9229,6 +9239,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 shadow_control->scene_b = hb;
                 shadow_control->scene_active = k;
                 shadow_control->scene_pc_seq++;
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+            /* PC 126 / 127 on the same channel: take / recall the global
+             * snapshot, exactly as Shift+Copy / Shift+Delete do. */
+            const int snap = scene_pc_snapshot(shadow_control->scene_pc_channel,
+                                               hw_midi[j + 1], hw_midi[j + 2]);
+            if (snap) {
+                if (shadow_ui_enabled) {
+                    const uint16_t raise = snap == SCENE_PC_SNAPSHOT_TAKE
+                        ? SHADOW_UI_FLAG_SNAPSHOT_TAKE : snapshot_recall_pc();
+                    if (raise)
+                        shadow_control->ui_flags_ext |= (uint16_t)(raise >> SHADOW_UI_FLAG_EXT_SHIFT);
+                }
                 midi_in_swallow(sh_midi, hw_midi, j);
                 continue;
             }
