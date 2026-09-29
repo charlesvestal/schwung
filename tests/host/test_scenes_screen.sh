@@ -138,6 +138,12 @@ async function render(name, st, sc) {
   s2.draw({ fillRect: fb.fillRect, print: fb.print, textWidth: fb.textWidth,
             drawHeader: ML.drawMenuHeader, drawFooter: ML.drawMenuFooter });
   fs.writeFileSync("build/tests/scenes_" + name + ".png", fb.toPng(4));
+  /* The edit hint sits right of the pad map and must not touch it (grid ends x=79). */
+  const rows = fb.toAscii().split("\n");
+  for (let y = 12; y < 42; y++) {
+    const x = rows[y].slice(80, 82).indexOf("#");
+    if (x >= 0) { fail(name + ": the hint touches the pad map at " + (80 + x) + "," + y); break; }
+  }
   if (fb.clipped()) fail(name + ": " + fb.clipped() + " pixels drawn off the panel");
   if (fb.missingGlyphs.size) fail(name + ": missing glyphs " + [...fb.missingGlyphs].join(""));
 }
