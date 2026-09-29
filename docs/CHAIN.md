@@ -1463,6 +1463,90 @@ degrades resolution rather than dropping the gesture (the write replaces its
 nearest point and counts a `full_hits`), because a lost write mid-sweep is a
 hole the user can neither see nor fix.
 
+### Step chance -- hold ONE step, press Menu
+
+Elektron-style trig conditions on Move's own notes: a percentage (Elektron's
+ladder, 99..1 %) or **A:B** -- play on pass A of every B loop passes. The step
+menu also shows Move's own **Length** and **Velocity** for the held note.
+Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
+
+- **The gesture is the SHIM's, over MOVE's screen only** (`step_menu.h` pure,
+  `step_menu.c` glue). Menu is swallowed on BOTH edges, latched -- measured on
+  2.1.x, Menu with a step held still flips Note/Session and the pads start
+  launching clips. Further Menu presses cycle Chance -> Length -> Velocity.
+  The jog is SWALLOWED on Chance (Move would edit the note length under it),
+  PASSED on Length (Move's own hold-step + jog) and REWRITTEN IN PLACE into a
+  Volume detent on Velocity (Move's own hold-step + Volume; no touch note
+  needed, measured). Releasing the step closes it. With the shadow UI up a
+  held step is the p-lock gesture, so the menu never opens there.
+- **Chance reaches SCHWUNG's instruments only.** The gate
+  (`step_chance_gate.h`, `chance_filter` in `chain_chance.c`) sits in
+  `v2_on_midi` AHEAD of the LFO retrigger, MIDI FX and synth, and drops a
+  losing note-on AND its note-off. Move's own instrument on the track still
+  plays: we see the note after Move played it. Pre mode stands down (its echo
+  filter counts what it injected).
+- **Length and Velocity are ACCELERATED.** Move honours a relative jog
+  value's magnitude (one +5 moved a note 0.5 step, measured), so a fast turn
+  is rewritten in place into a bigger detent: x3 / x8 / x16 under 90 / 50 /
+  25 ms between detents, x1 on a slow turn or a reversal -- Move's own 0.1
+  step stays the fine control. Chance is not accelerated (57 values).
+- **NO WIND-UP past Move's cap.** Within one hold Move COUNTS detents past a
+  note's limit without moving it (200 forward then 5 back left 16.0; a fresh
+  hold's 5 back gave 15.5), and acceleration multiplied that into a jog that
+  "kept going" and took ages to come back. The model thread computes each
+  note's cap from the WHOLE clip -- the next note of the same pitch, else the
+  clip end (both measured: 2.2 and 16.0) -- and the step menu trims or
+  swallows any detent that would only bank. Floors too (0.1 step, velocity 1).
+- **The TAP GUARD.** Move decides tap-vs-hold on the step's RELEASE at
+  ~500 ms (500 toggled, 520 did not). The Menu press is swallowed, so a quick
+  step + Menu + release is a tap to Move and toggles the note -- deleting the
+  one being edited. A release within 700 ms of a press the menu used is
+  withheld and handed to Move at 700 ms, after compaction.
+- **One roll per step per pass**: every note starting on the step in that pass
+  shares the first note's result, so a chord drops whole.
+- **Keyed by Move's note id, matched by pitch + clip phase.** A note-on is bare
+  MIDI; Move's notes arrive exactly on their start phase (measured 2026-09-17),
+  so the match tolerance is 0.03 q and wraps at the loop window. Because the
+  match is POSITIONAL, the shim follows Move's edits on the page it shows:
+  a nudged/re-pitched note is relocated by id, a deleted one is pruned (else
+  the next note placed there inherits its condition). Never from a truncated
+  or undecodable page -- absence from a list not finished says nothing.
+- **The A:B pass is DERIVED, not counted** -- `sc_clip_pass` from Move's launch
+  beat and the transport, pushed each frame through `chain_set_clip_pass`, a
+  NEW dlsym'd export (the phase seam's signature is final). The instance stores
+  pass + 1 so calloc's zero reads as UNKNOWN, and an unknown pass plays.
+- **CHANCE FOLLOWS MOVE'S EDITS off the LANES' verbs** (`step_chance_follow.h`,
+  `chance_on_lane_verb`): `paste_span` (step/page paste AND Double Loop),
+  `journal undo|redo`, `stash`/`unstash` (clip delete + Undo), `copy_clip`.
+  Each is issued by `edit_follow` only once the model confirms Move made the
+  edit, and chance sees it BEFORE the lanes and regardless of `lanes_off`, so
+  the two cannot disagree. A paste REPLACES the destination's conditions,
+  scoped by the `v=` pitches Move actually pasted (a drum paste moves one
+  pad), journaled per jid for Move's Undo/Redo.
+  **A copy cannot carry Move's note id** -- copied notes are new notes -- so a
+  copied condition gets a SYNTHETIC (negative) id and plays at once (matching
+  is by pitch + position); the shim ADOPTS it to Move's real id the first
+  time its page is shown, BEFORE the prune that would otherwise take it.
+  A deleted clip parks its conditions on rows 200..203 (never matched, never
+  serialized) until Move's Undo brings the very clip back.
+  **Deliberately NOT followed**, because each would need a heuristic rather
+  than a confirmed event: a single deleted NOTE's condition is gone for good
+  (Move's Undo restores the note, not the condition -- Move reuses note ids,
+  so "the same id came back" cannot tell an Undo from a re-tap), and a clip
+  copied to ANOTHER TRACK arrives with no conditions.
+- **Drum voice**: Move's document does not name the selected drum cell (all 93
+  classes checked); its pad LED does -- the left-4x4 pad lit 122. Chance scopes
+  to that voice when it is on the step, else to every note on the step.
+- **Persistence**: `chance_<i>.txt` in the set's state dir, the same rev skip,
+  three-answer rule and restore readback as `lanes_<i>.json`.
+- **A track with no Schwung synth says "Move only"** on the Chance field
+  (`SM_FLAG_NO_SYNTH`), and the jog does nothing there -- a value that cannot
+  move reads as broken. `chance:stats` ("matched dropped") is how chance is
+  verified on a device nobody can hear, and tells "does nothing" from a
+  routing problem (Move track MIDI Out Off: nothing ever matches).
+- **Unknown is never "drop"**: stopped transport, no clip, no row, unknown pass
+  -- all play the note.
+
 ### Scenes -- a MORPH contribution, the table verbs, and the edit arm
 
 A slot's share of the scene bank lives on `chain_instance_t` (`scenes`, a

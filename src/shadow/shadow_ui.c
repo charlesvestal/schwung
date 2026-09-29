@@ -873,6 +873,34 @@ static JSValue js_host_scene_surface(JSContext *ctx, JSValueConst this_val, int 
     return JS_TRUE;
 }
 
+/* shadow_get_step_menu() -> null | { seq, field, step, cond, vel, lenC, flags, track, page[16] }
+ *
+ * The step menu (hold one step, press Menu) -- the SHIM owns the gesture and
+ * fills shadow_control_t.step_menu_* (src/host/step_menu.c); this only reads.
+ * null while it is closed, so the caller's cheapest question is the common
+ * one. `cond` / page cells: SM_CELL_EMPTY (255) no note, SM_CELL_OFF (254) no
+ * step there, else a step_chance.h index. */
+static JSValue js_shadow_get_step_menu(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control || !shadow_control->step_menu_open) return JS_NULL;
+    JSValue o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "seq", JS_NewInt32(ctx, shadow_control->step_menu_seq));
+    JS_SetPropertyStr(ctx, o, "field", JS_NewInt32(ctx, shadow_control->step_menu_field));
+    JS_SetPropertyStr(ctx, o, "step", JS_NewInt32(ctx, shadow_control->step_menu_step));
+    JS_SetPropertyStr(ctx, o, "cond", JS_NewInt32(ctx, shadow_control->step_menu_cond));
+    JS_SetPropertyStr(ctx, o, "vel", JS_NewInt32(ctx, shadow_control->step_menu_vel));
+    JS_SetPropertyStr(ctx, o, "lenC", JS_NewInt32(ctx, shadow_control->step_menu_len_c));
+    JS_SetPropertyStr(ctx, o, "flags", JS_NewInt32(ctx, shadow_control->step_menu_flags));
+    JS_SetPropertyStr(ctx, o, "velMax", JS_NewInt32(ctx, shadow_control->step_menu_vel_max));
+    JS_SetPropertyStr(ctx, o, "lenMaxC", JS_NewInt32(ctx, shadow_control->step_menu_len_max_c));
+    JS_SetPropertyStr(ctx, o, "track", JS_NewInt32(ctx, shadow_control->step_menu_track));
+    JSValue pg = JS_NewArray(ctx);
+    for (int i = 0; i < 16; i++)
+        JS_SetPropertyUint32(ctx, pg, (uint32_t)i, JS_NewInt32(ctx, shadow_control->step_menu_page[i]));
+    JS_SetPropertyStr(ctx, o, "page", pg);
+    return o;
+}
+
 /* shadow_get_held_step_is_hold() -> int
  *
  * Has that press become a HOLD rather than a tap? 1 or 0.
@@ -3853,6 +3881,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_scene_flash", JS_NewCFunction(ctx, js_shadow_clear_scene_flash, "shadow_clear_scene_flash", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_unlock", JS_NewCFunction(ctx, js_shadow_set_scene_unlock, "shadow_set_scene_unlock", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_scene_surface", JS_NewCFunction(ctx, js_host_scene_surface, "host_scene_surface", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_step_menu", JS_NewCFunction(ctx, js_shadow_get_step_menu, "shadow_get_step_menu", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step_is_hold", JS_NewCFunction(ctx, js_shadow_get_held_step_is_hold, "shadow_get_held_step_is_hold", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_delete_held", JS_NewCFunction(ctx, js_shadow_get_delete_held, "shadow_get_delete_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_lanes_driving_mask", JS_NewCFunction(ctx, js_shadow_get_lanes_driving_mask, "shadow_get_lanes_driving_mask", 0));

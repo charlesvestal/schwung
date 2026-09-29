@@ -235,6 +235,8 @@ extern void (*shadow_chain_set_clip_phase)(void *instance, int valid,
 /* Where slot `slot`'s Move track is in its playing clip. Returns 1 for a known
  * phase, 0 for UNKNOWN -- never phase 0. *clip_slot and *fp_valid answer
  * identity and are filled either way; see the definition. */
+extern void (*shadow_chain_set_clip_pass)(void *instance, long pass);
+extern long shadow_slot_clip_pass_last[];
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp);
 

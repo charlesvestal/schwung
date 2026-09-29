@@ -971,10 +971,8 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
     /* Every automation-lane key, in ONE dispatch (chain_lanes.c). One branch
      * rather than one per key: this file is pinned at 2900 lines, so a ladder
      * here makes the next lane key a choice between the pin and the feature. */
-    if (key && strncmp(key, "lanes:", 6) == 0) {
-        lane_param_set(inst, key + 6, val);
-        return;
-    }
+    if (key && strncmp(key, "lanes:", 6) == 0) { chance_on_lane_verb(inst, key + 6, val); lane_param_set(inst, key + 6, val); return; }
+    if (key && strncmp(key, "chance:", 7) == 0) { chance_param_set(inst, key + 7, val); return; }
 
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
@@ -1638,6 +1636,7 @@ static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf
      * as a FAILED read rather than as an empty answer. */
     if (strncmp(key, "lanes:", 6) == 0)
         return lane_param_get(inst, key + 6, buf, buf_len);
+    if (strncmp(key, "chance:", 7) == 0) return chance_param_get(inst, key + 7, buf, buf_len);
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we return our cached flag instead of forwarding to the sub-plugin. */

@@ -63,6 +63,8 @@
 #include "host/shim_worker.h"
 #include "host/move_model.h"
 #include "host/move_model_sync.h"
+#include "host/step_menu.h"
+#include "host/step_menu_glue.h"
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
@@ -2263,6 +2265,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
+                /* Step chance's A:B clock, from the same model snapshot. */
+                if (shadow_chain_set_clip_pass)
+                    shadow_chain_set_clip_pass(shadow_chain_slots[s].instance,
+                                               (lane_ok && s < MM_TRACKS)
+                                                   ? shadow_slot_clip_pass_last[s] : -1);
 
                 /* THE KILL SWITCH, pushed on change like everything else
                  * here. ON unless lanes_off exists: see SHIM_FLAG_LANES_OFF. */
@@ -9393,6 +9400,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * counter, and an early-out when nothing is armed. */
     snapshot_recall_check_boundary();
 
+    /* The step menu: close it if its step went away, republish the card
+     * (step_menu.c). Before the scan, so it draws last frame's edits -- one
+     * frame late, which nothing can see. */
+    if (shadow_control)
+        step_menu_frame(shadow_control, shadow_steps_held_mask,
+                        !shadow_display_mode && shadow_ui_enabled);
+
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -9422,6 +9436,37 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 move_model_sync_on_midi(status, d1, d2)) {
                 midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 continue;
+            }
+
+            /* THE STEP MENU: hold one step, press Menu (step_menu.c). Over
+             * Move's screen only -- with the shadow UI up a held step is the
+             * p-lock gesture and Menu is the UI's. Both edges of a taken Menu
+             * press are swallowed (Move would flip Note/Session); the jog is
+             * swallowed on Chance and rewritten IN PLACE into a Volume detent
+             * on Velocity, which is Move's own hold-step + Volume edit. */
+            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B)) {
+                uint8_t sm_out[3];
+                const int sm = step_menu_on_input(status, d1, d2, sm_out, shadow_steps_held_mask,
+                                                  shadow_shift_held,
+                                                  !shadow_display_mode && shadow_ui_enabled,
+                                                  now_mono_ms());
+                if (sm == SM_SWALLOW) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    /* A swallowed STEP edge is invisible to midi_monitor (it
+                     * reads the mailbox the swallow zeroes), so the held-step
+                     * mask is kept here -- the step_note_withhold rule. */
+                    if (d1 >= 16 && d1 <= 31 && (type == 0x90 || type == 0x80)) {
+                        const uint32_t bit = 1u << (d1 - 16);
+                        if (type == 0x90 && d2 > 0) shadow_steps_held_mask |= bit;
+                        else shadow_steps_held_mask &= ~bit;
+                    }
+                    continue;
+                }
+                if (sm == SM_REWRITE) {
+                    uint8_t *sh = shadow + MIDI_IN_OFFSET + j;
+                    sh[1] = sm_out[0]; sh[2] = sm_out[1]; sh[3] = sm_out[2];
+                    continue;
+                }
             }
 
             /* Anything else pressed while Mute is down makes it some other
@@ -10887,6 +10932,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             j += SHADOW_MIDI_IN_STRIDE;
             shim_step_tap_emitted++;
             step_tap_replay[i] = on ? 2 : 0;
+        }
+    }
+
+    /* === POST-IOCTL: THE STEP MENU'S WITHHELD RELEASES ===
+     * A step released soon after its press opened the step menu would be a
+     * TAP to Move -- a toggled note -- so step_menu.h withholds the release
+     * until the press is old enough to be a hold, and it is handed over here,
+     * after compaction, where the free slots are a contiguous tail. */
+    if (global_mmap_addr) {
+        uint32_t due = step_menu_take_due_releases(now_mono_ms());
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        int j = 0;
+        for (int i = 0; i < 16 && due; i++) {
+            if (!(due & (1u << i))) continue;
+            for (; j < SHADOW_MIDI_IN_BYTES; j += SHADOW_MIDI_IN_STRIDE)
+                if (shadow_midi_in_slot_empty(&src[j])) break;
+            if (j >= SHADOW_MIDI_IN_BYTES) break;
+            src[j] = 0x08; src[j + 1] = 0x80; src[j + 2] = (uint8_t)(16 + i); src[j + 3] = 0;
+            memset(&src[j + 4], 0, 4);
+            j += SHADOW_MIDI_IN_STRIDE;
+            due &= ~(1u << i);
         }
     }
 

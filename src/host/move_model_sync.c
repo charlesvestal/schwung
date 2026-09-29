@@ -8,6 +8,7 @@
 
 #include "move_model.h"
 #include "edit_follow.h"
+#include "step_menu_glue.h"
 #include "edit_gesture.h"
 #include "undo_timeline.h"
 #include "lane_edit.h"
@@ -522,6 +523,9 @@ static void on_tick(const move_model_t *now)
     ef_notes_t nn, pn;
     drain_intents();
     edited_notes(&nn, &pn);
+    /* The step menu's page: the same decoded notes, published for the SPI
+     * callback (step_menu.c). */
+    step_menu_publish_page(now, nn.notes, nn.n, &nn.ref);
     edit_follow_tick(now, &nn, &pn, now_ms(), enqueue_cmd, NULL);
     undo_tick(now);
 }

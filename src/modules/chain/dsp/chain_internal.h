@@ -49,6 +49,8 @@
 #include "host/bus_route.h"
 #include "host/lane_store.h"
 #include "host/lane_edit.h"
+#include "host/step_chance_gate.h"
+#include "host/step_chance_follow.h"
 #include "host/lane_serial.h"
 #include "host/scene_morph.h"
 #include "../../../host/unified_log.h"
@@ -1219,6 +1221,18 @@ typedef struct chain_instance {
     
     /* Synth load error message */
     char synth_load_error[256];
+
+    /* STEP CHANCE (chain_chance.c): Elektron-style trig conditions on Move's
+     * notes, keyed by note id and matched at playback by pitch + clip phase.
+     * On the instance for the lanes' reason -- never inside patch_info_t. The
+     * pass is pushed by the shim beside the phase (chain_set_clip_pass). */
+    sc_store_t chance;
+    sc_gate_t  chance_gate;
+    long       chance_pass1;         /* loop pass + 1 of the playing clip; 0 = UNKNOWN
+                                      * (calloc's zero must not read as pass 0) */
+    /* Following Move's edits (step_chance_follow.h), off the lanes' verbs. */
+    sc_journal_t chance_journal[SC_JOURNAL];   /* pastes, by edit_follow's jid */
+    uint32_t     chance_stash_sid[SC_STASHES]; /* which clip delete each stash row holds */
 } chain_instance_t;
 
 /*
@@ -1517,6 +1531,15 @@ CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,
                                    const char *val);
 CHAIN_INTERNAL int lane_param_get(chain_instance_t *inst, const char *sub,
                                   char *buf, int buf_len);
+
+/* chain_chance.c -- every "chance:" key, and the gate on Move's notes. */
+CHAIN_INTERNAL void chance_param_set(chain_instance_t *inst, const char *sub, const char *val);
+CHAIN_INTERNAL int  chance_param_get(chain_instance_t *inst, const char *sub, char *buf, int buf_len);
+/* 1 = deliver, 0 = drop (a note that lost its roll, or that note's off). */
+CHAIN_INTERNAL int  chance_filter(chain_instance_t *inst, const uint8_t *msg, int len, int source);
+/* Every "lanes:" verb, seen by chance first: paste_span, journal, stash,
+ * unstash and copy_clip are Move's edits, confirmed, and chance follows them. */
+CHAIN_INTERNAL void chance_on_lane_verb(chain_instance_t *inst, const char *sub, const char *val);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

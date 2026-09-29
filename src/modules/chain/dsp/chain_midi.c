@@ -778,6 +778,11 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
         }
     }
 
+    /* STEP CHANCE: a note that lost its roll never happened -- so it must be
+     * dropped before the LFO retrigger, the MIDI FX and the synth all see it,
+     * and its note-off with it (chain_chance.c). */
+    if (!chance_filter(inst, msg, len, source)) return;
+
     /* LFO retrigger: reset phase on first note-on of new phrase */
     lfo_process_midi(inst->lfos, msg, len);
 
