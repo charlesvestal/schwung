@@ -5296,13 +5296,22 @@ void shadow_inprocess_handle_param_request(void) {
                             shadow_param->result_len = -1;
                         }
                     } else {
-                        int n = shadow_scene_bus_read(send_idx + 1, send_fx, send_param,
-                                                      shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                        /* `<param>:base` is the knob -- what a save reads --
+                         * even armed, when the plain read answers the lock. */
+                        char base_param[64];
+                        const int is_base = mfx_param_strip_suffix(send_param, ":base", base_param,
+                                                                   sizeof(base_param));
+                        const char *read_param = is_base ? base_param : send_param;
+                        int n = is_base
+                            ? shadow_scene_bus_read_base(send_idx + 1, send_fx, base_param,
+                                                         shadow_param->value, SHADOW_PARAM_VALUE_LEN)
+                            : shadow_scene_bus_read(send_idx + 1, send_fx, send_param,
+                                                    shadow_param->value, SHADOW_PARAM_VALUE_LEN);
                         const int is_state = strcmp(send_param, "state") == 0;
                         if (is_state) shadow_scene_bus_state_begin(send_idx + 1, send_fx);
                         if (n < 0)
                             n = sfx->api->get_param
-                              ? sfx->api->get_param(sfx->instance, send_param,
+                              ? sfx->api->get_param(sfx->instance, read_param,
                                                     shadow_param->value,
                                                     SHADOW_PARAM_VALUE_LEN)
                               : -1;
@@ -5793,6 +5802,19 @@ void shadow_inprocess_handle_param_request(void) {
                         shadow_param->result_len = strlen(shadow_param->value);
                         shadow_param_publish_response(req_id);
                         return;
+                    }
+
+                    /* A SCENE-driven param: the plugin holds the morph (or,
+                     * armed, the audition), and :base is what a save reads. */
+                    {
+                        int n = shadow_scene_bus_read_base(0, mfx_slot, bare_param, shadow_param->value,
+                                                           SHADOW_PARAM_VALUE_LEN);
+                        if (n >= 0) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = n;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
                     }
 
                     if (mfx->api && mfx->instance && mfx->api->get_param) {

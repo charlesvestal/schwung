@@ -66,6 +66,14 @@ static int lfo_cfg_impl(void *i, const char *k, char *b, int n) {
     return snprintf(b, n, "{}");
 }
 
+/* ...and the enabled flag it saw. */
+static int saw_enabled;
+static int lfo_cfg_enabled_impl(void *i, const char *k, char *b, int n) {
+    (void)k;
+    saw_enabled = ((chain_instance_t *)i)->lfos[0].enabled;
+    return snprintf(b, n, "{}");
+}
+
 static void setup(chain_instance_t *inst) {
     snprintf(v_cutoff, sizeof(v_cutoff), "10");
     snprintf(v_wave, sizeof(v_wave), "0");
@@ -246,12 +254,63 @@ int main(void) {
         frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
     }
 
+    /* A STATE WRITE (User Preset load, set restore) replaces the knob, and the
+     * base the scene captured must follow it. It used to stay on the pre-load
+     * knob, so every later save recorded it and a release wrote it back. What
+     * v2_set_param does: forward the blob, then chain_mod_rebase_target. */
+    {
+        chain_scene_set_param(inst, "lock", "6 synth cutoff 99 obxd");
+        knob_write(inst, "cutoff", "33");
+        frame(inst, 6, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(NEAR(cutoff(), 99), "scene drives cutoff before the preset load: %f", cutoff());
+        mod_target_state_t *e;
+        snprintf(v_cutoff, sizeof(v_cutoff), "50");     /* the module took the loaded state */
+        chain_mod_after_set_param(inst, "synth:cutoffx");  /* not bulk: nothing */
+        e = chain_mod_find_target_entry(inst, "synth", "cutoff");
+        CHECK(e && NEAR(e->base_value, 33), "a non-bulk key rebases nothing");
+        chain_mod_after_set_param(inst, "synth:state");
+        CHECK(NEAR(cutoff(), 99), "after the load the scene's lock is back on top: %f", cutoff());
+        e = chain_mod_find_target_entry(inst, "synth", "cutoff");
+        CHECK(e && NEAR(e->base_value, 50), "the base is the LOADED knob (50): %f", e ? e->base_value : -1.0f);
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 50), "a save records the loaded knob, not the old one: %s", seen);
+        chain_scene_set_param(inst, "clear", "6");
+        frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(NEAR(cutoff(), 50), "released, the module keeps the loaded knob: %f", cutoff());
+        knob_write(inst, "cutoff", "33");
+    }
+
     /* rev moves on every table change and on nothing else. */
     uint16_t r0 = inst->scene_rev;
     frame(inst, 0, 1, 0.3f, SCENE_NONE);
     CHECK(inst->scene_rev == r0, "a fader move is not a table change");
     chain_scene_set_param(inst, "clear", "4");
     CHECK(inst->scene_rev != r0, "a clear is");
+
+    /* ...and so does EVERY other modulation source, with no scene bank at all.
+     * The swap existed only for scene sources and only while a bank was
+     * loaded, so the autosave recorded a lane's (or an LFO's) current value
+     * as the knob, and a reload brought the automation back as the knob. */
+    {
+        setup(inst);                                   /* no scenes */
+        knob_write(inst, "cutoff", "33");
+        chain_mod_emit_override(inst, "lane", "synth", "cutoff", 80.0f, 1);
+        CHECK(NEAR(cutoff(), 80), "the lane drives cutoff: %f", cutoff());
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 33), "no scene bank: a lane-driven param saves the KNOB: %s", seen);
+        CHECK(NEAR(cutoff(), 80), "...and the lane is back on it after the read: %f", cutoff());
+        chain_mod_emit_override(inst, "lane", "synth", "cutoff", 0.0f, 0);
+        chain_mod_emit_value(inst, "lfo1", "synth", "cutoff", 1.0f, 0.1f, 0.0f, 1, 1);
+        float swung = cutoff();
+        CHECK(!NEAR(swung, 33), "an LFO swings cutoff: %f", swung);
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 33), "an LFO-driven param saves the KNOB too: %s", seen);
+        CHECK(NEAR(cutoff(), swung), "...and the swing is back after the read: %f", cutoff());
+        chain_mod_emit_value(inst, "lfo1", "synth", "cutoff", 0, 0, 0, 1, 0);
+    }
 
     /* ---- THE LIVE TAKEOVER on a module knob, measured at the module. */
     setup(inst);
@@ -381,6 +440,34 @@ int main(void) {
         CHECK(NEAR(saw_depth, 0.4f), "lfo_config saves the knob, not the morph: %f", saw_depth);
         frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
         CHECK(NEAR(inst->lfos[0].depth, 0.7f), "... and the morph returns: %f", inst->lfos[0].depth);
+    }
+
+    /* A scene driving an LFO's ENABLED flag (knob off, scene on): the save
+     * sees "off", and the read has NO side effect -- it used to switch the
+     * LFO off through lfo_field_set, which took its modulation down and
+     * force-wrote the knob into the module on every save. */
+    {
+        chain_instance_t *li = calloc(1, sizeof(*li));
+        setup(li);
+        knob_write(li, "cutoff", "40");
+        li->lfos[0].enabled = 0;
+        li->lfos[0].depth = 0.1f;
+        snprintf(li->lfos[0].target, sizeof(li->lfos[0].target), "synth");
+        snprintf(li->lfos[0].param, sizeof(li->lfos[0].param), "cutoff");
+        chain_scene_set_param(li, "lock", "0 lfo1 enabled 1 chain");
+        frame(li, 0, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(li->lfos[0].enabled == 1 && li->lfos[0].active == 1, "the scene switches LFO 1 on");
+        chain_mod_emit_value(li, "lfo1", "synth", "cutoff", 1.0f, 0.1f, 0.0f, 1, 1);  /* its tick */
+        const float swung = cutoff();
+        const int w0 = writes;
+        saw_enabled = -1;
+        chain_scene_get_around_state(li, "lfo_config", buf, sizeof(buf), lfo_cfg_enabled_impl);
+        CHECK(saw_enabled == 0, "lfo_config saves the knob (off): %d", saw_enabled);
+        CHECK(li->lfos[0].enabled == 1 && li->lfos[0].active == 1, "...and the LFO is still on after the read");
+        CHECK(chain_mod_is_target_active(li, "synth", "cutoff") && writes == w0 && NEAR(cutoff(), swung),
+              "...with its modulation untouched: no write to the module (%d), cutoff %f", writes - w0, cutoff());
+        chain_mod_emit_value(li, "lfo1", "synth", "cutoff", 0, 0, 0, 1, 0);
+        free(li);
     }
 
     /* enum fields switch at the midpoint; unlocking hands the field back */

@@ -9731,13 +9731,22 @@ function saveChainConfigToDir(dir) {
     const path = dir + "/shadow_chain_config.json";
     try {
         const cfgSlots = [];
+        /* `:base` -- the KNOB. While a snapshot is armed the plain read
+         * answers its LOCK (so the knob on screen shows what a turn changes),
+         * and a save sharing that key wrote the lock into the set as the
+         * user's level. The plain read stays as the fallback for a shim that
+         * does not serve :base. */
+        const knob = (i, key) => {
+            const b = getSlotParam(i, key + ":base");
+            return (b !== null && b !== undefined && b !== "") ? b : getSlotParam(i, key);
+        };
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-            const vol = parseFloat(getSlotParam(i, "slot:volume") || "1");
+            const vol = parseFloat(knob(i, "slot:volume") || "1");
             const ch = parseInt(getSlotParam(i, "slot:receive_channel") || "0");
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            const pan = parseFloat(knob(i, "slot:pan") || "0") || 0;
             /* The sends the shim keeps for a slot with no module (a slot with
              * one saves its sends in its own state). */
             const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
@@ -11983,6 +11992,12 @@ function sceneApplyAll(verb, value) {
 let sceneActive = -1;
 let scenePairs = sceneDefaultPairs();
 function scenePushEnds() {
+    /* A Program Change the shim applied since our last tick is ADOPTED FIRST.
+     * It wrote the ends and scene_active on the frame it arrived; pushing
+     * from a stale sceneActive (a pairing edit, an undo) in the same tick
+     * overwrote them, and scenesAdoptPc then adopted our own stale scene --
+     * the PC silently reverted. */
+    scenesAdoptPc(sceneState());
     const e = sceneEndsFor(sceneActive, scenePairs);
     if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
     /* ...and the whole pairing table, so the shim can apply a Program Change
@@ -12014,7 +12029,9 @@ function scenesAdoptPc(st) {
 const scenesScreen = createScenesScreen({
     state: () => sceneState(),
     scene: () => ({ active: sceneActive, pairs: scenePairs }),
-    setActive: (k) => { sceneActive = k; scenePushEnds(); },
+    /* The tap comes after any PC already applied: consume that first, so the
+     * push below cannot adopt it over the scene the user just chose. */
+    setActive: (k) => { scenesAdoptPc(sceneState()); sceneActive = k; scenePushEnds(); },
     setPair: (k, p) => {
         if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
         scenePairs[k] = [p[0], p[1]];
@@ -12268,7 +12285,9 @@ function scenesLoadFrom(dir, adoptLive) {
             return false;
         }
     }
-    /* The active scene and the on/offs are JS state: from the file either way. */
+    /* The active scene and the on/offs are JS state: from the file either way.
+     * A set load wins over a PC still pending from the outgoing set. */
+    scenePcSeqSeen = null;
     sceneActive = doc.active;
     scenePairs = doc.pairs;
     if (adoptLive) {
@@ -14948,7 +14967,12 @@ function saveMasterFxChainConfigOnMaster() {
                         const chainParams = getMasterFxChainParams(slotIdx);
                         if (chainParams && chainParams.length > 0) {
                             for (const p of chainParams) {
-                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                /* `:base`: a scene-driven param's KNOB (armed,
+                                 * the plain read answers the lock). */
+                                let val = shadow_get_param(0, `master_fx:${key}:${p.key}:base`);
+                                if (val === null || val === undefined || val === "") {
+                                    val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                }
                                 if (val !== null && val !== undefined && val !== "") {
                                     paramsObj[p.key] = val;
                                 }
@@ -15183,7 +15207,12 @@ function saveSendLevels() {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
             let v = null;
-            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            /* `:base`, the knob: armed, the plain key answers the snapshot's
+             * LOCK, and this file is what the set reloads as the level. */
+            try { v = shadow_get_param(0, bus.prefix + k + ":base"); } catch (e) {}
+            if (v === null || v === undefined || v === "") {
+                try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            }
             if (v === null || v === undefined || v === "") continue;
             const n = parseInt(v, 10);
             if (!Number.isFinite(n)) continue;
@@ -28524,6 +28553,13 @@ globalThis.tick = function() {
          * dead in the Schwung UI while Move's own tracks still respond. */
         if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
+
+            /* 0. Disarm any armed scene snapshot BEFORE anything is restored.
+             *    Armed, every restore write below (volumes, pans, Master FX
+             *    params and LFOs, send levels) is taken as a lock in the
+             *    OUTGOING bank, which 8c's bank load then discards. The shim
+             *    already disarms at detection; this is the UI's own half. */
+            sceneSetEdit(-1);
 
             /* 1. Save current state to outgoing directory */
             autosaveAllSlots();

@@ -451,6 +451,15 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     /* Signal shadow UI to handle ALL file I/O (active_set.txt, config,
      * tempo read, etc.) — zero file ops on the audio thread. */
     if (*host.shadow_control_ptr) {
+        /* DISARM an armed scene snapshot first. The UI is about to restore
+         * the incoming set -- slot volumes and pans, Master FX params and LFOs,
+         * send levels -- and armed, each of those writes is taken as a LOCK in
+         * the OUTGOING bank (which the bank load then discards), so the new set
+         * would play at the old set's levels. Here, at detection, as an
+         * invariant: no write made after the set changed -- by the UI's
+         * handler or by any other client -- can be taken as a lock. */
+        (*host.shadow_control_ptr)->scene_edit = SCENE_NONE;
+        (*host.shadow_control_ptr)->scene_unlock = 0;
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
     }
 }
