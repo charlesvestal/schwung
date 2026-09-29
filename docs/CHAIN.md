@@ -530,6 +530,14 @@ about `chain_instance_t`, parameter types and the mod bus is
 skips `render_block` on a silent slot for 171 frames in 172, and a lane must
 keep playing through silence.
 
+**ON by default; `/data/UserData/schwung/lanes_off` is the KILL SWITCH** (#564,
+`SHIM_FLAG_LANES_OFF` in `shim_worker.h`, pinned by
+`tests/host/test_lanes_default_on.sh`). It was an opt-in `lanes_on` while
+lanes could attach to the wrong clip silently; the live model closed that. The
+flag is pushed per slot with no restart. Disarmed, the chain RELEASES whatever
+it is driving and then does nothing — merely stopping the tick would leave an
+override asserted and the parameter stuck where the clip left it.
+
 #### It is ABSOLUTE, and that is why `chain_mod` grew an override class
 
 The lane *is* the value; the knob is the base underneath it. So
@@ -608,10 +616,15 @@ Two things this also settled, both previously listed as unverified: the
 `:modulated` mark exists and reads 1, and the clip gained **no notes** from
 arming Record (`[50, 50, 60]`, loop 8..20 unchanged).
 
-#### Step p-locks: the arithmetic is done, the gesture is not
+#### Step p-locks
 
-A p-lock is **hold a step, turn a knob** — set a value *on* that step. Two
-pieces of it exist and are tested; the input plumbing is not written.
+A p-lock is **hold a step, turn a knob** — set a value *on* that step.
+
+> **Where the facts come from now.** The clip, its scroll, its length and the
+> grid are read from Move's live model (`shadow_lanes_step_phase()`,
+> `docs/MOVE_MODEL.md`). The step strip and the `Song.abl` re-parse
+> (`clip_regions`) that some bullets below name were deleted in #569; those
+> bullets are kept for what they measured, and say so.
 
 - **A point can be a RECTANGLE.** `lane_point_t.hold` says "this value stands
   until the next point" instead of ramping into it, because that is what a
@@ -636,11 +649,10 @@ pieces of it exist and are tested; the input plumbing is not written.
   set at 1/16 — 22 steps — so p-locks did not work at all there. The bar form
   survives for a clip the file has never seen.
 
-  **The live strip is the cross-check**, because the scroll is as old as
-  Move's last save: where the strip names a bar the scroll must fall inside
-  it, and where they disagree the live reading wins. That check is what
-  correctly rejects a scroll sitting at the loop end — Move lets you page onto
-  the `+` beyond a clip, which is a bar that does not exist yet.
+  The scroll is read LIVE from the model (it was file-aged, and a step-strip
+  cross-check papered over that; both are gone). A scroll at or past the
+  clip's end — Move lets you page onto the `+` beyond a clip — is still
+  refused (`outside_clip`).
 - **A TRIPLET GRID DEACTIVATES EVERY FOURTH BUTTON**, so a page is 12 steps
   across 16 buttons and `button != step` (button 4 is step 3, button 14 is
   step 11; button 3 refuses). Measured: at 1/16t one right-arrow moved the
@@ -654,16 +666,13 @@ pieces of it exist and are tested; the input plumbing is not written.
   decodes PLAYBACK and says `clip_slot -1` for a stopped track — correct for a
   lane's position gate, and wrong here, because step editing is mostly done
   stopped. Move records the selection as **`isPlaying` on the clip**, which
-  survives a stop and names the clip `Shift+Step 14` just created:
-  `clip_regions_selected_slot()`. Prefer the live answer while something is
-  playing, the file only when nothing is.
-- **The bar strip's vocabulary** (manual): a **thick** segment is the selected
-  bar *in* the loop, a **thin** one is in the loop but not selected, and a
-  **`+`** is a bar *outside* it. A one-bar loop draws thin with no thickening,
-  so `bold_segment` is 0 there — which is also how the strip says "I cannot
-  name a bar". `step_strip_displayed_bar()` is the one place that tells those
-  apart, via `single_thin`; reading `bold_segment` directly refused every
-  single-bar clip.
+  survives a stop and names the clip `Shift+Step 14` just created. The model's
+  `PlayingState` answers exactly that, live (with the transport stopped it
+  names the selected clip), so the file lookup that did this is gone.
+- *(RETIRED with the strip.)* **The bar strip's vocabulary** (manual): a
+  **thick** segment is the selected bar *in* the loop, a **thin** one is in
+  the loop but not selected, and a **`+`** is a bar *outside* it. A one-bar
+  loop draws thin with no thickening, so "bar 1" and "cannot say" drew alike.
 - **A refusal can name itself.** `lanes:plock_reason` reports the last refusal
   per slot (`no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`,
   `bad_request`, or `ok`). The translation runs on the SPI callback where
@@ -672,8 +681,7 @@ pieces of it exist and are tested; the input plumbing is not written.
   defect hid another.
 - **`lanes:plock_step` IS THE GESTURE'S KEY**, and the step→phase translation
   happens **once**, shim-side, because every fact it needs lives there: the
-  displayed bar (the strip's `bold_segment`), the grid and signature
-  (`clip_regions`), and the clip's length. The UI passes only
+  scroll, the grid and the clip's length, all from the model. The UI passes only
   `"<target> <param> <step> <value>"`, so neither it nor the chain carries a
   copy of the arithmetic — this feature has already paid twice for computing
   one fact in two places.
@@ -686,9 +694,9 @@ pieces of it exist and are tested; the input plumbing is not written.
   gesture will actually use went through the SHM handler, fell through to the
   chain — which serves `lanes:plock`, not `plock_step` — and was dropped with
   *no log line at all*, because the branch was never reached.
-- **The bar must come from a CURRENT reading of the SAME track.** The strip
-  reports whichever track's editor it last decoded, and a stale or foreign
-  `bold_segment` would place the p-lock on a bar the user is not looking at.
+- **The page must come from the SAME track's clip.** The strip reported
+  whichever track's editor it last decoded; the model reads the scroll off the
+  slot's own track's clip, so a foreign page cannot be used.
 - **THE GESTURE IS BUILT AND VERIFIED END TO END.** `step_observe` has the shim
   forward Move's step notes to the UI; the UI remembers which is held and, on a
   knob **commit**, writes `lanes:plock_step`. Driven entirely by the harness —
@@ -735,15 +743,12 @@ pieces of it exist and are tested; the input plumbing is not written.
   (`lane_is_recording`), never a host-side restatement of it; **a failed read
   is not a "no"**.
 
-- **`no_bar` ON A MODULE'S OWN UI WAS A STATE ARTIFACT, not a structural
-  blocker** — and believing otherwise cost the revert. Measured with 9W9 up on
-  its own screen and its clip playing: `step_strip valid=true reject=0 track=1
-  segments=1 single_thin=1`, and `lanes:plock_step synth bd_c_drive 3 100`
-  landing as `P 0.75 100 1`. The strip is decoded from `pin_display_frame()` —
-  the PIN scanner's reassembly of MOVE's frame, upstream of Schwung's
-  compositor — so it survives Schwung owning the OLED. What it does NOT
-  survive is the selection: the strip shows ONE track, and it is only a bar
-  when that track is the slot's.
+- *(Strip-era, kept as a record.)* **`no_bar` ON A MODULE'S OWN UI WAS A
+  STATE ARTIFACT, not a structural blocker** — and believing otherwise cost
+  the revert. With 9W9 on its own screen and its clip playing,
+  `lanes:plock_step synth bd_c_drive 3 100` landed as `P 0.75 100 1`; the
+  strip only ever named ONE track. Today `no_bar` means the track's clip is
+  not a MIDI clip (no scroll).
 
 - **THE GESTURE IS SILENT BY NATURE, so it needs a MARK.** A p-lock changes
   nothing audible until the loop reaches that step, so "did that work?" had no
@@ -772,7 +777,7 @@ pieces of it exist and are tested; the input plumbing is not written.
   that step (within `LANE_MIN_POINT_BEATS`, the window `lane_write` replaces
   in) rather than the curve merely passing through, so "turning here edits
   this point" is what the mark means. Every kind of "no" — no step, two steps,
-  a step the strip cannot place, no lane, nothing at that phase — is the EMPTY
+  a step that cannot be placed, no lane, nothing at that phase — is the EMPTY
   STRING, and none of them is the value 0.
 
   **The window goes with the question.** `lane_eval` answers nothing for a
@@ -971,58 +976,12 @@ pieces of it exist and are tested; the input plumbing is not written.
 
 #### Recording on a clip Move has not saved yet
 
-The hole: make a clip, press Play, try to record automation — refused. `T1 -`,
-`loop_len 0.00`, `has_phase false`. The clip reaches `Song.abl` about **10 s**
-later (measured), and until then there is no length, so no phase, so nothing
-records.
-
-It closes with the two facts arriving from two places at two times:
-
-1. **The length, now, from Move's own screen.** `shadow_slot_clip_phase` falls
-   back to `step_strip_segments_for_track()` when the file has no entry for the
-   live clip: `loop_len = segments × quarters_per_bar`, `loop_start` **assumed
-   0**. Both limitations are real — bar resolution, and an origin the strip
-   cannot show — and honest for a clip just made, whose loop is a whole number
-   of bars starting at bar 1.
-2. **The identity and the true origin, later, from the file.** When the clip
-   appears, its notes identify it and its `loop.start` places it. A lane
-   recorded blind is **adopted**: every point is shifted by the real
-   `loop_start` and the fingerprint is stamped, in one step, with the number
-   that just arrived rather than a guess (`lane_adopt_fingerprint`).
-
-- **`fp_valid == 0 with a valid phase` IS the provisional signal**, and it
-  needs no new argument on a seam that cannot safely take one (`dlsym`, the
-  breakbeat drift). It is a state that could not otherwise occur: the
-  fingerprint is filled in *before* the anchor is even checked.
-- **Adoption is scoped to THIS SESSION's blind takes** (`origin_pending`, never
-  serialized). An absent fingerprint on disk and a blind take are the same
-  bytes and must not be the same decision — adopting the loaded one would bind
-  a lane to whatever clip later occupied its position and play it. The cost is
-  a reboot inside the 10 s window: that take stays at its assumed origin, goes
-  stale, and is silent until re-recorded.
-- **It refuses** an already-identified lane (structurally — the fingerprint is
-  no longer absent, so it is idempotent and cannot be hijacked), an absent
-  incoming fingerprint (a no-op that would still clear the pending state), and
-  a non-finite or negative `loop_start`. Every refusal leaves the lane exactly
-  as it was, still adoptable: a bad answer now must not cost the chance of a
-  good one later.
-- **A live pass's `rec_last_phase` moves with its points**, or the next write
-  erases a span the gesture never swept.
-- **A blind take PLAYS while it is unidentified.** That is not a hole in the
-  staleness rule: the lane is at the position that is playing and nothing else
-  can be there. Staleness is for a position holding a *different* clip, and
-  establishing that needs a fingerprint.
-- **No strip reading, no answer**, and no anchor, no answer. The fallback is a
-  reading, not a guess.
-- **THE PROVISIONAL LENGTH IS ±1 BAR, and that is bounded by WHEN it matters.**
-  The strip's count can exceed the loop by one (Move draws the next bar it
-  offers you), so a blind take's length can be a bar out. A length is only used
-  at the **wrap**: inside a single pass the phase is monotonic and correct
-  whatever the length is, and a clip younger than ~10 s at, say, 120 BPM has
-  usually not completed one pass. So a blind take recorded in the first pass is
-  right; a longer one can wrap early or late, and the honest remedy is to
-  record it again once the clip is in the file. Adoption fixes the ORIGIN, not
-  a length the points were already computed against.
+> **RETIRED — the model names a new clip, its length and its origin at once**
+> (`docs/MOVE_MODEL.md`, "Automation lanes on the model"). The fallback that
+> lived here — a length from the step strip, the identity and origin from
+> `Song.abl` ~10 s later, then **adoption** (`lane_adopt_fingerprint`,
+> `origin_pending`) — is deleted on the host side. The chain's adoption
+> machinery stays, inert, because saved lane files can hold pending rows.
 
 #### A point is CLIP TIME, and the loop is a WINDOW over it
 
@@ -1252,7 +1211,9 @@ stop.
 
 | Key | Direction | Meaning |
 |---|---|---|
-| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was. |
+| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was — but a `{}` document (the snapshot's no-lanes marker) EMPTIES it. A bare empty string does not: that is what a lost write looks like. A set that applies also drops the undo buffer: it belonged to the outgoing set. |
+| `lanes:rev` | get | A hash of the store's CONTENT (16 hex digits). The autosave reads it first and skips `lanes:state` -- a serialise of the whole store on the SPI callback -- while it matches the last verified write. A hash rather than a bumped counter, so no mutation site can forget to bump it; playback alone (`driving`, punch, the recording pass) does not move it. |
+| `lanes:reset` | set | The RESTORE of "no lanes" — a set change or snapshot recall for a slot with no lanes file. Same as `lanes:state` with an empty document: releases, empties, drops the undo buffer, journals nothing. **Not** `lanes:clear`, which is the user's verb and saves the outgoing store as undo — so after a set change Undo swapped the previous set's lanes in. |
 | `lanes:armed` | get / set | Move's Record button, pushed by the shim on change. Readable because the UI has no other source for it. Disarming releases nothing and clears nothing — a take must keep driving its parameter the moment Record goes out. |
 | `lanes:clear` | set | Throw this slot's automation away. Releases first, then resets. Guarded on a non-zero value so a stray `=0` cannot destroy a set's automation. |
 | `lanes:cleared` | get | How many lanes the last clear threw away. Written unconditionally, so a second press answers `0` rather than repeating the first take's number. |

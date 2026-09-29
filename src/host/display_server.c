@@ -951,11 +951,20 @@ int main(int argc, char *argv[]) {
             if (wp - audio_cursor > AUDIO_CHUNK_MAX) audio_cursor = wp - AUDIO_CHUNK_MAX;
             if (wp > audio_cursor) {
                 int n = audio_live_read(audio_ptr, audio_cursor, wp, audio_pcm);
-                (void)base64_encode((const uint8_t *)audio_pcm, n * 4, audio_b64);
-                pcm_len = snprintf(pcm_evt, sizeof pcm_evt,
-                                   "event: pcm\ndata: {\"pos\":%llu,\"n\":%d,\"rate\":%u,\"d\":\"%s\"}\n\n",
-                                   (unsigned long long)audio_cursor, n, audio_ptr->sample_rate, audio_b64);
-                if (pcm_len >= (int)sizeof pcm_evt) pcm_len = 0;
+                /* The copy can be lapped: this process has no priority and
+                 * the writer is the SPI callback. Drop what may have been
+                 * overwritten, so the page sees a gap in `pos` rather than a
+                 * corrupt chunk labelled contiguous. */
+                uint64_t lost = audio_live_lapped(audio_ptr, audio_cursor);
+                if (lost < (uint64_t)n) {
+                    int keep = n - (int)lost;
+                    (void)base64_encode((const uint8_t *)(audio_pcm + lost * 2), keep * 4, audio_b64);
+                    pcm_len = snprintf(pcm_evt, sizeof pcm_evt,
+                                       "event: pcm\ndata: {\"pos\":%llu,\"n\":%d,\"rate\":%u,\"d\":\"%s\"}\n\n",
+                                       (unsigned long long)(audio_cursor + lost), keep,
+                                       audio_ptr->sample_rate, audio_b64);
+                    if (pcm_len >= (int)sizeof pcm_evt) pcm_len = 0;
+                }
                 audio_cursor = wp;
             }
         }

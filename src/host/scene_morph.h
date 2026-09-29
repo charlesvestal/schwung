@@ -511,4 +511,17 @@ static inline int scene_edit_subkey_eligible(const char *subkey) {
     return 1;
 }
 
+/*
+ * A BULK WRITE: one that sets many of a module's params at once -- a whole
+ * state blob (preset load, set restore), a preset index, a file load. Every
+ * base a scene (or any modulation source) captured from that module is stale
+ * the moment one lands, so each consumer re-reads its bases from the module
+ * after it (chain_mod_rebase_target, shadow_scene_bus_note_write). Without
+ * that, the next release or `state` save writes the PRE-load knob back.
+ */
+static inline int scene_write_is_bulk(const char *subkey) {
+    return subkey && (strcmp(subkey, "state") == 0 || strcmp(subkey, "preset") == 0 ||
+                      strcmp(subkey, "load") == 0);
+}
+
 #endif /* SCENE_MORPH_H */

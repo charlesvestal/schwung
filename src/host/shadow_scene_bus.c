@@ -660,7 +660,14 @@ int shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int 
     }
     /* A DRIVEN param answers its base: the plugin holds the morph, which is
      * not what the user set (#276, the same rule the chain follows). */
-    scene_drive_t *d = find_drive(bus, target, param);
+    return shadow_scene_bus_read_base(scope, pos, param, buf, len);
+}
+
+int shadow_scene_bus_read_base(int scope, int pos, const char *param, char *buf, int len) {
+    if (!valid_bus_scope(scope) || !param || !buf || len < 2) return -1;
+    char target[SCENE_TARGET_LEN];
+    snprintf(target, sizeof(target), "fx%d", pos + 1);
+    scene_drive_t *d = find_drive(&s_bus[scope], target, param);
     if (!d) return -1;
     return d->kind == SCENE_KIND_FLOAT ? snprintf(buf, len, "%.6f", d->base)
                                        : snprintf(buf, len, "%d", (int)lroundf(d->base));
@@ -696,6 +703,19 @@ void shadow_scene_bus_note_write(int scope, int pos, const char *param, const ch
     if (!valid_bus_scope(scope) || !param || !val) return;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
+    /* A BULK write (a preset or a set restore) replaced every knob at this
+     * position, and each drive's base is the knob as it stood BEFORE -- so the
+     * next release, or a `state` save, would write the old value back over the
+     * one just loaded. Drop them WITHOUT writing: the plugin holds the load,
+     * and the next tick re-engages each drive with its base read from there. */
+    if (scene_write_is_bulk(param)) {
+        for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+            scene_drive_t *dd = &s_bus[scope].drives[i];
+            if (dd->active && strcmp(dd->target, target) == 0) memset(dd, 0, sizeof(*dd));
+        }
+        s_bus[scope].dirty = 1;
+        return;
+    }
     scene_drive_t *d = find_drive(&s_bus[scope], target, param);
     if (!d) return;
     void *slot = slot_for(scope, target);

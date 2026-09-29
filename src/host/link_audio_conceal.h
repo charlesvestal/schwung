@@ -36,8 +36,9 @@
 #define LA_CONCEAL_BLOCK_SAMPLES  256
 
 /* Consecutive starved blocks concealed before giving up: ~11.6 ms. The first
- * is the faded mirror, the rest are silence -- still "valid", so a short stall
- * on EVERY track does not bounce the mix to the non-rebuild path and back. */
+ * is the faded mirror, the rest are silence. That silence is only ever heard
+ * on a track stalling ALONE -- when every track stalls together the frame
+ * gate below falls back to Move's native mix after the first block instead. */
 #define LA_CONCEAL_MAX_BLOCKS     4
 
 /* A track is only aligned when it sits more than one block deeper than the
@@ -109,6 +110,103 @@ static inline void la_conceal_real(la_conceal_t *c, int16_t *out, int frames)
     for (int i = 0; i < n; i++) c->last[i] = out[i];
     c->have_last = 1;
     c->run = 0;
+}
+
+/*
+ * THE FRAME GATE: what to do when EVERY track starves together.
+ *
+ * Per-track concealment is right when one track stalls: the others are real,
+ * so the rebuild keeps running and the one track dips for ~3 ms. But the
+ * common stall is SHARED -- Move's publisher stops all four tracks within a
+ * few ms of each other -- and there the per-track rule alone produced fade ->
+ * up to 3 blocks of concealed SILENCE (still "valid", so the rebuild kept
+ * zeroing Move's mailbox) -> then, once concealment gave up, a hard cut into
+ * Move's native mix at full level. A click at the far end of every stall
+ * longer than one block, and silence where Move's own audio was available.
+ *
+ * So the gate decides per frame, from how many tracks read REAL audio and how
+ * many were concealed:
+ *   - any real track            -> rebuild (single-track concealment intact)
+ *   - all concealed, 1st block  -> rebuild: the faded mirror carries the join
+ *   - otherwise                 -> fall back to Move's native mailbox NOW,
+ *                                  not after the silence
+ * and it names the two EDGES so the caller can make them ramps, not steps:
+ *   - FALLBACK_RAMP_IN   first native frame after a rebuilt one: the rebuilt
+ *                        tracks just faded to ~zero, so ramp native in 0 -> 1
+ *   - REBUILD_XFADE      first rebuilt frame after a fallback: the tracks fade
+ *                        in (la_conceal_real), so fade native out 1 -> 0
+ *                        across the same block -- a linear crossfade.
+ * Nothing here adds latency: no read position moves, no reserve is held.
+ */
+enum {
+    LA_GATE_REBUILD = 0,
+    LA_GATE_REBUILD_XFADE,      /* rebuild; crossfade native out */
+    LA_GATE_FALLBACK,           /* native mailbox, already at full level */
+    LA_GATE_FALLBACK_RAMP_IN,   /* native mailbox, ramped in from zero */
+};
+
+typedef struct {
+    int      prev;              /* LA_GATE_* of the previous gated frame, -1 = none */
+    uint32_t all_conceal_run;   /* consecutive frames with no real track */
+} la_rebuild_gate_t;
+
+static inline void la_rebuild_gate_reset(la_rebuild_gate_t *g)
+{
+    g->prev = -1;
+    g->all_conceal_run = 0;
+}
+
+static inline int la_gate_is_rebuild(int d)
+{
+    return d == LA_GATE_REBUILD || d == LA_GATE_REBUILD_XFADE;
+}
+
+/* n_real: tracks that read real audio this frame; n_concealed: tracks whose
+ * starve was concealed. Tracks that starved unconcealed count in neither. */
+static inline int la_rebuild_gate(la_rebuild_gate_t *g, int n_real, int n_concealed)
+{
+    int prev_rebuilt  = g->prev >= 0 && la_gate_is_rebuild(g->prev);
+    int prev_fallback = g->prev >= 0 && !la_gate_is_rebuild(g->prev);
+    int d;
+    if (n_real > 0) {
+        g->all_conceal_run = 0;
+        d = prev_fallback ? LA_GATE_REBUILD_XFADE : LA_GATE_REBUILD;
+    } else if (n_concealed > 0 && g->all_conceal_run == 0 && !prev_fallback) {
+        g->all_conceal_run = 1;
+        d = LA_GATE_REBUILD;
+    } else {
+        g->all_conceal_run++;
+        d = prev_rebuilt ? LA_GATE_FALLBACK_RAMP_IN : LA_GATE_FALLBACK;
+    }
+    g->prev = d;
+    return d;
+}
+
+/* Scale a block by a gain ramping 1/frames .. 1 (the la_conceal_real curve). */
+static inline void la_ramp_in(int16_t *buf, int frames)
+{
+    for (int f = 0; f < frames; f++) {
+        int32_t g_num = f + 1;
+        buf[f * 2]     = (int16_t)((int32_t)buf[f * 2]     * g_num / frames);
+        buf[f * 2 + 1] = (int16_t)((int32_t)buf[f * 2 + 1] * g_num / frames);
+    }
+}
+
+/* Add `native` into `mix` with the complementary gain (frames-1-f)/frames, so
+ * against a block ramped in by la_ramp_in / la_conceal_real the weights sum to
+ * one. Saturating. */
+static inline void la_mix_ramp_out(int16_t *mix, const int16_t *native, int frames)
+{
+    for (int f = 0; f < frames; f++) {
+        int32_t g_num = frames - 1 - f;
+        for (int c = 0; c < 2; c++) {
+            int32_t v = (int32_t)mix[f * 2 + c] +
+                        (int32_t)native[f * 2 + c] * g_num / frames;
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            mix[f * 2 + c] = (int16_t)v;
+        }
+    }
 }
 
 /*

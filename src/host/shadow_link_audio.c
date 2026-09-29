@@ -103,6 +103,13 @@ void shadow_link_audio_init(void) {
     la_conceal_align_reset();
 }
 
+/* SPI thread: forget every track's concealment source and alignment decision.
+ * Called on the 0->1 rebuild edge, so a starve on the first frame back can
+ * never replay a block last heard minutes ago at full amplitude. */
+void link_audio_conceal_reset(void) {
+    la_conceal_align_reset();
+}
+
 void link_audio_reset_state(void) {
     /* Post-migration this is just a no-op safety net — the sidecar owns
      * reception, so there is no in-process channel state to clear.
@@ -188,7 +195,7 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
          * What changes is that this block is a faded mirror, not silence. */
         if (la_conceal_fill(&la_conceal[slot_idx], out_lr, frames)) {
             __atomic_fetch_add(&la_conceal_count[slot_idx], 1, __ATOMIC_RELAXED);
-            return 1;
+            return LA_READ_CONCEALED;
         }
         return 0;
     }

@@ -168,6 +168,13 @@ int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t
 
 /* ---- pure pieces, exported for tests/host ---------------------------- */
 
+/* Did two back-to-back reads see the same document SHAPE? The reader's tear
+ * check. Ignores the transport clock and continuously-valued scalars (tempo,
+ * master level, track volume/pan values), which cannot tear and may never
+ * hold still -- a tempo moving under Link made every pair disagree and the
+ * model never published again. 1 = consistent. */
+int mm_pair_consistent(const move_model_t *a, const move_model_t *b);
+
 /* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
  *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag
  *   then EITHER  i64 id                         (first u32 of it is 0: a plain note)

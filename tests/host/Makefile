@@ -92,6 +92,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
+	$(BUILD_DIR)/test_link_audio_conceal \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
@@ -196,6 +197,12 @@ $(BUILD_DIR)/test_display_pull: test_display_pull.c | $(BUILD_DIR)
 # Header-only unit: link_audio_in_trim_pos lives in link_audio.h, so the
 # DEPFLAGS header tracking above is what keeps this honest when it changes.
 $(BUILD_DIR)/test_link_audio_backlog_trim: test_link_audio_backlog_trim.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit: starve concealment, depth alignment and the frame gate
+# live in link_audio_conceal.h. It was written in #571 and never listed here,
+# so CI had not run it once.
+$(BUILD_DIR)/test_link_audio_conceal: test_link_audio_conceal.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Header-only unit: heal_tool_id_is_safe lives in heal_tool_id.h. schwung-heal

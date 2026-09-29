@@ -266,6 +266,13 @@ typedef struct {
     lane_fingerprint_t fp;
     int  stale;          /* fingerprint mismatch: retained, silent */
     int  orphaned;       /* the clip was deleted; retained, silent */
+    /* The MODULE this lane drove left its position (fx:remove), so the
+     * target string now names whatever slid in. Retained and SILENT like an
+     * orphan, but STICKY: a clip fingerprint says which clip a lane belongs
+     * to, never which module, so lane_tick's un-orphan-on-match must not
+     * revive it. Only an explicit write (which restarts the lane) or a clear
+     * ends it. Runtime only -- such a lane is never serialized. */
+    int  module_gone;
     int  n;
     int  full_hits;      /* writes that had to replace a neighbour */
     /* This lane took an ORPHAN's slot because the store was full. Recorded

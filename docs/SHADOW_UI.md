@@ -1457,7 +1457,8 @@ the same reason; the eight-character label floor still protects the bus name.
 post-fader send buses hosted as `master_fx_slot_t`, a `send_accum[]` in the
 shim, return levels, the feedback-safe A→B ordering, shared presets, and one
 generic FX-bus picker over all three buses — is that PR's design,
-device-verified there and documented in its own `docs/SEND_FX.md`. It is
+device-verified there and documented in that branch's own `docs/SEND_FX.md`
+(never merged here; `legsmechanical/fx-buses-pr`). It is
 unmergeable (merge-base 2026-03-04; `main` is 1696 commits ahead and the branch
 carries 864 of its own), so this is a re-implementation of its design on current
 `main`. The one part not re-implemented is the shared preset store — a send
@@ -1766,7 +1767,19 @@ value (`scene_send_mod`, `shadow_slot_volume_eff`, `shadow_send_return_eff`);
 LFO fields are written with the knob's value kept as their BASE. **In every
 case the user's value is never overwritten**, so every read and every save --
 `<comp>:state`, `lfo_config`, `master_fx:lfoN:config`, `slot:volume` -- sees the
-knob, not the morph. The one read that shows the morph is
+knob, not the morph. **Every modulation source is swapped out around a `<comp>:state` read** --
+a lane, a scene or an LFO, bank loaded or not (`chain_mod_state_swap_in`). It
+was scenes only, and only while a bank existed, so the slot autosave recorded
+a lane's current value as the knob.
+**A bulk write re-captures the base** (`scene_write_is_bulk`: `state`,
+`preset`, `load` -- a User Preset or a set restore): the chain rebases every
+modulated param of that component from the module
+(`chain_mod_after_set_param`, the exported `set_param` wrapper), and a bus
+drops that position's drives without writing so they re-engage from the
+plugin. Before, the base stayed on the PRE-load knob, so the next save and the
+next release both wrote the old value back over the one just loaded -- on a
+set switch, the previous set's knob for every param the outgoing bank locked.
+The one read that shows the morph is
 `<scope>:scenes:driven`, a DIAGNOSTIC that asks the plugin itself (or the
 host's applied override): it is how the Master FX and host paths were verified
 on hardware.
@@ -1783,7 +1796,10 @@ a change -- in the chain host for slots, in the shim for the buses and host
 settings. Below the UI because a module that draws its own screen (9W9) never
 passes the host's write wrapper. Identity, state, bypass, presets and every
 suffixed view are never locked (`scene_edit_subkey_eligible`). Armed, the
-snapshot auditions at 100% and **a read answers the lock**. **Delete held
+snapshot auditions at 100% and **a read answers the lock** -- which is why
+every SAVE reads `<key>:base` instead (slot volume/pan, the send returns, a
+stateless Master FX module's params): sharing the plain key, a save made while
+armed wrote the lock into the set as the user's value. **Delete held
 while armed** turns the write into an UNLOCK (`SCENE_EDIT_UNLOCK`); Delete is
 claimed while armed, because a lone Delete reaching Move deletes a clip.
 **Armed, the scene OWNS Delete + knob.** Unarmed, the same gesture clears the
@@ -1864,6 +1880,11 @@ Nothing is written for a set until its bank is CONFIRMED loaded (every scope's
 happen; a file this build cannot read is left alone and the set never saved
 over (v1/v2 were earlier shapes that never shipped and read as empty). A
 shadow_ui RESTART adopts a non-empty live bank instead of reloading the file.
+**A set change DISARMS an armed snapshot** -- in the shim at detection
+(`shadow_handle_set_loaded`) and first thing in the UI's SET_CHANGED handler --
+because armed, the incoming set's restore writes (volumes, pans, Master FX
+params and LFOs, send levels) were taken as locks in the outgoing bank and
+discarded with it, and the new set played at the old set's levels.
 Verified on hardware: a set switch loads that set's bank, a lock made in one
 set is saved to its file only, and returning restores the first set exactly.
 The fader is live-only and starts at A.

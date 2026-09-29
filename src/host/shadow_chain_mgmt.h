@@ -590,6 +590,9 @@ void shadow_apply_volume(int slot, float linear);
 void shadow_toggle_solo(int slot);
 void shadow_apply_solo(int slot, int is_soloed);
 void shadow_apply_mix_state(const int muted[4], const int soloed[4]);
+/* Worker thread: log the slot mute/solo state if it changed since the last
+ * call. The mutators above run on the SPI callback and may not log. */
+void shadow_mix_log_service(void);
 int shadow_sync_mix_from_song(const char *uuid, const char *set_name);
 
 /* --- Master FX --- */

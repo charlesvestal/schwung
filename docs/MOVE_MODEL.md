@@ -145,6 +145,23 @@ optimistic toggle (Mute+Track, which also wrote the state file on the SPI
 callback) is gone under the model, and the per-set chain config no longer
 overrides the mixer when a set loads.
 
+**Master volume, track volume, the metronome and the selection too** (#567).
+Each was inferred -- master volume from Move's on-screen volume bar (coarse,
+only while the overlay shows), track volume from the spoken "Track Volume X
+dB" while a Track button was held, the metronome from "Metronome On/Off", the
+selected track from whichever Track presses Schwung saw. The document holds
+each exactly:
+
+| What | Field | Applied |
+|---|---|---|
+| master volume | `Song.mOutputMixerDevice` → `OutputMixerParameters.mVolume` (dB; -70 = the knob's bottom = silence) | SPI thread, every frame; the bar scan stands down |
+| track volume | the mixer `mVolume` already walked for mute | EDGES only, through the same ring as mute -- a set load keeps the set's saved slot levels. An edge goes through the scene hooks like any `slot:volume` write: a lock while a snapshot is armed, a takeover otherwise |
+| metronome | `Transport.mIsMetronomeOn` | assigned from the reader (`levels_from_model`); the announcement classifier stands down |
+| selected track | `Track.mIsSelected` | SPI thread (`move_model_sync_take_selected`) |
+
+Every old path stays as the fallback on a firmware the model cannot resolve,
+and whenever the model is not live.
+
 **Set changes land in ~10 ms, not ~3 s.** A set load replaces the document:
 the new tracks are inserted before the old are removed, over ~180 ms, and
 Move rewrites `Settings.json`'s `currentSongIndex` within ~12 ms of the swap
@@ -393,6 +410,19 @@ Not hardware-verified yet -- the History candidates are logged to
   that slot's entries -- undoing one would splice pre-restore content in.
 - **An empty commit never touches the ring** (counted first), so it cannot
   destroy the oldest still-claimable entry.
+- **A stalled reader claims nothing.** `undo_claim` asks
+  `move_model_sync_active()` (a publish in the last 2 s), not the
+  never-cleared `g_active`: while the Song is being re-found, the last
+  published claim describes a Move history nobody is reading, so the press is
+  Move's. `tests/host/test_move_model_sync.c`.
+- **A claim Move outran is counted, not replayed.** The claim is republished
+  every model tick; if Move pushes a history step between that publish and the
+  take, the press has already been swallowed (both edges) and `ut_take_undo`
+  refuses -- neither history moves. It is logged from the model thread and
+  counted (`move_model_sync_undo_refused()`). Replaying the press to Move was
+  declined: it would add a producer on Move's MIDI_IN from the shim, and the
+  injected Undo would re-enter this claim path. Realistic trigger: a device
+  knob turn immediately followed by Undo.
 
 ### Known limits
 
@@ -430,6 +460,24 @@ Not hardware-verified yet -- the History candidates are logged to
   backs off to a minute.
 - **A misalignment nothing can resolve expires after 15 s** (no SET_CHANGED
   pending): an unreadable Settings.json otherwise gated autosave all session.
+  The 15 s run from the later of the load edge and the last NEW read
+  (`shadow_set_pages_last_read_ms` -- a different name, uuid or generation),
+  never from the last PUBLISH: the worker republishes the same read every tick
+  while misaligned, so a publish clock never goes quiet, and keying on it
+  meant the give-up could not fire in the state it exists for.
+- **The `set_aligned` ack is verified and resent** (`armAlignAck` /
+  `alignAckTick`, one short write per 500 ms, at most 20) until
+  `host_move_model_state()[2]` reports it or the generations agree. One lost
+  ack -- sent once, result ignored, behind the set change's slot writes --
+  otherwise left the set unacked: the same-set path refuses it, the cleared
+  flag is never raised again, and autosave stayed off for the session.
+  `tests/host/test_set_alignment_ui.sh`, and the lost-ack case in
+  `test_set_alignment.sh` / `test_move_model_sync.c`.
+- **The scene bank follows the same two rules as slot state.** Its periodic
+  save is skipped (kept dirty) while `setAlignmentPending()`, and the outgoing
+  set's scenes are saved with the other outgoing saves at step 1 -- before the
+  pending-set migration moves that folder. Saved after it, the write went into
+  the deleted path and step 8c loaded the stale copy over the live bank.
 - **Mute/solo are applied on the SPI thread**, posted by the reader through a
   ring (`move_model_sync_apply_pending`), so the slot mix flags have one writer
   with `slot:muted` / `slot:soloed`. The mutators now only REQUEST a state save

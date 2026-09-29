@@ -104,14 +104,82 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
  * `param` naming a departed module's parameter is how a later `target` write
  * silently revives half a routing.
  */
+/* Follow one table of lanes through the permutation. A lane whose module LEFT
+ * keeps its target string (see below) and is marked orphaned AND module_gone:
+ * `module_gone` is the sticky half, because lane_tick un-orphans on a clip
+ * fingerprint match and a fingerprint says nothing about which MODULE a lane
+ * belongs to -- orphaned alone lasted exactly one block, after which the lane
+ * drove whatever slid into the position. `is_live` is 0 for the copies (undo,
+ * edit base, stash), which hold no override of their own. */
+static void chain_perm_retarget_lanes(lane_t *lanes, int n, const char *prefix,
+                                      int max, const int *map, int count,
+                                      int is_live) {
+    for (int i = 0; i < n; i++) {
+        lane_t *ln = &lanes[i];
+        if (!ln->used) continue;
+        char keep[sizeof(ln->target)];
+        snprintf(keep, sizeof(keep), "%s", ln->target);
+        if (chain_perm_retarget(ln->target, sizeof(ln->target),
+                                prefix, max, map, count) < 0) {
+            snprintf(ln->target, sizeof(ln->target), "%s", keep);
+            ln->orphaned = 1;
+            ln->module_gone = 1;
+            /* Its override went with the module's mod entries (the unloader
+             * clears them), so there is nothing left to release. */
+            if (is_live) ln->driving = 0;
+        }
+    }
+}
+
+/* The journals hold lane NAMES too (lane_span_rec_t). A record whose module
+ * left voids its whole entry: applying it would re-create automation aimed at
+ * whatever now sits at that position, and a half-applied entry is the desync
+ * lane_paste_span refuses everywhere else. The host treats a voided id as
+ * "too far back" (the id check in the journal verb). */
+static void chain_perm_retarget_journal(lane_journal_entry_t *ring, int depth,
+                                        const char *prefix, int max,
+                                        const int *map, int count) {
+    for (int k = 0; k < depth; k++) {
+        lane_journal_entry_t *je = &ring[k];
+        if (!je->id) continue;
+        for (int r = 0; r < je->nrec && r < LANE_JOURNAL_LANES; r++) {
+            if (chain_perm_retarget(je->rec[r].target, sizeof(je->rec[r].target),
+                                    prefix, max, map, count) < 0) {
+                je->id = 0;
+                break;
+            }
+        }
+    }
+}
+
+/* A lane's mod-bus source id is "lane:<target>:<param>" (chain_lanes.c), so a
+ * renamed ENTRY must rename the lane source inside it too. Left under the old
+ * name, the next lane_tick emitted the new id as a SECOND override on the same
+ * entry, and the release only ever removed the new one: the old override kept
+ * the parameter frozen and the knob dead. Every lane source on an entry is for
+ * that entry's own target:param, so the new id is derived from the entry. */
+static void chain_perm_rename_lane_sources(mod_target_state_t *e) {
+    char sid[MOD_SOURCE_ID_LEN];
+    int n = snprintf(sid, sizeof(sid), "lane:%s:%s", e->target, e->param);
+    if (n <= 0 || n >= (int)sizeof(sid)) return;
+    for (int s = 0; s < MAX_MOD_SOURCES_PER_TARGET; s++) {
+        mod_source_contribution_t *src = &e->sources[s];
+        if (!src->active || strncmp(src->source_id, "lane:", 5) != 0) continue;
+        memcpy(src->source_id, sid, (size_t)n + 1);
+    }
+}
+
 static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
                                     int max, const int *map, int count) {
     for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
         mod_target_state_t *e = &inst->mod_targets[i];
         if (!e->active) continue;
-        if (chain_perm_retarget(e->target, sizeof(e->target), prefix, max, map, count) < 0) {
+        const int r = chain_perm_retarget(e->target, sizeof(e->target), prefix, max, map, count);
+        if (r < 0) {
             e->active = 0;
             e->param[0] = '\0';
+        } else if (r > 0) {
+            chain_perm_rename_lane_sources(e);
         }
     }
     for (int i = 0; i < LFO_COUNT; i++) {
@@ -169,17 +237,22 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
      * resurrected by the next write, because a different module at that
      * position is a different thing. So the target is put back and the flag
      * set instead. */
-    for (int i = 0; i < LANE_MAX; i++) {
-        lane_t *ln = &inst->lanes.lanes[i];
-        if (!ln->used) continue;
-        char keep[sizeof(ln->target)];
-        snprintf(keep, sizeof(keep), "%s", ln->target);
-        if (chain_perm_retarget(ln->target, sizeof(ln->target),
-                                prefix, max, map, count) < 0) {
-            snprintf(ln->target, sizeof(ln->target), "%s", keep);
-            ln->orphaned = 1;
-        }
+    chain_perm_retarget_lanes(inst->lanes.lanes, LANE_MAX, prefix, max, map, count, 1);
+
+    /* AND EVERY COPY OF THE STORE, which name positions the same way. Left
+     * behind, Slot Settings' Undo (a store swap), Move's Undo of a clip
+     * delete (unstash) and the unified-Undo journal all brought lanes back
+     * aimed at whichever module now occupies the old position. */
+    chain_perm_retarget_lanes(inst->lanes_undo.lanes, LANE_MAX, prefix, max, map, count, 0);
+    chain_perm_retarget_lanes(inst->lanes_edit_base.lanes, LANE_MAX, prefix, max, map, count, 0);
+    for (int k = 0; k < LANE_STASH_DEPTH; k++) {
+        lane_stash_t *sh = &inst->lanes_stash[k];
+        if (!sh->id) continue;
+        chain_perm_retarget_lanes(sh->lanes, sh->n < LANE_MAX ? sh->n : LANE_MAX,
+                                  prefix, max, map, count, 0);
     }
+    chain_perm_retarget_journal(inst->lanes_journal, LANE_JOURNAL_DEPTH, prefix, max, map, count);
+    chain_perm_retarget_journal(inst->lanes_sjournal, LANE_SJOURNAL_DEPTH, prefix, max, map, count);
 }
 
 /* Which section a request names, resolved once so the three verbs below cannot

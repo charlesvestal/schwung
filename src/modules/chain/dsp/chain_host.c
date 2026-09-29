@@ -921,7 +921,7 @@ void parse_debug_log(const char *msg) {
 
 static void lfo_tick(chain_instance_t *inst, int frames);
 
-static void v2_set_param(void *instance, const char *key, const char *val) {
+static void v2_set_param_impl(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
 
@@ -2678,7 +2678,8 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     }
 }
 
-/* A `<comp>:state` read saves the knob, not the scene morph (chain_scene.c). */
+/* A `<comp>:state` read saves the knob, a state WRITE rebases it (chain_scene.c, chain_mod.c). */
+static void v2_set_param(void *i, const char *k, const char *v) { v2_set_param_impl(i, k, v); chain_mod_after_set_param(i, k); }
 static int v2_get_param(void *i, const char *k, char *b, int n) {
     return chain_scene_get_around_state((chain_instance_t *)i, k, b, n, v2_get_param_impl);
 }

@@ -93,7 +93,8 @@ void move_model_sync_apply_pending(void)                /* SPI thread */
 
 /* ---- HOUSEKEEPING, from the shim worker every tick ----------------------- */
 #define MISALIGN_GIVEUP_MS 15000
-void move_model_sync_housekeep(void)
+void move_model_sync_housekeep(void) { move_model_sync_housekeep_at(now_ms()); }
+void move_model_sync_housekeep_at(uint64_t now)
 {
     shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
     if (!ctl) return;
@@ -107,16 +108,27 @@ void move_model_sync_housekeep(void)
      * no set dir -- then every edit of the session would be lost on reboot.
      * After 15 s with no set change pending, align to what Move has and say
      * so; that is where the pre-model behaviour would have saved anyway. */
-    /* ...and ONLY when nothing was read since the load: a read that exists
-     * is pending (the consume waits for it to settle), and forcing alignment
-     * over it would let autosave run before the UI has switched sets. */
+    /* ...and only 15 s after the LATER of the load and the last NEW read: a
+     * read that just changed may still be pending (the consume waits for it
+     * to settle), and forcing alignment over it would let autosave run before
+     * the UI has switched sets. A read unchanged for 15 s has been consumed;
+     * with SET_CHANGED clear the UI has handled it, and only its ack is
+     * missing -- one lost `set_aligned` write used to gate autosave for the
+     * whole session.
+     *
+     * NEVER key this on "last PUBLISH": the worker republishes the same read
+     * every tick while misaligned, so that clock is always "just now" and the
+     * give-up could never fire in exactly the state it exists for. */
     const uint64_t edge = atomic_load(&g_edge_ms);
+    const uint64_t read = shadow_set_pages_last_read_ms();
+    const uint64_t since = read > edge ? read : edge;
     if (live && ctl->move_doc_gen != ctl->set_doc_gen &&
         !(ctl->ui_flags & SHADOW_UI_FLAG_SET_CHANGED) &&
-        shadow_set_pages_last_publish_ms() < edge &&
-        now_ms() - edge > MISALIGN_GIVEUP_MS) {
+        now > since && now - since > MISALIGN_GIVEUP_MS) {
         ctl->set_doc_gen = ctl->move_doc_gen;
-        shadow_log("move_model: set alignment gave up after 15 s (no set read); autosave resumes");
+        shadow_log(read > edge
+            ? "move_model: set alignment gave up after 15 s (set read, no ack); autosave resumes"
+            : "move_model: set alignment gave up after 15 s (no set read); autosave resumes");
     }
 }
 
@@ -193,6 +205,8 @@ static atomic_uint g_uq_w, g_uq_r;
 static ut_t g_ut;
 static atomic_ullong g_claim_undo, g_claim_redo;   /* (slot + 1) << 32 | jid, 0 = Move's */
 static int g_undo_latch;                            /* SPI thread only */
+static atomic_uint g_undo_refused;
+unsigned move_model_sync_undo_refused(void) { return atomic_load(&g_undo_refused); }
 
 static void push_uev(int type, int slot, uint32_t jid, int kind)   /* SPI thread */
 {
@@ -230,8 +244,26 @@ static void undo_tick(const move_model_t *now)                     /* model thre
         switch (e->type) {
         case UE_EDIT: ut_on_schwung_edit(&g_ut, e->slot, e->jid, e->kind, e->t_ms); break;
         case UE_ARM:  ut_on_arm(&g_ut, e->kind, e->t_ms); break;
-        case UE_UNDO: ut_take_undo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL); break;
-        case UE_REDO: ut_take_redo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL); break;
+        /* A REFUSED TAKE: the press was already swallowed from Move (both
+         * edges, on the SPI thread) against a claim Move has since outrun --
+         * it pushed a history step between the claim's publish and this take.
+         * Neither history moves. Replaying the press to Move is not done: it
+         * would be a new producer on Move's MIDI_IN, and the injected Undo
+         * would re-enter this claim path. Counted and logged (this thread is
+         * SCHED_OTHER) so the silence has a name. */
+        case UE_UNDO:
+        case UE_REDO: {
+            const int ok = (e->type == UE_UNDO)
+                ? ut_take_undo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL)
+                : ut_take_redo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL);
+            if (!ok) {
+                atomic_fetch_add(&g_undo_refused, 1);
+                shadow_log(e->type == UE_UNDO
+                    ? "move_model: Undo swallowed for Schwung but its claim was stale; nothing undone"
+                    : "move_model: Redo swallowed for Schwung but its claim was stale; nothing redone");
+            }
+            break;
+        }
         }
         atomic_store_explicit(&g_uq_r, ++r, memory_order_release);
     }
@@ -251,6 +283,10 @@ static int undo_claim(uint8_t d2)
         /* Every press decides afresh: a latch left by a release that never
          * came here (overtake began mid-press) must not swallow this one's. */
         g_undo_latch = 0;
+        /* LIVE, not "worked once" (g_active is never cleared). A stalled
+         * reader's last claim describes a Move history it has stopped
+         * reading; the press is Move's. */
+        if (!move_model_sync_active()) return 0;
         const int redo = g_gest.shift_held;
         uint64_t c = atomic_exchange(redo ? &g_claim_redo : &g_claim_undo, 0);
         if (!c) return 0;

@@ -33,11 +33,19 @@ void shadow_link_audio_init(void);
  * buffer so stale content doesn't leak into a new session. */
 void link_audio_reset_state(void);
 
+/* SPI thread only: reset per-track concealment + alignment state. Called when
+ * the rebuild path engages, so no stale block is replayed. */
+void link_audio_conceal_reset(void);
+
 /* Read stereo-interleaved audio from a /schwung-link-in slot.
  * SPSC consumer helper: does NOT zero out_lr on starvation (caller zeros).
- * Returns 1 on full read -- or on a starve it CONCEALED (see
- * link_audio_conceal.h) -- and 0 on an unconcealed starvation / inactive slot /
- * bad args. */
+ * Returns LA_READ_REAL (1) on a full read, LA_READ_CONCEALED (2) on a starve
+ * it concealed (see link_audio_conceal.h) -- both non-zero, i.e. "out_lr is
+ * filled" -- and 0 on an unconcealed starvation / inactive slot / bad args.
+ * The two are told apart because a frame where EVERY track is concealed is
+ * handled differently from one where a single track is (la_rebuild_gate). */
+#define LA_READ_REAL       1
+#define LA_READ_CONCEALED  2
 int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                                 int16_t *out_lr, int frames);
 
