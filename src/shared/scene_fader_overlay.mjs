@@ -56,7 +56,7 @@ export function createSceneFaderOverlay(io) {
  * ctx: { fillRect(x,y,w,h,c), print(x,y,s,c), textWidth(s) }. Returns the rect
  * it touched (for a blit onto Move's screen), or null.
  *
- *   A3 |=====#------| B3  62%
+ *   A3 |=====#------| B3
  */
 export function drawSceneFaderOverlay(ctx, fr) {
     if (!fr) return null;
@@ -66,12 +66,9 @@ export function drawSceneFaderOverlay(ctx, fr) {
     const a = (label && label.a) || "A-";
     const b = (label && label.b) || "B-";
     const v = Math.max(0, Math.min(1, x));
-    const pct = Math.round(v * 100) + "%";
-    const pctW = ctx.textWidth(pct);
-    const bx = 127 - pctW - 4 - ctx.textWidth(b);
+    const bx = 127 - ctx.textWidth(b);
     ctx.print(1, ty, a, 1);
     ctx.print(bx, ty, b, 1);
-    ctx.print(127 - pctW, ty, pct, 1);
     /* The Scenes screen's fader at footer size, so it reads as the same one. */
     const tx0 = 1 + ctx.textWidth(a) + 3, tx1 = bx - 3;
     if (tx1 - tx0 >= 8) {
