@@ -48,6 +48,12 @@ void launch_shadow_ui_reset_backoff(void);
  * shadow_ui. Read off the SPI path (the launcher itself cannot log). */
 int shadow_ui_relaunch_backoff_active(void);
 
+/* Point the watchdog at `shadow_control_t.should_exit`. While it is non-zero
+ * launch_shadow_ui() does not respawn -- a requested exit (restart, or a second
+ * host quiescing this one) is not a crash. launch_shadow_ui_reset_backoff()
+ * clears it: an explicit user request for the UI ends the quiesce. */
+void shadow_ui_set_exit_flag(volatile uint8_t *flag);
+
 /* Link subscriber process management */
 void launch_link_subscriber(void);
 void start_link_sub_monitor(void);

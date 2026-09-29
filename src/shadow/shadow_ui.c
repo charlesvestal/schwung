@@ -7,6 +7,7 @@
 
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -61,6 +62,38 @@ static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
 
 static int global_exit_flag = 0;
+
+/* SIGTERM/SIGINT used to be the default action: the process died mid-frame
+ * with nothing saved, because the only save-and-leave path is `should_exit`.
+ * The handler only records the request; the main loop turns it into that same
+ * path -- raising should_exit first, so the shim's watchdog treats it as a
+ * requested exit rather than a crash to respawn (shadow_process.c). */
+static volatile sig_atomic_t term_requested = 0;
+
+static void shadow_ui_on_term(int sig) {
+    (void)sig;
+    term_requested = 1;
+}
+
+static void shadow_ui_install_term_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = shadow_ui_on_term;
+    sigemptyset(&sa.sa_mask);
+    /* SA_RESTART: a param read blocked in a wait must not come back EINTR and
+     * be recorded as a failed read by the very save this signal asks for. */
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    /* And UNBLOCK them: a mask survives exec, and the shim forks us from a
+     * MoveOriginal thread that blocks SIGTERM -- measured on hardware, the
+     * handler above was installed and never ran, the signal left pending. */
+    sigset_t unblock;
+    sigemptyset(&unblock);
+    sigaddset(&unblock, SIGTERM);
+    sigaddset(&unblock, SIGINT);
+    sigprocmask(SIG_UNBLOCK, &unblock, NULL);
+}
 static uint8_t last_midi_ready = 0;
 static const char *shadow_ui_pid_path = "/data/UserData/schwung/shadow_ui.pid";
 
@@ -4159,6 +4192,7 @@ int main(int argc, char *argv[]) {
     unified_log_init();
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
+    shadow_ui_install_term_handler();
 
     /* OTLP tracing (Phase 2): own process-local ring + exporter, off unless the
      * touch-file is present. Distinct service name → its own traces file; the
@@ -4241,6 +4275,10 @@ int main(int argc, char *argv[]) {
             if (t_wake > deadline) late_ns = t_wake - deadline;
         }
 
+        if (term_requested) {
+            if (!shadow_control) break;
+            shadow_control->should_exit = 1;
+        }
         if (shadow_control && shadow_control->should_exit) {
             if (jsSaveStateIsDefined) {
                 callGlobalFunction(ctx, &JSSaveState, 0);
