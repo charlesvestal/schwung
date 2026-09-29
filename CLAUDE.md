@@ -898,8 +898,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   "opt-in" moved nothing.
 - **Two per-param declarations, inert when absent** — `peek: false` (the
   contract declines its own peek; allowEnumPeek is the host's) and `commit:
-  "release"` (the turn is shown, the write waits for the hand to let go — an LFO
-  Target enum would otherwise drive every param it scrolls past).
+  "release"` (the turn is shown, the write waits for the hand to let go — an
+  enum whose values are consequences, like movy's flat LFO Target, would
+  otherwise drive every param it scrolls past).
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
@@ -1349,6 +1350,15 @@ component load gate, and the input-dispatch order. Read it before editing
   CURSOR. The swap picker's row 0 filters by list; the filter persists across
   pickers but is re-resolved per picker, and its cursor SCANS rather than
   counting, because the move rows sit under the loaded module.
+- **A TURN on a door LISTS; a JOG CLICK NAVIGATES.** Turning an LFO Target
+  cell opens every target as ONE flat list (module dividers with the POSITION,
+  "SYN Mini-JV" / "FX1 Freeverb", sections indented under them); turning a file
+  cell lists the files in its CURRENT folder only. Release commits, Back
+  cancels, nothing is written while scrolling -- a module may load a sample in
+  `set_param`, so per-detent writes would be per-detent loads. Hold + click
+  still opens the hierarchy. The grid hands the turn over via `io.turnDoor`,
+  with `held`, because the host's touch tracking is off while the grid owns
+  input.
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
