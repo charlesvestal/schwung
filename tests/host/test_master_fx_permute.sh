@@ -296,33 +296,13 @@ const void *clip_state_current(void) { return 0; }
  * is the answer that makes shadow_slot_clip_phase fall through to the file
  * exactly as it did before the selection decode existed. */
 int clip_state_selected_slot(const void *st, int track) { (void)st; (void)track; return -1; }
-/* No worker in this fixture, so no clip ever "newly appeared": -1 keeps
- * shadow_slot_clip_phase on the path it took before that signal existed. */
-int shadow_clip_new_slot(int track) { (void)track; return -1; }
 /* No playhead in a host unit test: the blind-window phase source asks for one
  * and must get "never seen", which is the state every other stub here models. */
 int clip_playhead_last(unsigned char *i, unsigned int *p) { (void)i; (void)p; return 0; }
-const void *shadow_clip_regions(void) { return 0; }
 int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
                      double loop_len, double *out_beats) {
     (void)t; (void)pulses; (void)loop_start; (void)loop_len; (void)out_beats;
     return 0;
-}
-/* And the fallback the resolver reaches for when Move has not saved the clip
- * yet: the step editor's bar strip. "No reading" keeps the answer UNKNOWN,
- * which is what these tests want -- they are about Master FX permutation and
- * must not acquire an opinion about clip phase. */
-int step_strip_segments_for_track(int track) { (void)track; return 0; }
-/* And the last reading itself, which the p-lock step translation consults for
- * the displayed bar. "Nothing observed" keeps these tests out of the business
- * of having an opinion about Move's screen. */
-unsigned step_strip_latest(void *out, int *track) {
-    if (out) { unsigned char *p = (unsigned char *)out; for (int i = 0; i < 64; i++) p[i] = 0; }
-    if (track) *track = -1;
-    return 0;
-}
-double clip_regions_quarters_per_bar(const void *rg, int track, int slot) {
-    (void)rg; (void)track; (void)slot; return 4.0;
 }
 EOF
 

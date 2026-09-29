@@ -232,47 +232,6 @@ extern void (*shadow_chain_set_clip_phase)(void *instance, int valid,
                                            int track, int clip_slot,
                                            int fp_valid, const double *fp);
 
-/* Optional, same seam: a clip at (track, slot) has been DELETED, so its lanes
- * are orphaned -- silent and RETAINED, never destroyed. Pushed by the SPI
- * callback's per-slot loop, once per deleted-mask generation; the worker that
- * discovers the deletion must never call into a chain instance itself.
- * NULL degrades to "lanes go stale by fingerprint instead", which is also
- * silent and retained. */
-extern void (*shadow_chain_set_clip_deleted)(void *instance, int track,
-                                             int slot);
-
-/* Published by the worker (shim_worker.c) when a re-parse of Song.abl finds a
- * clip gone: bit `track * CLIP_SLOTS + slot`, with a monotonic generation so
- * the callback can tell news from a repeat. A generation is only bumped when
- * the mask is non-zero, so a new generation always MEANS a deletion. */
-uint32_t shadow_clip_deleted_generation(void);
-uint32_t shadow_clip_deleted_mask(void);
-
-/* A clip was DUPLICATED: its automation should travel with it. Published by
- * the worker exactly like the deletion mask -- fields first, generation LAST,
- * so a reader that sees a new generation is looking at settled ones -- and
- * consumed by the SPI callback's per-slot loop, the only place a chain
- * instance is in hand.
- *
- * A duplicate is recognised by WHAT IT IS: a clip in a slot that was empty at
- * the previous parse, whose notes and loop length match one already on that
- * track. Not by the Copy button, because a clip can be duplicated more than
- * one way (Move 2.1.0 added copy/paste between slots) and a button press is a
- * moment that can be missed, while the file states the result. */
-uint32_t shadow_clip_copy_generation(void);
-
-/* The row that NEWLY APPEARED on `track` at the last re-parse, or -1.
- *
- * A take recorded before Move wrote the clip carries the PENDING placeholder
- * and must be re-keyed. Handing it the PLAYING row adopted it onto the wrong
- * clip whenever something else was playing; the row that just appeared is the
- * clip the user made. */
-int      shadow_clip_new_slot(int track);
-uint32_t shadow_clip_new_generation(void);
-int shadow_clip_copy_track(void);
-int shadow_clip_copy_src(void);
-int shadow_clip_copy_dst(void);
-
 /* Where slot `slot`'s Move track is in its playing clip. Returns 1 for a known
  * phase, 0 for UNKNOWN -- never phase 0. *clip_slot and *fp_valid answer
  * identity and are filled either way; see the definition. */

@@ -598,7 +598,13 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   are diffs of it. Several bullets below describe the LED / step-strip /
   Song.abl resolver it replaced (blind takes, adoption, the strip's
   bar count, `edit_unconfirmed`) -- they are history now, kept for the
-  measurements. Orphans are not written to disk; Undo re-attaches in memory.
+  measurements. **The host half of that resolver is DELETED** (the Song.abl
+  re-parse `clip_regions`, the "Bar N" capture, `step_strip.c`, the
+  `lanes:new_row` / `edit_unconfirmed` / `double` pushes and the phase-check
+  scoring): retired, the model answers all of it. The chain's adoption
+  machinery (`LANE_SLOT_PENDING`, `origin_pending`) stays, inert, because saved
+  lane files can hold pending rows. Orphans are not written to disk; Undo
+  re-attaches in memory.
 - **A rack's templated keys (`pad7_transpose`) are typed by the CHAIN**, from
   the level's `child_key_template`/`child_prefix` -- the same rule as
   `child_key.mjs`, at every position; without it every dr32 pad param was
@@ -821,8 +827,8 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   own clip deletion reads as *delete this clip*), each row naming its clip as
   `C1` — never `T3C1`, since `lane_track` IS the slot index. **Undo is slot
   level only**, one buffer per slot.
-- **A clip Move has not saved yet can be recorded onto, and the two missing
-  facts arrive separately.** The length comes from the step editor's strip NOW
+- **(RETIRED -- the model names a new clip at once.) A clip Move has not saved
+  yet can be recorded onto, and the two missing facts arrive separately.** The length comes from the step editor's strip NOW
   (bar resolution, origin assumed 0); the identity and true origin come from
   the file ~10 s later, and the lane is then **adopted** — points shifted by
   the real `loop_start`, fingerprint stamped, one step, exact arithmetic.
@@ -832,8 +838,8 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   identified", and adopting those would bind a lane to a stranger's clip. A
   blind take PLAYS while unidentified — its position is the one playing, and
   staleness needs a fingerprint to establish.
-- **Move's step editor draws the clip's bar count, and we READ it rather than
-  model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
+- **(RETIRED -- the decoder is deleted; the live model answers this.) Move's
+  step editor draws the clip's bar count, and we READ it rather than model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
   no length, so no phase, so recording refuses — and Move's own screen has the
   answer: a full-width strip on **row 59** in equal segments, the displayed bar
   thickened, the playhead a **1 px interruption** (against 2 px bar gaps, which

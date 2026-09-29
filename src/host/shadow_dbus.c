@@ -32,7 +32,6 @@
 
 #include "shadow_dbus.h"
 #include "metronome_announce.h"
-#include "editor_bar_announce.h"
 #include "mute_follow.h"
 #include "move_model_sync.h"
 
@@ -67,21 +66,6 @@ volatile int in_set_overview = 0;
  * volatile int, the same as in_set_overview above.
  */
 volatile int shadow_metronome_on = 0;
-
-/*
- * Move's step-editor page, 1-based, 0 = not yet announced.
- *
- * The ONLY external statement of which page the editor is on. The playhead
- * cannot supply it -- it is visible exactly when the displayed page contains
- * it, so deriving the page from the playhead assumes the phase you wanted to
- * check. Not persisted: it is Move's live UI state and stale is worse than
- * absent.
- *
- * Written on the D-Bus monitor thread, read by the worker. A plain volatile
- * int, like shadow_metronome_on above.
- */
-volatile int shadow_editor_bar = 0;
-volatile unsigned shadow_editor_bar_seq = 0;
 
 /* Which slot Move's next "<name> muted"/"unmuted" belongs to. Fed by the
  * shim's Mute / Track scan on the SPI callback, read here. See mute_follow.h. */
@@ -229,14 +213,6 @@ static void shadow_dbus_handle_text(const char *text)
         char msg[256];
         snprintf(msg, sizeof(msg), "D-Bus text: \"%s\" (held_track=%d)", text, *host.held_track);
         host.log(msg);
-    }
-
-    {
-        int bar = editor_bar_parse(text);
-        if (bar > 0) {
-            shadow_editor_bar = bar;
-            shadow_editor_bar_seq++;
-        }
     }
 
     /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
