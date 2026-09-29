@@ -1537,7 +1537,23 @@ modulation bus by `chain_scene.c`. The user-facing model is in
   targets on a permutation and drops the pairs of a removed position.
 - **`v2_get_param` is a wrapper**: `chain_scene_get_around_state` puts the base
   back into the module around a `<comp>:state` read, so a save records the knob
-  rather than the morph.
+  rather than the morph -- and around `lfo_config`, for the LFO fields below.
+- **SLOT SETTINGS lock too, as target `slot` / `lfo1` / `lfo2` with module
+  `chain`** (never dormant). Keys: `buses:main_send<N>` (target `slot`) and
+  `lfo<N>:<field>`; the shape comes from `chain_setting_meta`, not
+  `chain_params`. The two sends are an OFFSET (`scene_send_mod`, recomputed
+  every block against the live level and summed at the send drain), never a
+  write to `main_send_level`, which `saveSendLevels` reads back. LFO fields are
+  WRITTEN, with the knob kept as the drive's `base` (`scene_lfo_drive`):
+  a read of a driven field answers the base, and a patch load drops the drives
+  so they re-engage against what was loaded.
+- **THE LIVE TAKEOVER** (`scene_takeover_t`, `docs/SHADOW_UI.md`): a non-armed
+  write to a driven param anchors it at the fader -- `chain_scene_route_set`
+  calls `chain_mod_scene_takeover` BEFORE the base takes the write, so the old
+  base is still there to measure the turn against. The anchor lives on the
+  MORPH contribution (zeroed with it) and `chain_mod_recompute_effective`
+  resolves it; `chain_mod_clear_takeovers` runs when A, B or the arm change.
+  The LFO drives and the two sends carry their own anchor.
 
 ## A rack's templated keys are typed by the CHAIN
 

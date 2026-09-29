@@ -1,7 +1,15 @@
 # Scene Morphing (Octatrack-style) — Design
 
 Date: 2026-09-27
-Status: approved in brainstorm, awaiting spec review
+Status: SHIPPED (#550, 2026-09-29) -- and SUPERSEDED in its model.
+
+> **Read `docs/SHADOW_UI.md` ("Scenes") for the current design.** This is the
+> original brainstorm spec, kept for its reasoning. Since it was written the
+> model changed twice: scenes became PAIRINGS of 32 shared SNAPSHOTS (pads)
+> selected on the steps, rather than 16 scenes assigned to A and B; slot and
+> host settings became lockable; a knob turned on a driven parameter now takes
+> over live; Shift+-/+ edit A/B from anywhere; Shift+Volume is the fader; and
+> Program Change selects scenes and the global snapshot.
 
 ## Summary
 
