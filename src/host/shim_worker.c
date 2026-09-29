@@ -17,6 +17,10 @@
 #include "spi_tally.h"
 #include "align_capture.h"
 #include "shadow_set_pages.h"
+#include "move_model_sync.h"
+#include "move_model.h"
+#include "step_plock.h"     /* set-load edge -> prompt identity poll */
+#include "shadow_state.h"
 #include "unified_log.h"
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
@@ -115,6 +119,7 @@ static const flag_spec_t FLAGS[] = {
     /* The lanes kill switch. Polled like the rest so arming it needs no
      * restart, and so a user can turn the feature off again the moment it
      * misbehaves. */
+    { "/data/UserData/schwung/lanes_on",             SHIM_FLAG_LANES_ON,     0 },
 };
 
 /* ---- SPI frame tally --------------------------------------------------- */
@@ -404,6 +409,7 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+#include "lane_trace.h"
 /* Defined in schwung_shim.c; see its comment. */
 void shim_gesture_state(int *shift, int *vol, unsigned *pending,
                         unsigned *fired, unsigned *vol_during);
@@ -500,6 +506,25 @@ uint32_t shadow_clip_new_generation(void) { return g_clip_new_gen; }
 uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
 uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
 uint32_t shadow_clip_copy_generation(void) { return g_clip_copy_gen; }
+
+/* The live model's producers (move_model_sync.c) -- the same channels the file
+ * diff below feeds, current to the edit instead of ~10 s behind it. Payload
+ * first, generation LAST, as everywhere here. */
+void shim_worker_publish_clip_deleted(uint32_t mask)
+{
+    if (!mask) return;
+    g_clip_deleted_mask = mask;
+    __sync_synchronize();
+    g_clip_deleted_gen++;
+}
+void shim_worker_publish_clip_copy(int track, int src, int dst)
+{
+    g_clip_copy_track = track;
+    g_clip_copy_src = src;
+    g_clip_copy_dst = dst;
+    __sync_synchronize();
+    g_clip_copy_gen++;
+}
 int shadow_clip_copy_track(void) { return g_clip_copy_track; }
 int shadow_clip_copy_src(void)   { return g_clip_copy_src; }
 int shadow_clip_copy_dst(void)   { return g_clip_copy_dst; }
@@ -631,7 +656,10 @@ static void clip_regions_tick(void)
      * deleted. Compared against the PREVIOUS parse so a newly copied clip --
      * also absent from the file until Move saves -- is not mistaken for one
      * that was removed. */
-    if (!set_changed) {
+    /* With the live model, deletions and copies come from it (the same channels,
+     * ~10 s sooner) -- and a file diff that lands a save later would ORPHAN a
+     * lane on a clip made in the same slot since. */
+    if (!set_changed && !move_model_sync_active()) {
         uint32_t deleted = 0;
         clip_regions_forget_deleted(&before, &g_regions, st, &deleted);
         /* Only publish when something actually went away. A generation bumped
@@ -802,11 +830,39 @@ static void clip_phase_check_tick(void)
     if (!cs || !g_regions.valid) return;
     double res = g_regions.step_resolution > 0 ? g_regions.step_resolution : 0.25;
 
+    /* THE MODEL PATH, scored against Move's own step playhead: for each lit
+     * step on the selected track, where the live-model resolver says that
+     * track's clip is at the LED's clock pulse, minus the lit step's start --
+     * in beats. Right is a small, steady positive number (the LED's ~25 ms
+     * latency) whatever the tempo, loop or page. Written only while
+     * move_model_on is armed. */
+    const int mm_log = (access("/data/UserData/schwung/move_model_on", F_OK) == 0);
+    FILE *mmf = NULL;
     clip_playhead_ev_t ev[32];
     int n;
     while ((n = clip_playhead_take(ev, 32)) > 0) {
         for (int i = 0; i < n; i++) {
             g_ph_total++;
+            if (mm_log) {
+                static move_model_t mm;
+                if (move_model_get(&mm) && mm.clock_valid && mm.selected_track >= 0 &&
+                    mm.step_beats > 0.0) {
+                    const mm_track_t *T = &mm.track[mm.selected_track];
+                    const int cs2 = (T->mode == 1) ? T->playing_slot : -1;
+                    if (cs2 >= 0 && cs2 < MM_SLOTS && T->slot[cs2].exists && T->slot[cs2].scroll >= 0.0) {
+                        const mm_clip_t *c = &T->slot[cs2];
+                        const double pos = mm_clip_position(c, T->start_beats, ev[i].pulses / 24.0);
+                        const int step = step_plock_button_to_step(ev[i].idx, mm.step_triplet);
+                        if (pos >= 0.0 && step >= 0) {
+                            const double d = (pos - c->scroll) - step * mm.step_beats;
+                            if (!mmf) mmf = fopen("/data/UserData/schwung/phase_model.log", "a");
+                            if (mmf) fprintf(mmf, "pul=%u T%d s%d idx=%u pos=%.4f scroll=%.2f grid=%.4f d=%+.4f bpm=%.1f\n",
+                                             ev[i].pulses, mm.selected_track + 1, cs2 + 1, ev[i].idx, pos,
+                                             c->scroll, mm.step_beats, d, mm.tempo);
+                        }
+                    }
+                }
+            }
             /* Before scoring: if the SELECTED track has identity but no
              * anchor, solve it from this very sighting. Loading a set while
              * the transport keeps running produces no Start and no witnessed
@@ -969,6 +1025,53 @@ static void clip_phase_check_tick(void)
         }
         if (n < 32) break;
     }
+    if (mmf) fclose(mmf);
+}
+
+/* THE LANE TRACE, drained. The callback fills a preallocated ring (lane_trace.h);
+ * this is the only side that opens a file. Armed by
+ * /data/UserData/schwung/lanes_trace_on, polled here so the callback never
+ * calls access().
+ *
+ * Drained at the worker's full 5 Hz rather than the 1 Hz the clip readout uses:
+ * the ring holds ~51 s and a take plus its following loops is ~15 s, so this is
+ * belt and braces -- but a diagnostic that loses the take because its consumer
+ * was lazy is worse than no diagnostic, and the drops would only show up as a
+ * number after the fact. */
+static void lane_trace_tick(void)
+{
+    static int armed;
+    const int now = (access("/data/UserData/schwung/lanes_trace_on", F_OK) == 0);
+    if (now != armed) {
+        armed = now;
+        lane_trace_set_armed(now);
+        FILE *m = fopen("/data/UserData/schwung/lanes_trace.log", "a");
+        if (m) {
+            fprintf(m, "# lane trace %s\n", now ? "ARMED" : "disarmed");
+            fclose(m);
+        }
+        if (!now) return;
+    }
+    if (!armed) return;
+
+    lane_trace_entry_t e;
+    FILE *fp = NULL;
+    while (lane_trace_pop(lane_trace_ring(), &e)) {
+        if (!fp) {
+            /* Opened only when there is something to write, and closed each
+             * drain -- same reasoning as clip_state_tick: a FILE* held across
+             * an `rm` of the log writes to an unlinked inode and the readout
+             * goes silent in a way that looks like a dead worker. */
+            fp = fopen("/data/UserData/schwung/lanes_trace.log", "a");
+            if (!fp) return;
+        }
+        fprintf(fp, "f=%-9u s%u %s\n", e.frame, e.slot, e.line);
+    }
+    if (fp) {
+        const uint32_t d = lane_trace_ring()->dropped;
+        if (d) fprintf(fp, "# DROPPED %u samples (ring lapped)\n", d);
+        fclose(fp);
+    }
 }
 
 /* THE STEP TAP PATH, reported. Always on and silent unless a step moved --
@@ -990,6 +1093,37 @@ static void step_tap_tick(void)
              shim_step_tap_queued, shim_step_tap_emitted,
              shim_step_tap_noroom, shim_step_hold_ms_last, 500,
              shim_step_plock_key[0] ? shim_step_plock_key : "(none)");
+    LOG_DEBUG("shim", msg);
+}
+
+/* THE ROW WAS UNKNOWN AND THE SCREEN COULD NOT SAY. Once a second, silent
+ * otherwise -- see g_row_unknown_* in shadow_chain_mgmt.c for why this needed
+ * a name of its own rather than the chain's generic `no_clip`. */
+static void row_unknown_tick(void)
+{
+    if (!g_row_unknown_seen) return;
+    g_row_unknown_seen = 0;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "lane-row: UNKNOWN -- %d clips on this track and no step strip "
+             "(segs=%d), so the file's answer would be a guess. A p-lock here "
+             "reports no_clip; the clip is there, its row is not readable.",
+             g_row_unknown_clips, g_row_unknown_strip);
+    LOG_DEBUG("shim", msg);
+}
+
+/* THE BLIND WINDOW, once a second while it is open. Silent otherwise. */
+static void blind_anchor_tick(void)
+{
+    if (!g_blind_seen) return;
+    g_blind_seen = 0;
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "lane-blind: have_ph=%d idx=%d age=%d segs=%d len=%.2f res=%.2f "
+             "-> phase=%s",
+             g_blind_have_ph, g_blind_idx, g_blind_age, g_blind_segs,
+             g_blind_len_x100 / 100.0, g_blind_res_x100 / 100.0,
+             g_blind_got ? "YES" : "no");
     LOG_DEBUG("shim", msg);
 }
 
@@ -1822,6 +1956,7 @@ static void *worker_main(void *arg) {
         clip_regions_tick();
         clip_phase_check_tick();
         clip_state_tick();
+        lane_trace_tick();                       /* 5 Hz drain, no-op unless armed */
         worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
         if (tick % 5 == 0) {
@@ -1834,8 +1969,15 @@ static void *worker_main(void *arg) {
     ui_midi_out_volume_tick();
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
+            blind_anchor_tick();      /* 1 Hz while a clip has no row yet */
+            row_unknown_tick();       /* 1 Hz while the row is unreadable */
         }
-        if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
+        /* ~1.4 s FS scan -- every tick (200 ms) while a set load the model saw
+         * is not yet aligned, so identity lands promptly even if the model's
+         * own edge-triggered read raced Move's Settings.json rewrite. */
+        if (tick % 7 == 0 || move_model_sync_misaligned()) shadow_poll_current_set();
+        move_model_sync_housekeep();   /* liveness -> UI; expire an unresolvable misalignment */
+        shadow_save_state_service();   /* the slot mix mutators only ask */
         tick++;
     }
     return NULL;

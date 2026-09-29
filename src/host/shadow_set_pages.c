@@ -19,6 +19,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"  /* for SAMPLER_SETS_DIR, sampler_read_set_tempo */
 #include "shadow_chain_mgmt.h"  /* for MASTER_FX_SLOTS */
+#include "move_model_sync.h"   /* the set-load edge and document generation */
 
 /* ============================================================================
  * Globals
@@ -412,14 +413,34 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
  * Heavy file I/O (config save/load, copy detection, mkdir) has been
  * removed and is handled by the UI thread via SHADOW_UI_FLAG_SET_CHANGED.
  * Only small writes (active_set.txt) and tempo read remain here. */
+/* The generation of the read being consumed, and of the SET_CHANGED last
+ * raised -- all on the SPI thread, which is the only caller of both. */
+static uint32_t s_consume_gen, s_published_gen, s_acked_gen;
+static int s_consume_settled;
+
+uint32_t shadow_set_pages_published_gen(void) { return s_published_gen; }
+
 void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (!set_name || !set_name[0]) return;
 
     /* Avoid re-triggering for the same set */
     if (strcmp(sampler_current_set_name, set_name) == 0 &&
         (uuid == NULL || strcmp(sampler_current_set_uuid, uuid) == 0)) {
+        /* Same set -- including Move RELOADING it, which is a new document with
+         * the same name. Nothing for the UI to switch, so this read aligns us,
+         * but only once it is known to postdate Move's Settings.json rewrite. */
+        /* ...and only once the UI has ACKED the last change it was told
+         * about. Otherwise a set loaded while the UI was still switching to
+         * the previous one would be "the same set" here and align unhandled,
+         * letting autosave write into the wrong folder. */
+        if (s_consume_gen && s_consume_settled && *host.shadow_control_ptr &&
+            s_acked_gen == s_published_gen &&
+            (*host.shadow_control_ptr)->set_doc_gen != s_consume_gen &&
+            !((*host.shadow_control_ptr)->ui_flags & SHADOW_UI_FLAG_SET_CHANGED))
+            (*host.shadow_control_ptr)->set_doc_gen = s_consume_gen;
         return;
     }
+    s_published_gen = s_consume_gen;
 
     /* Update in-memory state */
     snprintf(sampler_current_set_name, sizeof(sampler_current_set_name), "%s", set_name);
@@ -448,14 +469,42 @@ static struct {
     volatile uint32_t seq;   /* odd while the worker is writing */
     char name[128];
     char uuid[64];
+    uint32_t gen;            /* the model's document generation the read belongs to */
+    int settled;             /* the read postdates Move's Settings.json rewrite */
+    uint64_t read_ms;        /* when the read was taken (CLOCK_MONOTONIC) */
 } set_snapshot;
+
+static uint64_t set_pages_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static volatile uint64_t s_last_publish_ms;
+uint64_t shadow_set_pages_last_publish_ms(void) { return s_last_publish_ms; }
 
 static void shadow_set_pages_publish(const char *name, const char *uuid)
 {
+    uint32_t gen = move_model_sync_gen();
+    int settled = move_model_sync_settled();
+    s_last_publish_ms = set_pages_now_ms();
+    /* A REPUBLISH OF THE SAME READ KEEPS ITS AGE. The worker republishes
+     * every ~200 ms while misaligned; restamping read_ms each time meant a
+     * read never reached the 300 ms the consume waits for, and the switch
+     * only happened when the 15 s give-up forced it (measured on hardware). */
+    if (set_snapshot.gen == gen && !strcmp(set_snapshot.name, name ? name : "") &&
+        !strcmp(set_snapshot.uuid, uuid ? uuid : "") && !(set_snapshot.seq & 1u)) {
+        set_snapshot.settled = settled;
+        return;
+    }
     set_snapshot.seq++;            /* odd: write in progress */
     __sync_synchronize();
     snprintf(set_snapshot.name, sizeof(set_snapshot.name), "%s", name ? name : "");
     snprintf(set_snapshot.uuid, sizeof(set_snapshot.uuid), "%s", uuid ? uuid : "");
+    set_snapshot.gen = gen;
+    set_snapshot.settled = settled;
+    set_snapshot.read_ms = set_pages_now_ms();
     __sync_synchronize();
     set_snapshot.seq++;            /* even: stable */
 }
@@ -471,17 +520,68 @@ void shadow_set_pages_consume(void)
     if (!set_snapshot.name[0]) return;      /* nothing published yet */
     memcpy(name, (const void *)set_snapshot.name, sizeof(name));
     memcpy(uuid, (const void *)set_snapshot.uuid, sizeof(uuid));
+    uint32_t gen = set_snapshot.gen;
+    int settled = set_snapshot.settled;
+    uint64_t read_ms = set_snapshot.read_ms;
     __sync_synchronize();
     if (set_snapshot.seq != seq1) return;   /* torn read — next frame */
     name[sizeof(name) - 1] = '\0';
     uuid[sizeof(uuid) - 1] = '\0';
+    shadow_set_pages_consume_read(name, uuid, gen, settled, set_pages_now_ms() - read_ms);
+}
+
+/* The consume's decision, given one read -- separate so tests/host can drive
+ * it without Move's filesystem. Returns 1 if the read was acted on. */
+int shadow_set_pages_consume_read(const char *name, const char *uuid, uint32_t gen,
+                                  int settled, uint64_t age_ms)
+{
+    /* A READ IS ONLY TRUSTED ONCE THE MODEL HAS HAD TIME TO DISAGREE WITH IT.
+     * Move rewrites Settings.json ~12 ms after a swap completes and the
+     * model sees the swap a tick or two later, so a read can name the NEW
+     * set while still carrying the OLD generation -- and a generation is
+     * what proves "same document" to the pending-set migration. Wait 300 ms;
+     * if the generation moved meanwhile, drop the read and let the worker's
+     * republish (it polls every tick while misaligned) bring the right one. */
+    if (move_model_sync_active()) {
+        if (age_ms < 300) return 0;
+        if (move_model_sync_gen() != gen) return 0;
+    }
+    s_consume_gen = gen;
+    s_consume_settled = settled;
     shadow_handle_set_loaded(name, uuid);
+    return 1;
+}
+
+/* shadow_ui has switched its per-set state to the set it was told about as
+ * generation `gen` (the third line of `active_set`, read with the name). The
+ * ack names what the UI HANDLED, not whatever was published last: a set loaded
+ * while the UI was switching has a newer generation, and its SET_CHANGED --
+ * which the UI's own clear may just have erased -- is raised again. */
+void shadow_set_pages_ack_aligned(uint32_t gen)
+{
+    shadow_control_t *ctl = *host.shadow_control_ptr;
+    if (!ctl) return;
+    ctl->set_doc_gen = gen;
+    s_acked_gen = gen;
+    if (gen != s_published_gen) ctl->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
 }
 
 /* Poll Settings.json for currentSongIndex changes, then match via xattr.
  * Runs on the shim worker thread (~every 1.4 s); publishes results via the
  * snapshot above instead of calling shadow_handle_set_loaded directly. */
+/* Two callers now -- the worker's scan and the model's set-load edge -- and
+ * the body keeps static state. */
+static pthread_mutex_t poll_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void shadow_poll_current_set_locked(void);
+
 void shadow_poll_current_set(void)
+{
+    pthread_mutex_lock(&poll_mutex);
+    shadow_poll_current_set_locked();
+    pthread_mutex_unlock(&poll_mutex);
+}
+
+static void shadow_poll_current_set_locked(void)
 {
     static const char settings_path[] = "/data/UserData/settings/Settings.json";
 
@@ -506,8 +606,12 @@ void shadow_poll_current_set(void)
 
     /* Normal path: react when index changes.
      * Pending path: keep retrying the same unresolved index until a UUID appears. */
+    /* ...and, with the live model, while a document it saw is not aligned
+     * yet: a boot, or Move reloading the SAME set, changes no index, and the
+     * republish is what lets the consume align it as "same set". */
     if (song_index == sampler_last_song_index &&
-        song_index != sampler_pending_song_index) {
+        song_index != sampler_pending_song_index &&
+        !move_model_sync_misaligned()) {
         return;
     }
 
@@ -574,8 +678,15 @@ void shadow_poll_current_set(void)
     char pending_name[128];
     char pending_uuid[64];
     snprintf(pending_name, sizeof(pending_name), "New Set %d", song_index + 1);
-    snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
-             song_index, (unsigned)sampler_pending_set_seq);
+    /* The id must be unique ACROSS BOOTS, not just within one: the sequence
+     * restarts at 1 every boot, so "__pending-26-1" named a different unsaved
+     * set each session and a new one silently loaded whatever an old one had
+     * left in set_state/ (eight such folders were found on one device). The
+     * boot token is the wall clock at the first pending set of this process. */
+    static unsigned boot_token;
+    if (!boot_token) boot_token = (unsigned)time(NULL) | 1u;
+    snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%x-%u",
+             song_index, boot_token, (unsigned)sampler_pending_set_seq);
     shadow_set_pages_publish(pending_name, pending_uuid);
 }
 

@@ -97,6 +97,17 @@ void shadow_poll_current_set(void);
  * scan itself (shadow_poll_current_set) runs on the shim worker. */
 void shadow_set_pages_consume(void);
 
+/* shadow_ui finished switching its per-set state for the SET_CHANGED it was
+ * last given: set_doc_gen = that change's document generation. */
+void shadow_set_pages_ack_aligned(uint32_t gen);
+/* The consume's decision for one read (age = ms since it was taken). */
+int shadow_set_pages_consume_read(const char *name, const char *uuid, uint32_t gen,
+                                  int settled, uint64_t age_ms);
+/* The generation of the SET_CHANGED last raised (served as `active_set` line 3). */
+uint32_t shadow_set_pages_published_gen(void);
+/* CLOCK_MONOTONIC ms of the worker's last successful set read (0 = never). */
+uint64_t shadow_set_pages_last_publish_ms(void);
+
 
 /* Read current page from disk (returns 0 if not found) */
 int set_page_read_persisted(void);
