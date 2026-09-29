@@ -517,8 +517,9 @@ int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *
  *
  * So around that one read, the base goes back into the module and the morph is
  * re-applied straight after. Same call, same thread (the SPI callback), no
- * audio block in between -- nothing is heard. Scene-driven params only: an
- * LFO's save behaviour is not this feature's to change.
+ * audio block in between -- nothing is heard. EVERY source, not scenes only:
+ * a lane's value or an LFO's swing saved as the knob is the same bug, and it
+ * used to happen whenever no scene bank was loaded (chain_mod_state_swap_in).
  */
 /* A read of a slot setting answers WHAT A WRITE WOULD CHANGE: the lock
  * while armed, else the base of a driven LFO field (the struct holds the
@@ -635,28 +636,19 @@ int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *
         }
         return r;
     }
+    /* A `<comp>:state` read: every modulated param's BASE goes into the
+     * module for the read -- a lane's, a scene's and an LFO's alike, whether
+     * or not a scene bank is loaded (chain_mod_state_swap_in). */
     size_t n = key ? strlen(key) : 0;
-    if (!inst || n <= 6 || strcmp(key + n - 6, ":state") != 0 || inst->scenes.count == 0)
+    if (!inst || n <= 6 || strcmp(key + n - 6, ":state") != 0)
         return impl(inst, key, buf, buf_len);
     char target[SCENE_TARGET_LEN];
     const char *subkey = NULL;
     if (!chain_scene_split_key(key, target, sizeof(target), &subkey) || strcmp(subkey, "state") != 0)
         return impl(inst, key, buf, buf_len);
-    int swapped = 0;
-    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
-        mod_target_state_t *e = &inst->mod_targets[i];
-        if (!e->active || strcmp(e->target, target) != 0 || !chain_mod_has_source(e, SCENE_SOURCE_ID)) continue;
-        chain_mod_write_base(inst, e);
-        swapped++;
-    }
+    const int swapped = chain_mod_state_swap_in(inst, target);
     int r = impl(inst, key, buf, buf_len);
-    if (swapped) {
-        for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
-            mod_target_state_t *e = &inst->mod_targets[i];
-            if (!e->active || strcmp(e->target, target) != 0 || !chain_mod_has_source(e, SCENE_SOURCE_ID)) continue;
-            chain_mod_apply_effective_value(inst, e, 1);
-        }
-    }
+    if (swapped) chain_mod_state_swap_out(inst, target);
     return r;
 }
 

@@ -280,6 +280,30 @@ int main(void) {
     chain_scene_set_param(inst, "clear", "4");
     CHECK(inst->scene_rev != r0, "a clear is");
 
+    /* ...and so does EVERY other modulation source, with no scene bank at all.
+     * The swap existed only for scene sources and only while a bank was
+     * loaded, so the autosave recorded a lane's (or an LFO's) current value
+     * as the knob, and a reload brought the automation back as the knob. */
+    {
+        setup(inst);                                   /* no scenes */
+        knob_write(inst, "cutoff", "33");
+        chain_mod_emit_override(inst, "lane", "synth", "cutoff", 80.0f, 1);
+        CHECK(NEAR(cutoff(), 80), "the lane drives cutoff: %f", cutoff());
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 33), "no scene bank: a lane-driven param saves the KNOB: %s", seen);
+        CHECK(NEAR(cutoff(), 80), "...and the lane is back on it after the read: %f", cutoff());
+        chain_mod_emit_override(inst, "lane", "synth", "cutoff", 0.0f, 0);
+        chain_mod_emit_value(inst, "lfo1", "synth", "cutoff", 1.0f, 0.1f, 0.0f, 1, 1);
+        float swung = cutoff();
+        CHECK(!NEAR(swung, 33), "an LFO swings cutoff: %f", swung);
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 33), "an LFO-driven param saves the KNOB too: %s", seen);
+        CHECK(NEAR(cutoff(), swung), "...and the swing is back after the read: %f", cutoff());
+        chain_mod_emit_value(inst, "lfo1", "synth", "cutoff", 0, 0, 0, 1, 0);
+    }
+
     /* ---- THE LIVE TAKEOVER on a module knob, measured at the module. */
     setup(inst);
     chain_scene_set_param(inst, "lock", "0 synth cutoff 20 obxd");

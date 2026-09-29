@@ -780,6 +780,44 @@ void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry) {
 }
 
 /*
+ * A `<comp>:state` READ SAVES THE KNOB, WHATEVER IS DRIVING THE PARAM.
+ *
+ * A module serialises what it holds, and a modulated param holds the
+ * modulation: a lane's value, a scene's morph, an LFO's swing. Every save path
+ * (slot autosave, User Presets, the snapshot) reads that blob, so without this
+ * the file records automation instead of the knob -- and after a reload the
+ * knob "returns" to a snapshot of wherever the lane was. This used to exist
+ * for scene sources only, and only while a scene bank was loaded.
+ *
+ * swap_in puts every modulated param's BASE into the module and returns how
+ * many it touched; the caller reads, then swap_out re-applies the effective
+ * values with a forced write. Same call, same thread (the SPI callback), no
+ * audio block in between, so nothing is heard.
+ */
+int chain_mod_state_swap_in(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return 0;
+    int n = 0;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || !e->enabled || strcmp(e->target, target) != 0) continue;
+        if (!chain_mod_has_active_sources(e)) continue;
+        chain_mod_write_base(inst, e);
+        n++;
+    }
+    return n;
+}
+
+void chain_mod_state_swap_out(chain_instance_t *inst, const char *target) {
+    if (!inst || !target) return;
+    for (int i = 0; i < inst->mod_target_count && i < MAX_MOD_TARGETS; i++) {
+        mod_target_state_t *e = &inst->mod_targets[i];
+        if (!e->active || !e->enabled || strcmp(e->target, target) != 0) continue;
+        if (!chain_mod_has_active_sources(e)) continue;
+        chain_mod_apply_effective_value(inst, e, 1);
+    }
+}
+
+/*
  * A BULK WRITE landed on `target` (scene_write_is_bulk: a state blob, a preset,
  * a file load) and replaced its knobs wholesale. Every base captured from it is
  * the knob as it stood BEFORE, so a later release, or the swap above on the

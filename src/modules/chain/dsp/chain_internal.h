@@ -1516,6 +1516,8 @@ CHAIN_INTERNAL int chain_mod_emit_morph(chain_instance_t *inst, const char *sour
 CHAIN_INTERNAL void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id);
 CHAIN_INTERNAL void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry);
+CHAIN_INTERNAL int chain_mod_state_swap_in(chain_instance_t *inst, const char *target);
+CHAIN_INTERNAL void chain_mod_state_swap_out(chain_instance_t *inst, const char *target);
 CHAIN_INTERNAL void chain_mod_rebase_target(chain_instance_t *inst, const char *target);
 CHAIN_INTERNAL void chain_mod_after_set_param(void *ctx, const char *key);
 CHAIN_INTERNAL int chain_mod_scene_takeover(chain_instance_t *inst, const char *source_id, const char *target, const char *param, float new_base);
