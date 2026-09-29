@@ -445,7 +445,30 @@ static void scene_host_apply(const char *t, const char *p, int on, float v) {
         }
     }
 }
-static const scene_host_io_t scene_host_io = { scene_host_get, scene_host_apply };
+static int scene_host_peek(const char *t, const char *p, float *out) {
+    int i;
+    if ((i = scene_host_index(t, "slot", SHADOW_CHAIN_INSTANCES)) >= 0) {
+        const shadow_chain_slot_t *s = &shadow_chain_slots[i];
+        if (!strcmp(p, "volume") && s->scene_volume_on) { *out = s->scene_volume; return 1; }
+        if (!strcmp(p, "pan") && s->scene_pan_on) { *out = s->scene_pan; return 1; }
+        return 0;
+    }
+    if ((i = scene_host_index(t, "send", SEND_BUSES)) >= 0) {
+        const int o = !strcmp(p, "return") ? shadow_scene_return_ov[i]
+                    : (i == 0 && !strcmp(p, "to_send2")) ? shadow_scene_a_to_b_ov : -1;
+        if (o < 0) return 0;
+        *out = (float)o;
+        return 1;
+    }
+    if ((i = scene_host_index(t, "mfx_lfo", MASTER_FX_LFO_COUNT)) >= 0) {
+        int f = mfx_lfo_field_index(p);
+        if (f < 0 || !mfx_lfo_scene[i][f].on) return 0;
+        *out = mfx_lfo_field_get(&shadow_master_fx_lfos[i], f);
+        return 1;
+    }
+    return 0;
+}
+static const scene_host_io_t scene_host_io = { scene_host_get, scene_host_apply, scene_host_peek };
 
 void chain_mgmt_init(const chain_mgmt_host_t *h) {
     host = *h;
