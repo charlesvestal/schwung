@@ -129,6 +129,7 @@ void chain_scene_init(chain_instance_t *inst) {
     inst->scene_rev = 0;
     memset(inst->scene_send_mod, 0, sizeof(inst->scene_send_mod));
     memset(inst->scene_lfo_drive, 0, sizeof(inst->scene_lfo_drive));
+    memset(inst->scene_send_takeover, 0, sizeof(inst->scene_send_takeover));
 }
 
 /* The module loaded at a component position right now, or NULL. */
@@ -192,7 +193,11 @@ static void chain_scene_sends(chain_instance_t *inst) {
         int ha, hb; float va, vb;
         if (!scene_resolve(p, a, b, &ha, &va, &hb, &vb)) continue;
         const float base = (float)inst->main_send_level[sd];
-        const float v = scene_morph_value(ha, va, hb, vb, base, x, SCENE_KIND_INT);
+        scene_takeover_t *to = &inst->scene_send_takeover[sd];
+        if (scene_takeover_expired(to, x)) to->on = 0;
+        const float v = to->on
+            ? scene_takeover_value(to, ha ? va : base, hb ? vb : base, x, SCENE_KIND_INT)
+            : scene_morph_value(ha, va, hb, vb, base, x, SCENE_KIND_INT);
         inst->scene_send_mod[sd] += (int)lroundf(v - base);
     }
 }
@@ -233,7 +238,10 @@ static void chain_scene_lfos(chain_instance_t *inst, int a, int b, float x) {
             dr->base = lfo_field_get(&inst->lfos[li], p->param);
         }
         typeof(inst->scene_lfo_drive[0]) *dr = &inst->scene_lfo_drive[d];
-        const float v = setting_clamp(m, scene_morph_value(ha, va, hb, vb, dr->base, x, m->kind));
+        if (scene_takeover_expired(&dr->takeover, x)) dr->takeover.on = 0;
+        const float v = setting_clamp(m, dr->takeover.on
+            ? scene_takeover_value(&dr->takeover, ha ? va : dr->base, hb ? vb : dr->base, x, m->kind)
+            : scene_morph_value(ha, va, hb, vb, dr->base, x, m->kind));
         if (dr->has_last && fabsf(v - dr->last) < 1e-6f) continue;
         lfo_field_set(inst, li, p->param, v);
         dr->last = v;
@@ -327,6 +335,13 @@ uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, flo
     if (b != SCENE_NONE && b >= SCENE_COUNT) b = SCENE_NONE;
     if (edit != SCENE_NONE && edit >= SCENE_COUNT) edit = SCENE_NONE;
     x = scene_clamp01(x);
+    if (a != inst->scene_a || b != inst->scene_b || edit != inst->scene_edit) {
+        /* Another scene, or an edit: every live anchor goes. They were a
+         * position between THESE two ends, and mean nothing between others. */
+        chain_mod_clear_takeovers(inst, SCENE_SOURCE_ID);
+        for (int d = 0; d < 16; d++) inst->scene_lfo_drive[d].takeover.on = 0;
+        for (int sd = 0; sd < BUS_MIX_SENDS; sd++) inst->scene_send_takeover[sd].on = 0;
+    }
     if (a != inst->scene_a || b != inst->scene_b || edit != inst->scene_edit ||
         fabsf(x - inst->scene_x) > 1e-6f) {
         inst->scene_a = a;
@@ -596,17 +611,58 @@ int chain_scene_route_set(chain_instance_t *inst, const char *key, const char *v
         inst->dirty = 1;
         return 1;
     }
-    /* A knob write to an LFO field a scene is driving: that is the new BASE.
-     * The write itself still goes through (the LFO takes it now) and the
-     * morph is re-applied over it on the next tick. */
-    if ((key[0] == 'l') && (!strncmp(key, "lfo1:", 5) || !strncmp(key, "lfo2:", 5)) && val) {
+    if (!val || inst->scenes.count == 0) return 0;
+    /*
+     * A KNOB TURN ON A PARAMETER THE SCENE IS DRIVING is heard: the LIVE
+     * TAKEOVER (scene_morph.h) anchors it at the fader, and the fader then
+     * morphs from there toward whichever end it heads for. Measured BEFORE
+     * the write lands, so the old base is still here to measure against.
+     */
+    /* An LFO field: that is also its new BASE. The write itself still goes
+     * through (the LFO takes it now); the next tick puts the anchor back. */
+    if ((key[0] == 'l') && (!strncmp(key, "lfo1:", 5) || !strncmp(key, "lfo2:", 5))) {
         const int li = key[3] - '1';
         int d = lfo_drive_find(inst, li, key + 5);
         const chain_setting_meta_t *m = chain_setting_meta(li ? "lfo2" : "lfo1", key + 5);
         if (d >= 0 && m) {
-            inst->scene_lfo_drive[d].base = setting_clamp(m, strtof(val, NULL));
-            inst->scene_lfo_drive[d].has_last = 0;
+            typeof(inst->scene_lfo_drive[0]) *dr = &inst->scene_lfo_drive[d];
+            const float nb = setting_clamp(m, strtof(val, NULL));
+            const float heard = dr->has_last ? dr->last : dr->base;
+            dr->takeover.k = scene_takeover_k(heard, dr->base, nb, m->kind, m->min, m->max);
+            dr->takeover.x0 = inst->scene_x;
+            dr->takeover.on = 1;
+            dr->base = nb;
+            dr->has_last = 0;
             inst->scene_dirty = 1;
+        }
+        return 0;
+    }
+    /* A slot send: an offset beside the level, so the anchor is all there is. */
+    if (!strncmp(key, "buses:main_send", 15)) {
+        const int sd = !strcmp(key + 15, "1") ? 0 : !strcmp(key + 15, "2") ? 1 : -1;
+        if (sd >= 0 && sd < BUS_MIX_SENDS && scene_find(&inst->scenes, "slot", key + 6) >= 0) {
+            const float old = (float)inst->main_send_level[sd];
+            const float heard = old + (float)inst->scene_send_mod[sd];
+            float nb = strtof(val, NULL);
+            if (nb < 0) nb = 0;
+            if (nb > BUS_MIX_SEND_LEVEL_MAX) nb = BUS_MIX_SEND_LEVEL_MAX;
+            scene_takeover_t *to = &inst->scene_send_takeover[sd];
+            to->k = scene_takeover_k(heard, old, nb, SCENE_KIND_INT, 0, BUS_MIX_SEND_LEVEL_MAX);
+            to->x0 = inst->scene_x;
+            to->on = 1;
+        }
+        return 0;
+    }
+    /* A module's own parameter: the anchor sits on the scene's morph. */
+    {
+        char target[SCENE_TARGET_LEN];
+        const char *subkey = NULL;
+        if (chain_scene_split_key(key, target, sizeof(target), &subkey) &&
+            !chain_setting_meta(target, subkey)) {
+            chain_param_info_t *pinfo = find_param_by_key(inst, target, subkey);
+            if (pinfo)
+                chain_mod_scene_takeover(inst, SCENE_SOURCE_ID, target, subkey,
+                                         dsp_value_to_float(val, pinfo, pinfo->default_val));
         }
     }
     return 0;

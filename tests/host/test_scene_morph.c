@@ -151,6 +151,26 @@ int main(void) {
           "suffixed views never lock");
     CHECK(!scene_edit_subkey_eligible("") && !scene_edit_subkey_eligible(NULL), "empty never locks");
 
+    /* THE LIVE TAKEOVER: three points, (0, A) (x0, k) (1, B). */
+    {
+        scene_takeover_t t = { 1, 0.75f, 50.0f };   /* A 0, B 100; turned to 50 at 75% */
+        CHECK(NEAR(scene_takeover_value(&t, 0, 100, 0.75f, SCENE_KIND_FLOAT), 50), "at the anchor: the turn");
+        CHECK(NEAR(scene_takeover_value(&t, 0, 100, 0.875f, SCENE_KIND_FLOAT), 75), "toward B: halfway to B");
+        CHECK(NEAR(scene_takeover_value(&t, 0, 100, 0.375f, SCENE_KIND_FLOAT), 25), "toward A: halfway to A");
+        CHECK(NEAR(scene_takeover_value(&t, 0, 100, 0.0f, SCENE_KIND_FLOAT), 0) &&
+              NEAR(scene_takeover_value(&t, 0, 100, 1.0f, SCENE_KIND_FLOAT), 100), "the ends are the ends");
+        CHECK(!scene_takeover_expired(&t, 0.5f) && scene_takeover_expired(&t, 0.0f) &&
+              scene_takeover_expired(&t, 1.0f), "released at EITHER end, never between");
+        scene_takeover_t e = { 1, 1.0f, 30.0f };    /* turned AT B */
+        CHECK(NEAR(scene_takeover_value(&e, 0, 100, 1.0f, SCENE_KIND_FLOAT), 30) && !scene_takeover_expired(&e, 1.0f),
+              "an anchor made AT an end holds there");
+        CHECK(NEAR(scene_takeover_value(&e, 0, 100, 0.5f, SCENE_KIND_FLOAT), 15) && scene_takeover_expired(&e, 0.0f),
+              "... morphs to the other end, and goes there");
+        CHECK(NEAR(scene_takeover_k(80, 10, 15, SCENE_KIND_FLOAT, 0, 127), 85), "a turn is a CHANGE to what is heard");
+        CHECK(NEAR(scene_takeover_k(125, 10, 15, SCENE_KIND_FLOAT, 0, 127), 127), "... clamped to the range");
+        CHECK(NEAR(scene_takeover_k(3, 0, 2, SCENE_KIND_ENUM, 0, 3), 2), "an enum takes the written option");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

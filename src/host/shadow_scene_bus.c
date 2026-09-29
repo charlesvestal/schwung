@@ -26,6 +26,7 @@ typedef struct {
     float last;
     int has_last;
     uint64_t last_ms;
+    scene_takeover_t takeover;       /* a live knob turn (scene_morph.h) */
 } scene_drive_t;
 
 typedef struct {
@@ -166,8 +167,11 @@ static void tick_host(int a, int b, float x) {
         if (!scene_resolve(p, a, b, &ha, &va, &hb, &vb)) continue;
         float base = m.def;
         if (!s_host->get(p->target, p->param, &base)) continue;
-        const float v = host_clamp(&m, scene_morph_value(ha, va, hb, vb, base, x, m.kind));
         scene_drive_t *d = find_drive(bus, p->target, p->param);
+        if (d && scene_takeover_expired(&d->takeover, x)) d->takeover.on = 0;
+        const float v = host_clamp(&m, (d && d->takeover.on)
+            ? scene_takeover_value(&d->takeover, ha ? va : base, hb ? vb : base, x, m.kind)
+            : scene_morph_value(ha, va, hb, vb, base, x, m.kind));
         if (!d) {
             for (int j = 0; j < SCENE_MAX_PAIRS && !d; j++) if (!bus->drives[j].active) d = &bus->drives[j];
             if (!d) continue;
@@ -206,6 +210,26 @@ int shadow_scene_host_edit_write(const char *target, const char *param, const ch
     changed(SCENE_HOST_SCOPE);
     tick_host(s_edit, SCENE_NONE, 0.0f);
     return 1;
+}
+
+void shadow_scene_host_note_write(const char *target, const char *param, const char *val) {
+    if (!s_host || s_edit != SCENE_NONE || !target || !param || !val) return;
+    scene_bus_t *bus = &s_bus[SCENE_HOST_SCOPE];
+    scene_drive_t *d = find_drive(bus, target, param);
+    if (!d) return;
+    scene_bus_meta_t m;
+    if (!scene_host_meta(target, param, &m)) return;
+    char *end = NULL;
+    float nb = strtof(val, &end);
+    if (!end || end == val) return;
+    nb = host_clamp(&m, nb);
+    float old = m.def;
+    if (!s_host->get(target, param, &old)) return;
+    const float heard = d->has_last ? d->last : old;
+    d->takeover.k = scene_takeover_k(heard, old, nb, m.kind, m.min, m.max);
+    d->takeover.x0 = s_x;
+    d->takeover.on = 1;
+    d->has_last = 0;
 }
 
 int shadow_scene_host_read(const char *target, const char *param, char *buf, int len) {
@@ -465,7 +489,10 @@ static void tick_bus(int scope, int a, int b, float x) {
             d = engage_drive(bus, slot, p, &meta);
             if (!d) continue;
         }
-        float v = scene_morph_value(ha, va, hb, vb, d->base, x, d->kind);
+        if (scene_takeover_expired(&d->takeover, x)) d->takeover.on = 0;
+        float v = d->takeover.on
+            ? scene_takeover_value(&d->takeover, ha ? va : d->base, hb ? vb : d->base, x, d->kind)
+            : scene_morph_value(ha, va, hb, vb, d->base, x, d->kind);
         if (v < d->min) v = d->min;
         if (v > d->max) v = d->max;
         if (d->has_last) {
@@ -489,6 +516,15 @@ static void tick_bus(int scope, int a, int b, float x) {
 void shadow_scene_bus_tick(uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags) {
     if (!s_io && !s_host) return;
     s_edit_flags = edit_flags;
+    if (a != s_a || b != s_b || edit != s_edit) {
+        /* Another scene, or an edit: every live anchor goes. */
+        for (int i = 0; i < SCENE_BUS_SCOPES; i++)
+            for (int j = 0; j < SCENE_MAX_PAIRS; j++) {
+                /* has_last is left alone: it is what tells a RELEASE the
+                 * plugin holds a scene value and must be handed the knob. */
+                s_bus[i].drives[j].takeover.on = 0;
+            }
+    }
     if (a != s_a || b != s_b || edit != s_edit || fabsf(x - s_x) > 1e-6f) {
         s_a = a; s_b = b; s_edit = edit; s_x = x;
         for (int i = 0; i < SCENE_BUS_SCOPES; i++) s_bus[i].dirty = 1;
@@ -646,7 +682,17 @@ void shadow_scene_bus_note_write(int scope, int pos, const char *param, const ch
     scene_bus_meta_t meta = { d->kind, d->min, d->max, d->min, 0 };
     float v;
     if (!parse_value(slot, param, val, &meta, &v)) return;
-    d->base = v < d->min ? d->min : v > d->max ? d->max : v;
+    v = v < d->min ? d->min : v > d->max ? d->max : v;
+    /* THE LIVE TAKEOVER: the turn is heard, from what was heard, and anchored
+     * at the fader (scene_morph.h). Not while an edit is armed -- that write
+     * was a lock, and never reaches here. */
+    if (s_edit == SCENE_NONE) {
+        const float heard = d->has_last ? d->last : d->base;
+        d->takeover.k = scene_takeover_k(heard, d->base, v, d->kind, d->min, d->max);
+        d->takeover.x0 = s_x;
+        d->takeover.on = 1;
+    }
+    d->base = v;
     d->has_last = 0;                 /* the plugin now holds the base: re-apply */
     s_bus[scope].dirty = 1;
 }
