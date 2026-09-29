@@ -50,6 +50,7 @@
 #include "host/lane_store.h"
 #include "host/lane_edit.h"
 #include "host/lane_serial.h"
+#include "host/scene_morph.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -209,7 +210,11 @@ typedef struct {
     int option_count;       /* Number of enum options */
 } chain_param_info_t;
 
-#define MAX_MOD_TARGETS 32
+/* 64, not 32: SCENES take a target per locked (component, param) pair on top
+ * of the LFOs, up to SCENE_MAX_PAIRS of them (scene_morph.h). An entry is
+ * ~450 B, so the doubling is ~14 KB on an ~8.4 MB instance.
+ * tests/host/test_chain_scene.sh pins both numbers. */
+#define MAX_MOD_TARGETS 64
 #define MAX_MOD_SOURCES_PER_TARGET 8
 #define MOD_PARAM_CACHE_REFRESH_MS 250
 #define MOD_FLOAT_CHANGE_EPSILON 0.000001f
@@ -224,6 +229,20 @@ typedef struct mod_source_contribution {
      * lane IS the value, the knob is the base underneath it. Offsets from
      * LFOs still sum on top, so the two compose. */
     int is_override;
+    /* A MORPH (a scene crossfade) carries its two ENDS rather than a value,
+     * and is resolved at recompute time against the knob -- or, when an
+     * automation lane drives the param, against the lane's value -- so the
+     * unlocked end follows whatever is playing with nothing re-emitting.
+     * Offsets still sum on top (chain_mod_recompute_effective). */
+    int is_morph;
+    int morph_has_a;
+    int morph_has_b;
+    float morph_a;
+    float morph_b;
+    float morph_x;
+    /* A knob turned while this morph drives the param: the LIVE TAKEOVER
+     * (scene_morph.h). Zeroed with the contribution. */
+    scene_takeover_t takeover;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -851,6 +870,36 @@ typedef struct chain_instance {
     /* Runtime modulation bus state */
     mod_target_state_t mod_targets[MAX_MOD_TARGETS];
     int mod_target_count;
+
+    /* SCENES (chain_scene.c). This slot's share of the set's scene bank, and
+     * the crossfader state the shim pushes every frame through the dlsym'd
+     * chain_set_scene_morph(). a/b/edit are SCENE_NONE when unset -- set in
+     * v2_create_instance, because a zeroed instance would mean "scene 1". */
+    scene_table_t scenes;
+    uint8_t scene_a;
+    uint8_t scene_b;
+    uint8_t scene_edit;        /* armed scene: writes lock into it */
+    uint8_t scene_edit_flags;  /* SCENE_EDIT_UNLOCK: Delete is held */
+    uint8_t scene_flash;       /* last refusal, consumed by the shim */
+    float scene_x;
+    int scene_dirty;
+    int scene_revalidate;
+    uint16_t scene_rev;        /* bumped on every change to `scenes` */
+    /* Scene-driven SLOT SETTINGS (chain_scene.c): the two slot sends are an
+     * OFFSET beside the LFO's main_send_mod -- the saved level is never
+     * written -- and the LFO fields are written with their base kept here,
+     * so a read and a save still see the knob. */
+    int scene_send_mod[BUS_MIX_SENDS];
+    scene_takeover_t scene_send_takeover[BUS_MIX_SENDS];   /* a live turn, scene_morph.h */
+    struct {
+        int active;
+        int lfo;               /* 0 or 1 */
+        char param[16];
+        float base;
+        float last;
+        int has_last;
+        scene_takeover_t takeover;
+    } scene_lfo_drive[16];
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
@@ -1463,6 +1512,12 @@ CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
 CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
+CHAIN_INTERNAL int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id, const char *target, const char *param, int has_a, float a, int has_b, float b, float x);
+CHAIN_INTERNAL void chain_mod_clear_source_at(chain_instance_t *inst, const char *source_id, const char *target, const char *param);
+CHAIN_INTERNAL int chain_mod_has_source(const mod_target_state_t *entry, const char *source_id);
+CHAIN_INTERNAL void chain_mod_write_base(chain_instance_t *inst, mod_target_state_t *entry);
+CHAIN_INTERNAL int chain_mod_scene_takeover(chain_instance_t *inst, const char *source_id, const char *target, const char *param, float new_base);
+CHAIN_INTERNAL void chain_mod_clear_takeovers(chain_instance_t *inst, const char *source_id);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
@@ -1471,6 +1526,19 @@ CHAIN_INTERNAL int chain_mod_get_modulated_for_subkey(chain_instance_t *inst, co
 CHAIN_INTERNAL int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target);
 CHAIN_INTERNAL void chain_mod_update_base_from_set_param(chain_instance_t *inst, const char *target, const char *param, const char *val);
+
+/* chain_scene.c */
+CHAIN_INTERNAL void chain_scene_init(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_scene_tick(chain_instance_t *inst);
+CHAIN_INTERNAL int chain_scene_set_param(chain_instance_t *inst, const char *verb, const char *val);
+CHAIN_INTERNAL int chain_scene_get_param(chain_instance_t *inst, const char *verb, char *buf, int buf_len);
+CHAIN_INTERNAL int chain_scene_route_set(chain_instance_t *inst, const char *key, const char *val);
+typedef int (*chain_get_param_fn)(void *instance, const char *key, char *buf, int buf_len);
+CHAIN_INTERNAL int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *buf, int buf_len, chain_get_param_fn impl);
+CHAIN_INTERNAL int chain_scene_edit_write(chain_instance_t *inst, const char *key, const char *val);
+CHAIN_INTERNAL int chain_scene_edit_read(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
+CHAIN_INTERNAL uint32_t chain_scene_set_morph(chain_instance_t *inst, uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);
+uint32_t chain_set_scene_morph(void *instance, uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags);
 
 /* chain_midi.c */
 CHAIN_INTERNAL int chain_get_clock_status(void);

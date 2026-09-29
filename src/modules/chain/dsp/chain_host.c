@@ -101,6 +101,7 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     inst->synth_split_voice_count = 0;
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
+    chain_scene_init(inst);  /* zeroed would mean "scene 1" is A, B and armed */
     /* Set up host API for sub-plugins */
     if (g_host) {
         inst->host = g_host;
@@ -964,6 +965,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /* SCENES verbs + edit arm, ahead of the component routes (chain_scene.c). */
+    if (chain_scene_route_set(inst, key, val)) return;
+
     /* Every automation-lane key, in ONE dispatch (chain_lanes.c). One branch
      * rather than one per key: this file is pinned at 2900 lines, so a ladder
      * here makes the next lane key a choice between the pin and the feature. */
@@ -1613,7 +1617,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
  * looks up the index in the param's options list.
  * Returns the float value, or fallback if conversion fails.
  */
-static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
+static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
 
@@ -1628,6 +1632,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
     }
 
+    if (strncmp(key, "scenes:", 7) == 0) return chain_scene_get_param(inst, key + 7, buf, buf_len);
     /* Every automation-lane key, in ONE dispatch (chain_lanes.c). -1 comes
      * back for a key it does not serve, so an unknown "lanes:" subkey reads
      * as a FAILED read rather than as an empty answer. */
@@ -1966,6 +1971,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         /* A plain read of an actively modulated key answers with the BASE —
          * the plugin holds the effective value the overlay keeps writing into
          * it, which is not what the user set (#276). */
+        { int r = chain_scene_edit_read(inst, "synth", subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, "synth", subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
 
@@ -2077,6 +2083,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (mod_result >= 0) return mod_result;
         int eff_result = chain_mod_get_effective_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (eff_result >= 0) return eff_result;
+        { int r = chain_scene_edit_read(inst, fx_id, subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, fx_id, subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
 
@@ -2157,6 +2164,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (mod_result >= 0) return mod_result;
         int eff_result = chain_mod_get_effective_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (eff_result >= 0) return eff_result;
+        { int r = chain_scene_edit_read(inst, mfx_id, subkey, buf, buf_len); if (r >= 0) return r; }
         int plain_base = chain_mod_get_base_for_plain_key(inst, mfx_id, subkey, buf, buf_len);
         if (plain_base >= 0) return plain_base;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
@@ -2248,6 +2256,7 @@ static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
 
 static void lfo_tick(chain_instance_t *inst, int frames) {
     if (!inst) return;
+    chain_scene_tick(inst);  /* a morph replaces the base; LFOs sum on top */
     float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
 
     /*
@@ -2669,6 +2678,10 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     }
 }
 
+/* A `<comp>:state` read saves the knob, not the scene morph (chain_scene.c). */
+static int v2_get_param(void *i, const char *k, char *b, int n) {
+    return chain_scene_get_around_state((chain_instance_t *)i, k, b, n, v2_get_param_impl);
+}
 /* V2 Plugin API structure */
 static plugin_api_v2_t g_plugin_api_v2 = {
     .api_version = MOVE_PLUGIN_API_VERSION_2,
@@ -2884,7 +2897,7 @@ void chain_drain_main_send(void *instance, int16_t *const *accum, int n_sends,
         if (!accum[sd]) continue;
         /* base + the LFO's offset, clamped. main_send_level itself is never
          * written by modulation -- see main_send_mod in chain_internal.h. */
-        int amt = inst->main_send_level[sd] + inst->main_send_mod[sd];
+        int amt = inst->main_send_level[sd] + inst->main_send_mod[sd] + inst->scene_send_mod[sd];
         if (amt < 0) amt = 0;
         if (amt > BUS_MIX_SEND_LEVEL_MAX) amt = BUS_MIX_SEND_LEVEL_MAX;
         int lvl = (amt * slot_volume_0_127) / BUS_MIX_SEND_LEVEL_MAX;

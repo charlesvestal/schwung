@@ -109,6 +109,17 @@ import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_
 import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
 import { createLayoutEditor, createCCEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
 import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
+/* SCENES: the screen, and the bank as a saved document. */
+import { createScenesScreen, drawArmBadge, armBadgeText, editLabel as sceneEditLabel }
+    from '/data/UserData/schwung/shared/scenes_screen.mjs';
+import { createSceneFaderOverlay, drawSceneFaderOverlay }
+    from '/data/UserData/schwung/shared/scene_fader_overlay.mjs';
+import { SCOPES as SCENE_SCOPES, scopeKey as sceneScopeKey, buildDoc as buildSceneDoc,
+         parseDoc as parseSceneDoc, docToLoads as sceneDocToLoads,
+         expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts,
+         endsFor as sceneEndsFor, defaultPairs as sceneDefaultPairs,
+         halfA as sceneHalfA, halfB as sceneHalfB }
+    from '/data/UserData/schwung/shared/scene_doc.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -388,6 +399,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
 const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
 const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
+const SHADOW_UI_FLAG_JUMP_TO_SCENES = 0x2000;   /* Shift+Vol+Step3 */
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -533,7 +545,8 @@ const VIEWS = {
     BUS_LIST: "buslist",                     // This slot's buses, Main and New Bus
     BUS_ACTIONS: "busactions",               // One bus: voices, inserts, sends, rename, delete
     BUS_VOICES: "busvoices",                 // Multi-select over the synth's split_voices
-    BUS_CHAIN: "buschain"                    // One bus's 8-position insert chain
+    BUS_CHAIN: "buschain",                   // One bus's 8-position insert chain
+    SCENES: "scenes"                         // Scene crossfader: A, B, fader, arm
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -4836,6 +4849,8 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "surface_layout", label: "Surface Layout", type: "action" },
     /* Any controller's CCs bound to parameters, per set (cc_map.mjs). */
     { key: "cc_map", label: "CC Map", type: "action" },
+    /* The Scenes screen (Shift+Vol+Step3 is the shortcut). */
+    { key: "scenes", label: "Scenes", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -7923,6 +7938,13 @@ function getModuleAbbrev(moduleId) {
 
 /* Param API helper functions */
 function getSlotParam(slot, key) {
+    /* The scene fader is a byte in shared memory, not a module parameter: the
+     * CC Map and any surface address it as the master setting "scenes:xfade"
+     * and it is served here with no IPC at all. */
+    if (key === "scenes:xfade") {        /* literal: this runs before SCENE_XFADE_KEY is initialised */
+        const st = sceneState();
+        return st ? String(st.xfade) : null;
+    }
     if (typeof shadow_get_param !== "function") return null;
     try {
         return shadow_get_param(slot, key);
@@ -7950,6 +7972,7 @@ function shadowSetParamBlocking(slot, key, value) {
 }
 
 function setSlotParam(slot, key, value) {
+    if (key === "scenes:xfade") return sceneSetXfade(Number(value));   /* SCENE_XFADE_KEY; literal for the TDZ */
     if (typeof shadow_set_param !== "function") return false;
     try {
         const ok = shadow_set_param(slot, key, String(value));
@@ -11274,6 +11297,46 @@ function setRecallQuantize(v) {
     }
 }
 
+/*
+ * Shift + volume knob = the scene fader (Global Settings -> Shortcuts ->
+ * Scene Fader, default on). The shim does the work -- it has to, since it
+ * works over Move's own screen too -- this only holds the setting.
+ */
+let sceneShiftVol = true;
+function setSceneShiftVol(on) {
+    sceneShiftVol = !!on;
+    if (typeof shadow_scene_shift_vol_set === "function") shadow_scene_shift_vol_set(sceneShiftVol ? 1 : 0);
+}
+/*
+ * Program Change on this channel (0 = off, 1..16; default 16) selects scene
+ * 1..16 -- applied by the shim on the frame it arrives, adopted here from
+ * scene_pc_seq (scenesAdoptPc).
+ */
+let scenePcChannel = 16;
+function setScenePcChannel(ch) {
+    ch = Number.isInteger(ch) && ch >= 0 && ch <= 16 ? ch : 16;
+    scenePcChannel = ch;
+    if (typeof shadow_scene_pc_channel_set === "function") shadow_scene_pc_channel_set(ch);
+}
+function loadScenePcChannel() {
+    let ch = 16;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_pc_channel"\s*:\s*(\d+)/.exec(raw) : null;
+        if (m) ch = parseInt(m[1], 10);
+    } catch (e) { debugLog("scene_pc_channel read failed: " + e); }
+    setScenePcChannel(ch);
+}
+function loadSceneShiftVol() {
+    let on = true;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_shift_vol"\s*:\s*(true|false)/.exec(raw) : null;
+        if (m) on = m[1] === "true";
+    } catch (e) { debugLog("scene_shift_vol read failed: " + e); }
+    setSceneShiftVol(on);
+}
+
 /* Restore from features.json and push the register down. Called once at
  * startup: the setting persists in the file, the register does not. */
 function loadRecallQuantize() {
@@ -11768,6 +11831,414 @@ const ccMap = createCCMap({
  * controller CC), so the TICK notices a change and asks for a frame -- the
  * draw path does not run without one.
  */
+/* ============================================================================
+ * SCENES -- Octatrack-style scene morphing.
+ *
+ * Sixteen scenes of parameter locks across the four slots, Master FX and both
+ * send buses; A and B at the ends of one crossfader. The DSP does the morph
+ * (chain_scene.c, shadow_scene_bus.c) and holds the live bank; this is the
+ * screen, the fader, the arm badge and the per-set file.
+ * Design: docs/superpowers/specs/2026-09-27-scene-morphing-design.md.
+ * ============================================================================ */
+const SCENE_XFADE_KEY = "scenes:xfade";
+const SCENE_SAVE_DEBOUNCE_MS = 1000;
+const SCENE_LOAD_RETRY_MS = 2000;
+const SCENE_FLASH_MS = 900;
+
+function sceneState() {
+    if (typeof shadow_get_scene_state !== "function") return null;
+    try { return shadow_get_scene_state(); } catch (e) { return null; }
+}
+function sceneSetXfade(x) {
+    if (typeof shadow_set_scene_xfade !== "function" || !Number.isFinite(x)) return false;
+    shadow_set_scene_xfade(Math.max(0, Math.min(1, x)));
+    needsRedraw = true;
+    return true;
+}
+function sceneScopeRead(scope, verb) {
+    const k = sceneScopeKey(scope, verb);
+    return getSlotParam(k.slot, k.key);
+}
+function sceneScopeWrite(scope, verb, value) {
+    const k = sceneScopeKey(scope, verb);
+    return !!shadowSetParamBlocking(k.slot, k.key, value);
+}
+/* Every scope's dump, or null if ANY read failed -- a snapshot missing a scope
+ * would restore as that scope's scenes deleted. */
+function sceneSnapshotAll() {
+    const out = {};
+    for (const sc of SCENE_SCOPES) {
+        const t = sceneScopeRead(sc, "dump");
+        if (t === null || t === undefined) return null;
+        out[sc.id] = t;
+    }
+    return out;
+}
+function sceneLoadAll(loads) {
+    let ok = true;
+    for (const sc of SCENE_SCOPES) {
+        const text = loads[sc.id] || "";
+        if (!sceneScopeWrite(sc, "load", text)) { ok = false; continue; }
+        /* READ BACK what was pushed -- a restore that is assumed to have
+         * landed is how lane files were deleted (restoreSlotLanes). */
+        const n = sceneScopeRead(sc, "count");
+        if (n === null || n === undefined || Number(n) !== sceneExpectedPairCount(text)) ok = false;
+    }
+    return ok;
+}
+function sceneApplyAll(verb, value) {
+    let ok = true;
+    for (const sc of SCENE_SCOPES) if (!sceneScopeWrite(sc, verb, value)) ok = false;
+    return ok;
+}
+
+/*
+ * THE LOGICAL SCENES: which of the 16 is active, and each one's PAIRING --
+ * which A snapshot and which B snapshot (or none). JS owns this (it is saved
+ * in scenes.json); the fader's two ENDS are derived from it and pushed to the
+ * shim, which is all the DSP ever sees.
+ */
+let sceneActive = -1;
+let scenePairs = sceneDefaultPairs();
+function scenePushEnds() {
+    const e = sceneEndsFor(sceneActive, scenePairs);
+    if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
+    /* ...and the whole pairing table, so the shim can apply a Program Change
+     * on the frame it arrives without asking us (scene_pc_select). */
+    if (typeof shadow_set_scene_pairs === "function") {
+        const flat = [];
+        for (const p of scenePairs) flat.push(p[0], p[1]);
+        shadow_set_scene_pairs(flat, sceneActive);
+    }
+    needsRedraw = true;
+}
+
+/* A Program Change the shim applied: adopt its scene. The ends are already
+ * pushed; this is the UI catching up -- the active step, the saved file, and
+ * the fader slider saying which scene it now is. */
+let scenePcSeqSeen = null;
+function scenesAdoptPc(st) {
+    if (!st || !Number.isInteger(st.pcSeq)) return;
+    if (scenePcSeqSeen === null) { scenePcSeqSeen = st.pcSeq; return; }
+    if (st.pcSeq === scenePcSeqSeen) return;
+    scenePcSeqSeen = st.pcSeq;
+    if (Number.isInteger(st.active) && st.active >= 0 && st.active < scenePairs.length) {
+        sceneActive = st.active;
+        sceneFaderOverlay.raise();
+        needsRedraw = true;
+    }
+}
+
+const scenesScreen = createScenesScreen({
+    state: () => sceneState(),
+    scene: () => ({ active: sceneActive, pairs: scenePairs }),
+    setActive: (k) => { sceneActive = k; scenePushEnds(); },
+    setPair: (k, p) => {
+        if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
+        scenePairs[k] = [p[0], p[1]];
+        scenePushEnds();
+    },
+    setXfade: (x) => sceneSetXfade(x),
+    setEdit: (n) => sceneSetEdit(n),
+    applyAll: (verb, value) => sceneApplyAll(verb, value),
+    /* Undo keeps the DSP bank AND the pairings. */
+    snapshot: () => {
+        const dumps = sceneSnapshotAll();
+        return dumps ? { dumps, pairs: scenePairs.map((p) => p.slice()) } : null;
+    },
+    restore: (snap) => {
+        if (!snap || !sceneLoadAll(snap.dumps)) return false;
+        scenePairs = snap.pairs.map((p) => p.slice());
+        scenePushEnds();
+        return true;
+    },
+    lockCounts: () => sumSceneLockCounts(SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "locks"))),
+    setLed: (note, color) => (typeof move_midi_internal_send === "function")
+        ? move_midi_internal_send([0x09, 0x90, note, color]) : false,
+    /* The jog is a parameter write as far as LEARN is concerned, so CC Learn
+     * captures the fader the same way it captures a knob. */
+    noteFaderMoved: (x) => { try { controlHost.observeWrite(0, SCENE_XFADE_KEY, x); } catch (e) {} },
+    learnFader: () => {
+        try {
+            if (!ccMap.learning) ccMap.beginLearn();
+            controlHost.observeWrite(0, SCENE_XFADE_KEY, (sceneState() || {}).xfade || 0);
+        } catch (e) { debugLog("scenes: fader learn failed: " + e); }
+    },
+    announce: (text) => announce(text),
+});
+
+function sceneSetEdit(n) {
+    if (typeof shadow_set_scene_edit !== "function") return;
+    shadow_set_scene_edit(n);
+    /* A read answers what a write would change, so every knob on screen is
+     * now showing the wrong one: forget what was read. */
+    try { invalidateKnobContextCache(); } catch (e) {}
+    if (n < 0 && typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(0);
+    needsRedraw = true;
+}
+
+let scenesReturnView = null;
+function enterScenes(returnView) {
+    scenesReturnView = (returnView && returnView !== VIEWS.SCENES) ? returnView : VIEWS.SLOTS;
+    setView(VIEWS.SCENES);
+    scenesScreen.enter();
+    needsRedraw = true;
+}
+function exitScenes() {
+    const back = scenesReturnView || VIEWS.SLOTS;
+    scenesReturnView = null;
+    if (back === VIEWS.GLOBAL_SETTINGS) { enterGlobalSettings(); return; }
+    if (back === VIEWS.MASTER_FX) { enterFxBus(0); return; }
+    setView(back);
+    needsRedraw = true;
+}
+
+/*
+ * Input that belongs to scenes, before any view sees it. Returns true when
+ * consumed. Two cases:
+ *   - the Scenes screen is up: it takes everything but Shift and Menu;
+ *   - a scene is ARMED: Delete (claimed, so Move never sees it -- a lone
+ *     Delete deletes the selected clip) is the unlock modifier, decided
+ *     below the UI through shadow_set_scene_unlock.
+ */
+function scenesHandleMidi(status, d1, d2) {
+    const type = status & 0xF0;
+    if (view === VIEWS.SCENES) {
+        if (type === 0xB0 && (d1 === 49 || d1 === 50)) return false;
+        if (type === 0xB0 && d1 === MoveBack) {
+            if (d2 > 0) exitScenes();
+            return true;
+        }
+        scenesScreen.onMidi(status, d1, d2, isShiftHeld());
+        return true;
+    }
+    return false;
+}
+
+/*
+ * SHIFT+- / SHIFT++ (Down / Up): edit the active scene's A / B, from any Schwung
+ * screen (the shim claims both edges while our screen is up; Move gives the
+ * combo no meaning beyond the bare arrows' octave shift).
+ *
+ *   TAP                  latch editing on (tap again: off)
+ *   HOLD + turn a knob   momentary: editing ends on release
+ *
+ * The release decides which it was: a lock made while held (the scene
+ * revision moved) or a hold past SCENE_EDIT_HOLD_MS is momentary. A press on
+ * the side already latched only ever stops it.
+ */
+const SCENE_EDIT_HOLD_MS = 500;
+const sceneEditKey = {};   /* cc -> { at, rev, wasOn } */
+function scenesHandleEditKey(status, d1, d2) {
+    if ((status & 0xF0) !== 0xB0 || (d1 !== 55 && d1 !== 54)) return false;
+    const side = d1 === 54 ? "a" : "b";   /* Shift+- = A, Shift++ = B */
+    if (d2 > 0) {
+        if (!isShiftHeld()) return false;          /* a bare arrow is not ours */
+        const st = sceneState() || { edit: -1, rev: 0 };
+        const k = sceneActive >= 0 ? sceneActive : 0;
+        const snap = scenePairs[k][side === "a" ? 0 : 1];
+        const half = snap < 0 ? -2 : (side === "a" ? sceneHalfA(snap) : sceneHalfB(snap));
+        const wasOn = st.edit === half;
+        if (!wasOn) scenesScreen.toggleEdit(side);
+        sceneEditKey[d1] = { at: Date.now(), rev: (sceneState() || st).rev, wasOn };
+        showOverlay("Scene " + (sceneActive + 1),
+                    (wasOn ? "Tap to stop " : "Editing ") + sceneEditLabel((sceneState() || st).edit), 40);
+        return true;
+    }
+    const p = sceneEditKey[d1];
+    if (!p) return false;                          /* a release we did not see go down */
+    delete sceneEditKey[d1];
+    const st = sceneState() || { edit: -1, rev: p.rev };
+    const locked = st.rev !== p.rev;
+    const momentary = locked || Date.now() - p.at >= SCENE_EDIT_HOLD_MS;
+    if (p.wasOn ? !locked : momentary) {
+        if (st.edit >= 0) scenesScreen.toggleEdit(side);
+        showOverlay("Scene " + (sceneActive + 1), "Done editing", 30);
+    }
+    return true;
+}
+
+/* Delete with a scene armed, anywhere but the Scenes screen. FIRST in the
+ * input path: the knob grid's own early-out would otherwise take Delete for
+ * its copy/clear gesture. */
+function scenesHandleArmedDelete(status, d1, d2) {
+    if (view === VIEWS.SCENES || (status & 0xF0) !== 0xB0 || d1 !== 119) return false;
+    const st = sceneState();
+    if (!st || st.edit < 0) {
+        /* A release owed from a press made while armed still clears the flag. */
+        if (d2 === 0 && typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(0);
+        return false;
+    }
+    if (typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(d2 > 0 ? 1 : 0);
+    if (d2 > 0) announce("Turn a knob to remove it from scene " + (st.edit + 1));
+    return true;
+}
+
+/* The buttons scenes need withheld from Move, as a claim list. */
+function sceneClaimedCcs() {
+    const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    if (!onScreen) return [];
+    if (view === VIEWS.SCENES) return scenesScreen.claimedCcs();
+    const st = sceneState();
+    return (st && st.edit >= 0) ? [119] : [];
+}
+
+/* ---- the fader overlay: the A-B slider that rises over the footer when the
+ * fader moves anywhere but the Scenes screen (scene_fader_overlay.mjs). ---- */
+const sceneFaderOverlay = createSceneFaderOverlay({ now: () => Date.now() });
+function sceneFaderLabel() {
+    const p = (sceneActive >= 0 && scenePairs[sceneActive]) || [-1, -1];
+    return { a: p[0] >= 0 ? "A" + (p[0] + 1) : "A-", b: p[1] >= 0 ? "B" + (p[1] + 1) : "B-" };
+}
+/* Once per tick, before the redraw gate: a move must be seen on Move's own
+ * screen too, where nothing else asks for a redraw. */
+function sceneFaderObserve() {
+    const st = sceneState();
+    if (!st) return;
+    sceneFaderOverlay.observe(st.xfade, sceneFaderLabel(),
+                              view === VIEWS.SCENES && !shadowDisplayHidden());
+}
+const sceneFaderCtx = () => ({ fillRect: fill_rect, print, textWidth: text_width });
+/* The shadow UI is the screen: paint over the view just drawn. */
+function drawSceneFaderOnTop() {
+    if (shadowDisplayHidden()) return;
+    drawSceneFaderOverlay(sceneFaderCtx(), sceneFaderOverlay.frame());
+}
+
+/* ---- the badge ---- */
+let sceneFlashText = "", sceneFlashUntil = 0;
+function drawSceneBadge() {
+    if (shadowDisplayHidden()) return;
+    const st = sceneState();
+    if (!st) return;
+    const now = Date.now();
+    if (st.flash) {
+        sceneFlashText = armBadgeText(-1, st.flash);
+        sceneFlashUntil = now + SCENE_FLASH_MS;
+        if (typeof shadow_clear_scene_flash === "function") shadow_clear_scene_flash();
+        announce(st.flash === 1 ? "Scene full" : "Can't lock that");
+    }
+    const text = now < sceneFlashUntil ? sceneFlashText : armBadgeText(st.edit, 0);
+    if (!text || view === VIEWS.SCENES && now >= sceneFlashUntil) return;
+    drawArmBadge({ fillRect: fill_rect, print, textWidth: text_width }, text);
+}
+
+/* ---- persistence: <set dir>/scenes.json ----
+ *
+ * THE DSP HOLDS THE BANK; this file is its copy. Three rules, each the lesson
+ * of a lost automation file:
+ *   - nothing is written for a set until its bank is CONFIRMED loaded (read
+ *     back scope by scope), so a save can never race the restore;
+ *   - a save needs EVERY scope's answer, or it does not happen;
+ *   - a file this build cannot read (a later version) is left alone, and so
+ *     is the set: no save will overwrite it this session.
+ */
+let sceneLoadConfirmed = false;
+let sceneLoadRefused = false;
+let sceneLoadDir = null;
+let sceneLoadNextTry = 0;
+let sceneSavedKey = null;
+let sceneDirtyAt = 0;
+
+function sceneFilePath(dir) { return dir + "/scenes.json"; }
+
+function scenesSaveTo(dir) {
+    if (!dir || !sceneLoadConfirmed || sceneLoadRefused || dir !== sceneLoadDir) return false;
+    const st = sceneState();
+    if (!st) return false;
+    const dumps = sceneSnapshotAll();
+    if (!dumps) return false;
+    const doc = buildSceneDoc({ active: sceneActive, pairs: scenePairs, dumps });
+    if (!doc) return false;
+    host_write_file(sceneFilePath(dir), JSON.stringify(doc) + "\n");
+    sceneSavedKey = sceneSaveKey(st);
+    return true;
+}
+/* What a save must follow: the bank (rev), the active scene, the on/offs. */
+function sceneSaveKey(st) {
+    return st.rev + "|" + sceneActive + "|" + JSON.stringify(scenePairs);
+}
+
+/*
+ * Bring a set's bank into the DSP. `adoptLive` is for a shadow_ui RESTART
+ * (overtake exit, a crash): the shim kept running and still holds the bank,
+ * possibly with edits newer than the file, so a non-empty live bank is kept
+ * and the file is brought up to date from it rather than the other way round.
+ */
+function scenesLoadFrom(dir, adoptLive) {
+    sceneLoadDir = dir;
+    sceneLoadConfirmed = false;
+    sceneLoadRefused = false;
+    sceneSetEdit(-1);
+    const path = sceneFilePath(dir);
+    const raw = host_file_exists(path) ? host_read_file(path) : "";
+    let doc = { v: 3, active: -1, pairs: sceneDefaultPairs(), halves: [] };
+    if (raw) {
+        doc = parseSceneDoc(raw);
+        if (!doc) {
+            sceneLoadRefused = true;
+            debugLog("scenes: " + path + " is not a bank this build reads -- left alone");
+            return false;
+        }
+    }
+    /* The active scene and the on/offs are JS state: from the file either way. */
+    sceneActive = doc.active;
+    scenePairs = doc.pairs;
+    if (adoptLive) {
+        const counts = SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "count"));
+        if (counts.every((c) => c !== null && c !== undefined) && counts.some((c) => Number(c) > 0)) {
+            sceneLoadConfirmed = true;
+            sceneSavedKey = null;          /* save it soon */
+            scenePushEnds();
+            debugLog("scenes: adopted the live bank (" + counts.join(",") + ")");
+            return true;
+        }
+    }
+    if (typeof shadow_set_scene_xfade === "function") shadow_set_scene_xfade(0);
+    if (!sceneLoadAll(sceneDocToLoads(doc))) {
+        sceneLoadNextTry = Date.now() + SCENE_LOAD_RETRY_MS;
+        debugLog("scenes: load into the DSP not confirmed -- will retry");
+        return false;
+    }
+    scenePushEnds();
+    const st = sceneState();
+    sceneSavedKey = st ? sceneSaveKey(st) : null;
+    if (doc.legacy) sceneSavedKey = null;   /* rewrite a v1 file in the new shape */
+    sceneLoadConfirmed = true;
+    debugLog("scenes: loaded " + doc.halves.length + " scene side(s) from " + path);
+    return true;
+}
+
+function scenesTick() {
+    /* An overtake module owns the surface: an armed scene would turn its knob
+     * writes into locks nobody can see. Disarmed by INVARIANT, not from the
+     * four places that enter overtake -- an exit list is how a flag strands. */
+    if (view === VIEWS.OVERTAKE_MODULE) {
+        const st = sceneState();
+        if (st && st.edit >= 0) sceneSetEdit(-1);
+    }
+    if (view === VIEWS.SCENES && scenesScreen.tick()) needsRedraw = true;
+    if (view === VIEWS.SCENES && scenesScreen.learnPending && !ccMap.learning) {
+        scenesScreen.clearLearnPending();
+        needsRedraw = true;
+    }
+    scenesAdoptPc(sceneState());
+    const now = Date.now();
+    if (!sceneLoadConfirmed) {
+        if (!sceneLoadRefused && sceneLoadDir && now >= sceneLoadNextTry) scenesLoadFrom(sceneLoadDir, false);
+        return;
+    }
+    const st = sceneState();
+    if (!st) return;
+    const key = sceneSaveKey(st);
+    if (key === sceneSavedKey) { sceneDirtyAt = 0; return; }
+    if (!sceneDirtyAt) sceneDirtyAt = now;
+    if (now - sceneDirtyAt >= SCENE_SAVE_DEBOUNCE_MS) {
+        if (scenesSaveTo(activeSlotStateDir)) sceneDirtyAt = 0;
+        else sceneDirtyAt = now;     /* a failed read: try again, never write a partial bank */
+    }
+}
+
 let ccLearnFooterShown = null;
 function drawCcLearnFooter() {
     const text = ccLearnFooterShown;
@@ -12643,6 +13114,11 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "scenes") {
+        if (paramPagesActive()) exitParamPages();
+        enterScenes(VIEWS.MASTER_FX);
+        return;
+    }
     if (key === "surface_layout" || key === "cc_map") {
         /* From the grid this runs from the menu INTENT, after the controller
          * has finished with its input, so leaving the grid here is safe. */
@@ -16190,6 +16666,10 @@ function globalGridIoFor() {
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "recall_quantize":
                 return String(recallQuantizeValue);
+            case "scene_shift_vol":
+                return bit(sceneShiftVol);
+            case "scene_pc_channel":
+                return String(scenePcChannel);
             case "metronome_mode":
                 return String(metronomeMode);
             case "metronome_level":
@@ -16328,6 +16808,12 @@ function globalGridIoFor() {
             case "recall_quantize":
                 setRecallQuantize(parseInt(value, 10) || 0);
                 break;
+            case "scene_shift_vol":
+                setSceneShiftVol(on);
+                return;
+            case "scene_pc_channel":
+                setScenePcChannel(parseInt(value, 10));
+                return;
             case "metronome_mode":
                 setMetronome(parseInt(value, 10) || 0, metronomeLevel);
                 return;
@@ -21171,7 +21657,10 @@ function reconcileStepObserve() {
      * looking at. */
     const onScreen = typeof shadow_get_display_mode !== "function" ||
                      shadow_get_display_mode() === 1;
-    const want = (hostGrid || !!moduleGrid) && onScreen;
+    /* The Scenes screen picks scenes with the steps (the shim consumes them
+     * outright while scene_surface says so -- no tap replays to Move). */
+    const scenesUp = view === VIEWS.SCENES;
+    const want = (hostGrid || !!moduleGrid || scenesUp) && onScreen;
     host_step_observe(want ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;
@@ -21181,11 +21670,29 @@ function reconcileStepObserve() {
 
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
+    /* The Scenes screen takes the pads while it is ON SCREEN -- presses and
+     * LEDs both -- and gives them back the moment it is not. Restated every
+     * tick for the same reason as the rest of this function: the shim drops
+     * the flags on its own when the display closes. */
+    const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    const scenesOwnPads = view === VIEWS.SCENES && onScreen;
+    /* 1 = pads, 2 = steps (SCENE_SURF_*): the Scenes screen takes both. */
+    if (typeof host_scene_surface === "function") host_scene_surface(scenesOwnPads ? 3 : 0);
+    if (scenesOwnPads !== scenesPadsOwned) {
+        scenesPadsOwned = scenesOwnPads;
+        /* Regained: Move's colours were put back while we did not own them. */
+        if (scenesOwnPads) scenesScreen.paintLeds(true);
+    }
+    if (scenesOwnPads) {
+        if (typeof host_pad_block === "function") host_pad_block(1);
+        return;
+    }
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
                            loadedModuleUi && loadedModuleUi.tick &&
                            !coRunUiActive();
     if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
 }
+let scenesPadsOwned = false;
 
 /* The shim's copy of "is a surface attached" is RESTATED, never memoised.
  *
@@ -21276,9 +21783,13 @@ function reconcileCcClaim() {
      */
     const displayOn = (typeof shadow_get_display_mode === "function")
         ? shadow_get_display_mode() : 1;
+    /* Scenes claim buttons of their own (the Scenes screen's Copy / Delete /
+     * Undo, Delete while a scene is armed), so their state is in the key too. */
+    const sceneCcs = sceneClaimedCcs();
+    const sceneTag = "|scn:" + sceneCcs.join(",");
     const key = onScreen
-        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn)
-        : "";
+        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn + sceneTag)
+        : sceneTag;
     if (key === ccClaimKey) return;
     /* THE READ COMES FIRST, AND null IS NOT AN ANSWER.
      *
@@ -21305,7 +21816,10 @@ function reconcileCcClaim() {
         moduleId = raw;
     }
     ccClaimKey = key;
-    const claim = onScreen ? moduleClaimedCcs(moduleId) : "";
+    const moduleClaim = onScreen ? moduleClaimedCcs(moduleId) : "";
+    const merged = new Set(moduleClaim ? moduleClaim.split(",").map(Number) : []);
+    for (const cc of sceneCcs) merged.add(cc);
+    const claim = [...merged].sort((x, y) => x - y).join(",");
     if (claim === ccClaimed) return;
     ccClaimed = claim;
     host_claim_ccs(claim ? claim.split(",").map(Number) : []);
@@ -24450,6 +24964,9 @@ function handleBack() {
         case VIEWS.EC4_SETUP:
             exitEc4Setup();
             break;
+        case VIEWS.SCENES:
+            exitScenes();
+            break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 showingNamePreview = false;
@@ -26878,7 +27395,12 @@ globalThis.init = function() {
      * empty directory and do nothing — silently, which is the failure mode
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
+    /* Scenes: adopt a bank the shim already holds (this is a shadow_ui
+     * restart), else load the set's file. */
+    try { scenesLoadFrom(activeSlotStateDir, true); } catch (e) { debugLog("scenes load failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadSceneShiftVol(); } catch (e) { debugLog("scene_shift_vol load failed: " + e); }
+    try { loadScenePcChannel(); } catch (e) { debugLog("scene_pc_channel load failed: " + e); }
     try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
     try { loadSpeakerEq(); } catch (e) { debugLog("speaker_eq load failed: " + e); }
@@ -27070,6 +27592,7 @@ globalThis.tick = function() {
     e16BlastTick();
     e16NoiseTick();
     reconcileStepObserve();
+    try { scenesTick(); } catch (e) { debugLog("scenes tick: " + e); }
     /* WHERE THE UI IS, once a second, when the debug log is armed.
      *
      * Every other instrument in this session could see Move (its screen, its
@@ -27388,6 +27911,12 @@ globalThis.tick = function() {
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_TOOLS | SHADOW_UI_FLAG_JUMP_TO_SLOT);
                 }
+            } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SCENES) {
+                debugLog("SCENES flag detected, entering Scenes");
+                enterScenes(view === VIEWS.SCENES ? scenesReturnView : view);
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SCENES | SHADOW_UI_FLAG_JUMP_TO_SLOT);
+                }
             } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
                 debugLog("SETTINGS flag detected, entering Global Settings");
                 enterGlobalSettings();
@@ -27468,6 +27997,7 @@ globalThis.tick = function() {
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) {}
             saveMasterFxChainConfig();
             saveChainConfigToDir(activeSlotStateDir);
             if (typeof shadow_clear_ui_flags === "function") {
@@ -27652,6 +28182,9 @@ globalThis.tick = function() {
                 }
             }
 
+            /* 4b. The outgoing set's scenes, while the DSP still holds them. */
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
+
             /* 5. Switch directory and load chain config (volumes/channels/mute/solo) */
             const oldDir = activeSlotStateDir;
             activeSlotStateDir = newDir;
@@ -27830,6 +28363,10 @@ globalThis.tick = function() {
              * chance to overwrite them with anything the user has since
              * touched. */
             snapshotSeed(true);
+
+            /* 8c. This set's scenes. Never ADOPTED here: the live bank is the
+             * previous set's. */
+            try { scenesLoadFrom(activeSlotStateDir, false); } catch (e) { debugLog("scenes load failed: " + e); }
 
             /* 9. Show overlay notification (~2 seconds) */
             if (setName) {
@@ -28285,7 +28822,8 @@ globalThis.tick = function() {
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
-    if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+    sceneFaderObserve();
+    if (!needsRedraw && !overlayActive && !snapshotToastActive() && !sceneFaderOverlay.busy() &&
         !snapshotQueuedPending &&
         (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
@@ -28362,6 +28900,21 @@ globalThis.tick = function() {
             shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
+    }
+
+    /* The scene fader over MOVE's screen: drawn on the scratch surface and
+     * blitted in as a rect, like the toasts above. The rect follows the slide,
+     * so Move's picture is uncovered row by row on the way out. */
+    if (shadowDisplayHidden() && sceneFaderOverlay.busy()) {
+        const fr = sceneFaderOverlay.frame();
+        if (fr) {
+            clear_screen();
+            const r = drawSceneFaderOverlay(sceneFaderCtx(), fr);
+            if (r && typeof shadow_set_display_overlay === "function") {
+                shadow_set_display_overlay(1, r.x, r.y, r.w, r.h);
+            }
+            if (r) return;
+        }
     }
 
     /* No overlay active - clear overlay display mode */
@@ -28554,6 +29107,11 @@ globalThis.tick = function() {
             break;
         case VIEWS.EC4_SETUP:
             drawEc4Setup();
+            break;
+        case VIEWS.SCENES:
+            clear_screen();
+            scenesScreen.draw({ fillRect: fill_rect, print, textWidth: text_width,
+                                drawHeader, drawFooter });
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();
@@ -28763,6 +29321,9 @@ globalThis.tick = function() {
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
         drawCcLearnFooter();
+        drawSceneBadge();
+        /* Over the footer, under nothing: it is what the hand is doing now. */
+        drawSceneFaderOnTop();
         /* ...and the p-lock mark, which outlives neither: it is its own
          * 600 ms and belongs on top of both, since it reports something that
          * happened just now. */
@@ -28814,6 +29375,8 @@ globalThis.onMidiMessageInternal = function(data) {
      * keyboard without calling setView, so `view` is still PARAM_PAGES — the
      * jog paged the grid drawn UNDERNEATH the keyboard while pad typing kept
      * working, because decodeInput claims CC 14 but returns null for pads. */
+    if (scenesHandleArmedDelete(status, d1, d2)) { needsRedraw = true; return; }
+    if (scenesHandleEditKey(status, d1, d2)) { needsRedraw = true; return; }
     if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
         if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
@@ -28888,6 +29451,9 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
     }
+
+    /* SCENES: the Scenes screen, and Delete while a scene is armed. */
+    if (scenesHandleMidi(status, d1, d2)) { needsRedraw = true; return; }
 
     /* In co-run the outer view is OVERTAKE_MODULE; the canvas is the active
      * co-run overlay when coRunView === CANVAS. Steal jog-click/Back to close it

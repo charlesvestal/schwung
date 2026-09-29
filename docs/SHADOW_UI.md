@@ -1670,6 +1670,96 @@ Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
 
+### Scenes: sixteen banks of locks and one crossfader, morphed in the DSP
+
+Octatrack-style. A **scene** is a set of parameter LOCKS across the four slots,
+Master FX and both send buses; two scenes sit at the ends of one crossfader (A
+and B) and every parameter locked in either end morphs between them. Design:
+`docs/superpowers/specs/2026-09-27-scene-morphing-design.md`.
+
+```
+va = A locks it ? A.value : base        float  lerp(va, vb, x)
+vb = B locks it ? B.value : base        int    round(lerp)
+                                         enum   x < 0.5 ? va : vb
+```
+
+A parameter locked in NEITHER end gets no contribution at all -- nothing is
+pinned -- and `base` is the knob, read LIVE, so turning a knob mid-morph moves
+the unlocked end. The formula lives once, in `src/host/scene_morph.h`, and both
+consumers include it.
+
+**The DSP holds the bank and does the morph; the UI moves one number.** Slots
+morph inside their chain host (`chain_scene.c`, a MORPH contribution in
+`chain_mod` that stores the two ENDS and resolves them against the base at
+recompute time); Master FX and the sends morph in the shim
+(`shadow_scene_bus.c`, which drives the plugin's own `set_param` and tracks the
+base like the Master FX LFO does). The fader, A, B and the armed scene are
+bytes in `shadow_control_t`; the shim slews the fader (~15 ms one-pole) and
+pushes all four to every slot each frame through the dlsym'd
+`chain_set_scene_morph`. A JS morph was ruled out on the numbers: a param write
+is ~2.8 ms, so twenty locked parameters would make one jog detent take 56 ms.
+
+**Locks are made by an ARM, decided below the UI.** While scene N is armed
+(`scene_edit`), a write to a component's own `chain_params` key becomes a lock
+in N instead of a base change -- in the chain host for slots, in the shim's
+Master FX / send routes for the buses. Below the UI because a module that draws
+its own screen (9W9) brings its own io and never passes through the host's
+write wrapper; a UI-side hook would work on the host grid and silently do
+nothing there. Identity, state, bypass, presets and every suffixed view are
+never locked (`scene_edit_subkey_eligible`), so a preset load while armed
+behaves normally. Armed, the scene auditions at 100% and **a read answers what
+a write would change** -- the lock. **Delete held while armed** turns the same
+write into an UNLOCK (`scene_unlock`, `SCENE_EDIT_UNLOCK`), again below the UI;
+Delete is CLAIMED while a scene is armed, because a lone Delete reaching Move
+deletes the selected clip. A write the arm cannot take goes to the BASE -- a
+knob never goes dead -- and the badge flashes `FULL` (64-pair budget) or `N/A`.
+
+**The SCN badge is drawn over every screen while armed**, after the view
+switch, so it lands on a module-drawn frame too: a latched mode with no sign of
+itself records into a scene without the user knowing.
+
+**A `<comp>:state` read saves the KNOB, not the morph.** Every save path (the
+slot autosave, User Presets, the snapshot, Master FX state) reads the opaque
+state blob, and a module writes into it whatever it holds NOW -- under a scene,
+the morphed value. Measured on hardware before the fix: a reboot brought
+`hank.bright` back at the fader's position instead of the knob's. So around
+that one read the base goes into the module and the morph is re-applied after
+it (`chain_scene_get_around_state`, `shadow_scene_bus_state_begin/end`); same
+call, same thread, no audio block between. Scene-driven params only.
+
+**The Scenes screen** (Shift+Vol+Step 3, Shift+hold Step 3, or Master FX
+Settings > Scenes; `shared/scenes_screen.mjs`) **picks scenes on the PADS**:
+the top two rows are A 1-16, the bottom two B 1-16, and the OLED draws the same
+4x8 grid. Tap to select (the selected one again: none), HOLD to arm, Copy+two
+pads copies, Delete+pad clears, Undo swaps back; jog / knob 8 is the fader.
+**The steps stay Move's, Shift+steps included** -- a first cut picked scenes
+with the steps, which took Move's sequencer and its Shift+step pages away while
+the screen was up, and that is not a trade anyone wanted. The pads are only
+taken while the screen is ON SCREEN: `pad_block` withholds the presses and
+`scene_pads` strips Move's own pad LED repaints (note and RGB sysex) from
+MIDI_OUT, restoring Move's cached colours on release; both are restated every
+tick, and a regained ownership forces a full repaint.
+
+**Persistence: `<set>/scenes.json`, and three rules from the lane-file loss.**
+Nothing is written for a set until its bank is CONFIRMED loaded (every scope's
+`scenes:count` read back); a save needs EVERY scope's dump or it does not
+happen; a file this build cannot read is left alone and the set is never saved
+over. A shadow_ui RESTART adopts a non-empty live bank instead of reloading the
+file, because the shim kept running and may hold edits newer than the file
+(measured: an edit made 0 ms before a kill survived and was saved by the new
+process). The fader is live-only and starts at A; A and B are saved.
+
+**The fader is a CC Map target** (`scenes:xfade`, a master setting served by the
+host's param io without IPC). Shift+Click on the Scenes screen starts CC learn
+with the fader already chosen. The binding is PER SET, like every other CC Map
+binding -- the brainstorm asked for global, and the existing per-set CC Map was
+found afterwards.
+
+Limits: 64 locked pairs per scope, counted across all 16 scenes; a swapped
+module's locks go DORMANT (kept, not applied); a send-bus reorder does not
+re-aim bus locks (their module check keeps them from applying to the wrong
+module); an LFO and a scene on the same Master FX param fight.
+
 ### `Clear Lanes`, and the one read a refusal is allowed to cost
 
 Automation lanes (`docs/CHAIN.md`) are recorded by turning a knob while Move's

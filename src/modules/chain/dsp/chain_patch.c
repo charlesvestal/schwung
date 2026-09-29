@@ -1745,6 +1745,10 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
             inst->lfos[i].phase = 0.0;
         }
     }
+    /* A scene driving an LFO field held the OLD patch's value as its base;
+     * drop the drives so they re-engage against what was just loaded. */
+    memset(inst->scene_lfo_drive, 0, sizeof(inst->scene_lfo_drive));
+    inst->scene_dirty = 1;
 
     /*
      * Buses LAST, because a voice id resolves against the module that is
