@@ -110,12 +110,13 @@ import { createControlHost } from '/data/UserData/schwung/shared/control_host.mj
 import { createLayoutEditor, createCCEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
 import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
 /* SCENES: the screen, and the bank as a saved document. */
-import { createScenesScreen, drawArmBadge, armBadgeText }
+import { createScenesScreen, drawArmBadge, armBadgeText, editLabel as sceneEditLabel }
     from '/data/UserData/schwung/shared/scenes_screen.mjs';
 import { SCOPES as SCENE_SCOPES, scopeKey as sceneScopeKey, buildDoc as buildSceneDoc,
          parseDoc as parseSceneDoc, docToLoads as sceneDocToLoads,
          expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts,
-         endsFor as sceneEndsFor, defaultEnables as sceneDefaultEnables }
+         endsFor as sceneEndsFor, defaultPairs as sceneDefaultPairs,
+         halfA as sceneHalfA, halfB as sceneHalfB }
     from '/data/UserData/schwung/shared/scene_doc.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
@@ -11870,34 +11871,42 @@ function sceneApplyAll(verb, value) {
 }
 
 /*
- * THE LOGICAL SCENE: which of the 16 is active, and whether each side is on.
- * JS owns this (it is saved in scenes.json); the fader's two ENDS are derived
- * from it -- scene k's A is half 2k, its B half 2k+1, and a side that is off is
- * "none" -- and pushed to the shim, which is all the DSP ever sees.
+ * THE LOGICAL SCENES: which of the 16 is active, and each one's PAIRING --
+ * which A snapshot and which B snapshot (or none). JS owns this (it is saved
+ * in scenes.json); the fader's two ENDS are derived from it and pushed to the
+ * shim, which is all the DSP ever sees.
  */
 let sceneActive = -1;
-let sceneEnables = sceneDefaultEnables();
+let scenePairs = sceneDefaultPairs();
 function scenePushEnds() {
-    const e = sceneEndsFor(sceneActive, sceneEnables);
+    const e = sceneEndsFor(sceneActive, scenePairs);
     if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
     needsRedraw = true;
 }
 
 const scenesScreen = createScenesScreen({
     state: () => sceneState(),
-    scene: () => ({ active: sceneActive, enables: sceneEnables }),
+    scene: () => ({ active: sceneActive, pairs: scenePairs }),
     setActive: (k) => { sceneActive = k; scenePushEnds(); },
-    setEnable: (k, side, on) => {
-        if (k < 0 || k >= sceneEnables.length) return;
-        sceneEnables[k][side === "a" ? 0 : 1] = !!on;
+    setPair: (k, p) => {
+        if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
+        scenePairs[k] = [p[0], p[1]];
         scenePushEnds();
     },
-    copyEnables: (src, dst) => { sceneEnables[dst] = sceneEnables[src].slice(); scenePushEnds(); },
     setXfade: (x) => sceneSetXfade(x),
     setEdit: (n) => sceneSetEdit(n),
     applyAll: (verb, value) => sceneApplyAll(verb, value),
-    snapshot: () => sceneSnapshotAll(),
-    restore: (snap) => sceneLoadAll(snap),
+    /* Undo keeps the DSP bank AND the pairings. */
+    snapshot: () => {
+        const dumps = sceneSnapshotAll();
+        return dumps ? { dumps, pairs: scenePairs.map((p) => p.slice()) } : null;
+    },
+    restore: (snap) => {
+        if (!snap || !sceneLoadAll(snap.dumps)) return false;
+        scenePairs = snap.pairs.map((p) => p.slice());
+        scenePushEnds();
+        return true;
+    },
     lockCounts: () => sumSceneLockCounts(SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "locks"))),
     setLed: (note, color) => (typeof move_midi_internal_send === "function")
         ? move_midi_internal_send([0x09, 0x90, note, color]) : false,
@@ -11982,12 +11991,13 @@ function scenesHandleEditKey(status, d1, d2) {
         if (!isShiftHeld()) return false;          /* a bare arrow is not ours */
         const st = sceneState() || { edit: -1, rev: 0 };
         const k = sceneActive >= 0 ? sceneActive : 0;
-        const half = side === "a" ? 2 * k : 2 * k + 1;
+        const snap = scenePairs[k][side === "a" ? 0 : 1];
+        const half = snap < 0 ? -2 : (side === "a" ? sceneHalfA(snap) : sceneHalfB(snap));
         const wasOn = st.edit === half;
         if (!wasOn) scenesScreen.toggleEdit(side);
         sceneEditKey[d1] = { at: Date.now(), rev: (sceneState() || st).rev, wasOn };
-        showOverlay("Scene " + (sceneActive + 1) + " " + side.toUpperCase(),
-                    wasOn ? "Tap to stop" : "Editing", 40);
+        showOverlay("Scene " + (sceneActive + 1),
+                    (wasOn ? "Tap to stop " : "Editing ") + sceneEditLabel((sceneState() || st).edit), 40);
         return true;
     }
     const p = sceneEditKey[d1];
@@ -11998,7 +12008,7 @@ function scenesHandleEditKey(status, d1, d2) {
     const momentary = locked || Date.now() - p.at >= SCENE_EDIT_HOLD_MS;
     if (p.wasOn ? !locked : momentary) {
         if (st.edit >= 0) scenesScreen.toggleEdit(side);
-        showOverlay("Scene " + (sceneActive + 1) + " " + side.toUpperCase(), "Done", 30);
+        showOverlay("Scene " + (sceneActive + 1), "Done editing", 30);
     }
     return true;
 }
@@ -12071,7 +12081,7 @@ function scenesSaveTo(dir) {
     if (!st) return false;
     const dumps = sceneSnapshotAll();
     if (!dumps) return false;
-    const doc = buildSceneDoc({ active: sceneActive, enables: sceneEnables, dumps });
+    const doc = buildSceneDoc({ active: sceneActive, pairs: scenePairs, dumps });
     if (!doc) return false;
     host_write_file(sceneFilePath(dir), JSON.stringify(doc) + "\n");
     sceneSavedKey = sceneSaveKey(st);
@@ -12079,7 +12089,7 @@ function scenesSaveTo(dir) {
 }
 /* What a save must follow: the bank (rev), the active scene, the on/offs. */
 function sceneSaveKey(st) {
-    return st.rev + "|" + sceneActive + "|" + JSON.stringify(sceneEnables);
+    return st.rev + "|" + sceneActive + "|" + JSON.stringify(scenePairs);
 }
 
 /*
@@ -12095,7 +12105,7 @@ function scenesLoadFrom(dir, adoptLive) {
     sceneSetEdit(-1);
     const path = sceneFilePath(dir);
     const raw = host_file_exists(path) ? host_read_file(path) : "";
-    let doc = { v: 2, active: -1, enables: sceneDefaultEnables(), halves: [] };
+    let doc = { v: 3, active: -1, pairs: sceneDefaultPairs(), halves: [] };
     if (raw) {
         doc = parseSceneDoc(raw);
         if (!doc) {
@@ -12106,7 +12116,7 @@ function scenesLoadFrom(dir, adoptLive) {
     }
     /* The active scene and the on/offs are JS state: from the file either way. */
     sceneActive = doc.active;
-    sceneEnables = doc.enables;
+    scenePairs = doc.pairs;
     if (adoptLive) {
         const counts = SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "count"));
         if (counts.every((c) => c !== null && c !== undefined) && counts.some((c) => Number(c) > 0)) {
