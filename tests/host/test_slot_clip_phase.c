@@ -100,8 +100,69 @@ static int call(int slot, double *ph, double *len, int *cs, int *fpv, double *fp
     return shadow_slot_clip_phase(slot, ph, len, cs, fpv, fp);
 }
 
+
+/* ------------------------------------------------------------ mix glide */
+/* A slot's volume and pan GLIDE into the mix (shadow_mix_targets once per
+ * block, shadow_mix_advance per frame). A scene morph sweeping the fader, an
+ * override released, a mute -- each was a hard gain step every 128-frame block,
+ * heard as zipper noise and clicks. Run a whole block the way the shim does
+ * and bound the largest per-frame change. */
+static float run_blocks(int slot, int blocks, float *max_step)
+{
+    for (int b = 0; b < blocks; b++) {
+        shadow_mix_targets(slot);
+        for (int f = 0; f < 128; f++) {
+            const float before = shadow_chain_slots[slot].mix_vol;
+            shadow_mix_advance(slot);
+            const float d = fabsf(shadow_chain_slots[slot].mix_vol - before);
+            if (d > *max_step) *max_step = d;
+        }
+    }
+    return shadow_chain_slots[slot].mix_vol;
+}
+
+static void test_mix_glide(void)
+{
+    shadow_chain_slot_t *s = &shadow_chain_slots[0];
+    memset(s, 0, sizeof *s);
+    s->volume = 1.0f;
+    shadow_solo_count = 0;
+    float step = 0;
+    CHECK(run_blocks(0, 1, &step) == 1.0f && step == 0.0f, "the first block SNAPS (nothing fades in from 0)");
+
+    /* A scene takes the track from 1.0 to 0.2 in one move. */
+    s->scene_volume = 0.2f; s->scene_volume_on = 1;
+    step = 0;
+    float v = run_blocks(0, 1, &step);
+    CHECK(v > 0.5f, "after ONE block (2.9 ms) it is still on its way, not stepped: %f", v);
+    v = run_blocks(0, 8, &step);
+    CHECK(fabsf(v - 0.2f) < 0.01f, "within 1%% of the target after ~26 ms: %f", v);
+    CHECK(step < 0.005f, "no per-frame jump bigger than 0.5%% (the step was 80%%): %f", step);
+
+    /* Releasing the override glides back too. */
+    s->scene_volume_on = 0; step = 0;
+    v = run_blocks(0, 9, &step);
+    CHECK(fabsf(v - 1.0f) < 0.01f && step < 0.005f, "release glides back: v=%f step=%f", v, step);
+
+    /* Mute is a short fade now, not a click. */
+    s->muted = 1; step = 0;
+    v = run_blocks(0, 9, &step);
+    CHECK(v < 0.01f && step < 0.005f, "mute fades out: v=%f step=%f", v, step);
+    s->muted = 0;
+    run_blocks(0, 20, &step);
+
+    /* Pan: hard right by scene -- the LEFT gain glides down. */
+    s->scene_pan = 1.0f; s->scene_pan_on = 1;
+    shadow_mix_targets(0);
+    CHECK(s->mix_pan_l > 0.99f, "pan has not stepped at the block start: %f", s->mix_pan_l);
+    for (int b = 0; b < 12; b++) { shadow_mix_targets(0); for (int f = 0; f < 128; f++) shadow_mix_advance(0); }
+    CHECK(s->mix_pan_l < 0.01f && s->mix_pan_r > 0.99f, "pan arrived: l=%f r=%f", s->mix_pan_l, s->mix_pan_r);
+    memset(s, 0, sizeof *s);
+}
+
 int main(void)
 {
+    test_mix_glide();
     double ph, len, fp[4];
     int cs, fpv, rc;
 
