@@ -303,7 +303,8 @@ static void shadow_dbus_handle_text(const char *text)
      */
     {
         metronome_announce_t m = metronome_announce_classify(text);
-        if (m != METRONOME_ANNOUNCE_NONE) {
+        /* The live model reads Transport.mIsMetronomeOn itself. */
+        if (m != METRONOME_ANNOUNCE_NONE && !move_model_sync_active()) {
             int now_on = (m == METRONOME_ANNOUNCE_ON);
             if (now_on != shadow_metronome_on) {
                 shadow_metronome_on = now_on;
@@ -417,7 +418,9 @@ static void shadow_dbus_handle_text(const char *text)
     /* Set detection handled by Settings.json polling (shadow_poll_current_set) */
 
     /* Check if it's a track volume message */
-    if (strncmp(text, "Track Volume ", 13) == 0) {
+    /* The live model reads each track's mixer volume itself (every change,
+     * not only while a Track button is held). */
+    if (strncmp(text, "Track Volume ", 13) == 0 && !move_model_sync_active()) {
         float volume = shadow_parse_volume_db(text);
         int held = *host.held_track;
         if (volume >= 0.0f && held >= 0 && held < SHADOW_CHAIN_INSTANCES) {

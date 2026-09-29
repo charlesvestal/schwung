@@ -70,7 +70,7 @@ typedef struct {
     uint8_t   selected;
     uint8_t   mixer_valid;
     uint8_t   muted, soloed;  /* derived: speakerOn off / solo-cue on */
-    double    volume, pan;    /* the mixer Parameters' manual values, as stored (volume 0..1) */
+    double    volume, pan;    /* the mixer Parameters' manual values, as stored (volume in dB, 0 = unity) */
     double    speaker_value, solo_value;
     int       mode;
     int       playing_slot;  /* 0..7, or -1 */
@@ -91,6 +91,13 @@ typedef struct {
     double   step_beats;      /* one step button, in beats (1/16 = 0.25); 0 = unknown */
     uint8_t  step_triplet;    /* triplet grid: 12 steps per page, every 4th button dead */
     int      selected_track; /* 0..3, or -1 */
+    /* MASTER VOLUME -- the volume knob: Song.mOutputMixerDevice's
+     * OutputMixerParameters.mVolume, in dB, -70 (the knob's bottom) .. 0.
+     * Measured 2026-09-29 by sampling while the knob was swept. Replaces
+     * reading Move's on-screen volume bar. */
+    int      master_valid;
+    double   master_db;
+    uint8_t  metronome_on;   /* Transport.mIsMetronomeOn */
     mm_track_t track[MM_TRACKS];
     /* MOVE'S UNDO STACK -- flip's History<HistoryStoreMemory>, read in place.
      * A step is its list node (nodes never move) plus its transaction number

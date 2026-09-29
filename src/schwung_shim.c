@@ -7057,6 +7057,22 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
          * slot mix flags have one writer (see move_model_sync.h). Every frame --
          * it is an empty ring check when nothing changed. */
         move_model_sync_apply_pending();
+        /* Master volume and the selected track, from the model when it is
+         * live -- exact, and current even when Move shows no overlay and a
+         * Track press never reached us. */
+        {
+            float mvm;
+            if (move_model_sync_master_volume(&mvm)) shadow_master_volume = mvm;
+            const int sel = move_model_sync_take_selected();
+            if (sel >= 0 && sel < SHADOW_CHAIN_INSTANCES && sel != shadow_selected_slot) {
+                shadow_selected_slot = sel;
+                shadow_selection_known = 1;
+                if (shadow_control) {
+                    shadow_control->selected_slot = (uint8_t)sel;
+                    shadow_control->ui_slot = (uint8_t)sel;
+                }
+            }
+        }
     }
 
 
@@ -7516,7 +7532,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                         amplitude = powf(10.0f, db / 20.0f);
                     }
 
-                    if (amplitude == 0.0f || fabsf(amplitude - shadow_master_volume) > 0.003f) {
+                    /* The model reads the knob exactly (move_model_sync); the bar
+                     * scan is the fallback for a firmware it cannot resolve. */
+                    float mv_model;
+                    if (move_model_sync_master_volume(&mv_model)) {
+                        /* stand down */
+                    } else if (amplitude == 0.0f || fabsf(amplitude - shadow_master_volume) > 0.003f) {
                         shadow_master_volume = amplitude;
                         float db_val = (amplitude > 0.0f) ? (20.0f * log10f(amplitude)) : -99.0f;
                         char msg[112];

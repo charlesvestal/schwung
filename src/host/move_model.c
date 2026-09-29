@@ -342,13 +342,14 @@ static int read_build_id(char *out, size_t cap)
 enum {
     C_SONG, C_TRANSPORT, C_PARAMETER, C_TIMESIG, C_TRACKLIST, C_TRACK, C_CLIPS,
     C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_ABSDEV,
-    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_COUNT
+    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_OUTMIX, C_COUNT
 };
 static const char *CLASS_NAMES[C_COUNT] = {
     "live.Song", "live.Transport", "live.Parameter", "live.TimeSignature", "live.TrackList",
     "live.Track", "live.Clips", "live.PlayingState", "live.ClipSlot", "live.SessionClip",
     "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent", "live.AbstractDevice",
     "live.AudioMixerParameters", "live.ClipEnvelopeList", "live.ClipEnvelope", "live.Automation",
+    "live.OutputMixerParameters",
 };
 static uint64_t g_cls[C_COUNT];
 
@@ -380,7 +381,8 @@ enum {
     O_CLIP_TIMESIG, O_CLIP_CONTENT, O_RG_START, O_RG_END, O_RG_LOOP, O_LOOP_START, O_LOOP_END,
     O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_TRACK_MIXER, O_DEV_COMPONENTS,
     O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_MC_NOTES, O_SC_ENVELOPES,
-    O_ENVLIST_ENVS, O_ENV_AUTOMATION, O_AUTO_BREAKPOINTS, O_AUTO_PARAM, O_COUNT
+    O_ENVLIST_ENVS, O_ENV_AUTOMATION, O_AUTO_BREAKPOINTS, O_AUTO_PARAM,
+    O_SONG_OUTDEV, O_OUTMIX_VOLUME, O_TR_METRO, O_COUNT
 };
 static moff_t g_off[O_COUNT] = {
     {C_SONG, "mTransport", 0}, {C_SONG, "mTracks", 0},
@@ -400,6 +402,7 @@ static moff_t g_off[O_COUNT] = {
     {C_MIXPARAMS, "mSolo", 0}, {C_MIXPARAMS, "mSpeakerOn", 0}, {C_MIDICONTENT, "mNotes", 0},
     {C_SESSIONCLIP, "mClipEnvelopes", 0}, {C_ENVLIST, "mClipEnvelopes", 0}, {C_ENVELOPE, "mAutomation", 0},
     {C_AUTOMATION, "mBreakpoints", 0}, {C_AUTOMATION, "mpParameter", 0},
+    {C_SONG, "mOutputMixerDevice", 0}, {C_OUTMIX, "mVolume", 0}, {C_TRANSPORT, "mIsMetronomeOn", 0},
 };
 
 /* flip basic-type value slots, measured: Type ends at +0x64 (a 4-byte
@@ -552,7 +555,7 @@ static int vp_is(const vpset_t *s, uint64_t vp)
     for (int k = 0; k < s->n; k++) if (s->v[k] == vp) return 1;
     return 0;
 }
-static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip, g_vp_mixparams;
+static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip, g_vp_mixparams, g_vp_outmix;
 static vpset_t g_vp_hist, g_vp_hstore, g_vp_tx;
 static uint64_t g_hist;
 static uint64_t g_song;
@@ -652,6 +655,7 @@ static int resolve_all(void)
     g_vp_sessionclip.n = rtti_vptrs("N7ableton10flip_model12FSessionClipE", g_vp_sessionclip.v, MAXVP);
     g_vp_midicontent.n = rtti_vptrs("N7ableton10flip_model16FMidiClipContentE", g_vp_midicontent.v, MAXVP);
     g_vp_mixparams.n   = rtti_vptrs("N7ableton10flip_model21FAudioMixerParametersE", g_vp_mixparams.v, MAXVP);
+    g_vp_outmix.n      = rtti_vptrs("N7ableton10flip_model22FOutputMixerParametersE", g_vp_outmix.v, MAXVP);
     /* The MIXER is mandatory too: the model owning mute/solo while it can
      * read no mixer turns every fallback off and follows nothing. */
     if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n || !g_vp_mixparams.n) {
@@ -865,8 +869,19 @@ static int snapshot(move_model_t *m)
     if (f_f64(tr + OFF(O_TR_TEMPO) + OFF(O_PARAM_VALUE), &m->tempo) ||
         f_int(tr + OFF(O_TR_TIMESIG) + OFF(O_TS_UPPER), &m->ts_upper) ||
         f_int(tr + OFF(O_TR_TIMESIG) + OFF(O_TS_LOWER), &m->ts_lower) ||
-        f_int(S + OFF(O_SONG_STEPRES), &m->step_resolution))
+        f_int(S + OFF(O_SONG_STEPRES), &m->step_resolution) ||
+        f_bool(tr + OFF(O_TR_METRO), &m->metronome_on))
         return -1;
+    if (g_vp_outmix.n) {   /* the master volume knob; optional -- its absence only loses this */
+        uint64_t oc[8];
+        int no = walk(S + OFF(O_SONG_OUTDEV) + OFF(O_DEV_COMPONENTS) + V_WORD, oc, 8);
+        if (no < 0) return -1;
+        for (int k = 0; k < no && k < 8; k++) {
+            if (!vp_is(&g_vp_outmix, guard(oc[k]))) continue;
+            if (f_f64(oc[k] + OFF(O_OUTMIX_VOLUME) + OFF(O_PARAM_VALUE), &m->master_db)) return -1;
+            m->master_valid = 1;
+        }
+    }
     if (g_clock_pinned) {
         uint64_t cm = tr + OFF(O_TR_CTRLMSG);
         int64_t pl = 0;
@@ -1163,7 +1178,8 @@ static void write_json(const move_model_t *m)
 {
     FILE *f = fopen(DIAG_JSON ".tmp", "w");
     if (!f) return;
-    fprintf(f, "{\"valid\":%d,\"doc_gen\":%u,\"clock_valid\":%d,\"playing\":%d,\"song_beats\":%.4f,\"tempo\":%.3f,"
+    fprintf(f, "{\"master_db\":%.3f,\"master_valid\":%d,\"metronome\":%d,", m->master_db, m->master_valid, m->metronome_on);
+    fprintf(f, "\"valid\":%d,\"doc_gen\":%u,\"clock_valid\":%d,\"playing\":%d,\"song_beats\":%.4f,\"tempo\":%.3f,"
                "\"ts\":[%d,%d],\"step_resolution\":%d,\"step_beats\":%.5f,\"step_triplet\":%d,\"selected_track\":%d,\"tracks\":[",
             m->valid, m->doc_gen, m->clock_valid, m->playing, m->song_beats, m->tempo, m->ts_upper, m->ts_lower,
             m->step_resolution, m->step_beats, m->step_triplet, m->selected_track);
