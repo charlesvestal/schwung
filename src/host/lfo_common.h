@@ -83,7 +83,7 @@ typedef struct {
     float beats;
 } lfo_division_t;
 
-static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
+__attribute__((unused)) static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
     { "16bar", 64.0f   },
     { "15bar", 60.0f   },
     { "14bar", 56.0f   },
@@ -115,7 +115,7 @@ static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
 
 /* Migration: old 14-entry table index -> new 27-entry table index.
  * Dotted divisions (1/4D, 1/8D) were removed; map to straight equivalent. */
-static const int lfo_division_migrate_14_to_27[14] = {
+__attribute__((unused)) static const int lfo_division_migrate_14_to_27[14] = {
     8,   /* old 0  (8bar)  -> new 8  */
     12,  /* old 1  (4bar)  -> new 12 */
     14,  /* old 2  (2bar)  -> new 14 */
@@ -142,7 +142,7 @@ static inline int lfo_migrate_division_index(int old_idx) {
     return old_idx;
 }
 
-static const char *lfo_shape_names[LFO_NUM_SHAPES] = {
+__attribute__((unused)) static const char *lfo_shape_names[LFO_NUM_SHAPES] = {
     "sine", "tri", "saw", "square", "s&h", "swishy"
 };
 
