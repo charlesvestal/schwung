@@ -774,14 +774,16 @@ typedef struct shadow_control_t {
     volatile uint16_t scene_xfade_q;
     volatile uint16_t scene_rev;
     /*
-     * THE SCENES SCREEN OWNS THE PADS' LEDS, 0 or 1. The screen picks scenes
-     * with the pads (pad_block withholds the presses); this is the LED half:
-     * while set AND the shadow display is up, Move's own pad LED writes --
-     * note and RGB sysex -- are stripped from MIDI_OUT so the scene colours
-     * are not repainted over, and on the falling edge Move's cached pad
-     * colours are put back. Restated every tick by the UI.
+     * WHAT THE SCENES SCREEN HAS TAKEN FROM MOVE, while it is on screen
+     * (SCENE_SURF_*). STEPS: the 16 scenes -- every step press is consumed
+     * (never replayed to Move as a tap) and Move's step LED repaints are
+     * stripped. PADS: the active scene's A (top half) and B (bottom half) --
+     * the presses via pad_block, the LEDs stripped here. Only while the shadow
+     * display is up; on each falling edge Move's cached colours go back.
+     * Shift+step is never taken: Move's Shift+step pages stay reachable.
+     * Restated every tick by the UI.
      */
-    volatile uint8_t scene_pads;
+    volatile uint8_t scene_surface;
     /*
      * DELETE IS HELD WITH A SCENE ARMED, 0 or 1: the next armed write REMOVES
      * that parameter from the scene instead of locking it (SCENE_EDIT_UNLOCK).
@@ -790,6 +792,13 @@ typedef struct shadow_control_t {
      * the claimed Delete's two edges.
      */
     volatile uint8_t scene_unlock;
+    /*
+     * SHIFT + VOLUME KNOB = THE SCENE FADER, 0 or 1 (Global Settings ->
+     * Shortcuts -> Scene Fader, default on). Read by the shim's always-on
+     * control scan, so it works over Move's screen too; Off hands
+     * Shift+Volume back to Move.
+     */
+    volatile uint8_t scene_shift_vol;
 } shadow_control_t;
 
 

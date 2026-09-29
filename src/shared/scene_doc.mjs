@@ -18,8 +18,31 @@
  * Design: docs/superpowers/specs/2026-09-27-scene-morphing-design.md.
  */
 
+/*
+ * A SCENE IS AN A/B PAIR. Sixteen scenes; scene k's A is stored HALF 2k and
+ * its B half 2k+1 -- the DSP only knows halves (scene_morph.h). Each side can
+ * be switched OFF, which makes that end of the fader "the knobs as they are"
+ * without deleting its locks; a side with no locks means the same thing.
+ */
 export const SCENE_COUNT = 16;
-export const DOC_VERSION = 1;
+export const HALF_COUNT = 32;
+export const DOC_VERSION = 2;
+
+export const halfA = (k) => 2 * k;
+export const halfB = (k) => 2 * k + 1;
+
+/** The halves the fader runs between for the active scene, -1 = off/none. */
+export function endsFor(active, enables) {
+    if (!Number.isInteger(active) || active < 0 || active >= SCENE_COUNT) return { a: -1, b: -1 };
+    const e = (enables && enables[active]) || [true, true];
+    return { a: e[0] ? halfA(active) : -1, b: e[1] ? halfB(active) : -1 };
+}
+
+export function defaultEnables() {
+    const out = [];
+    for (let k = 0; k < SCENE_COUNT; k++) out.push([true, true]);
+    return out;
+}
 
 export const SCOPES = [
     { id: "slot0", slot: 0, prefix: "" },
@@ -50,7 +73,7 @@ export function parseDump(text) {
         if (f.length !== 5) return null;
         const n = Number(f[0]);
         const value = Number(f[3]);
-        if (!Number.isInteger(n) || n < 0 || n >= SCENE_COUNT || !Number.isFinite(value)) return null;
+        if (!Number.isInteger(n) || n < 0 || n >= HALF_COUNT || !Number.isFinite(value)) return null;
         out.push({ n, target: f[1], param: f[2], value, module: f[4] });
     }
     return out;
@@ -63,28 +86,39 @@ export function lockLine(l) {
 
 const clampScene = (v) => (Number.isInteger(v) && v >= 0 && v < SCENE_COUNT) ? v : -1;
 
+function normEnables(e) {
+    const out = defaultEnables();
+    if (Array.isArray(e)) {
+        for (let k = 0; k < SCENE_COUNT; k++) {
+            if (Array.isArray(e[k])) out[k] = [e[k][0] !== false, e[k][1] !== false];
+        }
+    }
+    return out;
+}
+
 /**
- * The document for a set: A, B, and every scope's locks grouped by scene.
- * `dumps` maps scope id -> dump text. ANY missing or unparsable scope makes
- * the whole document null -- a save that silently dropped a scope would write
- * a bank without it, and the next load would erase that scope's scenes.
+ * The document for a set: the active scene, each side's on/off, and every
+ * scope's locks grouped by HALF. `dumps` maps scope id -> dump text. ANY
+ * missing or unparsable scope makes the whole document null -- a save that
+ * silently dropped a scope would write a bank without it, and the next load
+ * would erase that scope's scenes.
  */
-export function buildDoc({ a, b, dumps }) {
-    const scenes = [];
-    for (let n = 0; n < SCENE_COUNT; n++) scenes.push({ n, locks: [] });
+export function buildDoc({ active, enables, dumps }) {
+    const halves = [];
+    for (let n = 0; n < HALF_COUNT; n++) halves.push({ n, locks: [] });
     for (const scope of SCOPES) {
         const locks = parseDump(dumps ? dumps[scope.id] : null);
         if (!locks) return null;
         for (const l of locks) {
-            scenes[l.n].locks.push({ scope: scope.id, target: l.target, param: l.param,
-                                      module: l.module, value: l.value });
+            halves[l.n].locks.push({ scope: scope.id, target: l.target, param: l.param,
+                                     module: l.module, value: l.value });
         }
     }
     return {
         v: DOC_VERSION,
-        a: clampScene(a),
-        b: clampScene(b),
-        scenes: scenes.filter((s) => s.locks.length > 0),
+        active: clampScene(active),
+        enables: normEnables(enables),
+        halves: halves.filter((h) => h.locks.length > 0),
     };
 }
 
@@ -96,8 +130,13 @@ export function parseDoc(text) {
     if (typeof text !== "string" || !text.trim()) return null;
     let d;
     try { d = JSON.parse(text); } catch (e) { return null; }
-    if (!d || typeof d !== "object" || d.v !== DOC_VERSION || !Array.isArray(d.scenes)) return null;
-    return d;
+    if (!d || typeof d !== "object") return null;
+    /* v1 was the Octatrack-style bank (any scene on either end), which never
+     * shipped; its scenes have no A/B meaning here, so it reads as EMPTY
+     * rather than as a file to protect. */
+    if (d.v === 1) return { v: DOC_VERSION, active: -1, enables: defaultEnables(), halves: [], legacy: true };
+    if (d.v !== DOC_VERSION || !Array.isArray(d.halves)) return null;
+    return { v: DOC_VERSION, active: clampScene(d.active), enables: normEnables(d.enables), halves: d.halves };
 }
 
 /**
@@ -109,9 +148,9 @@ export function docToLoads(doc) {
     const out = {};
     for (const s of SCOPES) out[s.id] = [];
     const ids = new Set(SCOPES.map((s) => s.id));
-    for (const sc of (doc && Array.isArray(doc.scenes)) ? doc.scenes : []) {
+    for (const sc of (doc && Array.isArray(doc.halves)) ? doc.halves : []) {
         const n = Number(sc && sc.n);
-        if (!Number.isInteger(n) || n < 0 || n >= SCENE_COUNT || !Array.isArray(sc.locks)) continue;
+        if (!Number.isInteger(n) || n < 0 || n >= HALF_COUNT || !Array.isArray(sc.locks)) continue;
         for (const l of sc.locks) {
             if (!l || !ids.has(l.scope)) continue;
             if (typeof l.target !== "string" || typeof l.param !== "string" ||
@@ -136,14 +175,14 @@ export function expectedPairCount(loadText) {
     return seen.size;
 }
 
-/** Sum per-scope "n0,...,n15" answers into one per-scene count. null in -> null. */
+/** Sum per-scope "n0,...,n31" answers into one per-HALF count. null in -> null. */
 export function sumLockCounts(answers) {
-    const total = new Array(SCENE_COUNT).fill(0);
+    const total = new Array(HALF_COUNT).fill(0);
     for (const a of answers) {
         if (a === null || a === undefined) return null;
         const parts = String(a).split(",");
-        if (parts.length !== SCENE_COUNT) return null;
-        for (let i = 0; i < SCENE_COUNT; i++) total[i] += Number(parts[i]) || 0;
+        if (parts.length !== HALF_COUNT) return null;
+        for (let i = 0; i < HALF_COUNT; i++) total[i] += Number(parts[i]) || 0;
     }
     return total;
 }

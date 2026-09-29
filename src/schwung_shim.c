@@ -4580,8 +4580,9 @@ static void init_shadow_shm(void)
         shadow_control->scene_edit = SCENE_NONE;
         shadow_control->scene_flash = SCENE_FLASH_NONE;
         shadow_control->scene_xfade_q = 0;
-        shadow_control->scene_pads = 0;
+        shadow_control->scene_surface = 0;
         shadow_control->scene_unlock = 0;
+        shadow_control->scene_shift_vol = 1;   /* shadow_ui restates the setting */
     }
 
     /* Create/open UI shared memory (slot labels/state) */
@@ -8261,6 +8262,11 @@ static uint8_t step_tap_replay[16];
  * press that did nothing else, which is the case it is good at. */
 static uint8_t step_used[16];
 static uint8_t claim_press_blocked[128];
+/* The Scenes screen has the steps (scene_surface & SCENE_SURF_STEPS): every
+ * withheld press is USED, so none is replayed. A plain byte refreshed at the
+ * top of each post-transfer, so step_note_withhold stays liftable into
+ * tests/host/test_step_tap_vs_hold.sh. */
+static uint8_t step_claim_all;
 
 /* A withheld step press or release, and what it decides.
  *
@@ -8314,7 +8320,9 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
-        step_used[i] = 0;
+        /* The Scenes screen takes the steps outright: a press is USED the
+         * moment it lands, so no tap is replayed to Move. */
+        step_used[i] = step_claim_all;
         shim_step_press_seen++;
         return;
     }
@@ -8356,6 +8364,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 {
     (void)ctx;
     (void)size;
+    step_claim_all = (shadow_control && (shadow_control->scene_surface & SCENE_SURF_STEPS)) ? 1 : 0;
 
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
@@ -8944,9 +8953,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * recall, handled and swallowed in the post-ioctl
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
+                                /* Shift+Up / Shift+Down: SCENE EDIT A / B
+                                 * (tap = latch, hold + turn = momentary; the
+                                 * UI decides). Move gives Shift+Up/Down no
+                                 * meaning of its own -- measured: it is the
+                                 * same octave shift as the bare arrows -- so
+                                 * claiming it costs nothing. Only while our
+                                 * screen is up (this block), never in
+                                 * overtake; the latch carries the release. */
+                                const int scene_edit_cc =
+                                    (d1 == CC_UP || d1 == CC_DOWN) && shadow_shift_held &&
+                                    shadow_control && shadow_control->overtake_mode == 0;
                                 claim_press_blocked[d1] =
-                                    ((claim_cc_set(d1) || step_owns_edit_cc) &&
-                                     !claim_denied_cc(d1) && !shadow_shift_held)
+                                    (((claim_cc_set(d1) || step_owns_edit_cc) &&
+                                      !claim_denied_cc(d1) && !shadow_shift_held) || scene_edit_cc)
                                         ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
                             if (claim_press_blocked[d1]) filter = 1;
@@ -9832,6 +9852,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }
+                }
+
+                /* SHIFT + VOLUME KNOB = THE SCENE FADER (setting, default on).
+                 * Here, in the always-on scan, so it works whichever screen is
+                 * up. The turn is withheld from Move (both buffers), so the
+                 * master volume does not move with it. ~1/128 of the fader per
+                 * detent; the shim's slew smooths the steps. Not in overtake:
+                 * a tool owns the surface. */
+                if (d1 == CC_MASTER_KNOB && type == 0xB0 && shadow_shift_held &&
+                    shadow_control && shadow_control->scene_shift_vol &&
+                    shadow_control->overtake_mode == 0) {
+                    int delta = (d2 >= 1 && d2 <= 63) ? d2 : (d2 >= 65 && d2 <= 127) ? (int)d2 - 128 : 0;
+                    int q = (int)shadow_control->scene_xfade_q + delta * 512;
+                    if (q < 0) q = 0;
+                    if (q > 65535) q = 65535;
+                    shadow_control->scene_xfade_q = (uint16_t)q;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    continue;
                 }
 
                 /* Shift+Vol+Left/Right: set page navigation (when enabled) */

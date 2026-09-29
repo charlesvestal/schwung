@@ -31,6 +31,7 @@
  * fact wrong in two places at once. tests/host/test_scene_morph.c runs it.
  *
  * WIRE FORMAT of the verbs (set_param values, never JSON on the callback):
+ * (<n> is a HALF, 0..31 -- see SCENE_COUNT.)
  *     lock    "<n> <target> <param> <value> <module>"
  *     unlock  "<n> <target> <param>"
  *     clear   "<n>"
@@ -48,7 +49,10 @@
 #include <string.h>
 #include <math.h>
 
-#define SCENE_COUNT        16
+/* STORED HALVES, not user scenes. The UI's scene k is a PAIR -- its A is
+ * half 2k and its B half 2k+1 -- so 16 scenes are 32 halves. Everything below
+ * speaks halves; the pairing lives in the UI (scene_doc.mjs). */
+#define SCENE_COUNT        32
 #define SCENE_MAX_PAIRS    64
 #define SCENE_NONE         0xFF
 #define SCENE_TARGET_LEN   16
@@ -59,6 +63,10 @@
 #define SCENE_KIND_FLOAT   0
 #define SCENE_KIND_INT     1
 #define SCENE_KIND_ENUM    2
+
+/* shadow_control_t.scene_surface bits. */
+#define SCENE_SURF_PADS    0x01
+#define SCENE_SURF_STEPS   0x02
 
 /* Edit-arm flags, pushed with the crossfader. */
 #define SCENE_EDIT_UNLOCK  0x01   /* Delete is held: an armed write UNLOCKS */
@@ -77,7 +85,7 @@ typedef struct {
     char target[SCENE_TARGET_LEN];
     char param[SCENE_PARAM_LEN];
     char module[SCENE_MODULE_LEN];
-    uint16_t mask;                  /* bit n = scene n locks this pair */
+    uint32_t mask;                  /* bit n = half n locks this pair */
     float values[SCENE_COUNT];
 } scene_pair_t;
 
@@ -141,7 +149,7 @@ static inline int scene_lock(scene_table_t *t, int n, const char *target, const 
         memset(p->values, 0, sizeof(p->values));
         scene_copy_str(p->module, sizeof(p->module), module);
     }
-    t->pairs[i].mask |= (uint16_t)(1u << n);
+    t->pairs[i].mask |= (uint32_t)(1u << n);
     t->pairs[i].values[n] = value;
     return SCENE_OK;
 }
@@ -150,7 +158,7 @@ static inline int scene_unlock(scene_table_t *t, int n, const char *target, cons
     if (!t || !scene_valid_index(n)) return SCENE_ERR_ARGS;
     int i = scene_find(t, target, param);
     if (i < 0) return SCENE_OK;
-    t->pairs[i].mask &= (uint16_t)~(1u << n);
+    t->pairs[i].mask &= (uint32_t)~(1u << n);
     t->pairs[i].values[n] = 0.0f;
     if (t->pairs[i].mask == 0) scene_remove_pair(t, i);
     return SCENE_OK;
@@ -159,7 +167,7 @@ static inline int scene_unlock(scene_table_t *t, int n, const char *target, cons
 static inline int scene_clear(scene_table_t *t, int n) {
     if (!t || !scene_valid_index(n)) return SCENE_ERR_ARGS;
     for (int i = 0; i < t->count; i++) {
-        t->pairs[i].mask &= (uint16_t)~(1u << n);
+        t->pairs[i].mask &= (uint32_t)~(1u << n);
         t->pairs[i].values[n] = 0.0f;
     }
     scene_compact(t);
@@ -173,10 +181,10 @@ static inline int scene_copy(scene_table_t *t, int src, int dst) {
     for (int i = 0; i < t->count; i++) {
         scene_pair_t *p = &t->pairs[i];
         if (p->mask & (1u << src)) {
-            p->mask |= (uint16_t)(1u << dst);
+            p->mask |= (uint32_t)(1u << dst);
             p->values[dst] = p->values[src];
         } else {
-            p->mask &= (uint16_t)~(1u << dst);
+            p->mask &= (uint32_t)~(1u << dst);
             p->values[dst] = 0.0f;
         }
     }

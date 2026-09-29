@@ -1,74 +1,43 @@
 /*
- * scenes_screen.mjs -- the SCENES screen: pick A and B, move the crossfader,
- * arm a scene for editing, copy and clear scenes.
+ * scenes_screen.mjs -- the SCENES screen.
  *
- *   top two pad rows     scene A, 1-16 (tap the selected one again: none)
- *   bottom two pad rows  scene B, 1-16
+ * A SCENE IS AN A/B PAIR (scene_doc.mjs): the fader morphs the ACTIVE scene
+ * from its A to its B. Each side can be switched off -- that end is then "the
+ * knobs as they are" -- and a side with no locks means the same thing.
+ *
+ *   steps 1-16           pick the active scene
+ *   top half of pads     the active scene's A:  tap = on/off,  hold = EDIT A
+ *   bottom half of pads  the active scene's B:  tap = on/off,  hold = EDIT B
  *   jog / knob 8         the fader (1/64 per detent, Shift 1/256)
  *   jog click            snap the fader to the nearer end
- *   Shift+click          learn an external CC for the fader (CC Map)
- *   pad HOLD             arm that scene for editing (hold it again to disarm)
- *   Copy + 2 pads        copy a scene (source, destination; either row)
- *   Delete + pad         clear a scene
+ *   Shift+jog click      learn an external CC for the fader (CC Map)
+ *   Copy + 2 steps       copy a scene (source, destination)
+ *   Delete + step        clear a scene;  Delete + pad: clear that side
  *   Undo                 undo the last copy or clear (one level; again = redo)
  *
- * PADS, NOT STEPS. The steps and Shift+steps are Move's everywhere -- its
- * sequencer and its Shift+step pages must always be reachable -- so the
- * scenes live on the pads, and only while this screen is up (pad_block
- * withholds them from Move; scene_pads strips Move's pad LED repaints). Two
- * rows per end is the whole bank at a glance: A on top, B below, the selected
- * scene bright, a scene with locks dim, the one being edited white.
+ * EDITING IS LATCHED: it outlasts the screen, because the knobs being locked
+ * are on other screens. A tap on the side being edited (or Shift+Vol+Up/Down
+ * again, from anywhere) stops it. The side being edited plays at 100% whatever
+ * the fader says, so what you hear is what you are building.
  *
- * PURE except through `io` and the draw context, so tests/host can drive it
- * against the harness framebuffer. Everything it reads from the device (the
- * fader state, lock counts, dumps) comes through io; nothing here allocates a
- * model of the bank -- the DSP holds it (scene_doc.mjs).
+ * The steps and pads are taken ONLY while this screen is up (the host restates
+ * the claims every tick); Shift+step is never taken -- Move's Shift+step pages
+ * stay reachable.
+ *
+ * PURE except through `io` and the draw context, so tests/host drive it
+ * against the harness framebuffer.
  */
 
-import { SCENE_COUNT } from "./scene_doc.mjs";
+import { SCENE_COUNT, halfA, halfB } from "./scene_doc.mjs";
 
-export const STEP_HOLD_MS = 500;
+export const HOLD_MS = 500;
 export const FADER_DETENT = 1 / 64;
 export const FADER_FINE_DETENT = 1 / 256;
 const ANNOUNCE_THROTTLE_MS = 400;
 
 const CC_JOG = 14, CC_JOG_CLICK = 3, CC_COPY = 60, CC_DELETE = 119, CC_UNDO = 56;
 const CC_KNOB8 = 78;
-
-/* Move's pad grid, top row first (92-99 is the top row, rows descend by 8). */
-const PAD_ROWS = [92, 84, 76, 68];
-
-/** A pad note -> { end: "a" | "b", n: 0..15 }, or null. */
-export function padScene(note) {
-    for (let r = 0; r < 4; r++) {
-        const first = PAD_ROWS[r];
-        if (note >= first && note < first + 8) {
-            return { end: r < 2 ? "a" : "b", n: (r % 2) * 8 + (note - first) };
-        }
-    }
-    return null;
-}
-
-/** The pad that shows scene n on an end. */
-export function scenePad(end, n) {
-    const r = (end === "a" ? 0 : 2) + (n >= 8 ? 1 : 0);
-    return PAD_ROWS[r] + (n % 8);
-}
-
-/* Palette indices (constants.mjs). Three levels per end, white for edit. */
-export const PAD_COLORS = {
-    a: { selected: 16, locked: 95, empty: 96 },   /* AzureBlue / DarkAzure / VeryDarkAzure */
-    b: { selected: 3, locked: 72, empty: 68 },    /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
-    edit: 120,                                    /* White */
-};
-
-/** The colour a pad should show. */
-export function padColor(end, n, st, counts) {
-    if (st.edit === n) return PAD_COLORS.edit;
-    const c = PAD_COLORS[end];
-    if ((end === "a" ? st.a : st.b) === n) return c.selected;
-    return counts && counts[n] > 0 ? c.locked : c.empty;
-}
+const NOTE_STEP_FIRST = 16;
 
 /* Relative encoder value -> signed detents (1..63 up, 65..127 down). */
 export function relDelta(v) {
@@ -76,22 +45,50 @@ export function relDelta(v) {
     return v < 64 ? v : v - 128;
 }
 
-export function sceneLabel(n) { return (n >= 0 && n < SCENE_COUNT) ? String(n + 1) : "-"; }
+/** A pad note -> "a" (top two rows) or "b" (bottom two), or null. */
+export function padSide(note) {
+    if (note >= 84 && note <= 99) return "a";
+    if (note >= 68 && note <= 83) return "b";
+    return null;
+}
+export const PADS_A = Array.from({ length: 16 }, (_, i) => 84 + i);
+export const PADS_B = Array.from({ length: 16 }, (_, i) => 68 + i);
+
+/* Palette indices (constants.mjs). */
+export const COLORS = {
+    a: { on: 16, onEmpty: 95, off: 96 },      /* AzureBlue / DarkAzure / VeryDarkAzure */
+    b: { on: 3, onEmpty: 72, off: 68 },       /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
+    edit: 120,                                /* White */
+    stepActive: 120,                          /* White */
+    stepLocked: 118,                          /* LightGrey */
+    stepEmpty: 0,
+};
+
+/** The badge the host draws on every screen while a side is being edited. */
+export function editLabel(editHalf) {
+    if (!(editHalf >= 0)) return "";
+    return "S" + (Math.floor(editHalf / 2) + 1) + " " + (editHalf % 2 ? "B" : "A");
+}
 
 export function createScenesScreen(io) {
     const now = io.now || (() => Date.now());
-    /* Per PAD NOTE: when it went down (0 = up) and whether its hold fired. */
-    const pressAt = new Map();
+    const pressAt = new Map();           /* note -> press time */
     const holdFired = new Map();
-    /* What each pad was last painted, so a frame repaints only changes. */
-    const painted = new Map();
+    const painted = new Map();           /* note -> colour last sent */
     let copyHeld = false, deleteHeld = false, copySource = -1;
-    let counts = null, countsRev = -1;
-    let undo = null;              /* { snapshot, label } */
+    let counts = null, countsRev = -1;   /* locks per HALF */
+    let undo = null;
     let lastFaderAnnounce = 0;
     let learnPending = false;
 
-    const st = () => io.state() || { a: -1, b: -1, edit: -1, xfade: 0, rev: 0, flash: 0 };
+    const st = () => io.state() || { edit: -1, xfade: 0, rev: 0, flash: 0 };
+    const scn = () => io.scene() || { active: -1, enables: [] };
+    const sideOn = (k, side) => {
+        const e = scn().enables[k];
+        return !e || e[side === "a" ? 0 : 1] !== false;
+    };
+    const halfOf = (k, side) => (side === "a" ? halfA(k) : halfB(k));
+    const halfLocks = (h) => (counts ? counts[h] || 0 : 0);
 
     function refreshCounts(force) {
         const s = st();
@@ -111,15 +108,6 @@ export function createScenesScreen(io) {
         }
     }
 
-    function setEnd(which, n) {
-        const s = st();
-        const a = which === "a" ? n : s.a;
-        const b = which === "b" ? n : s.b;
-        io.setAB(a, b);
-        io.announce("Scene " + which.toUpperCase() + " " + (n >= 0 ? n + 1 : "none"));
-    }
-
-    /* A destructive edit keeps the bank as it was, so Undo can put it back. */
     function destructive(label, fn) {
         const snap = io.snapshot();
         if (!snap) { io.announce("Scenes busy, try again"); return false; }
@@ -134,46 +122,72 @@ export function createScenesScreen(io) {
         const redo = io.snapshot();
         if (!redo || !io.restore(undo.snapshot)) { io.announce("Undo failed"); return; }
         io.announce("Undo " + undo.label);
-        /* One level, and it SWAPS: the same button is redo, which is the right
-         * shape when the mistake is heard rather than seen. */
         undo = { snapshot: redo, label: undo.label };
         refreshCounts(true);
     }
 
-    function padTap(end, n) {
-        const s = st();
-        if (s.edit === n) { io.setEdit(-1); io.announce("Scene " + (n + 1) + " disarmed"); return; }
+    function selectScene(k) {
+        if (st().edit >= 0 && k !== scn().active) io.setEdit(-1);
+        io.setActive(k);
+        io.announce("Scene " + (k + 1));
+    }
+
+    function stepPress(k) {
         if (copyHeld) {
             if (copySource < 0) {
-                copySource = n;
-                io.announce("Copy scene " + (n + 1) + ", pick destination");
+                copySource = k;
+                io.announce("Copy scene " + (k + 1) + ", pick destination");
             } else {
                 const src = copySource;
                 copySource = -1;
-                if (src === n) { io.announce("Copy cancelled"); return; }
-                if (destructive("copy", () => io.applyAll("copy", src + " " + n)))
-                    io.announce("Scene " + (src + 1) + " copied to " + (n + 1));
+                if (src === k) { io.announce("Copy cancelled"); return; }
+                if (destructive("copy", () =>
+                        io.applyAll("copy", halfA(src) + " " + halfA(k)) &&
+                        io.applyAll("copy", halfB(src) + " " + halfB(k)))) {
+                    if (io.copyEnables) io.copyEnables(src, k);
+                    io.announce("Scene " + (src + 1) + " copied to " + (k + 1));
+                }
             }
             return;
         }
         if (deleteHeld) {
-            if (destructive("clear", () => io.applyAll("clear", String(n))))
-                io.announce("Scene " + (n + 1) + " cleared");
+            if (destructive("clear", () =>
+                    io.applyAll("clear", String(halfA(k))) && io.applyAll("clear", String(halfB(k)))))
+                io.announce("Scene " + (k + 1) + " cleared");
             return;
         }
-        /* The selected one again clears that end. */
-        setEnd(end, (end === "a" ? s.a : s.b) === n ? -1 : n);
+        selectScene(k);
     }
 
-    function padHold(n) {
-        const s = st();
-        if (s.edit === n) {
+    /* Start or stop editing one side of the active scene. Starting switches
+     * the side on -- editing a side you cannot hear would be pointless. */
+    function toggleEdit(side) {
+        let k = scn().active;
+        if (k < 0) { k = 0; io.setActive(0); }
+        const h = halfOf(k, side);
+        if (st().edit === h) {
             io.setEdit(-1);
-            io.announce("Scene " + (n + 1) + " disarmed");
-        } else {
-            io.setEdit(n);
-            io.announce("Editing scene " + (n + 1) + ". Turn any knob to lock it. Delete and turn to remove.");
+            io.announce("Done editing scene " + (k + 1) + " " + side.toUpperCase());
+            return;
         }
+        if (!sideOn(k, side)) io.setEnable(k, side, true);
+        io.setEdit(h);
+        io.announce("Editing scene " + (k + 1) + " " + side.toUpperCase() +
+                    ". Turn knobs on any page to lock them.");
+    }
+
+    function padTap(side) {
+        const k = scn().active;
+        if (k < 0) { io.announce("Pick a scene with the steps first"); return; }
+        if (deleteHeld) {
+            if (destructive("clear " + side.toUpperCase(), () => io.applyAll("clear", String(halfOf(k, side)))))
+                io.announce("Scene " + (k + 1) + " " + side.toUpperCase() + " cleared");
+            return;
+        }
+        if (st().edit === halfOf(k, side)) { toggleEdit(side); return; }
+        const on = !sideOn(k, side);
+        io.setEnable(k, side, on);
+        io.announce("Scene " + (k + 1) + " " + side.toUpperCase() + (on ? " on" : " off"));
     }
 
     return {
@@ -185,51 +199,60 @@ export function createScenesScreen(io) {
             painted.clear();
             learnPending = false;
             refreshCounts(true);
-            const s = st();
-            io.announce("Scenes. A " + (s.a >= 0 ? s.a + 1 : "none") + ", B " + (s.b >= 0 ? s.b + 1 : "none") +
-                        ", fader " + Math.round(s.xfade * 100) + " percent");
+            const k = scn().active;
+            io.announce(k >= 0 ? "Scenes. Scene " + (k + 1) : "Scenes. Pick a scene with the steps.");
         },
 
-        /* The step half of the hold gesture is timed here, while the finger is
-         * still down: arming should happen when the hold is reached, not when
-         * the finger comes off. */
+        /* Called by the host for Shift+Vol+Up / Down. */
+        toggleEdit,
+
         tick() {
             const t = now();
             let changed = false;
             for (const [note, at] of pressAt) {
-                if (at && !holdFired.get(note) && t - at >= STEP_HOLD_MS && !copyHeld && !deleteHeld) {
+                const side = padSide(note);
+                if (side && at && !holdFired.get(note) && t - at >= HOLD_MS && !copyHeld && !deleteHeld) {
                     holdFired.set(note, true);
-                    padHold(padScene(note).n);
+                    toggleEdit(side);
                     changed = true;
                 }
             }
             const before = countsRev;
             refreshCounts(false);
-            this.paintPads();
+            this.paintLeds();
             return changed || countsRev !== before;
         },
 
-        /* The pads, repainted only where they changed. `force` repaints all
-         * (the screen was just entered, or the shim dropped our ownership). */
-        paintPads(force) {
-            if (!io.setPadLed) return;
-            if (force) painted.clear();
-            const s = st();
-            for (const end of ["a", "b"]) {
-                for (let n = 0; n < SCENE_COUNT; n++) {
-                    const note = scenePad(end, n);
-                    const col = padColor(end, n, s, counts);
-                    if (painted.get(note) === col) continue;
-                    if (io.setPadLed(note, col) !== false) painted.set(note, col);
-                }
-            }
-        },
-
-        /* The Delete/Copy/Undo claims this screen needs while it is up. */
         claimedCcs() { return [CC_COPY, CC_DELETE, CC_UNDO]; },
-
         get learnPending() { return learnPending; },
         clearLearnPending() { learnPending = false; },
+
+        /* Steps and pads, repainted only where they changed; `force` repaints
+         * all (the screen just took them, and the shim had restored Move's). */
+        paintLeds(force) {
+            if (force) painted.clear();
+            const send = (note, col) => {
+                if (painted.get(note) === col) return;
+                if (io.setLed && io.setLed(note, col) !== false) painted.set(note, col);
+            };
+            const s = st(), sc = scn();
+            for (let k = 0; k < SCENE_COUNT; k++) {
+                const locked = halfLocks(halfA(k)) + halfLocks(halfB(k)) > 0;
+                send(NOTE_STEP_FIRST + k, k === sc.active ? COLORS.stepActive
+                                        : locked ? COLORS.stepLocked : COLORS.stepEmpty);
+            }
+            for (const side of ["a", "b"]) {
+                let col = 0;
+                if (sc.active >= 0) {
+                    const h = halfOf(sc.active, side);
+                    const c = COLORS[side];
+                    col = s.edit === h ? COLORS.edit
+                        : !sideOn(sc.active, side) ? c.off
+                        : halfLocks(h) > 0 ? c.on : c.onEmpty;
+                }
+                for (const note of side === "a" ? PADS_A : PADS_B) send(note, col);
+            }
+        },
 
         onMidi(status, d1, d2, shift) {
             const type = status & 0xF0;
@@ -252,33 +275,32 @@ export function createScenesScreen(io) {
                     }
                     return true;
                 }
-                if (d1 === CC_COPY) {
-                    copyHeld = d2 > 0;
-                    if (!copyHeld) copySource = -1;
-                    return true;
-                }
+                if (d1 === CC_COPY) { copyHeld = d2 > 0; if (!copyHeld) copySource = -1; return true; }
                 if (d1 === CC_DELETE) { deleteHeld = d2 > 0; return true; }
                 if (d1 === CC_UNDO) { if (d2 > 0) doUndo(); return true; }
                 return false;
             }
-            const pad = (type === 0x90 || type === 0x80) ? padScene(d1) : null;
-            if (pad) {
-                if (type === 0x90 && d2 > 0) {
-                    pressAt.set(d1, now());
-                    holdFired.set(d1, false);
-                    /* With Copy or Delete held a press is a pick, not a hold:
-                     * act on the press so a quick sequence of picks works. */
-                    if (copyHeld || deleteHeld) { holdFired.set(d1, true); padTap(pad.end, pad.n); }
-                } else {
-                    const was = pressAt.get(d1);
-                    pressAt.delete(d1);
-                    if (was && !holdFired.get(d1)) padTap(pad.end, pad.n);
-                    holdFired.delete(d1);
-                }
-                this.paintPads();
+            if (type !== 0x90 && type !== 0x80) return false;
+            const on = type === 0x90 && d2 > 0;
+            if (d1 >= NOTE_STEP_FIRST && d1 < NOTE_STEP_FIRST + SCENE_COUNT) {
+                if (on) stepPress(d1 - NOTE_STEP_FIRST);
+                this.paintLeds();
                 return true;
             }
-            return false;
+            const side = padSide(d1);
+            if (!side) return false;
+            if (on) {
+                pressAt.set(d1, now());
+                holdFired.set(d1, false);
+                if (deleteHeld) { holdFired.set(d1, true); padTap(side); }
+            } else {
+                const was = pressAt.get(d1);
+                pressAt.delete(d1);
+                if (was && !holdFired.get(d1)) padTap(side);
+                holdFired.delete(d1);
+            }
+            this.paintLeds();
+            return true;
         },
 
         /*
@@ -286,47 +308,45 @@ export function createScenesScreen(io) {
          *        drawFooter(hints) }. 128x64, footer band from y 55.
          */
         draw(ctx) {
-            const s = st();
-            const armed = s.edit >= 0;
-            ctx.drawHeader(armed ? "Edit Scene " + (s.edit + 1) : "Scenes",
-                           "A" + sceneLabel(s.a) + " B" + sceneLabel(s.b), armed);
+            const s = st(), sc = scn();
+            const k = sc.active;
+            const editing = s.edit >= 0;
+            ctx.drawHeader(k >= 0 ? "Scene " + (k + 1) : "Scenes",
+                           editing ? "Edit " + (s.edit % 2 ? "B" : "A") : "", editing);
 
-            /* THE PADS, EXACTLY AS THEY SIT UNDER YOUR HANDS: four rows of
-             * eight, A on the top two, B on the bottom two. Filled = the scene
-             * holds locks; the selected scene has a dot cleared out of it; the
-             * one being edited is drawn inverted-with-a-frame (a box inside a
-             * box). The picture and the pads cannot disagree about where a
-             * scene is, because both come from scenePad(). */
-            const gx = 9, pitch = 9, cw = 8, chh = 6;
-            const rowY = [12, 19, 28, 35];
-            ctx.print(1, 15, "A", 1);
-            ctx.print(1, 31, "B", 1);
-            for (const end of ["a", "b"]) {
-                const sel = end === "a" ? s.a : s.b;
-                for (let n = 0; n < SCENE_COUNT; n++) {
-                    const r = (end === "a" ? 0 : 2) + (n >= 8 ? 1 : 0);
-                    const x = gx + (n % 8) * pitch, y = rowY[r];
-                    const has = counts ? counts[n] > 0 : false;
-                    if (has || n === sel) ctx.fillRect(x, y, cw, chh, 1);
-                    else {
-                        ctx.fillRect(x, y, cw, 1, 1);
-                        ctx.fillRect(x, y + chh - 1, cw, 1, 1);
-                        ctx.fillRect(x, y, 1, chh, 1);
-                        ctx.fillRect(x + cw - 1, y, 1, chh, 1);
-                    }
-                    if (n === sel) ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 0);
-                    if (n === s.edit) {
-                        ctx.fillRect(x + 1, y + 1, cw - 2, chh - 2, 0);
-                        ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 1);
-                    }
+            /* The 16 scenes, as the steps: the active one boxed with a dot,
+             * a scene holding locks filled. */
+            const y0 = 13, pitch = 8, cw = 6, ch = 6;
+            for (let i = 0; i < SCENE_COUNT; i++) {
+                const x = 1 + i * pitch;
+                const locked = halfLocks(halfA(i)) + halfLocks(halfB(i)) > 0;
+                if (locked || i === k) ctx.fillRect(x, y0, cw, ch, 1);
+                else {
+                    ctx.fillRect(x, y0, cw, 1, 1); ctx.fillRect(x, y0 + ch - 1, cw, 1, 1);
+                    ctx.fillRect(x, y0, 1, ch, 1); ctx.fillRect(x + cw - 1, y0, 1, ch, 1);
                 }
+                if (i === k) ctx.fillRect(x + 2, y0 + 2, cw - 4, ch - 4, 0);
             }
 
-            /* The fader position. (Per-end lock COUNTS were drawn beside the
-             * grid and read as unlabelled mystery numbers; a filled box already
-             * says a scene holds locks.) */
-            const pct = Math.round(Math.max(0, Math.min(1, s.xfade)) * 100) + "%";
-            ctx.print(127 - ctx.textWidth(pct), 44, pct, 1);
+            /* The active scene's two sides. The side being edited is drawn
+             * inverted -- that is where knob turns are going. */
+            const drawSide = (side, y) => {
+                const h = k >= 0 ? halfOf(k, side) : -1;
+                const isEdit = h >= 0 && s.edit === h;
+                const on = k >= 0 && sideOn(k, side);
+                const n = h >= 0 ? halfLocks(h) : 0;
+                const text = side.toUpperCase() + "  " + (k < 0 ? "-" : !on ? "off"
+                           : n ? n + (n === 1 ? " lock" : " locks") : "knobs");
+                if (isEdit) {
+                    ctx.fillRect(0, y - 1, 128, 9, 1);
+                    ctx.print(2, y, text, 0);
+                    ctx.print(127 - ctx.textWidth("editing"), y, "editing", 0);
+                } else {
+                    ctx.print(2, y, text, 1);
+                }
+            };
+            drawSide("a", 23);
+            drawSide("b", 33);
 
             /* The fader: A |####....| B, the position as a notch. */
             const fy = 44, fh = 7, fx0 = 9, fx1 = 92;
@@ -340,37 +360,35 @@ export function createScenesScreen(io) {
             ctx.fillRect(fx0 + 2, fy + 2, Math.max(0, pos - (fx0 + 2)), fh - 4, 1);
             ctx.fillRect(pos - 1, fy - 1, 3, fh + 2, 1);
             ctx.print(fx1 + 3, fy, "B", 1);
+            const pct = Math.round(Math.max(0, Math.min(1, s.xfade)) * 100) + "%";
+            ctx.print(127 - ctx.textWidth(pct), fy, pct, 1);
 
             if (learnPending) ctx.drawFooter(["Move a fader..."]);
             else if (copyHeld) ctx.drawFooter([copySource < 0 ? "Copy: pick source" : "Copy: pick dest"]);
-            else if (deleteHeld) ctx.drawFooter(["Clear: pick scene"]);
-            else if (armed) ctx.drawFooter(["Hold: done", "Del+knob: off"]);
-            else ctx.drawFooter(["Pad: A/B", "Hold: edit"]);
+            else if (deleteHeld) ctx.drawFooter(["Clear: step or pad"]);
+            else if (editing) ctx.drawFooter(["Tap pad: done", "Del+knob: off"]);
+            else ctx.drawFooter(["Step: scene", "Hold pad: edit"]);
         },
     };
 }
 
-/*
- * THE ARM BADGE: an inverted "SCN n" over the top-right corner of EVERY screen
- * while a scene is armed -- a latched mode with no sign of itself would record
- * into a scene without the user knowing. `flash` (FULL / N/A) replaces the
- * text for a moment when a knob's write could not be taken. Painted by the
- * host AFTER the view switch, so it lands on a module-drawn frame too.
- */
+/* THE EDIT BADGE: an inverted "S3 A" over the top-right corner of EVERY
+ * screen while a side is being edited; FULL / N/A flash in its place when a
+ * knob's write could not be taken. */
 export const SCENE_FLASH_FULL = 1;
 export const SCENE_FLASH_NA = 2;
 
 export function armBadgeText(edit, flash) {
     if (flash === SCENE_FLASH_FULL) return "FULL";
     if (flash === SCENE_FLASH_NA) return "N/A";
-    return edit >= 0 ? "SCN " + (edit + 1) : "";
+    return editLabel(edit);
 }
 
 export function drawArmBadge(ctx, text) {
     if (!text) return null;
     const w = ctx.textWidth(text) + 3;
     const x = 128 - w, y = 0, h = 9;
-    ctx.fillRect(x - 1, y, w + 1, h + 1, 0);    /* a clear margin against what is under it */
+    ctx.fillRect(x - 1, y, w + 1, h + 1, 0);
     ctx.fillRect(x, y, w, h, 1);
     ctx.print(x + 2, y + 1, text, 0);
     return { x, y, w, h };
