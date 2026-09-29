@@ -27307,7 +27307,10 @@ function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
     clearParamPagesTouch();
     enterLfoTargetPicker();
     lfoTargetKnob = listKnobInit();
-    lfoTargetFlatRows = buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf);
+    /* The caption's room: from the label column to the scrollbar gutter,
+     * less the rule stubs either side. */
+    lfoTargetFlatRows = buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf,
+        { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 });
     lfoTargetFlatStored = indexOfFlatRoute(lfoTargetFlatRows,
         lfoCtx.getParam("target") || "", lfoCtx.getParam("target_param") || "");
     lfoTargetFlatIndex = lfoTargetFlatStored;
@@ -27352,7 +27355,16 @@ function lfoTargetKnobTick() {
 
 function drawLfoTargetFlat() {
     clear_screen();
-    drawHeader((lfoCtx ? lfoCtx.title : "LFO") + " Target");
+    /* The header names the MODULE the cursor is in: its divider scrolls off
+     * above a long section, and the position is what a flat list must never
+     * stop saying. */
+    let module = "";
+    for (let i = lfoTargetFlatIndex; i >= 0; i--) {
+        const r = lfoTargetFlatRows[i];
+        if (r && r.type === "divider" && !(r.level > 0)) { module = r.label; break; }
+    }
+    const title = lfoCtx ? lfoCtx.title : "LFO";
+    drawHeader(truncateText(module ? title + " > " + module : title + " Target", 22));
     drawMenuList({
         items: lfoTargetFlatRows,
         selectedIndex: lfoTargetFlatIndex,

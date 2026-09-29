@@ -22,22 +22,53 @@
 
 export const CLEAR_KEY = "__clear__";
 
-/* "Synth: Mini-JV" -> "Mini-JV". The kind prefix is what the picker's first
- * step needs; here the divider is naming the module. */
+/*
+ * A divider names the POSITION as well as the module: two Freeverbs in FX 1
+ * and FX 2 must not read the same, and "Mini-JV" alone does not say it is the
+ * synth. The position is the short tag the Target cell's square already
+ * uses (SYN, FX1, MF1); LFO 2 and Sends are positions with no module.
+ */
+function positionTag(key) {
+    const k = String(key || "");
+    let m;
+    if (k === "synth") return "SYN";
+    if ((m = /^fx(\d+)$/.exec(k))) return "FX" + m[1];
+    if ((m = /^midi_fx(\d+)$/.exec(k))) return "MF" + m[1];
+    return "";
+}
 function moduleName(label) {
     const s = String(label || "");
     const at = s.indexOf(": ");
     return at < 0 ? s : s.slice(at + 2);
 }
 
-export function buildFlatTargetRows(comps, sectionsOf) {
+/** A caption that cannot fit is cut, measured, with a trailing dot. */
+export function fitDividerLabel(label, measure, maxW) {
+    let t = String(label || "");
+    if (typeof measure !== "function" || !(maxW > 0) || measure(t) <= maxW) return t;
+    while (t.length > 1 && measure(t + ".") > maxW) t = t.slice(0, -1);
+    return t.replace(/[\s\-_/.:]+$/, "") + ".";
+}
+
+/*
+ * TWO levels of divider in one flat list: the MODULE, with its position
+ * ("SYN Mini-JV", "FX1 Freeverb", "LFO 2"), then each of its SECTIONS
+ * ("Filter", "Envelope") when it has them. One line for both did not fit --
+ * the device font holds ~16 characters, and a long section name cut every
+ * module to "Min." -- and the position is the one fact a flat list needs
+ * most: two Freeverbs must not read the same.
+ */
+export function buildFlatTargetRows(comps, sectionsOf, { measure, maxW } = {}) {
     const rows = [{ label: "None", route: { target: "", param: "" } }];
     (comps || []).forEach((c, i) => {
         if (!c || !c.key || c.key === CLEAR_KEY) return;
-        const name = moduleName(c.label || c.key);
-        for (const sec of (sectionsOf(i) || [])) {
-            if (!sec || !sec.params || !sec.params.length) continue;
-            rows.push({ type: "divider", label: sec.label ? name + " / " + sec.label : name });
+        const secs = (sectionsOf(i) || []).filter((x) => x && x.params && x.params.length);
+        if (!secs.length) return;
+        const tag = positionTag(c.key);
+        const head = tag ? tag + " " + moduleName(c.label || c.key) : String(c.label || c.key);
+        rows.push({ type: "divider", label: fitDividerLabel(head, measure, maxW), level: 0 });
+        for (const sec of secs) {
+            if (sec.label) rows.push({ type: "divider", label: fitDividerLabel(sec.label, measure, maxW), level: 1 });
             for (const p of sec.params) {
                 if (p && p.key) rows.push({ label: p.label || p.key, route: { target: c.key, param: p.key } });
             }

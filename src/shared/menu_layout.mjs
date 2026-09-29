@@ -507,7 +507,10 @@ export function drawMenuList({
             const midY = y + Math.floor(itemHeight / 2);
             if (item.label) {
                 const captionW = measure(item.label);
-                const captionX = labelX;
+                /* `level: 1` is a divider UNDER a divider (a module's section
+                 * under the module): indented, so a flat list can still show
+                 * two levels. Absent -- every other caller -- nothing moves. */
+                const captionX = labelX + (item.level > 0 ? 10 : 0);
                 /* Line left of caption */
                 ctx.fillRect(0, midY, captionX - 2, 1, 1);
                 ctx.print(captionX, midY - 3, item.label, 1);

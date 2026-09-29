@@ -19,7 +19,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { buildFlatTargetRows, moveFlatCursor, indexOfFlatRoute } from "./src/shared/lfo_target_flat.mjs";
+import { buildFlatTargetRows, moveFlatCursor, indexOfFlatRoute, fitDividerLabel } from "./src/shared/lfo_target_flat.mjs";
 
 let fail = 0;
 const bad = (m) => { console.log("FAIL: " + m); fail++; };
@@ -38,7 +38,7 @@ const SECTIONS = [
 ];
 const rows = buildFlatTargetRows(comps, (c) => SECTIONS[c] || []);
 const shape = rows.map((r) => r.type === "divider" ? "[" + r.label + "]" : r.label).join(" ");
-const want = "None [Mini-JV / Filter] CUT RES [Mini-JV / Amp] ATT [Freeverb] SIZE MIX [LFO 2] DEPTH";
+const want = "None [SYN Mini-JV] [Filter] CUT RES [Amp] ATT [FX1 Freeverb] SIZE MIX [LFO 2] DEPTH";
 if (shape !== want) bad("rows: " + shape + "\n   want: " + want);
 if (rows[0].route.target !== "") bad("None must route nowhere");
 const res = rows.find((r) => r.label === "RES");
@@ -56,6 +56,25 @@ if (rows[moveFlatCursor(rows, 0, 3)].label !== "ATT") bad("three rows from None 
 if (rows[indexOfFlatRoute(rows, "fx1", "mix")].label !== "MIX") bad("stored routing row");
 if (indexOfFlatRoute(rows, "", "") !== 0) bad("no routing is None");
 if (indexOfFlatRoute(rows, "fx9", "x") !== 0) bad("an unlisted routing falls back to None");
+
+/* The POSITION is named: two of the same module must not read the same. */
+{
+  const twin = buildFlatTargetRows(
+    [{ key: "fx1", label: "FX 1: Freeverb" }, { key: "fx2", label: "FX 2: Freeverb" },
+     { key: "midi_fx1", label: "MIDI FX 1: Arp" }],
+    () => [{ label: null, params: P("mix") }]);
+  const d = twin.filter((r) => r.type === "divider").map((r) => r.label);
+  if (d.join("|") !== "FX1 Freeverb|FX2 Freeverb|MF1 Arp") bad("position tags: " + d.join("|"));
+}
+
+/* A caption too wide is cut by MEASURE, never to a trailing hyphen. */
+{
+  const m = (t) => t.length * 6;
+  if (fitDividerLabel("SYN Mini-JV", m, 999) !== "SYN Mini-JV") bad("fits whole when it fits");
+  const t = fitDividerLabel("SYN Mini-JV Deluxe Edition", m, 60);
+  if (m(t) > 60 || !t.endsWith(".")) bad("cut to fit with a dot: " + t);
+  if (fitDividerLabel("SYN Mini-JV", m, 9 * 6) !== "SYN Mini.") bad("no trailing hyphen: " + fitDividerLabel("SYN Mini-JV", m, 9 * 6));
+}
 
 if (fail) process.exit(1);
 '
