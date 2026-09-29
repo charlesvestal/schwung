@@ -1457,7 +1457,8 @@ the same reason; the eight-character label floor still protects the bus name.
 post-fader send buses hosted as `master_fx_slot_t`, a `send_accum[]` in the
 shim, return levels, the feedback-safe A→B ordering, shared presets, and one
 generic FX-bus picker over all three buses — is that PR's design,
-device-verified there and documented in its own `docs/SEND_FX.md`. It is
+device-verified there and documented in that branch's own `docs/SEND_FX.md`
+(never merged here; `legsmechanical/fx-buses-pr`). It is
 unmergeable (merge-base 2026-03-04; `main` is 1696 commits ahead and the branch
 carries 864 of its own), so this is a re-implementation of its design on current
 `main`. The one part not re-implemented is the shared preset store — a send

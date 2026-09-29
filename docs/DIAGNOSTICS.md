@@ -7,6 +7,9 @@ Every switch below is **off by default** and armed by touching a file under
 `/data/UserData/schwung/`. Disarm them when you stop measuring — `debug_log_on`
 has itself caused the audio dropouts it was being used to hunt.
 
+(`lanes_off` in the same directory is NOT a diagnostic: it is the kill switch
+for automation lanes, which are on by default — see `docs/CHAIN.md`.)
+
 **`param-slow` is ALWAYS ON, and is the exception to the sentence above.**
 There is no file to touch. When a param serve exceeds 1000 us the shim worker
 logs, at WARN:

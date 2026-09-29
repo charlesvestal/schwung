@@ -506,7 +506,7 @@ Master FX processes only Schwung's internal audio (slot synths, slot FX, overtak
 
 Skipback, quantized sampler, and the native resample bridge read `unity_view` → captures independent of master volume. Clean-idle leaves Move's mailbox untouched (no round-trip).
 
-Master volume is estimated from Move's on-screen volume bar (`shadow_master_volume` in `schwung_shim.c`). ±2 dB calibration error at extremes; capture degrades below ~15% (amplification clamps at `mv < 0.02`).
+Master volume (`shadow_master_volume`) is READ from Move's live model — `OutputMixerParameters.mVolume`, exact, every frame (#567, `docs/MOVE_MODEL.md`). The on-screen volume-bar scan it replaced is only the FALLBACK, when the model is not live (±2 dB at the extremes, and only while the overlay shows). Capture degrades below ~15% either way (amplification clamps at `mv < 0.02`).
 
 Under Link Audio rebuild mode (`rebuild_from_la`), mailbox is composited from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs on the mailbox, then master volume is applied for DAC out.
 
@@ -617,7 +617,9 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   scoring): retired, the model answers all of it. The chain's adoption
   machinery (`LANE_SLOT_PENDING`, `origin_pending`) stays, inert, because saved
   lane files can hold pending rows. Orphans are not written to disk; Undo
-  re-attaches in memory.
+  re-attaches in memory. **Lanes are ON by default; `touch
+  /data/UserData/schwung/lanes_off` is the kill switch** (#564) — disarmed, the
+  chain RELEASES what it drives, never just stops ticking.
 - **A rack's templated keys (`pad7_transpose`) are typed by the CHAIN**, from
   the level's `child_key_template`/`child_prefix` -- the same rule as
   `child_key.mjs`, at every position; without it every dr32 pad param was
@@ -809,18 +811,16 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   no page count, and 4/4 and 11/8 are one path. The bar-and-page form it
   replaced could only REFUSE a bar wider than the 16 buttons, which is every
   bar of an 11/8 set at 1/16 (22 steps) — p-locks did not work there at all.
-  The scroll is FILE-aged, so the live strip cross-checks it and wins on
-  disagreement. Three more that each cost a hardware session:
+  The scroll is read LIVE from the model now (it was file-aged, with a
+  step-strip cross-check; both are deleted). Three more that each cost a
+  hardware session:
   a **TRIPLET grid deactivates every fourth BUTTON** (12 steps per page, so
   `button != step`, and the duration cannot reveal triplet-ness — 1/16t and a
   straight 1/24 are both 1/6); a **p-lock edits the SELECTED clip**, which the
-  file calls `isPlaying`, never the playing one (the live identity says -1 when
-  stopped, and stopped is how step editing is done); and a **one-bar loop
-  draws thin with no thickening**, so `bold_segment` 0 means both "bar 1" and
-  "cannot say" — `step_strip_displayed_bar()` is the only thing that tells
-  them apart. `lanes:plock_reason` names the refusal, because this runs on the
-  SPI callback where `shadow_log()` is a no-op and five causes otherwise share
-  one bit.
+  file calls `isPlaying`, never the playing one (the model's `PlayingState`
+  names it, stopped or not — stopped is how step editing is done).
+  `lanes:plock_reason` names the refusal, because this runs on the SPI
+  callback and several causes otherwise share one bit.
   **The GESTURE works** — `step_observe` forwards Move's steps to the UI, which
   writes `lanes:plock_step` on a knob COMMIT (a turn's write is DEBOUNCED, so
   the hook wraps `setParam` rather than sitting on one of six call sites).
@@ -840,39 +840,13 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   own clip deletion reads as *delete this clip*), each row naming its clip as
   `C1` — never `T3C1`, since `lane_track` IS the slot index. **Undo is slot
   level only**, one buffer per slot.
-- **(RETIRED -- the model names a new clip at once.) A clip Move has not saved
-  yet can be recorded onto, and the two missing facts arrive separately.** The length comes from the step editor's strip NOW
-  (bar resolution, origin assumed 0); the identity and true origin come from
-  the file ~10 s later, and the lane is then **adopted** — points shifted by
-  the real `loop_start`, fingerprint stamped, one step, exact arithmetic.
-  `fp_valid == 0 with a valid phase` is the provisional signal, so the dlsym'd
-  seam needed no new argument. Adoption is scoped to THIS session's blind takes
-  (`origin_pending`, never serialized): the same bytes on disk mean "never
-  identified", and adopting those would bind a lane to a stranger's clip. A
-  blind take PLAYS while unidentified — its position is the one playing, and
-  staleness needs a fingerprint to establish.
-- **(RETIRED -- the decoder is deleted; the live model answers this.) Move's
-  step editor draws the clip's bar count, and we READ it rather than model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
-  no length, so no phase, so recording refuses — and Move's own screen has the
-  answer: a full-width strip on **row 59** in equal segments, the displayed bar
-  thickened, the playhead a **1 px interruption** (against 2 px bar gaps, which
-  is what keeps it from inflating the count) plus a stub below. Page-independent,
-  unlike the step LEDs. It does **not** say where the loop begins, which costs
-  nothing because lane phases are loop-relative. `src/host/step_strip.c`, decoded
-  where the frame COMPLETES on the callback and paired with the track selected at
-  that instant. The geometry is measured and the rejection gates are not, so it
-  is **a diagnostic first** (`clip_state.json`'s `step_strip`, the manager's
-  `/clip-state`) and nothing depends on it yet. Never build a parallel model of
-  Move's sequencer UI: read its answer. **A segment is a BAR, ROUNDED UP**, so the
-  strip answers a RANGE (`segments × quarters_per_bar`) and never better than
-  bar resolution. Two wrong answers preceded that, both from coincidences —
-  `bars × 4`, then "a 16-step page" — and only a clip whose bar and page counts
-  differ (16 quarters under 11/8: 2.91 bars, 4 pages, strip drew 3) could tell
-  them apart. **A one-bar loop draws a thin line with NO thickening** (the
-  manual says so), so the displayed-bar gate refused every new clip until it
-  was scoped to 2+ segments. The grid runs **1/8t to 1/64**, so a TRIPLET
-  suffix must parse — `sscanf("\"%d/%d\"")` read `1/8t` as a straight eighth,
-  a silent 50% error.
+- **(RETIRED — deleted in #569; the model answers both.)** Recording on a clip
+  Move had not saved yet (a length from the OLED step strip, then **adoption**
+  once `Song.abl` caught up) and the strip decoder itself (`step_strip.c`, the
+  `clip_state.json` / `/clip-state` readout). The measurements — a segment is a
+  bar ROUNDED UP, a one-bar loop draws thin with no thickening, a TRIPLET
+  suffix must parse (`1/8t`) — are kept in `docs/CHAIN.md`. **Never build a
+  parallel model of Move's sequencer UI: read its answer.**
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -1388,6 +1362,7 @@ Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger*
 - **Shift+Vol+Track 1–4** — open shadow / jump to slot settings
 - **Shift+Vol+Menu** — Master FX
 - **Shift+Vol+Step2** — Global Settings
+- **Shift+Vol+Step3** — Scenes (see Scenes below)
 - **Shift+Vol+Step13** / **Shift+Vol+Jog Click** — Tools menu (overtake modules below the divider). Jog-click also exits an active overtake module.
 - **Shift+Sample** — Quantized Sampler
 - **Shift+Capture** — Skipback (last 30 s)
@@ -1399,6 +1374,12 @@ Settings → Audio → **Save** (see Recording / capture).
 is on screen):
 - **Shift+Copy** — snapshot every slot + Master FX
 - **Shift+Delete** — put the snapshot back
+- **Shift+Volume** — the scene fader (Global Settings → Shortcuts → **Scene
+  Fader**, default ON — it takes Shift+Volume away from Move; turns AND touch
+  are withheld)
+- **Program Change on Scene PC Ch** (default **16**, external USB) — PC 0-15
+  selects scene 1-16, 126 takes the snapshot, 127 recalls it; those PCs are
+  swallowed from both buffers, so they no longer reach a slot or Move track
 
 **Long-press** (modes Both / Long Press):
 - **Hold Track 1–4 (500ms) → TOGGLE between the two worlds.** From Move it opens
@@ -1409,6 +1390,7 @@ is on screen):
   on whatever track Move was on.
 - Hold Menu (500ms) → Master FX
 - Shift + hold Step 2 (500ms) → Global Settings
+- Shift + hold Step 3 (500ms) → Scenes
 - Shift + Step 13 (immediate) → Tools menu
 - Tap Menu while shadow UI shown → dismiss. **Tap Track → switch to that slot**
   (**Global Settings → Display → Keep Schwung**, default ON; off restores the
@@ -1419,17 +1401,19 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
+- **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 
-Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track). **The slot FOLLOWS Move's track mute AND solo rather than toggling beside them** — a blind toggle stays opposite forever once the two drift (a plain Mute tap mutes only Move). Live: Move announces `"<instrument> muted/unmuted/soloed/unsoloed"`; the text supplies only the STATE, and the TRACK comes from the gesture (`src/host/mute_follow.h`): Mute+Track (or Shift+Mute+Track) names that track, a plain Mute tap names the selected track (only after a Track press has been seen), and Mute+pad or any other button during the hold names nothing — the drum-cell announcement has the same shape. The shim still toggles as the fallback for a reply that never comes. At BOOT and SET LOAD the slots take `tracks[i].mixer.speakerOn` / `solo-cue` from the set's `Song.abl` (C: `song_abl_mix.h`; JS: `song_mix.mjs` → `slot:move_mix`), over the per-set saved values — Move has just read that file, so there it IS Move's state. **`speakerOn` has an OBJECT form** (`{"value": false, "presetValue": true}`) that a line/truthiness test reads as unmuted, and the same keys sit on every drum cell's mixer deeper in the track. This REVERSES fa6b97509 (2026-03), which removed the Song.abl sync on the view that slot and track mute are independent; they are not — Mute passes through. A consequence: a slot cannot keep a mute its Move track does not have past a set load. Solo is EXCLUSIVE on both sides (Move's confirmed 2026-09-26), so the live follow unsolos the other slots; a set load copies the file as-is. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
+Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track). **The slot FOLLOWS Move's track mute, solo AND volume rather than toggling beside them** — a blind toggle stays opposite forever once the two drift (a plain Mute tap mutes only Move). **Primary source: Move's LIVE MODEL** (#552/#567, `move_model_sync.c`, `docs/MOVE_MODEL.md`): the mixer's `mSpeakerOn` / `mSolo` (LEVELS on a new document — set load, first snapshot after boot — EDGES after) and `mVolume` (EDGES only, so a set load keeps the set's saved slot levels), applied on the SPI thread through a ring — so Schwung's own slot controls hold between Move gestures. The selected track is read from the model too (`move_model_sync_take_selected`). A Move track-volume edge goes through the scene hooks like any `slot:volume` write (a lock while a snapshot is armed, a takeover otherwise). **Fallback only when the model is not live** (`move_model_sync_active()`): the D-Bus `"<instrument> muted/unmuted/soloed/unsoloed"` text paired with the gesture (`src/host/mute_follow.h`) and, at BOOT and SET LOAD, the set's `Song.abl` (`song_abl_mix.h`, `song_mix.mjs` → `slot:move_mix`) — **`speakerOn` has an OBJECT form** (`{"value": false, "presetValue": true}`) that a truthiness test reads as unmuted. This REVERSES fa6b97509 (2026-03), which removed the Song.abl sync on the view that slot and track mute are independent; they are not — Mute passes through. A consequence: a slot cannot keep a mute its Move track does not have past a set load. Solo is EXCLUSIVE on both sides (Move's confirmed 2026-09-26), so the live follow unsolos the other slots; a set load copies the file as-is. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
 ### A master-bus metronome is gone under Move→Schwung by CONSTRUCTION
 
 - Not by a bug: `rebuild_from_la` composites only the four per-track Link Audio
-  slots, and Move mixes its click at master. Schwung plays its own, detected
-  from Move's `"Metronome On"` / `"Metronome Off"` announcement — **exact
-  equality on the whole normalised string**, which is what separates it from
-  the removed mute auto-correct that matched a suffix and fired on Move's own
-  drum-kit names. **Never persisted, because Move does not persist it either**
+  slots, and Move mixes its click at master. Schwung plays its own, following
+  `Transport.mIsMetronomeOn` in Move's live model (#567); only when the model
+  is not live does it fall back to Move's `"Metronome On"` / `"Metronome Off"`
+  announcement — **exact equality on the whole normalised string**, which is
+  what separates it from the removed mute auto-correct that matched a suffix
+  and fired on Move's own drum-kit names. **Never persisted, because Move does not persist it either**
   — that is what makes off-at-boot the truth rather than a guess. The click
   mixes **between the `unity_view` snapshot and the master-volume scaling**, so
   it is on the DAC and in no recording. `Main − Σ(tracks)` is NOT the
@@ -1970,6 +1954,8 @@ inline is how this file got to 151 KB.
   `process_vm_readv`, ~1.6% of a core. Selected track, the playing/selected
   clip, region/loop, step-editor page, step grid and the exact launch beat are
   all current to the edit — `Song.abl` is ~10 s stale and has no new clips.
+  It also drives master volume, the metronome, and slot mute / solo / volume
+  (every older inference is the fallback when the model is not live).
   Only the transport run-flag/beat clock is build-pinned. Read it before
   building anything that needs clip state again.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
@@ -1978,7 +1964,7 @@ inline is how this file got to 151 KB.
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
-- `docs/MOVE_UI_MAP.md` — **Move's own UI, measured by driving it** on firmware
+- `docs/MOVE_UI_MAP.md` (**not on `main`** — branch `docs/move-ui-map`, unmerged; the facts below are its summary) — **Move's own UI, measured by driving it** on firmware
   **2.1.0**: the known-state reset, how to tell which pad mode you are in (three
   modes, not two — **Set Overview swaps the loaded SET from both its pads AND its
   steps**), the LED language, every control per mode, and a machine-readable
@@ -2007,7 +1993,7 @@ inline is how this file got to 151 KB.
   for.) Move ships **no shared libraries at all** -- everything is statically
   linked into the 29.7 MB `MoveOriginal`, so the DSP image and the UI image are
   one file, and `/opt/move/Dsp/` is 194 wavetable WAVs with no code in it.
-- `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
+- `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` (**not on `main`** — branch `docs/move-control-scheme-official`, unmerged) — what ABLETON says, and where that stops
   being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
   the two disagree the DEVICE is the authority. Carries the reconciliation table.
 - `docs/MOVE_COPY_GESTURES.md` — **Move's own copy/paste**, for steps, pages and
