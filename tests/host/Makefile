@@ -58,6 +58,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_undo_timeline \
 	$(BUILD_DIR)/test_edit_follow \
 	$(BUILD_DIR)/test_move_model_sync \
+	$(BUILD_DIR)/test_move_info \
 	$(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
@@ -311,8 +312,8 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
 
-$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c -lm
+$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c ../../src/host/move_info.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DMOVE_INFO_SHM_PATH='"$(BUILD_DIR)/move_info_sync_test.shm"' -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c ../../src/host/move_info.c -lm -lpthread
 
 $(BUILD_DIR)/test_undo_timeline: test_undo_timeline.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_undo_timeline.c ../../src/host/undo_timeline.c
@@ -362,3 +363,6 @@ $(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/ho
 $(BUILD_DIR)/test_rec_arm: test_rec_arm.c ../../src/host/rec_arm.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rec_arm.c
 
+
+$(BUILD_DIR)/test_move_info: test_move_info.c ../../src/host/move_info.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DMOVE_INFO_SHM_PATH='"$(BUILD_DIR)/move_info_test.shm"' -o $@ test_move_info.c ../../src/host/move_info.c -lm -lpthread -ldl

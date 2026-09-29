@@ -310,6 +310,8 @@ Display: `host_flush_display`, `host_set_refresh_rate(hz)`, `host_get_refresh_ra
 
 Filesystem: `host_file_exists`, `host_read_file`, `host_write_file`, `host_http_download`, `host_extract_tar(_strip)`, `host_ensure_dir`, `host_remove_dir`.
 
+**Move's set for modules**: `move_info.h` (copy it; `move_info_read()` — in-process a dlsym'd `schwung_move_info` seqlock copy, RT-safe; elsewhere the `/schwung-move-info` segment) and JS `host_get_move_info()`: tempo, time signature, root/scale, launch quantization, groove, metronome, clock sync, input monitoring, track names/colours. Size-versioned, explicit unknowns, members OPTIONAL in the reader. See docs/MODULES.md, docs/MOVE_MODEL.md.
+
 Tool lifecycle: `host_exit_module()`. MIDI injection: `move_midi_inject_to_move([type, status, d1, d2])`. **Three producers inject into Move's MIDI_IN and each owns its own queue, because ownership follows WHO PUSHED and never what mode the surface is in** — the overtake test bus keeps `/schwung-midi-inject` (during overtake the shim pops it *onto the module*, as if a control had been pressed), an overtake DSP's `midi_inject_to_move` has an in-shim ring (`shadow_overtake_move_inject_active()` detects it), and the shadow UI's JS binding has `/schwung-midi-inject-ui`. Sharing the first of those with JS is what broke song-mode for a month: its injected Play CC never reached Move and came back into its own `onMidiMessageInternal`, toggling playback and re-injecting, so it fired pads as fast as the queue drained. See `docs/ADDRESSING_MOVE_SYNTHS.md`. Sampler: `host_sampler_start(path)`, `host_sampler_stop()`, `host_sampler_is_recording()`.
 
 CC 79 is the host volume knob by default. Modules can claim it via `capabilities.claims_master_knob: true`.

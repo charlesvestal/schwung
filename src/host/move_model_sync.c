@@ -1,6 +1,7 @@
 /* move_model_sync.c -- see move_model_sync.h. */
 #define _GNU_SOURCE
 #include "move_model_sync.h"
+#include "move_info_pub.h"
 
 #include <stdatomic.h>
 #include <time.h>
@@ -99,6 +100,7 @@ void move_model_sync_housekeep_at(uint64_t now)
     shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
     if (!ctl) return;
     const int live = move_model_sync_active();
+    move_info_set_live(live);
     /* The UI reads readiness from here: a stalled model stops owning the mix
      * and stops gating autosave there too. */
     if (ctl->move_model_ready != (uint8_t)live) ctl->move_model_ready = (uint8_t)live;
@@ -513,6 +515,9 @@ static void on_change(const move_model_t *now, const move_model_t *prev)
 
 static void on_tick(const move_model_t *now)
 {
+    /* Modules' view of the set (move_info.h), from every published walk --
+     * ahead of the active gate, which is about Schwung's own following. */
+    move_info_publish(now, 1);
     if (!atomic_load_explicit(&g_active, memory_order_relaxed)) return;
     ef_notes_t nn, pn;
     drain_intents();

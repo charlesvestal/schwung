@@ -277,6 +277,7 @@ int mm_pair_consistent(const move_model_t *a, const move_model_t *b)
     x.doc_gen = y.doc_gen = 0;
     x.tempo = y.tempo = 0;
     x.master_db = y.master_db = 0;
+    x.groove = y.groove = 0;
     for (int t = 0; t < MM_TRACKS; t++) {
         x.track[t].volume = y.track[t].volume = 0;
         x.track[t].pan = y.track[t].pan = 0;
@@ -384,15 +385,18 @@ static int read_build_id(char *out, size_t cap)
 enum {
     C_SONG, C_TRANSPORT, C_PARAMETER, C_TIMESIG, C_TRACKLIST, C_TRACK, C_CLIPS,
     C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_ABSDEV,
-    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_OUTMIX, C_COUNT
+    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_OUTMIX, C_LABEL, C_COUNT
 };
 static const char *CLASS_NAMES[C_COUNT] = {
     "live.Song", "live.Transport", "live.Parameter", "live.TimeSignature", "live.TrackList",
     "live.Track", "live.Clips", "live.PlayingState", "live.ClipSlot", "live.SessionClip",
     "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent", "live.AbstractDevice",
     "live.AudioMixerParameters", "live.ClipEnvelopeList", "live.ClipEnvelope", "live.Automation",
-    "live.OutputMixerParameters",
+    "live.OutputMixerParameters", "live.Label",
 };
+/* Classes whose absence costs only OPTIONAL fields (move_info.h), never the
+ * model: a firmware that renames one must not turn mute follow and lanes off. */
+static int class_optional(int c) { return c == C_LABEL; }
 static uint64_t g_cls[C_COUNT];
 
 /* flip::EnumClass "StepEditorResolution": {vptr, name, enumerators{begin,end}},
@@ -415,6 +419,28 @@ static void resolve_enum_at(uint64_t ec)
     }
 }
 
+/* flip::EnumClass "LaunchQuantization" -- Song.mGlobalQuantization's names,
+ * read from the firmware ("none", "eightBars" .. "bar" .. "thirtySecondth";
+ * 4 = "bar" on 2.1.0), so no table of Move's is copied here. */
+#define QUANT_MAX 32
+static char g_quant_names[QUANT_MAX][24];
+static void resolve_quant_at(uint64_t ec)
+{
+    uint64_t b = rq(ec + 16), e = rq(ec + 24);
+    if (e < b || e - b > QUANT_MAX * 16) return;
+    for (uint64_t a = b; a < e; a += 16) {
+        char nm[24] = "";
+        uint64_t np = rq(a), v = rq(a + 8);
+        if (v >= QUANT_MAX || RD(np, nm, sizeof nm - 1)) continue;
+        nm[sizeof nm - 1] = 0;
+        memcpy(g_quant_names[v], nm, sizeof nm);
+    }
+}
+const char *move_model_quant_name(int v)
+{
+    return (v >= 0 && v < QUANT_MAX && g_quant_names[v][0]) ? g_quant_names[v] : NULL;
+}
+
 typedef struct { int cls; const char *member; uint32_t off; } moff_t;
 enum {
     O_SONG_TRANSPORT, O_SONG_TRACKS, O_TR_TEMPO, O_TR_TIMESIG, O_TR_CTRLMSG, O_PARAM_VALUE,
@@ -424,8 +450,13 @@ enum {
     O_LOOP_ON, O_MC_SCROLL, O_SONG_STEPRES, O_TRACK_MIXER, O_DEV_COMPONENTS,
     O_MIX_VOLUME, O_MIX_PAN, O_MIX_SOLO, O_MIX_SPEAKER, O_MC_NOTES, O_SC_ENVELOPES,
     O_ENVLIST_ENVS, O_ENV_AUTOMATION, O_AUTO_BREAKPOINTS, O_AUTO_PARAM,
-    O_SONG_OUTDEV, O_OUTMIX_VOLUME, O_TR_METRO, O_COUNT
+    O_SONG_OUTDEV, O_OUTMIX_VOLUME, O_TR_METRO,
+    /* OPTIONAL from here (O_FIRST_OPTIONAL): unresolved leaves the field unknown */
+    O_TR_GROOVE, O_TR_CLOCKSYNC, O_SONG_INMON, O_SONG_GQUANT, O_SONG_ROOT, O_SONG_SCALE,
+    O_TRACK_TYPE, O_TRACK_LABEL, O_LABEL_NAME, O_LABEL_COLOR, O_COUNT
 };
+#define O_FIRST_OPTIONAL O_TR_GROOVE
+#define O_UNRESOLVED 0xffffffffu
 static moff_t g_off[O_COUNT] = {
     {C_SONG, "mTransport", 0}, {C_SONG, "mTracks", 0},
     {C_TRANSPORT, "mTempo", 0}, {C_TRANSPORT, "mTimeSignature", 0},
@@ -445,7 +476,13 @@ static moff_t g_off[O_COUNT] = {
     {C_SESSIONCLIP, "mClipEnvelopes", 0}, {C_ENVLIST, "mClipEnvelopes", 0}, {C_ENVELOPE, "mAutomation", 0},
     {C_AUTOMATION, "mBreakpoints", 0}, {C_AUTOMATION, "mpParameter", 0},
     {C_SONG, "mOutputMixerDevice", 0}, {C_OUTMIX, "mVolume", 0}, {C_TRANSPORT, "mIsMetronomeOn", 0},
+    {C_TRANSPORT, "mGrooveAmount", 0}, {C_TRANSPORT, "mIsMidiClockSyncEnabled", 0},
+    {C_SONG, "mIsAudioInputMonitoringEnabled", 0}, {C_SONG, "mGlobalQuantization", 0},
+    {C_SONG, "mRootNote", 0}, {C_SONG, "mScale", 0},
+    {C_TRACK, "mTrackType", 0}, {C_TRACK, "mLabel", 0},
+    {C_LABEL, "mName", 0}, {C_LABEL, "mColorId", 0},
 };
+#define OPT(o) (g_off[o].off != O_UNRESOLVED)
 
 /* flip basic-type value slots, measured: Type ends at +0x64 (a 4-byte
  * modification count), Bool's value is the next byte, the 8-byte ones align
@@ -501,6 +538,7 @@ static int resolve_classes(void)
             if (RD(buf[k + 1], nm, sizeof nm)) continue;
             nm[31] = 0;
             if (strcmp(nm, "StepEditorResolution") == 0) { resolve_enum_at(s + k * 8); continue; }
+            if (strcmp(nm, "LaunchQuantization") == 0) { resolve_quant_at(s + k * 8); continue; }
             if (memcmp(nm, "live.", 5)) continue;
             for (int c = 0; c < C_COUNT; c++) {
                 if (!g_cls[c] && strcmp(nm, CLASS_NAMES[c]) == 0) {
@@ -512,16 +550,20 @@ static int resolve_classes(void)
         sched_yield();
     }
     free(buf);
-    if (found != C_COUNT) {
-        for (int c = 0; c < C_COUNT; c++)
-            if (!g_cls[c]) unified_log("move_model", LOG_LEVEL_WARN, "class %s not found", CLASS_NAMES[c]);
-        return -1;
+    int required_missing = 0;
+    for (int c = 0; c < C_COUNT; c++) {
+        if (g_cls[c]) continue;
+        unified_log("move_model", LOG_LEVEL_WARN, "class %s not found%s", CLASS_NAMES[c],
+                    class_optional(c) ? " (optional)" : "");
+        if (!class_optional(c)) required_missing = 1;
     }
+    if (required_missing) return -1;
     for (int o = 0; o < O_COUNT; o++) {
         if (find_member(g_cls[g_off[o].cls], g_off[o].member, &g_off[o].off, 0)) {
-            unified_log("move_model", LOG_LEVEL_WARN, "member %s.%s not resolved",
-                        CLASS_NAMES[g_off[o].cls], g_off[o].member);
-            return -1;
+            unified_log("move_model", LOG_LEVEL_WARN, "member %s.%s not resolved%s",
+                        CLASS_NAMES[g_off[o].cls], g_off[o].member, o >= O_FIRST_OPTIONAL ? " (optional)" : "");
+            if (o < O_FIRST_OPTIONAL) return -1;
+            g_off[o].off = O_UNRESOLVED;
         }
     }
     return 0;
@@ -775,6 +817,23 @@ static uint64_t guard(uint64_t a)
     rec(a, PK_GUARD, 8, NULL, v);
     return v;
 }
+
+/* A flip::Blob as a C string: its std::vector {begin, end} at +0x68. Both
+ * pointers AND the bytes are guarded, so a rename or a scale change -- even
+ * one that rewrites the bytes in place -- makes the plan re-walk and the new
+ * text is read. Too long for `cap` reads as unknown (""), never truncated. */
+static int f_blob(uint64_t a, char *dst, size_t cap)
+{
+    dst[0] = 0;
+    uint64_t b = guard(a + V_WORD), e = guard(a + V_WORD + 8);
+    if (e < b) return -1;
+    size_t n = (size_t)(e - b);
+    if (n >= cap) return 0;
+    if (n && RD(b, dst, n)) return -1;
+    dst[n] = 0;
+    for (size_t k = 0; k < n; k += 8) guard(b + k);
+    return 0;
+}
 static int walk(uint64_t hdr, uint64_t *out, int max)
 {
     int n = mm_tree_elems(self_read, NULL, hdr, g_img.lo, g_img.hi, out, max);
@@ -921,6 +980,16 @@ static int snapshot(move_model_t *m)
         f_int(S + OFF(O_SONG_STEPRES), &m->step_resolution) ||
         f_bool(tr + OFF(O_TR_METRO), &m->metronome_on))
         SNAP_FAIL();
+    /* OPTIONAL set-wide settings (move_info.h): an unresolved member or a
+     * failed read leaves the unknown value; neither fails the walk. */
+    m->groove = -1; m->clock_sync = 255; m->input_monitor = 255;
+    m->root_note = -1; m->global_quant = -1; m->scale[0] = 0;
+    if (OPT(O_TR_GROOVE) && f_f64(tr + OFF(O_TR_GROOVE) + OFF(O_PARAM_VALUE), &m->groove)) m->groove = -1;
+    if (OPT(O_TR_CLOCKSYNC) && f_bool(tr + OFF(O_TR_CLOCKSYNC), &m->clock_sync)) m->clock_sync = 255;
+    if (OPT(O_SONG_INMON) && f_bool(S + OFF(O_SONG_INMON), &m->input_monitor)) m->input_monitor = 255;
+    if (OPT(O_SONG_ROOT) && f_int(S + OFF(O_SONG_ROOT), &m->root_note)) m->root_note = -1;
+    if (OPT(O_SONG_GQUANT) && f_int(S + OFF(O_SONG_GQUANT), &m->global_quant)) m->global_quant = -1;
+    if (OPT(O_SONG_SCALE) && f_blob(S + OFF(O_SONG_SCALE), m->scale, sizeof m->scale)) m->scale[0] = 0;
     if (g_vp_outmix.n) {   /* the master volume knob; optional -- its absence only loses this */
         uint64_t oc[8];
         int no = walk(S + OFF(O_SONG_OUTDEV) + OFF(O_DEV_COMPONENTS) + V_WORD, oc, 8);
@@ -954,6 +1023,13 @@ static int snapshot(move_model_t *m)
     for (int t = 0; t < nt && t < MM_TRACKS; t++) {
         mm_track_t *T = &m->track[t];
         T->playing_slot = -1;
+        T->color_id = -1; T->type = -1; T->name[0] = 0;
+        if (OPT(O_TRACK_TYPE) && f_int(tracks[t] + OFF(O_TRACK_TYPE), &T->type)) T->type = -1;
+        if (OPT(O_TRACK_LABEL)) {
+            uint64_t lb = tracks[t] + OFF(O_TRACK_LABEL);
+            if (OPT(O_LABEL_COLOR) && f_int(lb + OFF(O_LABEL_COLOR), &T->color_id)) T->color_id = -1;
+            if (OPT(O_LABEL_NAME) && f_blob(lb + OFF(O_LABEL_NAME), T->name, sizeof T->name)) T->name[0] = 0;
+        }
         if (f_bool(tracks[t] + OFF(O_TRACK_SELECTED), &T->selected)) SNAP_FAIL();
         {   /* the mixer: Track.mTrackMixerDevice -> its AudioMixerParameters component */
             uint64_t dcomps[8];
