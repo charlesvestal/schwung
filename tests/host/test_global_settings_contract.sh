@@ -198,7 +198,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, surfaces: 4, system: 3 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 5, surfaces: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -322,6 +322,8 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
     set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
     recall_quantize: "Recall Q",
+    /* Shift + volume knob = the scene fader, and Off hands it back to Move. */
+    scene_shift_vol: "Scene Fader",
     /* Names written out in full, like every row above: the cell renderer
        abbreviates (labelForCell / WORD_ABBREV), the declaration does not. */
     metronome_mode: "Metronome", metronome_level: "Click Vol",

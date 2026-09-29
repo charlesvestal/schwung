@@ -46,6 +46,8 @@ static uint8_t  step_tap_replay[16];
 static volatile uint32_t shadow_steps_held_mask;
 /* "The press already did something on the grid" -- see step_used. */
 static uint8_t step_used[16];
+/* The Scenes screen has the steps: every press is USED (never replayed). */
+static uint8_t step_claim_all;
 /* The stage counters the worker reports (shim_worker.h). Stubs here: the
  * lifted function increments them and this harness only has to let it, but
  * they are ASSERTED on below -- a counter that stops being bumped is how the
@@ -68,10 +70,23 @@ static void reset(void) {
     memset(step_tap_replay, 0, sizeof(step_tap_replay));
     memset(step_used, 0, sizeof(step_used));
     shadow_steps_held_mask = 0;
+    step_claim_all = 0;
     g_now = 1000;
 }
 
 int main(void) {
+    /* THE SCENES SCREEN HAS THE STEPS: even a quick tap picks a scene and is
+     * never replayed -- a replay would also toggle a note in the clip. */
+    reset();
+    step_claim_all = 1;
+    step_note_withhold(20, 100);
+    g_now += 50;
+    step_note_withhold(20, 0);
+    CHECK(step_tap_replay[4] == 0, "a step claimed by the Scenes screen must never be replayed to Move");
+    CHECK(step_swallow_latch[4] == 0, "...and its release still retires the latch");
+    CHECK(shim_step_used_skip == 1, "...and the readout counts it as USED, not as a tap");
+    shim_step_press_seen = shim_step_release_seen = shim_step_used_skip = 0;
+
     /* A TAP: Move gets the note it would have got. */
     reset();
     step_note_withhold(20, 100);
@@ -222,7 +237,9 @@ body=$(awk '/^function reconcileStepObserve/,/^}/' src/shadow/shadow_ui.js)
 [ -n "$body" ] || fail "reconcileStepObserve is gone"
 echo "$body" | grep -q 'shadow_get_display_mode' \
   || fail "step_observe must not be wanted while Move owns the screen"
-echo "$body" | grep -qE 'const want = \(hostGrid \|\| !!moduleGrid\) && onScreen' \
+# (The Scenes screen is the third consumer of the steps; it rides the same
+# expression, so the on-screen test covers it too.)
+echo "$body" | grep -qE 'const want = \(hostGrid \|\| !!moduleGrid( \|\| scenesUp)?\) && onScreen' \
   || fail 'the display test must be part of the want expression, not a separate write'
 
 # The shim's own guard, at the site that withholds the press.

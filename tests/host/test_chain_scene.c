@@ -207,7 +207,7 @@ int main(void) {
     CHECK(chain_scene_edit_write(inst, "synth:cutoff", "50") == 0, "disarmed: a write is not consumed");
 
     chain_scene_get_param(inst, "locks", buf, sizeof(buf));
-    CHECK(strcmp(buf, "0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
+    CHECK(strcmp(buf, "0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
 
     /* The set_param ROUTE chain_host.c calls: verbs first, then the arm, and
      * a plain write while disarmed is NOT consumed. */

@@ -114,7 +114,8 @@ import { createScenesScreen, drawArmBadge, armBadgeText }
     from '/data/UserData/schwung/shared/scenes_screen.mjs';
 import { SCOPES as SCENE_SCOPES, scopeKey as sceneScopeKey, buildDoc as buildSceneDoc,
          parseDoc as parseSceneDoc, docToLoads as sceneDocToLoads,
-         expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts }
+         expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts,
+         endsFor as sceneEndsFor, defaultEnables as sceneDefaultEnables }
     from '/data/UserData/schwung/shared/scene_doc.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
@@ -11293,6 +11294,26 @@ function setRecallQuantize(v) {
     }
 }
 
+/*
+ * Shift + volume knob = the scene fader (Global Settings -> Shortcuts ->
+ * Scene Fader, default on). The shim does the work -- it has to, since it
+ * works over Move's own screen too -- this only holds the setting.
+ */
+let sceneShiftVol = true;
+function setSceneShiftVol(on) {
+    sceneShiftVol = !!on;
+    if (typeof shadow_scene_shift_vol_set === "function") shadow_scene_shift_vol_set(sceneShiftVol ? 1 : 0);
+}
+function loadSceneShiftVol() {
+    let on = true;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_shift_vol"\s*:\s*(true|false)/.exec(raw) : null;
+        if (m) on = m[1] === "true";
+    } catch (e) { debugLog("scene_shift_vol read failed: " + e); }
+    setSceneShiftVol(on);
+}
+
 /* Restore from features.json and push the register down. Called once at
  * startup: the setting persists in the file, the register does not. */
 function loadRecallQuantize() {
@@ -11848,16 +11869,37 @@ function sceneApplyAll(verb, value) {
     return ok;
 }
 
+/*
+ * THE LOGICAL SCENE: which of the 16 is active, and whether each side is on.
+ * JS owns this (it is saved in scenes.json); the fader's two ENDS are derived
+ * from it -- scene k's A is half 2k, its B half 2k+1, and a side that is off is
+ * "none" -- and pushed to the shim, which is all the DSP ever sees.
+ */
+let sceneActive = -1;
+let sceneEnables = sceneDefaultEnables();
+function scenePushEnds() {
+    const e = sceneEndsFor(sceneActive, sceneEnables);
+    if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
+    needsRedraw = true;
+}
+
 const scenesScreen = createScenesScreen({
     state: () => sceneState(),
-    setAB: (a, b) => { if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(a, b); needsRedraw = true; },
+    scene: () => ({ active: sceneActive, enables: sceneEnables }),
+    setActive: (k) => { sceneActive = k; scenePushEnds(); },
+    setEnable: (k, side, on) => {
+        if (k < 0 || k >= sceneEnables.length) return;
+        sceneEnables[k][side === "a" ? 0 : 1] = !!on;
+        scenePushEnds();
+    },
+    copyEnables: (src, dst) => { sceneEnables[dst] = sceneEnables[src].slice(); scenePushEnds(); },
     setXfade: (x) => sceneSetXfade(x),
     setEdit: (n) => sceneSetEdit(n),
     applyAll: (verb, value) => sceneApplyAll(verb, value),
     snapshot: () => sceneSnapshotAll(),
     restore: (snap) => sceneLoadAll(snap),
     lockCounts: () => sumSceneLockCounts(SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "locks"))),
-    setPadLed: (note, color) => (typeof move_midi_internal_send === "function")
+    setLed: (note, color) => (typeof move_midi_internal_send === "function")
         ? move_midi_internal_send([0x09, 0x90, note, color]) : false,
     /* The jog is a parameter write as far as LEARN is concerned, so CC Learn
      * captures the fader the same way it captures a knob. */
@@ -11917,6 +11959,48 @@ function scenesHandleMidi(status, d1, d2) {
         return true;
     }
     return false;
+}
+
+/*
+ * SHIFT+UP / SHIFT+DOWN: edit the active scene's A / B, from any Schwung
+ * screen (the shim claims both edges while our screen is up; Move gives the
+ * combo no meaning beyond the bare arrows' octave shift).
+ *
+ *   TAP                  latch editing on (tap again: off)
+ *   HOLD + turn a knob   momentary: editing ends on release
+ *
+ * The release decides which it was: a lock made while held (the scene
+ * revision moved) or a hold past SCENE_EDIT_HOLD_MS is momentary. A press on
+ * the side already latched only ever stops it.
+ */
+const SCENE_EDIT_HOLD_MS = 500;
+const sceneEditKey = {};   /* cc -> { at, rev, wasOn } */
+function scenesHandleEditKey(status, d1, d2) {
+    if ((status & 0xF0) !== 0xB0 || (d1 !== 55 && d1 !== 54)) return false;
+    const side = d1 === 55 ? "a" : "b";
+    if (d2 > 0) {
+        if (!isShiftHeld()) return false;          /* a bare arrow is not ours */
+        const st = sceneState() || { edit: -1, rev: 0 };
+        const k = sceneActive >= 0 ? sceneActive : 0;
+        const half = side === "a" ? 2 * k : 2 * k + 1;
+        const wasOn = st.edit === half;
+        if (!wasOn) scenesScreen.toggleEdit(side);
+        sceneEditKey[d1] = { at: Date.now(), rev: (sceneState() || st).rev, wasOn };
+        showOverlay("Scene " + (sceneActive + 1) + " " + side.toUpperCase(),
+                    wasOn ? "Tap to stop" : "Editing", 40);
+        return true;
+    }
+    const p = sceneEditKey[d1];
+    if (!p) return false;                          /* a release we did not see go down */
+    delete sceneEditKey[d1];
+    const st = sceneState() || { edit: -1, rev: p.rev };
+    const locked = st.rev !== p.rev;
+    const momentary = locked || Date.now() - p.at >= SCENE_EDIT_HOLD_MS;
+    if (p.wasOn ? !locked : momentary) {
+        if (st.edit >= 0) scenesScreen.toggleEdit(side);
+        showOverlay("Scene " + (sceneActive + 1) + " " + side.toUpperCase(), "Done", 30);
+    }
+    return true;
 }
 
 /* Delete with a scene armed, anywhere but the Scenes screen. FIRST in the
@@ -11987,11 +12071,15 @@ function scenesSaveTo(dir) {
     if (!st) return false;
     const dumps = sceneSnapshotAll();
     if (!dumps) return false;
-    const doc = buildSceneDoc({ a: st.a, b: st.b, dumps });
+    const doc = buildSceneDoc({ active: sceneActive, enables: sceneEnables, dumps });
     if (!doc) return false;
     host_write_file(sceneFilePath(dir), JSON.stringify(doc) + "\n");
-    sceneSavedKey = st.rev + "|" + st.a + "|" + st.b;
+    sceneSavedKey = sceneSaveKey(st);
     return true;
+}
+/* What a save must follow: the bank (rev), the active scene, the on/offs. */
+function sceneSaveKey(st) {
+    return st.rev + "|" + sceneActive + "|" + JSON.stringify(sceneEnables);
 }
 
 /*
@@ -12005,18 +12093,9 @@ function scenesLoadFrom(dir, adoptLive) {
     sceneLoadConfirmed = false;
     sceneLoadRefused = false;
     sceneSetEdit(-1);
-    if (adoptLive) {
-        const counts = SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "count"));
-        if (counts.every((c) => c !== null && c !== undefined) && counts.some((c) => Number(c) > 0)) {
-            sceneLoadConfirmed = true;
-            sceneSavedKey = null;          /* save it soon */
-            debugLog("scenes: adopted the live bank (" + counts.join(",") + ")");
-            return true;
-        }
-    }
     const path = sceneFilePath(dir);
     const raw = host_file_exists(path) ? host_read_file(path) : "";
-    let doc = { v: 1, a: -1, b: -1, scenes: [] };
+    let doc = { v: 2, active: -1, enables: sceneDefaultEnables(), halves: [] };
     if (raw) {
         doc = parseSceneDoc(raw);
         if (!doc) {
@@ -12025,17 +12104,31 @@ function scenesLoadFrom(dir, adoptLive) {
             return false;
         }
     }
+    /* The active scene and the on/offs are JS state: from the file either way. */
+    sceneActive = doc.active;
+    sceneEnables = doc.enables;
+    if (adoptLive) {
+        const counts = SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "count"));
+        if (counts.every((c) => c !== null && c !== undefined) && counts.some((c) => Number(c) > 0)) {
+            sceneLoadConfirmed = true;
+            sceneSavedKey = null;          /* save it soon */
+            scenePushEnds();
+            debugLog("scenes: adopted the live bank (" + counts.join(",") + ")");
+            return true;
+        }
+    }
     if (typeof shadow_set_scene_xfade === "function") shadow_set_scene_xfade(0);
     if (!sceneLoadAll(sceneDocToLoads(doc))) {
         sceneLoadNextTry = Date.now() + SCENE_LOAD_RETRY_MS;
         debugLog("scenes: load into the DSP not confirmed -- will retry");
         return false;
     }
-    if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(doc.a, doc.b);
+    scenePushEnds();
     const st = sceneState();
-    sceneSavedKey = st ? (st.rev + "|" + doc.a + "|" + doc.b) : null;
+    sceneSavedKey = st ? sceneSaveKey(st) : null;
+    if (doc.legacy) sceneSavedKey = null;   /* rewrite a v1 file in the new shape */
     sceneLoadConfirmed = true;
-    debugLog("scenes: loaded " + doc.scenes.length + " scene(s) from " + path);
+    debugLog("scenes: loaded " + doc.halves.length + " scene side(s) from " + path);
     return true;
 }
 
@@ -12059,7 +12152,7 @@ function scenesTick() {
     }
     const st = sceneState();
     if (!st) return;
-    const key = st.rev + "|" + st.a + "|" + st.b;
+    const key = sceneSaveKey(st);
     if (key === sceneSavedKey) { sceneDirtyAt = 0; return; }
     if (!sceneDirtyAt) sceneDirtyAt = now;
     if (now - sceneDirtyAt >= SCENE_SAVE_DEBOUNCE_MS) {
@@ -16495,6 +16588,8 @@ function globalGridIoFor() {
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "recall_quantize":
                 return String(recallQuantizeValue);
+            case "scene_shift_vol":
+                return bit(sceneShiftVol);
             case "metronome_mode":
                 return String(metronomeMode);
             case "metronome_level":
@@ -16633,6 +16728,9 @@ function globalGridIoFor() {
             case "recall_quantize":
                 setRecallQuantize(parseInt(value, 10) || 0);
                 break;
+            case "scene_shift_vol":
+                setSceneShiftVol(on);
+                return;
             case "metronome_mode":
                 setMetronome(parseInt(value, 10) || 0, metronomeLevel);
                 return;
@@ -21476,7 +21574,10 @@ function reconcileStepObserve() {
      * looking at. */
     const onScreen = typeof shadow_get_display_mode !== "function" ||
                      shadow_get_display_mode() === 1;
-    const want = (hostGrid || !!moduleGrid) && onScreen;
+    /* The Scenes screen picks scenes with the steps (the shim consumes them
+     * outright while scene_surface says so -- no tap replays to Move). */
+    const scenesUp = view === VIEWS.SCENES;
+    const want = (hostGrid || !!moduleGrid || scenesUp) && onScreen;
     host_step_observe(want ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;
@@ -21492,11 +21593,12 @@ function reconcilePadBlock() {
      * the flags on its own when the display closes. */
     const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
     const scenesOwnPads = view === VIEWS.SCENES && onScreen;
-    if (typeof host_scene_pads === "function") host_scene_pads(scenesOwnPads ? 1 : 0);
+    /* 1 = pads, 2 = steps (SCENE_SURF_*): the Scenes screen takes both. */
+    if (typeof host_scene_surface === "function") host_scene_surface(scenesOwnPads ? 3 : 0);
     if (scenesOwnPads !== scenesPadsOwned) {
         scenesPadsOwned = scenesOwnPads;
         /* Regained: Move's colours were put back while we did not own them. */
-        if (scenesOwnPads) scenesScreen.paintPads(true);
+        if (scenesOwnPads) scenesScreen.paintLeds(true);
     }
     if (scenesOwnPads) {
         if (typeof host_pad_block === "function") host_pad_block(1);
@@ -27214,6 +27316,7 @@ globalThis.init = function() {
      * restart), else load the set's file. */
     try { scenesLoadFrom(activeSlotStateDir, true); } catch (e) { debugLog("scenes load failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadSceneShiftVol(); } catch (e) { debugLog("scene_shift_vol load failed: " + e); }
     try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
     try { loadSpeakerEq(); } catch (e) { debugLog("speaker_eq load failed: " + e); }
@@ -29171,6 +29274,7 @@ globalThis.onMidiMessageInternal = function(data) {
      * jog paged the grid drawn UNDERNEATH the keyboard while pad typing kept
      * working, because decodeInput claims CC 14 but returns null for pads. */
     if (scenesHandleArmedDelete(status, d1, d2)) { needsRedraw = true; return; }
+    if (scenesHandleEditKey(status, d1, d2)) { needsRedraw = true; return; }
     if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
         if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }

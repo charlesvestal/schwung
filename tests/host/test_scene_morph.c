@@ -83,7 +83,9 @@ int main(void) {
     memset(&t, 0, sizeof(t));
     CHECK(scene_apply_lock_verb(&t, "3 synth cutoff 0.25 obxd") == SCENE_OK &&
           scene_lock_count(&t, 3) == 1, "lock verb");
-    CHECK(scene_apply_lock_verb(&t, "16 synth cutoff 0.25 obxd") == SCENE_ERR_ARGS, "scene 16 rejected");
+    CHECK(scene_apply_lock_verb(&t, "32 synth cutoff 0.25 obxd") == SCENE_ERR_ARGS, "half 32 rejected");
+    CHECK(scene_apply_lock_verb(&t, "31 synth cutoff 0.25 obxd") == SCENE_OK && (t.pairs[0].mask >> 31) == 1, "half 31 fits in the mask");
+    scene_apply_unlock_verb(&t, "31 synth cutoff");
     CHECK(scene_apply_lock_verb(&t, "3 synth cutoff nan obxd") == SCENE_ERR_ARGS, "nan value rejected");
     CHECK(scene_apply_lock_verb(&t, "3 synth cutoff 0.2") == SCENE_ERR_ARGS, "missing module rejected");
     CHECK(scene_apply_lock_verb(&t, "3 synth cutoff 0.2 obxd extra") == SCENE_ERR_ARGS, "trailing token rejected");

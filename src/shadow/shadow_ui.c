@@ -267,6 +267,22 @@ static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+/* shadow_scene_shift_vol_set(on) -> void
+ *
+ * Shift + volume knob drives the scene fader (shadow_control_t.scene_shift_vol,
+ * read by the shim). Persisted here, as recall_quantize is: the register lives
+ * in SHM and does not survive a reboot. */
+static JSValue js_shadow_scene_shift_vol_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    shadow_control->scene_shift_vol = v ? 1 : 0;
+    features_json_set("scene_shift_vol", v ? "true" : "false");
+    return JS_UNDEFINED;
+}
+
 /* shadow_metronome_set(mode, level) -> void   (mode 0=off, 1=follow, 2=on)
  *
  * Writes shadow_control_t.metronome_mode / metronome_level, which the shim
@@ -766,16 +782,16 @@ static JSValue js_shadow_set_scene_unlock(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
-/* host_scene_pads(on) - the Scenes screen owns the pad LEDs (Move's pad LED
- * writes are stripped while the display is up; restored on release).
- * Restated every tick by the caller; idempotent against the SHM. */
-static JSValue js_host_scene_pads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+/* host_scene_surface(bits) - what the Scenes screen has taken from Move
+ * (SCENE_SURF_PADS | SCENE_SURF_STEPS). Restated every tick by the caller;
+ * idempotent against the SHM. */
+static JSValue js_host_scene_surface(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1 || !shadow_control) return JS_FALSE;
     int val = 0;
     JS_ToInt32(ctx, &val, argv[0]);
-    uint8_t next = val ? 1 : 0;
-    if (shadow_control->scene_pads != next) shadow_control->scene_pads = next;
+    uint8_t next = (uint8_t)(val & (SCENE_SURF_PADS | SCENE_SURF_STEPS));
+    if (shadow_control->scene_surface != next) shadow_control->scene_surface = next;
     return JS_TRUE;
 }
 
@@ -3625,6 +3641,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_scene_shift_vol_set", JS_NewCFunction(ctx, js_shadow_scene_shift_vol_set, "shadow_scene_shift_vol_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_set", JS_NewCFunction(ctx, js_shadow_metronome_set, "shadow_metronome_set", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_save_stems_set", JS_NewCFunction(ctx, js_shadow_save_stems_set, "shadow_save_stems_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_speaker_eq_set", JS_NewCFunction(ctx, js_shadow_speaker_eq_set, "shadow_speaker_eq_set", 1));
@@ -3699,7 +3716,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_edit", JS_NewCFunction(ctx, js_shadow_set_scene_edit, "shadow_set_scene_edit", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_scene_flash", JS_NewCFunction(ctx, js_shadow_clear_scene_flash, "shadow_clear_scene_flash", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_unlock", JS_NewCFunction(ctx, js_shadow_set_scene_unlock, "shadow_set_scene_unlock", 1));
-    JS_SetPropertyStr(ctx, global_obj, "host_scene_pads", JS_NewCFunction(ctx, js_host_scene_pads, "host_scene_pads", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_scene_surface", JS_NewCFunction(ctx, js_host_scene_surface, "host_scene_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step_is_hold", JS_NewCFunction(ctx, js_shadow_get_held_step_is_hold, "shadow_get_held_step_is_hold", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_delete_held", JS_NewCFunction(ctx, js_shadow_get_delete_held, "shadow_get_delete_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_lanes_driving_mask", JS_NewCFunction(ctx, js_shadow_get_lanes_driving_mask, "shadow_get_lanes_driving_mask", 0));
