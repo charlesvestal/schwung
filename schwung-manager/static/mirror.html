@@ -68,6 +68,7 @@
     <option value="screen">Screen</option>
     <option value="device">Device</option>
   </select>
+  <button id="mute" type="button" title="Hear the device here. Recordings always include its sound.">Unmute</button>
   <button id="png" type="button">Save PNG</button>
   <button id="rec" type="button">Record</button>
   <button id="logbtn" type="button">Log</button>
@@ -179,7 +180,7 @@ function connect() {
   setStatus('connecting…');
   lastEvent = Date.now();
   connects++;
-  const src = new EventSource('/stream-auto?v=2');
+  const src = new EventSource('/stream-auto?v=2' + (audioOn ? '&audio=1' : ''));
   es = src;
   src.onopen = () => { if (es === src) { alive(); setStatus('live', 'live'); } };
   src.onerror = () => {
@@ -191,11 +192,13 @@ function connect() {
     if (es !== src) return;
     alive();
     let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-    const raw = atob(p.data || '');
-    if (p.format === 'gray4' || p.format === 'gray4_packed') drawGray4(raw); else drawMono(raw);
-    hctx.putImageData(img, 0, 0);
-    sourceLabel = p.source || p.format || '';
-    frames++; dirty = true;
+    later(() => {
+      const raw = atob(p.data || '');
+      if (p.format === 'gray4' || p.format === 'gray4_packed') drawGray4(raw); else drawMono(raw);
+      hctx.putImageData(img, 0, 0);
+      sourceLabel = p.source || p.format || '';
+      frames++; dirty = true;
+    });
   };
   src.addEventListener('hb', e => {
     if (es !== src) return;
@@ -212,10 +215,13 @@ function connect() {
     if (raw.length < OFF.size) return;
     const u = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) u[i] = raw.charCodeAt(i);
-    surf = u; surfView = new DataView(u.buffer);
-    curFrame = p.frame || curFrame;
-    dirty = true; renderLog();
+    later(() => {
+      surf = u; surfView = new DataView(u.buffer);
+      curFrame = p.frame || curFrame;
+      dirty = true; renderLog();
+    });
   });
+  src.addEventListener('pcm', e => { if (es === src) { alive(); pcmEvent(e.data); } });
   src.addEventListener('e16', e => { if (es === src) { alive(); e16Event(e.data); } });
 }
 
@@ -235,7 +241,8 @@ setInterval(() => {
   if (quiet > WATCHDOG_MS) { reconnectLater(); return; }
   if (es.readyState === EventSource.OPEN) {
     if (quiet > 2500) setStatus('no data for ' + Math.round(quiet / 1000) + ' s', 'stale');
-    else setStatus('live' + (sourceLabel ? ' — ' + sourceLabel : '') + ' — ' + (fps ? fps + ' fps' : 'screen idle'), 'live');
+    else setStatus('live' + (sourceLabel ? ' — ' + sourceLabel : '') + ' — ' + (fps ? fps + ' fps' : 'screen idle') +
+                   (audioOn ? ' — audio ' + (audioPrimed ? Math.round(audioDelay * 1000) + ' ms behind' : 'buffering…') : ''), 'live');
   }
 }, 500);
 document.addEventListener('visibilitychange', () => {
@@ -522,6 +529,133 @@ document.getElementById('logbtn').addEventListener('click', e => {
   if (logShown) renderLog(); if (logShown && !surfView) logEl.innerHTML = '<div class="empty">Waiting for the device…</div>';
 });
 
+/* ---------------- sound ----------------
+ * `pcm` events carry the capture mix (audio_live_shm.h): 44.1 kHz stereo
+ * int16, with `pos` the device's frame index so a gap is visible. A worklet
+ * keeps a jitter buffer of JITTER_S, filling small gaps with silence and
+ * trimming itself when a Wi-Fi burst overfills it. Everything VISUAL is then
+ * applied that much later (later() below), so picture and sound line up --
+ * they arrive together on one stream, and only the sound waits in a buffer. */
+const JITTER_S = 0.15;
+const WORKLET = `
+class MirrorPcm extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.cap = 44100 * 2;
+    this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
+    this.w = 0; this.r = 0; this.count = 0; this.primed = false; this.expect = -1;
+    this.target = Math.round(${JITTER_S} * 44100);
+    this.step = 44100 / sampleRate; this.frac = 0; this.reportIn = 0;
+    this.port.onmessage = e => this.push(e.data.pos, e.data.s);
+  }
+  put(l, r) {
+    if (this.count >= this.cap) { this.r = (this.r + 1) % this.cap; this.count--; }
+    this.L[this.w] = l; this.R[this.w] = r; this.w = (this.w + 1) % this.cap; this.count++;
+  }
+  push(pos, s) {
+    const n = s.length >> 1;
+    if (this.expect >= 0 && pos !== this.expect) {
+      const gap = pos - this.expect;
+      if (gap > 0 && gap < 22050) for (let i = 0; i < gap; i++) this.put(0, 0);
+      else { this.w = this.r = this.count = 0; this.primed = false; }
+    }
+    for (let i = 0; i < n; i++) this.put(s[2 * i] / 32768, s[2 * i + 1] / 32768);
+    this.expect = pos + n;
+    const over = this.count - (this.target + 13230);        /* > 300 ms past target */
+    if (over > 0) { this.r = (this.r + over) % this.cap; this.count -= over; }
+  }
+  process(inputs, outputs) {
+    const o = outputs[0], L = o[0], R = o[1] || o[0];
+    for (let i = 0; i < L.length; i++) {
+      if (!this.primed) { if (this.count >= this.target) this.primed = true; else { L[i] = R[i] = 0; continue; } }
+      if (this.count < 2) { this.primed = false; L[i] = R[i] = 0; continue; }
+      L[i] = this.L[this.r]; R[i] = this.R[this.r];
+      this.frac += this.step;
+      while (this.frac >= 1 && this.count > 1) { this.frac -= 1; this.r = (this.r + 1) % this.cap; this.count--; }
+    }
+    if ((this.reportIn -= L.length) <= 0) {
+      this.reportIn = sampleRate / 4;
+      this.port.postMessage({ buffered: this.count / 44100, primed: this.primed });
+    }
+    return true;
+  }
+}
+registerProcessor('mirror-pcm', MirrorPcm);`;
+
+/* Sound is ALWAYS streamed and recorded; the button only says whether this
+ * browser plays it, and starts muted. A browser will not start audio before a
+ * user gesture, so the first click anywhere on the page (Record included)
+ * starts it, and only then is the stream asked for `pcm`. */
+let audioOn = false, audioBroken = false, actx = null, pcmNode = null, listenGain = null, recDest = null;
+let audioDelay = 0, audioPrimed = false, listening = false;
+const muteBtn = document.getElementById('mute');
+
+let audioStarting = null;
+function ensureAudio() {
+  if (audioOn || audioBroken) return Promise.resolve(audioOn);
+  if (!audioStarting) audioStarting = startAudio().catch(() => false).then(ok => {
+    audioStarting = null;
+    if (!ok) { audioBroken = true; muteBtn.disabled = true; muteBtn.title = 'This browser cannot play the stream'; return false; }
+    audioOn = true;
+    flushLater();
+    connect();                       /* now ask for `pcm` */
+    return true;
+  });
+  return audioStarting;
+}
+
+async function startAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !window.AudioWorkletNode) return false;
+  try { actx = new AC({ sampleRate: 44100, latencyHint: 'interactive' }); } catch (_) { actx = new AC(); }
+  const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+  await actx.audioWorklet.addModule(url);
+  URL.revokeObjectURL(url);
+  pcmNode = new AudioWorkletNode(actx, 'mirror-pcm', { outputChannelCount: [2] });
+  pcmNode.port.onmessage = e => {
+    audioPrimed = e.data.primed;
+    const want = e.data.buffered + (actx.baseLatency || 0) + (actx.outputLatency || 0);
+    audioDelay = audioDelay ? audioDelay + (want - audioDelay) * 0.2 : want;   /* smoothed */
+  };
+  listenGain = actx.createGain();
+  listenGain.gain.value = listening ? 1 : 0;
+  recDest = actx.createMediaStreamDestination();
+  pcmNode.connect(listenGain).connect(actx.destination);    /* also what keeps the node pulled */
+  pcmNode.connect(recDest);
+  await actx.resume();
+  return true;
+}
+
+muteBtn.addEventListener('click', async () => {
+  listening = !listening;
+  muteBtn.textContent = listening ? 'Mute' : 'Unmute';
+  muteBtn.classList.toggle('on', listening);
+  if (await ensureAudio()) listenGain.gain.value = listening ? 1 : 0;
+});
+for (const ev of ['pointerdown', 'keydown'])
+  window.addEventListener(ev, () => { ensureAudio(); }, { capture: true, passive: true });
+
+function pcmEvent(data) {
+  if (!audioOn || !pcmNode) return;
+  let p; try { p = JSON.parse(data); } catch (_) { return; }
+  const raw = atob(p.d || '');
+  const buf = new ArrayBuffer(raw.length);
+  const u = new Uint8Array(buf);
+  for (let i = 0; i < raw.length; i++) u[i] = raw.charCodeAt(i);
+  pcmNode.port.postMessage({ pos: p.pos, s: new Int16Array(buf) }, [buf]);
+}
+
+/* Visual updates wait out the sound's buffer while sound is on. */
+const pending = [];
+function later(fn) {
+  if (!audioOn || !audioDelay) { fn(); return; }
+  pending.push([performance.now() + audioDelay * 1000, fn]);
+}
+function runLater(now) {
+  while (pending.length && pending[0][0] <= now) pending.shift()[1]();
+}
+function flushLater() { while (pending.length) pending.shift()[1](); }
+
 /* ---------------- capture ---------------- */
 const what = document.getElementById('what');
 try { const w = localStorage.getItem('mirror.what'); if (w) what.value = w; } catch (_) {}
@@ -557,15 +691,21 @@ document.getElementById('png').addEventListener('click', () => {
 
 let recorder = null, chunks = [], recKind = 'both';
 const recBtn = document.getElementById('rec');
-recBtn.addEventListener('click', () => {
+recBtn.addEventListener('click', async () => {
   if (recorder) { recorder.stop(); return; }
+  await ensureAudio();               /* recordings always carry the sound */
   if (!window.MediaRecorder || !out.captureStream) { recBtn.textContent = 'Record unsupported'; return; }
   recKind = what.value;
   composite(recKind);
-  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  const withAudio = audioOn && recDest;
+  const types = withAudio
+    ? ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+    : ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
   const type = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const stream = out.captureStream(30);
+  if (withAudio) for (const t of recDest.stream.getAudioTracks()) stream.addTrack(t);
   chunks = [];
-  try { recorder = new MediaRecorder(out.captureStream(30), type ? { mimeType: type } : undefined); }
+  try { recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined); }
   catch (_) { recorder = null; recBtn.textContent = 'Record unsupported'; return; }
   recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
   recorder.onstop = () => {
@@ -623,6 +763,7 @@ function e16Event(data) {
 let dirty = true;
 function tick() {
   const now = performance.now();
+  runLater(now);
   if (dirty || animating) {
     dirty = false;
     dctx.setTransform(dpr, 0, 0, dpr, 0, 0);

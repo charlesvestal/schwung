@@ -43,6 +43,7 @@
 #include "host/e16_claim.h"
 #include "host/cc_claim.h"
 #include "host/surface_live_shm.h"
+#include "host/audio_live_shm.h"
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
@@ -157,6 +158,12 @@ int (*real_ioctl)(int, unsigned long, ...) = NULL;  /* Libc ioctl for non-hook c
 
 /* Shadow structs from shadow_constants.h: shadow_control_t, shadow_ui_state_t, shadow_param_t */
 static shadow_control_t *shadow_control = NULL;
+/* The audio for the mirror (audio_live_shm.h), written only while Mirror
+ * Display is on. */
+static audio_live_shm_t *audio_live_shm = NULL;
+static inline int audio_live_wanted(void) {
+    return audio_live_shm && shadow_control && shadow_control->display_mirror;
+}
 static uint8_t shadow_display_mode = 0;
 
 static shadow_ui_state_t *shadow_ui_state = NULL;
@@ -3006,6 +3013,16 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture && !any_filter) {
         int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
         memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
+        /* The mirror's audio. No unity_view is built on this path, so Move's
+         * mix is un-scaled by the same smoothed 1/mv the full path uses for
+         * it -- otherwise the stream would jump in level as a slot loads. */
+        if (audio_live_wanted()) {
+            static float mv_live_smoothed = 1.0f;
+            mv_live_smoothed += (shadow_master_volume - mv_live_smoothed) * 0.1f;
+            float inv = (mv_live_smoothed > 0.001f) ? 1.0f / mv_live_smoothed : 1.0f;
+            if (inv > 50.0f) inv = 50.0f;
+            audio_live_push(audio_live_shm, mailbox_audio, FRAMES_PER_BLOCK, inv);
+        }
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
         native_bridge_capture_mv = shadow_master_volume;
         native_bridge_split_valid = 1;
@@ -3865,6 +3882,11 @@ skip_la_rebuild:
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(unity_view);
 
+    /* The mirror's audio: what Skipback records, finished here (no writer of
+     * unity_view below this point). */
+    if (audio_live_wanted())
+        audio_live_push(audio_live_shm, unity_view, FRAMES_PER_BLOCK, 1.0f);
+
     /*
      * Schwung's metronome. Move mixes its own at MASTER, which rebuild_from_la
      * discards along with everything outside the four per-track channels, so
@@ -4507,6 +4529,9 @@ static void init_shadow_shm(void)
     surface_live_shm = (surface_live_shm_t *)shadow_shm_map(SURFACE_LIVE_SHM_NAME,
                                                            sizeof(surface_live_shm_t), 1, 1);
     if (surface_live_shm) surface_live_init(surface_live_shm, &surface_live_writer);
+    audio_live_shm = (audio_live_shm_t *)shadow_shm_map(AUDIO_LIVE_SHM_NAME,
+                                                       sizeof(audio_live_shm_t), 1, 1);
+    if (audio_live_shm) audio_live_init(audio_live_shm);
 
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
     shadow_control = (shadow_control_t *)shadow_shm_map(SHM_SHADOW_CONTROL,
