@@ -1785,10 +1785,20 @@ passes the host's write wrapper. Identity, state, bypass, presets and every
 suffixed view are never locked (`scene_edit_subkey_eligible`). Armed, the
 snapshot auditions at 100% and **a read answers the lock**. **Delete held
 while armed** turns the write into an UNLOCK (`SCENE_EDIT_UNLOCK`); Delete is
-claimed while armed, because a lone Delete reaching Move deletes a clip. A
+claimed while armed, because a lone Delete reaching Move deletes a clip.
+**Armed, the scene OWNS Delete + knob.** Unarmed, the same gesture clears the
+knob's clip automation (`lanes:clear_param`, on the TOUCH) -- and since the
+touch precedes the turn, an armed Delete + knob used to do both: the knob left
+the snapshot AND its automation was erased. The grid's lane clear now stands
+down while `scene_edit` is set (`sceneArmedOf`, SHM-defaulted so a module-drawn
+grid gets it too); disarm to clear automation. A
 write the arm cannot take goes to the knob and the badge flashes `FULL`
 (64 pairs per scope) or `N/A`. The badge (`EDIT A3`) is drawn over every
 screen while armed, module-drawn frames included.
+
+**The Shift+Vol slider answers EVERY detent**, not only a change: a turn
+clockwise at 100% B is clamped and moves nothing, and showed nothing. The shim
+bumps `scene_turn_seq` per detent and the overlay rises on any change of it.
 
 **The LIVE TAKEOVER: a knob turned on a parameter a scene is driving is
 heard.** At 100% B with B locking noise, a turn used to change only the knob's

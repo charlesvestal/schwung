@@ -772,6 +772,7 @@ static JSValue js_shadow_get_scene_state(JSContext *ctx, JSValueConst this_val, 
     JS_SetPropertyStr(ctx, o, "rev", JS_NewInt32(ctx, shadow_control->scene_rev));
     JS_SetPropertyStr(ctx, o, "active", JS_NewInt32(ctx, scene_int(shadow_control->scene_active)));
     JS_SetPropertyStr(ctx, o, "pcSeq", JS_NewInt32(ctx, shadow_control->scene_pc_seq));
+    JS_SetPropertyStr(ctx, o, "turnSeq", JS_NewInt32(ctx, shadow_control->scene_turn_seq));
     return o;
 }
 

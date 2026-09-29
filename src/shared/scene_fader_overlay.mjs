@@ -17,9 +17,11 @@ export const HOLD_MS = 1200;           /* stays this long after the last move */
 
 /**
  * io: { now() -> ms }.
- * observe(x, label, suppressed) once per tick: x the fader 0..1, label
- *   { a: "A3", b: "B3" } for the active scene's ends, suppressed = the
- *   Scenes screen is up.
+ * observe(x, label, suppressed, turned) once per tick: x the fader 0..1,
+ *   label { a: "A3", b: "B3" } for the active scene's ends, suppressed = the
+ *   Scenes screen is up, turned = the fader was TURNED since the last tick
+ *   (Shift+Vol), whether or not x changed -- a turn past either end is
+ *   clamped, and it must still show where the fader is.
  * frame() -> null, or { y, payload: { x, label } } -- call once per drawn frame.
  */
 export function createSceneFaderOverlay(io) {
@@ -28,7 +30,7 @@ export function createSceneFaderOverlay(io) {
     let lastMove = -Infinity;
     let want = null;
 
-    function observe(x, label, suppressed) {
+    function observe(x, label, suppressed, turned) {
         if (!Number.isFinite(x)) return;
         /* The first observation is a baseline, not a move: a boot, a set load
          * or opening the shadow UI must not raise the panel. */
@@ -42,7 +44,7 @@ export function createSceneFaderOverlay(io) {
             return;
         }
         const t = io.now();
-        if (moved) lastMove = t;
+        if (moved || turned) lastMove = t;
         want = t - lastMove < HOLD_MS ? { x, label } : null;
     }
 

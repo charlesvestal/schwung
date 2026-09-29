@@ -4470,6 +4470,7 @@ static void init_shadow_shm(void)
         shadow_control->scene_pc_channel = 16; /* ... and this one */
         shadow_control->scene_active = SCENE_NONE;
         shadow_control->scene_pc_seq = 0;
+        shadow_control->scene_turn_seq = 0;
         for (int k = 0; k < 16; k++) {         /* scene k = Ak + Bk until the UI says */
             shadow_control->scene_pairs[k * 2] = (uint8_t)k;
             shadow_control->scene_pairs[k * 2 + 1] = (uint8_t)k;
@@ -9800,6 +9801,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (q < 0) q = 0;
                     if (q > 65535) q = 65535;
                     shadow_control->scene_xfade_q = (uint16_t)q;
+                    /* Every detent, clamped or not: the slider must answer
+                     * a turn at either end too (scene_turn_seq). */
+                    if (delta != 0) shadow_control->scene_turn_seq++;
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     continue;
                 }
