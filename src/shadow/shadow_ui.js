@@ -12102,11 +12102,16 @@ function sceneFaderLabel() {
 }
 /* Once per tick, before the redraw gate: a move must be seen on Move's own
  * screen too, where nothing else asks for a redraw. */
+let sceneTurnSeqSeen = null;
 function sceneFaderObserve() {
     const st = sceneState();
     if (!st) return;
+    /* A Shift+Vol detent the shim counted, even one clamped at an end. */
+    const turned = Number.isInteger(st.turnSeq) && sceneTurnSeqSeen !== null &&
+                   st.turnSeq !== sceneTurnSeqSeen;
+    if (Number.isInteger(st.turnSeq)) sceneTurnSeqSeen = st.turnSeq;
     sceneFaderOverlay.observe(st.xfade, sceneFaderLabel(),
-                              view === VIEWS.SCENES && !shadowDisplayHidden());
+                              view === VIEWS.SCENES && !shadowDisplayHidden(), turned);
 }
 const sceneFaderCtx = () => ({ fillRect: fill_rect, print, textWidth: text_width });
 /* The shadow UI is the screen: paint over the view just drawn. */

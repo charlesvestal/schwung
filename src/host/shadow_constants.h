@@ -813,6 +813,16 @@ typedef struct shadow_control_t {
     volatile uint8_t scene_active;              /* 0..15, SCENE_NONE */
     volatile uint8_t scene_pc_seq;
     volatile uint8_t scene_pairs[32];           /* [2k] A snapshot, [2k+1] B; SCENE_NONE = none */
+    /*
+     * BUMPED ON EVERY SHIFT+VOLUME DETENT, whether or not the fader moved.
+     * The overlay rose only on a CHANGE of the fader, so a turn clockwise at
+     * 100% B -- clamped, so nothing changed -- showed nothing, and a gesture
+     * that answers with nothing reads as broken. The UI raises the slider on
+     * any change of this counter. Wraps; only inequality is meaningful.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t scene_turn_seq;
 } shadow_control_t;
 
 
