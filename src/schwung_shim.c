@@ -77,7 +77,6 @@ extern align_capture_t g_align_capture;
 #include "host/audio_in_restore.h"
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
-#include "host/step_strip.h"
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
@@ -1054,11 +1053,6 @@ void shim_gesture_state(int *shift, int *vol, unsigned *pending,
     if (vol_during) *vol_during = v | ((shadow_steps_held_mask & 0xFFFFu) << 16);
 }
 
-/* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
- * the per-slot lane push in the next pre-transfer. A flag rather than a direct
- * call because the gesture is decoded in the post-ioctl scan, where a slot's
- * plugin instance is not the thing in hand. */
-static volatile int lane_double_pending = 0;
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -2181,18 +2175,6 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
-        /* TAKEN ONCE, FOR ALL FOUR SLOTS, and cleared here rather than in
-         * post_transfer. The gesture is detected in midi_monitor(), which runs
-         * in PRE-transfer -- so a clear in post_transfer wiped the flag in the
-         * same frame it was set and no slot ever saw it. Measured: Move
-         * doubled the clip and the lane reported nothing, three placements
-         * running. Reading it into a local first also means every slot sees
-         * the same answer, which a mid-loop clear would not give. */
-        /* With the live model, Double Loop is mirrored as a CONFIRMED paste
-         * (move_model_sync.c) -- journaled, so Move's Undo follows it too. */
-        const int lane_double_now = lane_double_pending && !move_model_sync_active();
-        lane_double_pending = 0;
-
         /* LANE COMMANDS FROM THE LIVE MODEL (move_model_sync.h): a paste Move
          * made, its undo/redo, a deleted clip's stash, its restore, a copy.
          * Decided off this thread; applied here because only the callback may
@@ -2270,45 +2252,6 @@ static void shadow_inprocess_render_to_buffer(void) {
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
 
-                /* AND WHETHER A WRITE MAY USE THAT ROW.
-                 *
-                 * The row above is the PLAYING clip; a p-lock wants the clip
-                 * on screen. When a clip plays while the user edits a new
-                 * one, those differ and the lock landed on the playing clip.
-                 * Carried as a param rather than a new argument, because this
-                 * hand-off crosses the dlsym'd seam and appending to it is
-                 * what boot-looped a device once already.
-                 *
-                 * ON CHANGE ONLY: a per-block write would serve a param
-                 * request on every frame, which is the cost this file avoids
-                 * everywhere else.
-                 *
-                 * TWO VALUES, and the length is not optional: a write keyed to
-                 * the placeholder needs the length of the clip it is being
-                 * made ON, and `loop_len` above is the PLAYING clip's. Pushed
-                 * first, so the chain never sees "unconfirmed" without the
-                 * geometry that makes it usable. */
-                if (shadow_plugin_v2->set_param && s < SHADOW_CHAIN_INSTANCES) {
-                    static int16_t last_unconf[SHADOW_CHAIN_INSTANCES];
-                    static int32_t last_elen[SHADOW_CHAIN_INSTANCES];
-                    static int8_t unconf_seen[SHADOW_CHAIN_INSTANCES];
-                    const int unconf = g_write_unconfirmed[s] ? 1 : 0;
-                    const int elen = g_write_edit_len_x100[s];
-                    if (!unconf_seen[s] || last_elen[s] != elen) {
-                        last_elen[s] = elen;
-                        char buf[24];
-                        snprintf(buf, sizeof(buf), "%d.%02d", elen / 100, elen % 100);
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:edit_len", buf);
-                    }
-                    if (!unconf_seen[s] || last_unconf[s] != unconf) {
-                        last_unconf[s] = (int16_t)unconf;
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:edit_unconfirmed",
-                                                    unconf ? "1" : "0");
-                    }
-                    unconf_seen[s] = 1;
-                }
                 /* THE KILL SWITCH, pushed on change like everything else
                  * here. ON unless lanes_off exists: see SHIM_FLAG_LANES_OFF. */
                 if (shadow_plugin_v2->set_param) {
@@ -2321,27 +2264,6 @@ static void shadow_inprocess_render_to_buffer(void) {
                         en_seen[s] = 1;
                         shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                                     "lanes:enabled", en ? "1" : "0");
-                    }
-                }
-
-                /* THE ROW A BLIND TAKE SHOULD ADOPT ONTO. Published by the
-                 * worker as the row that newly appeared in Song.abl, which is
-                 * the clip the user just made — as against the PLAYING row,
-                 * which is what adoption used and which belongs to a
-                 * different clip whenever something else is playing. */
-                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
-                    static uint32_t last_new_gen[SHADOW_CHAIN_INSTANCES];
-                    const uint32_t g = shadow_clip_new_generation();
-                    if (s < SHADOW_CHAIN_INSTANCES && last_new_gen[s] != g) {
-                        last_new_gen[s] = g;
-                        /* -1 IS FORWARDED TOO. The clear is the half that
-                         * matters: a row left standing from an old parse is
-                         * confidently wrong, and adoption would take it over
-                         * the clip the user just made. */
-                        char v[8];
-                        snprintf(v, sizeof(v), "%d", shadow_clip_new_slot(s));
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:new_row", v);
                     }
                 }
             }
@@ -2366,91 +2288,6 @@ static void shadow_inprocess_render_to_buffer(void) {
                                                 armed ? "1" : "0");
                     lane_armed_inst[s] = linst;
                     lane_armed_seen[s] = armed;
-                }
-            }
-
-            /* MOVE DOUBLED THE LOOP (Shift+Step 15). Its manual calls that
-             * doubling "notes and automation", so every lane on the playing
-             * clip copies its points one loop-length later.
-             *
-             * Pushed the frame the gesture is SEEN rather than when the
-             * clip's new length appears: Move writes that ~10 s later, and a
-             * lane that waited would be silent over the new bars until then --
-             * indistinguishable from one that simply failed. The flag is
-             * consumed here, once per slot, because the gesture is a moment
-             * and this loop is where a slot's instance is in hand. */
-            /* ...AND ONLY ON THE TRACK MOVE ACTUALLY DOUBLED.
-             *
-             * This pushed to every slot in the loop, so one Shift+Step 15
-             * doubled the lanes of all FOUR tracks. The three that were not
-             * doubled got duplicate points one loop-length past their own
-             * window — dormant, and therefore invisible, until that clip is
-             * lengthened for its own reasons, at which point automation
-             * nobody recorded plays in the new bars.
-             *
-             * Move's gesture acts on the SELECTED track, which the shim
-             * already decodes for the strip observer (clip_selected_track).
-             * A track it cannot name doubles nothing, which is the right
-             * direction to fail in: a missed double is a gesture to repeat,
-             * a spurious one is automation that appears weeks later. */
-            if (shadow_plugin_v2->set_param && lane_double_now &&
-                clip_selected_track() == (int)s)
-                shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                            "lanes:double", "1");
-
-            /* A DELETED clip orphans its lanes, and the crossing is
-             * worker-publishes / callback-pushes.
-             *
-             * The worker is the only thing that can tell a deletion from a
-             * clip Move has not saved yet (it holds the before/after parse),
-             * and it must not push this itself: chain_set_clip_deleted is a
-             * module entry point, i.e. THIS thread, and the instance is only
-             * safe because RT is its single writer.
-             *
-             * Once per GENERATION, not per block: a counter cannot be
-             * resurrected by a preempted worker the way a flag can, and the
-             * seen-value lives here, in the consumer, so the producer never
-             * has to unwrite anything. Bounded at 32 marks on the frame a
-             * deletion lands and zero on every other frame.
-             *
-             * Every set bit goes to every slot. chain_set_clip_deleted matches
-             * on (track, slot), so a slot holding no lane for that position
-             * does nothing -- and that is what keeps this correct if a lane is
-             * ever bound to a track other than its own slot index. */
-            if (shadow_chain_set_clip_deleted) {
-                static uint32_t lane_deleted_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t gen = shadow_clip_deleted_generation();
-                if (gen != lane_deleted_gen_seen[s]) {
-                    uint32_t mask = shadow_clip_deleted_mask();
-                    lane_deleted_gen_seen[s] = gen;
-                    for (int b = 0; b < CLIP_TRACKS * CLIP_SLOTS; b++) {
-                        if (!(mask & (1u << b))) continue;
-                        shadow_chain_set_clip_deleted(
-                            shadow_chain_slots[s].instance,
-                            b / CLIP_SLOTS, b % CLIP_SLOTS);
-                    }
-                }
-            }
-
-            /* A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT, published by
-             * the worker the same way a deletion is and consumed here for the
-             * same reason: this is where a slot's instance is in hand.
-             *
-             * Only the track whose slot index matches is told, because a lane
-             * lives on the chain instance that owns that Move track -- the
-             * same rule the deletion consumer above states. */
-            if (shadow_plugin_v2->set_param) {
-                static uint32_t lane_copy_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t cgen = shadow_clip_copy_generation();
-                if (cgen != lane_copy_gen_seen[s]) {
-                    lane_copy_gen_seen[s] = cgen;
-                    if (cgen != 0 && shadow_clip_copy_track() == (int)s) {
-                        char arg[32];
-                        snprintf(arg, sizeof(arg), "%d %d",
-                                 shadow_clip_copy_src(), shadow_clip_copy_dst());
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:copy_clip", arg);
-                    }
                 }
             }
 
@@ -6366,29 +6203,6 @@ void midi_monitor()
             continue;
         }
 
-        /* SHIFT + STEP 15 = Move's DOUBLE LOOP, which its own manual describes
-         * as doubling "notes and automation" -- so every lane on that clip
-         * copies its points one loop-length later (lanes:double).
-         *
-         * HERE, in the hotkey scan, because this is the only cable-0 walk that
-         * runs WHATEVER IS ON SCREEN. Three earlier placements each failed for
-         * the same kind of reason and each was measured rather than reasoned:
-         * inside the shadow-display branch (never runs with Move in front),
-         * inside the `type == 0xB0` branch (a note cannot match), and inside a
-         * second scan that turned out to be display-gated too. Every time, the
-         * clip doubled and the lane reported nothing.
-         *
-         * Never swallowed: Move must still perform its half. Step 15 is note
-         * 30 (steps are notes 16-31), and `shiftHeld` is this scan's own
-         * state, updated a few lines below -- so the gesture is read from the
-         * same place that defines what "Shift" means. */
-        if (cable == 0x00 && (midi_0 & 0xF0) == 0x90 && midi_1 == 30 &&
-            midi_2 > 0) {
-            if (shiftHeld) lane_double_pending = 1;
-            shadow_log(shiftHeld ? "lanes: Double Loop gesture seen"
-                                 : "lanes: step 15 with no Shift");
-        }
-
         int controlMessage = 0xb0;
         if (midi_0 == controlMessage)
         {
@@ -7399,27 +7213,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      *
      * That cost a measurement: with the knob grid up, no complete frame ever
      * accumulated, which read as "Move stopped rendering" when in fact we
-     * stopped looking. Move's step editor carries the clip's bar count and a
-     * loop-relative playhead -- the two facts Song.abl is ~35 s late with for
-     * a clip the user just made -- so this is the one path that can supply
-     * them during the workflow that needs them. */
+     * stopped looking. (It fed the step-strip decoder, now retired -- the live
+     * model answers the clip's length and page; the PIN scanner and the
+     * display dump still read the accumulated frame.) */
     if (global_mmap_addr) {
         uint8_t *mem_any = (uint8_t *)global_mmap_addr;
         uint8_t slice_any = mem_any[80];
         if (slice_any >= 1 && slice_any <= 6) {
             int idx = slice_any - 1;
-            if (pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172)) {
-                /* A WHOLE frame: decode Move's step-editor bar strip from it.
-                 *
-                 * Here rather than in the worker because the frame is only
-                 * whole at this instant -- the next slice overwrites it -- and
-                 * because the selected track must be read NOW: the editor
-                 * shows one track, and pairing the reading with whatever is
-                 * selected 200 ms later attributes a bar count to the wrong
-                 * clip. The decode is a scan of 128 columns in two pages, no
-                 * allocation and no I/O. See step_strip.h. */
-                step_strip_observe(pin_display_frame(), clip_selected_track());
-            }
+            (void)pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172);
         }
     }
 
