@@ -332,11 +332,9 @@ export function createScenesScreen(io) {
 
             /* THE PADS, EXACTLY AS THEY SIT UNDER YOUR HANDS: four rows of
              * eight, the scenes' A sides on the top two, B on the bottom two
-             * (pad k = scene k in both). ONE SHAPE PER STATE, nothing
-             * shared: outline = on, nothing locked (the knobs); filled = on,
-             * with locks; X = switched off; box-in-box = being edited. The
-             * active scene is the header's to name (and its pads light
-             * brightest) -- a dot here collided with the other marks. */
+             * (pad k = scene k in both). Outline = on, nothing locked (the
+             * knobs); filled = on, with locks; dotted outline = switched off;
+             * a centre dot = the active scene; box-in-box = being edited. */
             const gx = 9, pitch = 9, cw = 8, chh = 6;
             const rowY = [12, 19, 28, 35];
             ctx.print(1, 15, "A", 1);
@@ -353,13 +351,19 @@ export function createScenesScreen(io) {
                         ctx.fillRect(x, y, cw, 1, 1); ctx.fillRect(x, y + chh - 1, cw, 1, 1);
                         ctx.fillRect(x, y, 1, chh, 1); ctx.fillRect(x + cw - 1, y, 1, chh, 1);
                     } else {
-                        /* OFF: an X and no box -- nothing else here is a cross */
-                        for (let i = 0; i < chh; i++) {
-                            const dx = Math.round(i * (cw - 2) / (chh - 1));
-                            ctx.fillRect(x + dx, y + i, 2, 1, 1);
-                            ctx.fillRect(x + cw - 2 - dx, y + i, 2, 1, 1);
-                        }
+                        /* OFF: a DOTTED outline, strictly alternating all the
+                         * way round -- the 8x6 border is 24 pixels, so the
+                         * pattern closes with no two dots (or gaps) touching
+                         * at a corner. */
+                        let i = 0;
+                        const dot = (px, py) => { if ((i++ & 1) === 0) ctx.fillRect(px, py, 1, 1, 1); };
+                        for (let d = 0; d < cw - 1; d++) dot(x + d, y);
+                        for (let d = 0; d < chh - 1; d++) dot(x + cw - 1, y + d);
+                        for (let d = cw - 1; d > 0; d--) dot(x + d, y + chh - 1);
+                        for (let d = chh - 1; d > 0; d--) dot(x, y + d);
                     }
+                    /* The active scene: a dot in the middle (cut out of a filled cell). */
+                    if (n === k) ctx.fillRect(x + 3, y + 2, 2, 2, on && has ? 0 : 1);
                     if (s.edit === h) {
                         ctx.fillRect(x + 1, y + 1, cw - 2, chh - 2, 0);
                         ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 1);
