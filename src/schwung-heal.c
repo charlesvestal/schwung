@@ -12,10 +12,11 @@
  * + cable-0 transport).
  *
  * Threat model: the device is owned by the user (they already have
- * ableton SSH and can replace files in /data freely). This helper has
- * no command-line input besides an optional --reboot flag — it can
- * only ever do exactly what's hardcoded below (copy two specific
- * paths). That's the whole point of the audit: anything dangerous
+ * ableton SSH and can replace files in /data freely). This helper's
+ * command line is a closed set (host/heal_args.h): an optional --reboot,
+ * or one of two launcher verbs that each select a hardcoded systemctl
+ * call — it can only ever do exactly what's hardcoded below (copy two
+ * specific paths, stop or start one specific unit). That's the whole point of the audit: anything dangerous
  * has to be written into source and reviewed.
  *
  * Idempotent: if the destination already matches the source, it's a
@@ -53,6 +54,12 @@
  * descriptors — see install_one_tool_helper(). And a tool's failure there is
  * reported but never folded into the exit code, because the exit code gates
  * --reboot and that reboot belongs to the mirrors below.
+ *
+ * Launcher verbs: --pause-launcher / --resume-launcher stop and start
+ * move-launcher.service and do nothing else (see host/heal_args.h). They are
+ * what lets launch-standalone.sh keep systemd from reviving the stock stack on
+ * top of a standalone program. The verb comes from a closed pair and the unit
+ * and systemctl path are compile-time constants.
  */
 
 #include <dirent.h>
@@ -64,8 +71,10 @@
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include "host/heal_args.h"
 #include "host/heal_tool_id.h"
 
 /* Stream sfd -> dfd. Returns 0 on success, -1 on error (message printed).
@@ -299,6 +308,39 @@ static int install_tool_helpers(void) {
     return failures;
 }
 
+/* `systemctl <verb> move-launcher.service`, waited for. verb is one of the
+ * two literals heal_launcher_verb() returns; nothing from argv reaches execl.
+ * Returns 0 on success, 2 on failure (including no systemd on this image). */
+static int launcher_unit(const char *verb) {
+    if (access(HEAL_SYSTEMCTL, X_OK) != 0) {
+        fprintf(stderr, "schwung-heal: %s not present; no launcher to %s\n",
+                HEAL_SYSTEMCTL, verb);
+        return 2;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "schwung-heal: fork: %s\n", strerror(errno));
+        return 2;
+    }
+    if (pid == 0) {
+        execl(HEAL_SYSTEMCTL, "systemctl", verb, HEAL_LAUNCHER_UNIT, (char *)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) {
+        if (errno == EINTR) continue;
+        fprintf(stderr, "schwung-heal: waitpid: %s\n", strerror(errno));
+        return 2;
+    }
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+        fprintf(stderr, "schwung-heal: systemctl %s %s failed (status %d)\n",
+                verb, HEAL_LAUNCHER_UNIT, WIFEXITED(st) ? WEXITSTATUS(st) : -1);
+        return 2;
+    }
+    fprintf(stderr, "schwung-heal: %s %s\n", verb, HEAL_LAUNCHER_UNIT);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     /* Setuid bit on the binary should give us euid=0; some kernels also
      * keep ruid=ableton. Force ruid=0 too so child processes (rename,
@@ -314,13 +356,16 @@ int main(int argc, char **argv) {
     }
 
     int do_reboot = 0;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--reboot") == 0) do_reboot = 1;
-        else {
-            fprintf(stderr, "schwung-heal: unknown arg %s\n", argv[i]);
-            return 1;
-        }
+    heal_mode_t mode = heal_parse_args(argc, argv, &do_reboot);
+    if (mode == HEAL_MODE_INVALID) {
+        fprintf(stderr, "schwung-heal: usage: schwung-heal [--reboot] | "
+                        "--pause-launcher | --resume-launcher\n");
+        return 1;
     }
+    /* A launcher verb does exactly that and returns: no self-update, no
+     * mirror, no reboot (see host/heal_args.h). */
+    if (mode != HEAL_MODE_MIRROR)
+        return launcher_unit(heal_launcher_verb(mode));
 
     int rc = 0;
 

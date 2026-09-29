@@ -489,6 +489,12 @@ in `/data/UserData/boot-targets/` (`docs/BOOT_TARGETS.md`). Read that file
 before touching boot; every selector failure path must end in an exec of
 MoveOriginal.
 
+**Standalone tools pause Move's supervisor.** `launch-standalone.sh` stops
+`move-launcher.service` (Restart=on-failure) through `schwung-heal
+--pause-launcher` before killing the stack, and resumes it on exit — else
+systemd revived stock alongside the tool on one SPI device. Heal's argv is a
+closed set in `host/heal_args.h`; a launcher verb does nothing else.
+
 ## Gain Staging (MFX ME-Only Bus)
 
 Master FX processes only Schwung's internal audio (slot synths, slot FX, overtake DSP) — never Move's. Shim builds:
