@@ -2561,16 +2561,15 @@ static void shadow_inprocess_render_to_buffer(void) {
                         ps->active = 1;
                     }
                 }
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             }
 
@@ -3346,11 +3345,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
 
                 /* Add FX output to mailbox */
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     float gain = vol;
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
@@ -3358,7 +3356,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
@@ -3379,8 +3377,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * with none).
                  */
                 const float pass_vol = shadow_effective_volume(s);
-                float pass_l, pass_r;
-                shadow_pan_gains(s, &pass_l, &pass_r);
                 shadow_stem_store_slot(s, move_track, pass_vol);
                 /* ITS SENDS, when above 0: send level x fader, post-fader,
                  * pre-pan. A slot with no MODULE can still have a chain
@@ -3408,13 +3404,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
                                      (amt * vol127) / BUS_MIX_SEND_LEVEL_MAX);
                     }
                 }
+                /* Glided like an occupied slot's (shadow_mix_advance): a scene
+                 * morphing this track's volume was a hard step every block. */
+                shadow_mix_targets(s);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    const float g = pass_vol * ((i & 1) ? pass_r : pass_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    const float g = ms->mix_vol * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t mixed = (int32_t)mailbox_audio[i] +
                         (g == 1.0f ? (int32_t)move_track[i] : (int32_t)lroundf((float)move_track[i] * g));
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
+                    if (i & 1) shadow_mix_advance(s);
                 }
                 /* Publish Move track audio to ME channel even without a synth loaded */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
@@ -3467,15 +3468,14 @@ skip_la_rebuild:
                     ps->write_pos = wp;
                 }
 
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             } else if (shadow_slot_deferred_valid[s]) {
                 /* Fallback: FX not deferred — run inline (legacy path) */
@@ -3522,15 +3522,14 @@ skip_la_rebuild:
                     shadow_slot_fx_idle[s] = 0;
                 }
 
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             }
         }
