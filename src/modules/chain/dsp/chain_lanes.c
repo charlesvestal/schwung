@@ -186,7 +186,7 @@ CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
     if (inst->lane_track < 0 || !lane_slot_usable(row)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &inst->lanes.lanes[i];
-        if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
+        if (!ln->used || ln->stale || ln->orphaned || ln->module_gone || ln->n <= 0) continue;
         if (lane_is_for_param(ln, inst->lane_track, row, target, param))
             return 1;
     }
@@ -779,9 +779,10 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * does. Gated on fp_valid, a take recorded into an orphaned lane
          * during Move's save window stayed orphaned, so lane_eval refused it
          * and the take was silent forever. */
-        if (ln->orphaned && !ln->rec_active) {
+        if ((ln->orphaned || ln->module_gone) && !ln->rec_active) {
             ln->n = 0;                    /* the dead clip's points go, once */
             ln->orphaned = 0;
+            ln->module_gone = 0;          /* recording onto the module that IS there */
             if (!inst->clip_fp_valid) ln->origin_pending = 1;
         }
         if (inst->clip_fp_valid) {
@@ -1452,10 +1453,13 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
          *
          * The restart rule is unchanged and still applies: an orphan does not
          * come back to life with the dead clip's points. */
-        if (ln->orphaned) {
+        if (ln->orphaned || ln->module_gone) {
             ln->n = 0;                       /* the dead clip's points go */
             lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
             ln->orphaned = 0;
+            /* A lane whose module LEFT restarts the same way: the lock is on
+             * the module now at this position, not on the departed one. */
+            ln->module_gone = 0;
             /* With no fingerprint to take, this take is a blind one: mark it
              * so lane_tick can re-origin and identify it when the clip
              * lands, exactly as a first blind write on a fresh lane is. */
@@ -1513,7 +1517,7 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
         int total = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!ln->used || ln->stale || ln->orphaned) continue;
+            if (!ln->used || ln->stale || ln->orphaned || ln->module_gone) continue;
             if (ln->track != inst->lane_track || ln->slot != lane_write_slot(inst))
                 continue;
             total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
@@ -1590,6 +1594,9 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
              * and copying the ABSENT fingerprint would plant a lane that can
              * never match anything. */
             if (from->n <= 0 || lane_fp_absent(&from->fp)) continue;
+            /* A lane whose module LEFT names a position a different module
+             * now holds; a copy would drive that stranger. */
+            if (from->module_gone) continue;
             lane_t *to = lane_alloc(&inst->lanes, from->target, from->param,
                                     track, dst, &from->fp);
             if (!to) break;          /* store full: as many as fit, in order */
@@ -1872,7 +1879,7 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
              * invisible now, and the first write starts the lane over -- so it
              * BEHAVES deleted from every angle the user has, while an undo can
              * still bring it back. */
-            if (ln->orphaned) continue;
+            if (ln->orphaned || ln->module_gone) continue;
             int n = snprintf(buf + off, (size_t)(buf_len - off), "%s %s",
                              ln->target, ln->param);
             if (n <= 0 || off + n >= buf_len) return off;      /* truncated: stop clean */
@@ -2091,14 +2098,14 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             off += snprintf(buf + off, buf_len - off,
                             "\nL%d %s:%s t=%d row=%d pend=%d plen=%.3f "
                             "n=%d drv=%d punch=%d pph=%.4f "
-                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d "
+                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d gone=%d "
                             "opend=%d adopt=%d reorig=%d evict=%d full=%d",
                             i, ln->target, ln->param, ln->track, ln->slot,
                             lane_slot_is_pending(ln->slot), ln->pending_len,
                             ln->n, ln->driving,
                             ln->punch_until_wrap, ln->punch_phase,
                             ln->rec_active, ln->rec_last_phase, live,
-                            ln->stale, ln->orphaned,
+                            ln->stale, ln->orphaned, ln->module_gone,
                             ln->origin_pending, ln->adopted, ln->reorigined,
                             ln->evicted_orphan, ln->full_hits);
         }

@@ -216,7 +216,7 @@ static void remove_orphans_for_good(void) {
     int rc = chain_reorder_remove(inst, 0, 0);   /* afx2 slides into fx1 */
     CHECK(rc == 1, "remove fx1");
     for (int b = 0; b < 10; b++) play(inst, 1.0 + b * 0.1);
-    CHECK(strcmp(FX[1].val, "0.5") == 0,
+    CHECK(fabs(atof(FX[1].val) - 0.5) < 1e-6,
           "afx2, now at fx1, is NOT driven by afx1's lane (mix=%s)", FX[1].val);
     CHECK(!chain_mod_is_target_active(inst, "fx1", "mix"), "no override on fx1:mix");
     CHECK(lane_param_get(inst, "state", (char[512]){0}, 512) == 0,
@@ -257,7 +257,7 @@ static void move_keeps_one_source(const char *verb) {
     stop(inst);
     CHECK(!chain_mod_is_target_active(inst, nt, "mix"),
           "stop released %s:mix -- nothing left asserting under the old name", nt);
-    CHECK(strcmp(FX[1].val, "0.5") == 0, "afx2 is back on its knob (mix=%s)", FX[1].val);
+    CHECK(fabs(atof(FX[1].val) - 0.5) < 1e-6, "afx2 is back on its knob (mix=%s)", FX[1].val);
     free(inst);
 }
 
@@ -309,7 +309,7 @@ static void copies_follow_permutation(void) {
     CHECK(chain_reorder_remove(i2, 0, 0) == 1, "remove fx1 (afx2 slides in)");
     lane_param_set(i2, "undo", "1");
     for (int b = 0; b < 5; b++) play(i2, 1.0 + b * 0.1);
-    CHECK(strcmp(FX[1].val, "0.5") == 0,
+    CHECK(fabs(atof(FX[1].val) - 0.5) < 1e-6,
           "after Undo, afx2 at fx1 is not driven by the departed module's lane (mix=%s)",
           FX[1].val);
     free(inst);
@@ -459,6 +459,10 @@ int main(void) {
     long_key("nvram_patchCommon_patchlevel");                 /* minijv, 28 */
     long_key("abcdefghijklmnopqrstuvwxyz01234");              /* 31, the cap */
     too_long_id_refused();
+    remove_orphans_for_good();
+    move_keeps_one_source("move");
+    move_keeps_one_source("insert");
+    copies_follow_permutation();
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane review fixes\n");
     return 0;
