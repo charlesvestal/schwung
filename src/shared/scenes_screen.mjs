@@ -1,37 +1,35 @@
 /*
  * scenes_screen.mjs -- the SCENES screen.
  *
- * A SCENE IS AN A/B PAIR (scene_doc.mjs): the fader morphs the ACTIVE scene
- * from its A to its B. Each side can be switched off -- that end is then "the
- * knobs as they are" -- and a side with no locks means the same thing.
+ * TWO LAYERS (scene_doc.mjs): 32 SNAPSHOTS on the pads -- A1-A16 on the top
+ * two rows, B1-B16 on the bottom two -- and 16 SCENES on the steps, each a
+ * pairing of one A and one B (either may be none: that end is the knobs as
+ * they are). The fader morphs the ACTIVE scene from its A to its B.
  *
- *   top two pad rows     the 16 scenes' A sides (pad k = scene k's A)
- *   bottom two pad rows  the 16 scenes' B sides
- *     tap                another scene's pad: make that scene active;
- *                        the active scene's pad: that side on / off
- *     hold               make it active and EDIT that side
- *   steps 1-16           pick the active scene too
+ *   step                 pick the active scene
+ *   tap an A pad         that snapshot becomes the scene's A (the lit one
+ *                        again: none);  B pads the same
+ *   hold a pad           EDIT that snapshot (latched; tap it to stop)
  *   jog / knob 8         the fader (1/64 per detent, Shift 1/256)
  *   jog click            snap the fader to the nearer end
  *   Shift+jog click      learn an external CC for the fader (CC Map)
- *   Copy + 2 steps       copy a scene (source, destination)
- *   Delete + step        clear a scene;  Delete + pad: clear that side
+ *   Copy + 2 steps       copy a scene's pairing;  Copy + 2 pads: a snapshot
+ *   Delete + step        empty a scene's pairing; Delete + pad: a snapshot
  *   Undo                 undo the last copy or clear (one level; again = redo)
  *
  * EDITING IS LATCHED: it outlasts the screen, because the knobs being locked
- * are on other screens. A tap on the side being edited (or Shift+Up/Down
- * again, from any Schwung screen) stops it. The side being edited plays at 100% whatever
- * the fader says, so what you hear is what you are building.
+ * are on other screens. The snapshot being edited plays at 100% whatever the
+ * fader says, so what you hear is what you are building. Snapshots are
+ * SHARED: editing A1 changes every scene that uses A1.
  *
  * The steps and pads are taken ONLY while this screen is up (the host restates
- * the claims every tick); Shift+step is never taken -- Move's Shift+step pages
- * stay reachable.
+ * the claims every tick); Shift+step is never taken.
  *
  * PURE except through `io` and the draw context, so tests/host drive it
  * against the harness framebuffer.
  */
 
-import { SCENE_COUNT, halfA, halfB } from "./scene_doc.mjs";
+import { SCENE_COUNT, SNAP_COUNT, halfA, halfB } from "./scene_doc.mjs";
 
 export const HOLD_MS = 500;
 export const FADER_DETENT = 1 / 64;
@@ -51,38 +49,41 @@ export function relDelta(v) {
 /* Move's pad grid, top row first (92-99 is the top row, rows descend by 8). */
 const PAD_ROWS = [92, 84, 76, 68];
 
-/** A pad note -> { side: "a" | "b", k: scene 0..15 }, or null. The A rows
- *  are the top two, the B rows the bottom two; pad k is scene k in both. */
-export function padHalf(note) {
+/** A pad note -> { side: "a" | "b", i: snapshot 0..15 }, or null. */
+export function padSnap(note) {
     for (let r = 0; r < 4; r++) {
         const first = PAD_ROWS[r];
         if (note >= first && note < first + 8)
-            return { side: r < 2 ? "a" : "b", k: (r % 2) * 8 + (note - first) };
+            return { side: r < 2 ? "a" : "b", i: (r % 2) * 8 + (note - first) };
     }
     return null;
 }
 
-/** The pad that shows scene k's side. */
-export function halfPad(side, k) {
-    return PAD_ROWS[(side === "a" ? 0 : 2) + (k >= 8 ? 1 : 0)] + (k % 8);
+/** The pad of a snapshot. */
+export function snapPad(side, i) {
+    return PAD_ROWS[(side === "a" ? 0 : 2) + (i >= 8 ? 1 : 0)] + (i % 8);
 }
+
+export const snapHalf = (side, i) => (side === "a" ? halfA(i) : halfB(i));
 
 /* Palette indices (constants.mjs). */
 export const COLORS = {
-    /* active = the active scene's side (bright), locked = another scene's
-     * side holding locks, empty = on with nothing locked, off = switched off */
-    a: { active: 16, locked: 95, empty: 96, off: 0 },   /* AzureBlue / DarkAzure / VeryDarkAzure */
-    b: { active: 3, locked: 72, empty: 68, off: 0 },    /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
-    edit: 120,                                /* White */
-    stepActive: 120,                          /* White */
-    stepLocked: 118,                          /* LightGrey */
+    /* inScene = the active scene uses it; locked = holds locks; empty = none */
+    a: { inScene: 16, locked: 95, empty: 96 },   /* AzureBlue / DarkAzure / VeryDarkAzure */
+    b: { inScene: 3, locked: 72, empty: 68 },    /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
+    edit: 120,                                   /* White */
+    stepActive: 120,                             /* White */
+    stepPaired: 118,                             /* LightGrey: pairs something */
     stepEmpty: 0,
 };
 
-/** The badge the host draws on every screen while a side is being edited. */
+/** A snapshot's name: "A3", "B12". */
+export function snapName(side, i) { return side.toUpperCase() + (i + 1); }
+
+/** The badge the host draws on every screen while a snapshot is being edited. */
 export function editLabel(editHalf) {
     if (!(editHalf >= 0)) return "";
-    return "S" + (Math.floor(editHalf / 2) + 1) + " " + (editHalf % 2 ? "B" : "A");
+    return editHalf >= SNAP_COUNT ? snapName("b", editHalf - SNAP_COUNT) : snapName("a", editHalf);
 }
 
 export function createScenesScreen(io) {
@@ -90,19 +91,16 @@ export function createScenesScreen(io) {
     const pressAt = new Map();           /* note -> press time */
     const holdFired = new Map();
     const painted = new Map();           /* note -> colour last sent */
-    let copyHeld = false, deleteHeld = false, copySource = -1;
+    let copyHeld = false, deleteHeld = false;
+    let copySource = null;               /* { kind: "scene", k } | { kind: "snap", side, i } */
     let counts = null, countsRev = -1;   /* locks per HALF */
     let undo = null;
     let lastFaderAnnounce = 0;
     let learnPending = false;
 
     const st = () => io.state() || { edit: -1, xfade: 0, rev: 0, flash: 0 };
-    const scn = () => io.scene() || { active: -1, enables: [] };
-    const sideOn = (k, side) => {
-        const e = scn().enables[k];
-        return !e || e[side === "a" ? 0 : 1] !== false;
-    };
-    const halfOf = (k, side) => (side === "a" ? halfA(k) : halfB(k));
+    const scn = () => io.scene() || { active: -1, pairs: [] };
+    const pairOf = (k) => (scn().pairs[k] || [-1, -1]);
     const halfLocks = (h) => (counts ? counts[h] || 0 : 0);
 
     function refreshCounts(force) {
@@ -123,6 +121,8 @@ export function createScenesScreen(io) {
         }
     }
 
+    /* An edit that destroys something keeps what was there, so Undo can put it
+     * back: the DSP bank AND the pairings (io.snapshot carries both). */
     function destructive(label, fn) {
         const snap = io.snapshot();
         if (!snap) { io.announce("Scenes busy, try again"); return false; }
@@ -142,72 +142,92 @@ export function createScenesScreen(io) {
     }
 
     function selectScene(k) {
-        if (st().edit >= 0 && k !== scn().active) io.setEdit(-1);
         io.setActive(k);
-        io.announce("Scene " + (k + 1));
+        const p = pairOf(k);
+        io.announce("Scene " + (k + 1) + ", " + (p[0] >= 0 ? snapName("a", p[0]) : "no A") +
+                    " to " + (p[1] >= 0 ? snapName("b", p[1]) : "no B"));
     }
 
     function stepPress(k) {
         if (copyHeld) {
-            if (copySource < 0) {
-                copySource = k;
+            if (!copySource || copySource.kind !== "scene") {
+                copySource = { kind: "scene", k };
                 io.announce("Copy scene " + (k + 1) + ", pick destination");
             } else {
-                const src = copySource;
-                copySource = -1;
+                const src = copySource.k;
+                copySource = null;
                 if (src === k) { io.announce("Copy cancelled"); return; }
-                if (destructive("copy", () =>
-                        io.applyAll("copy", halfA(src) + " " + halfA(k)) &&
-                        io.applyAll("copy", halfB(src) + " " + halfB(k)))) {
-                    if (io.copyEnables) io.copyEnables(src, k);
+                if (destructive("copy", () => { io.setPair(k, pairOf(src).slice()); return true; }))
                     io.announce("Scene " + (src + 1) + " copied to " + (k + 1));
-                }
             }
             return;
         }
         if (deleteHeld) {
-            if (destructive("clear", () =>
-                    io.applyAll("clear", String(halfA(k))) && io.applyAll("clear", String(halfB(k)))))
-                io.announce("Scene " + (k + 1) + " cleared");
+            if (destructive("clear", () => { io.setPair(k, [-1, -1]); return true; }))
+                io.announce("Scene " + (k + 1) + " emptied");
             return;
         }
         selectScene(k);
     }
 
-    /* Start or stop editing one side of the active scene. Starting switches
-     * the side on -- editing a side you cannot hear would be pointless. */
+    /* Start or stop editing a snapshot. */
+    function toggleEditSnap(side, i) {
+        const h = snapHalf(side, i);
+        if (st().edit === h) {
+            io.setEdit(-1);
+            io.announce("Done editing " + snapName(side, i));
+            return;
+        }
+        io.setEdit(h);
+        io.announce("Editing " + snapName(side, i) + ". Turn knobs on any page to lock them.");
+    }
+
+    /* Shift+Up / Shift+Down: edit the ACTIVE scene's A / B. A scene with no
+     * snapshot on that end gets the one matching its own number first. */
     function toggleEdit(side) {
         let k = scn().active;
         if (k < 0) { k = 0; io.setActive(0); }
-        const h = halfOf(k, side);
-        if (st().edit === h) {
-            io.setEdit(-1);
-            io.announce("Done editing scene " + (k + 1) + " " + side.toUpperCase());
-            return;
-        }
-        if (!sideOn(k, side)) io.setEnable(k, side, true);
-        io.setEdit(h);
-        io.announce("Editing scene " + (k + 1) + " " + side.toUpperCase() +
-                    ". Turn knobs on any page to lock them.");
+        const p = pairOf(k).slice();
+        const j = side === "a" ? 0 : 1;
+        if (p[j] < 0) { p[j] = k; io.setPair(k, p); }
+        toggleEditSnap(side, p[j]);
     }
 
-    function padTap(side, k) {
-        if (k !== scn().active && !deleteHeld) { selectScene(k); return; }
-        if (deleteHeld) {
-            if (destructive("clear " + side.toUpperCase(), () => io.applyAll("clear", String(halfOf(k, side)))))
-                io.announce("Scene " + (k + 1) + " " + side.toUpperCase() + " cleared");
+    function padTap(side, i) {
+        if (copyHeld) {
+            if (!copySource || copySource.kind !== "snap") {
+                copySource = { kind: "snap", side, i };
+                io.announce("Copy " + snapName(side, i) + ", pick destination");
+            } else {
+                const src = copySource;
+                copySource = null;
+                if (src.side === side && src.i === i) { io.announce("Copy cancelled"); return; }
+                if (destructive("copy", () => io.applyAll("copy", snapHalf(src.side, src.i) + " " + snapHalf(side, i))))
+                    io.announce(snapName(src.side, src.i) + " copied to " + snapName(side, i));
+            }
             return;
         }
-        if (st().edit === halfOf(k, side)) { toggleEdit(side); return; }
-        const on = !sideOn(k, side);
-        io.setEnable(k, side, on);
-        io.announce("Scene " + (k + 1) + " " + side.toUpperCase() + (on ? " on" : " off"));
+        if (deleteHeld) {
+            if (destructive("clear " + snapName(side, i), () => io.applyAll("clear", String(snapHalf(side, i)))))
+                io.announce(snapName(side, i) + " cleared");
+            return;
+        }
+        const h = snapHalf(side, i);
+        if (st().edit === h) { toggleEditSnap(side, i); return; }
+        let k = scn().active;
+        if (k < 0) { k = 0; io.setActive(0); }
+        const p = pairOf(k).slice();
+        const j = side === "a" ? 0 : 1;
+        p[j] = p[j] === i ? -1 : i;
+        io.setPair(k, p);
+        io.announce("Scene " + (k + 1) + " " + side.toUpperCase() + " " +
+                    (p[j] >= 0 ? snapName(side, i) : "none"));
     }
 
     return {
         enter() {
             copyHeld = deleteHeld = false;
-            copySource = -1;
+            copySource = null;
             pressAt.clear();
             holdFired.clear();
             painted.clear();
@@ -224,12 +244,10 @@ export function createScenesScreen(io) {
             const t = now();
             let changed = false;
             for (const [note, at] of pressAt) {
-                const ph = padHalf(note);
-                if (ph && at && !holdFired.get(note) && t - at >= HOLD_MS && !copyHeld && !deleteHeld) {
+                const ps = padSnap(note);
+                if (ps && at && !holdFired.get(note) && t - at >= HOLD_MS && !copyHeld && !deleteHeld) {
                     holdFired.set(note, true);
-                    /* Hold selects too: the pad names its scene. */
-                    if (ph.k !== scn().active) selectScene(ph.k);
-                    toggleEdit(ph.side);
+                    toggleEditSnap(ps.side, ps.i);
                     changed = true;
                 }
             }
@@ -253,19 +271,20 @@ export function createScenesScreen(io) {
             };
             const s = st(), sc = scn();
             for (let k = 0; k < SCENE_COUNT; k++) {
-                const locked = halfLocks(halfA(k)) + halfLocks(halfB(k)) > 0;
+                const p = pairOf(k);
                 send(NOTE_STEP_FIRST + k, k === sc.active ? COLORS.stepActive
-                                        : locked ? COLORS.stepLocked : COLORS.stepEmpty);
+                                        : (p[0] >= 0 || p[1] >= 0) ? COLORS.stepPaired : COLORS.stepEmpty);
             }
+            const ap = sc.active >= 0 ? pairOf(sc.active) : [-1, -1];
             for (const side of ["a", "b"]) {
                 const c = COLORS[side];
-                for (let k = 0; k < SCENE_COUNT; k++) {
-                    const h = halfOf(k, side);
+                const used = side === "a" ? ap[0] : ap[1];
+                for (let i = 0; i < SNAP_COUNT; i++) {
+                    const h = snapHalf(side, i);
                     const col = s.edit === h ? COLORS.edit
-                              : !sideOn(k, side) ? c.off
-                              : k === sc.active ? c.active
+                              : i === used ? c.inScene
                               : halfLocks(h) > 0 ? c.locked : c.empty;
-                    send(halfPad(side, k), col);
+                    send(snapPad(side, i), col);
                 }
             }
         },
@@ -291,7 +310,7 @@ export function createScenesScreen(io) {
                     }
                     return true;
                 }
-                if (d1 === CC_COPY) { copyHeld = d2 > 0; if (!copyHeld) copySource = -1; return true; }
+                if (d1 === CC_COPY) { copyHeld = d2 > 0; if (!copyHeld) copySource = null; return true; }
                 if (d1 === CC_DELETE) { deleteHeld = d2 > 0; return true; }
                 if (d1 === CC_UNDO) { if (d2 > 0) doUndo(); return true; }
                 return false;
@@ -303,16 +322,16 @@ export function createScenesScreen(io) {
                 this.paintLeds();
                 return true;
             }
-            const ph = padHalf(d1);
-            if (!ph) return false;
+            const ps = padSnap(d1);
+            if (!ps) return false;
             if (on) {
                 pressAt.set(d1, now());
                 holdFired.set(d1, false);
-                if (deleteHeld) { holdFired.set(d1, true); padTap(ph.side, ph.k); }
+                if (copyHeld || deleteHeld) { holdFired.set(d1, true); padTap(ps.side, ps.i); }
             } else {
                 const was = pressAt.get(d1);
                 pressAt.delete(d1);
-                if (was && !holdFired.get(d1)) padTap(ph.side, ph.k);
+                if (was && !holdFired.get(d1)) padTap(ps.side, ps.i);
                 holdFired.delete(d1);
             }
             this.paintLeds();
@@ -327,43 +346,33 @@ export function createScenesScreen(io) {
             const s = st(), sc = scn();
             const k = sc.active;
             const editing = s.edit >= 0;
+            const ap = k >= 0 ? pairOf(k) : [-1, -1];
+            const pairText = (ap[0] >= 0 ? snapName("a", ap[0]) : "A-") + " " +
+                             (ap[1] >= 0 ? snapName("b", ap[1]) : "B-");
             ctx.drawHeader(k >= 0 ? "Scene " + (k + 1) : "Scenes",
-                           editing ? "Edit " + (s.edit % 2 ? "B" : "A") : "", editing);
+                           editing ? "Edit " + editLabel(s.edit) : (k >= 0 ? pairText : ""), editing);
 
             /* THE PADS, EXACTLY AS THEY SIT UNDER YOUR HANDS: four rows of
-             * eight, the scenes' A sides on the top two, B on the bottom two
-             * (pad k = scene k in both). Outline = on, nothing locked (the
-             * knobs); filled = on, with locks; dotted outline = switched off;
-             * a centre dot = the active scene; box-in-box = being edited. */
+             * eight, A1-A16 on the top two, B1-B16 on the bottom two.
+             * Filled = the snapshot holds locks; outline = empty; a centre
+             * dot = the active scene uses it; box-in-box = being edited. */
             const gx = 9, pitch = 9, cw = 8, chh = 6;
             const rowY = [12, 19, 28, 35];
             ctx.print(1, 15, "A", 1);
             ctx.print(1, 31, "B", 1);
             for (const side of ["a", "b"]) {
-                for (let n = 0; n < SCENE_COUNT; n++) {
-                    const r = (side === "a" ? 0 : 2) + (n >= 8 ? 1 : 0);
-                    const x = gx + (n % 8) * pitch, y = rowY[r];
-                    const h = halfOf(n, side);
-                    const on = sideOn(n, side);
+                const used = side === "a" ? ap[0] : ap[1];
+                for (let i = 0; i < SNAP_COUNT; i++) {
+                    const r = (side === "a" ? 0 : 2) + (i >= 8 ? 1 : 0);
+                    const x = gx + (i % 8) * pitch, y = rowY[r];
+                    const h = snapHalf(side, i);
                     const has = halfLocks(h) > 0;
-                    if (on && has) ctx.fillRect(x, y, cw, chh, 1);
-                    else if (on) {
+                    if (has) ctx.fillRect(x, y, cw, chh, 1);
+                    else {
                         ctx.fillRect(x, y, cw, 1, 1); ctx.fillRect(x, y + chh - 1, cw, 1, 1);
                         ctx.fillRect(x, y, 1, chh, 1); ctx.fillRect(x + cw - 1, y, 1, chh, 1);
-                    } else {
-                        /* OFF: a DOTTED outline, strictly alternating all the
-                         * way round -- the 8x6 border is 24 pixels, so the
-                         * pattern closes with no two dots (or gaps) touching
-                         * at a corner. */
-                        let i = 0;
-                        const dot = (px, py) => { if ((i++ & 1) === 0) ctx.fillRect(px, py, 1, 1, 1); };
-                        for (let d = 0; d < cw - 1; d++) dot(x + d, y);
-                        for (let d = 0; d < chh - 1; d++) dot(x + cw - 1, y + d);
-                        for (let d = cw - 1; d > 0; d--) dot(x + d, y + chh - 1);
-                        for (let d = chh - 1; d > 0; d--) dot(x, y + d);
                     }
-                    /* The active scene: a dot in the middle (cut out of a filled cell). */
-                    if (n === k) ctx.fillRect(x + 3, y + 2, 2, 2, on && has ? 0 : 1);
+                    if (i === used) ctx.fillRect(x + 3, y + 2, 2, 2, has ? 0 : 1);
                     if (s.edit === h) {
                         ctx.fillRect(x + 1, y + 1, cw - 2, chh - 2, 0);
                         ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 1);
@@ -387,24 +396,25 @@ export function createScenesScreen(io) {
             ctx.print(127 - ctx.textWidth(pct), fy, pct, 1);
 
             if (learnPending) ctx.drawFooter(["Move a fader..."]);
-            else if (copyHeld) ctx.drawFooter([copySource < 0 ? "Copy: pick source" : "Copy: pick dest"]);
+            else if (copyHeld) ctx.drawFooter([copySource ? "Copy: pick dest" : "Copy: pick source"]);
             else if (deleteHeld) ctx.drawFooter(["Clear: step or pad"]);
             else if (editing) ctx.drawFooter(["Tap pad: done", "Del+knob: off"]);
-            else ctx.drawFooter(["Pad: pick/on", "Hold: edit"]);
+            else ctx.drawFooter(["Pad: pair", "Hold: edit"]);
         },
     };
 }
 
-/* THE EDIT BADGE: an inverted "S3 A" over the top-right corner of EVERY
- * screen while a side is being edited; FULL / N/A flash in its place when a
- * knob's write could not be taken. */
+/* THE EDIT BADGE: an inverted "A3" / "B12" over the top-right corner of EVERY
+ * screen while a snapshot is being edited; FULL / N/A flash in its place when
+ * a knob's write could not be taken. */
 export const SCENE_FLASH_FULL = 1;
 export const SCENE_FLASH_NA = 2;
 
 export function armBadgeText(edit, flash) {
     if (flash === SCENE_FLASH_FULL) return "FULL";
     if (flash === SCENE_FLASH_NA) return "N/A";
-    return editLabel(edit);
+    const l = editLabel(edit);
+    return l ? "EDIT " + l : "";
 }
 
 export function drawArmBadge(ctx, text) {

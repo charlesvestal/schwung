@@ -19,29 +19,38 @@
  */
 
 /*
- * A SCENE IS AN A/B PAIR. Sixteen scenes; scene k's A is stored HALF 2k and
- * its B half 2k+1 -- the DSP only knows halves (scene_morph.h). Each side can
- * be switched OFF, which makes that end of the fader "the knobs as they are"
- * without deleting its locks; a side with no locks means the same thing.
+ * TWO LAYERS.
+ *
+ *   SNAPSHOTS  32 saved sets of locks: A1-A16 and B1-B16. The DSP stores them
+ *              as HALVES -- A snapshot i is half i, B snapshot i half 16+i
+ *              (scene_morph.h knows nothing else).
+ *   SCENES     16 PAIRINGS on the steps: which A snapshot and which B
+ *              snapshot the fader runs between. Either end may be empty
+ *              ("none"), which makes that end the knobs as they are. Scenes
+ *              SHARE snapshots, so editing A1 changes every scene that uses A1.
+ *
+ * Scene k starts out paired with Ak and Bk, so a set that never re-pairs
+ * anything reads simply as "step 3 fades A3 to B3".
  */
 export const SCENE_COUNT = 16;
+export const SNAP_COUNT = 16;
 export const HALF_COUNT = 32;
-export const DOC_VERSION = 2;
+export const DOC_VERSION = 3;
 
-export const halfA = (k) => 2 * k;
-export const halfB = (k) => 2 * k + 1;
+export const halfA = (i) => i;
+export const halfB = (i) => SNAP_COUNT + i;
 
-/** The halves the fader runs between for the active scene, -1 = off/none. */
-export function endsFor(active, enables) {
-    if (!Number.isInteger(active) || active < 0 || active >= SCENE_COUNT) return { a: -1, b: -1 };
-    const e = (enables && enables[active]) || [true, true];
-    return { a: e[0] ? halfA(active) : -1, b: e[1] ? halfB(active) : -1 };
+export function defaultPairs() {
+    const out = [];
+    for (let k = 0; k < SCENE_COUNT; k++) out.push([k, k]);
+    return out;
 }
 
-export function defaultEnables() {
-    const out = [];
-    for (let k = 0; k < SCENE_COUNT; k++) out.push([true, true]);
-    return out;
+/** The halves the fader runs between for the active scene, -1 = none. */
+export function endsFor(active, pairs) {
+    if (!Number.isInteger(active) || active < 0 || active >= SCENE_COUNT) return { a: -1, b: -1 };
+    const p = (pairs && pairs[active]) || [-1, -1];
+    return { a: p[0] >= 0 ? halfA(p[0]) : -1, b: p[1] >= 0 ? halfB(p[1]) : -1 };
 }
 
 export const SCOPES = [
@@ -86,24 +95,26 @@ export function lockLine(l) {
 
 const clampScene = (v) => (Number.isInteger(v) && v >= 0 && v < SCENE_COUNT) ? v : -1;
 
-function normEnables(e) {
-    const out = defaultEnables();
-    if (Array.isArray(e)) {
+const snapOrNone = (v) => (Number.isInteger(v) && v >= 0 && v < SNAP_COUNT) ? v : -1;
+
+function normPairs(p) {
+    const out = defaultPairs();
+    if (Array.isArray(p)) {
         for (let k = 0; k < SCENE_COUNT; k++) {
-            if (Array.isArray(e[k])) out[k] = [e[k][0] !== false, e[k][1] !== false];
+            if (Array.isArray(p[k])) out[k] = [snapOrNone(p[k][0]), snapOrNone(p[k][1])];
         }
     }
     return out;
 }
 
 /**
- * The document for a set: the active scene, each side's on/off, and every
- * scope's locks grouped by HALF. `dumps` maps scope id -> dump text. ANY
+ * The document for a set: the active scene, the 16 pairings, and every
+ * scope's locks grouped by HALF (snapshot). `dumps` maps scope id -> dump text. ANY
  * missing or unparsable scope makes the whole document null -- a save that
  * silently dropped a scope would write a bank without it, and the next load
  * would erase that scope's scenes.
  */
-export function buildDoc({ active, enables, dumps }) {
+export function buildDoc({ active, pairs, dumps }) {
     const halves = [];
     for (let n = 0; n < HALF_COUNT; n++) halves.push({ n, locks: [] });
     for (const scope of SCOPES) {
@@ -117,7 +128,7 @@ export function buildDoc({ active, enables, dumps }) {
     return {
         v: DOC_VERSION,
         active: clampScene(active),
-        enables: normEnables(enables),
+        pairs: normPairs(pairs),
         halves: halves.filter((h) => h.locks.length > 0),
     };
 }
@@ -131,12 +142,12 @@ export function parseDoc(text) {
     let d;
     try { d = JSON.parse(text); } catch (e) { return null; }
     if (!d || typeof d !== "object") return null;
-    /* v1 was the Octatrack-style bank (any scene on either end), which never
-     * shipped; its scenes have no A/B meaning here, so it reads as EMPTY
-     * rather than as a file to protect. */
-    if (d.v === 1) return { v: DOC_VERSION, active: -1, enables: defaultEnables(), halves: [], legacy: true };
+    /* v1 and v2 were earlier shapes of this feature that never shipped; their
+     * halves meant something else, so they read as EMPTY rather than as files
+     * to protect. */
+    if (d.v === 1 || d.v === 2) return { v: DOC_VERSION, active: -1, pairs: defaultPairs(), halves: [], legacy: true };
     if (d.v !== DOC_VERSION || !Array.isArray(d.halves)) return null;
-    return { v: DOC_VERSION, active: clampScene(d.active), enables: normEnables(d.enables), halves: d.halves };
+    return { v: DOC_VERSION, active: clampScene(d.active), pairs: normPairs(d.pairs), halves: d.halves };
 }
 
 /**
