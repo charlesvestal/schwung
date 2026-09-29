@@ -129,6 +129,7 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
 import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+import { buildFlatTargetRows, moveFlatCursor, indexOfFlatRoute } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
 /* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
  * context a widget and a card get, so a module author writes one thing. */
 import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
@@ -317,7 +318,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     paramPagesEntering,
-    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
+    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage, commitParamPagesValue,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
     paramPagesCachedValue, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
@@ -534,6 +535,8 @@ const VIEWS = {
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
+    LFO_TARGET_FLAT: "lfotargetflat",         // LFO targets as one list with dividers (knob)
+    FILE_FLAT: "fileflat",                    // Files in the current folder (knob on a file cell)
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
     COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
     MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
@@ -23702,6 +23705,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(lfoTargetGroups[selectedLfoTargetGroup].label);
             }
             break;
+        case VIEWS.LFO_TARGET_FLAT:
+            lfoTargetFlatMove(delta > 0 ? 1 : -1);
+            break;
+        case VIEWS.FILE_FLAT:
+            fileFlatMove(delta > 0 ? 1 : -1);
+            break;
         case VIEWS.LFO_TARGET_PARAM:
             selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam + delta));
             if (lfoTargetParams.length > 0) {
@@ -24724,8 +24733,13 @@ function handleSelect() {
             if (lfoTargetComponents.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 if (comp.key === "__clear__") {
-                    lfoCtx.setParamBlocking("target", "");
-                    lfoCtx.setParamBlocking("target_param", "");
+                    /* From the grid, clearing is switching off — it has no
+                     * Enabled cell. The list keeps its own row. */
+                    if (lfoTargetFromGrid) commitLfoTargetFromGrid(lfoCtx, null);
+                    else {
+                        lfoCtx.setParamBlocking("target", "");
+                        lfoCtx.setParamBlocking("target_param", "");
+                    }
                     if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
@@ -24740,12 +24754,22 @@ function handleSelect() {
             needsRedraw = true;
             break;
         }
+        case VIEWS.LFO_TARGET_FLAT:
+            lfoTargetFlatCommit();
+            break;
+        case VIEWS.FILE_FLAT:
+            fileFlatCommit();
+            break;
         case VIEWS.LFO_TARGET_PARAM: {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 const param = lfoTargetParams[selectedLfoTargetParam];
-                lfoCtx.setParamBlocking("target", comp.key);
-                lfoCtx.setParamBlocking("target_param", param.key);
+                if (lfoTargetFromGrid) {
+                    commitLfoTargetFromGrid(lfoCtx, { target: comp.key, param: param.key });
+                } else {
+                    lfoCtx.setParamBlocking("target", comp.key);
+                    lfoCtx.setParamBlocking("target_param", param.key);
+                }
                 if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
@@ -24795,6 +24819,16 @@ function handleSelect() {
 }
 
 function handleBack() {
+    /* Back while a knob is scrolling the target picker CANCELS: nothing has
+     * been written, so leaving is the whole of it. */
+    if (view === VIEWS.LFO_TARGET_FLAT) {
+        lfoTargetFlatCancel();
+        return;
+    }
+    if (view === VIEWS.FILE_FLAT) {
+        fileFlatCancel();
+        return;
+    }
     /* Pre-emption: in component-edit, let a module with a custom chain_ui
      * handle Back for its own internal navigation. Truthy = consumed;
      * falsy/absent falls through to the host unload logic below. */
@@ -26281,6 +26315,9 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.turnParamDoor = (slot, fullKey, dir, knob, held, info) =>
+        lfoTargetKnobEnter(slot, fullKey, dir, knob, held) ||
+        fileFlatEnter(slot, fullKey, knob, held, info);
     /* Slot-settings actions (Save / Delete / LFO / Knob Mapping). Exposed so
      * every branch can be EXECUTED by the tests: this code was previously
      * reachable only by pressing a specific row on a specific screen, and a
@@ -26870,6 +26907,32 @@ function resetLfoTargetLabels() {
     for (const k in _lfoTargetLabelCache) delete _lfoTargetLabelCache[k];
 }
 
+/*
+ * A routing chosen on the knob grid, `enabled` included.
+ *
+ * The grid has no Enabled cell: a target IS the LFO switched on and None is
+ * it switched off. The list editor keeps its own Enabled row and its picker is
+ * untouched — this is the grid's commit only.
+ *
+ * `enabled` goes FIRST on the way on. The DSP gives a fresh LFO full depth
+ * when it is enabled with no routing yet (chain_host.c's `lfo->depth == 0 &&
+ * !lfo->target[0]` guard); enabling after the target would leave it at 0%,
+ * an LFO that is routed and does nothing. Blocking throughout, for the reason
+ * the picker is: consecutive non-blocking writes to one slot clobber.
+ */
+function commitLfoTargetFromGrid(ctx, route) {
+    if (!ctx) return;
+    if (!route || !route.target) {
+        ctx.setParamBlocking("target", "");
+        ctx.setParamBlocking("target_param", "");
+        ctx.setParamBlocking("enabled", "0");
+        return;
+    }
+    ctx.setParamBlocking("enabled", "1");
+    ctx.setParamBlocking("target", route.target);
+    ctx.setParamBlocking("target_param", route.param);
+}
+
 /** The LFO the editor is currently pointed at. */
 function describeCurrentLfoTarget() {
     return lfoCtx ? describeLfoTargetFor(lfoCtx) : null;
@@ -27055,6 +27118,288 @@ function enterLfoTargetGroupParams(groupIndex) {
     } else {
         announce("No parameters available");
     }
+}
+
+/*
+ * THE TARGET PICKER, FLAT, FOR A KNOB.
+ *
+ * The picker is a hierarchy (component > section > param) and the JOG walks
+ * it as one -- hold the grid's Target knob and click, then click in and Back
+ * out. TURNING the Target knob shows the same targets as ONE list instead:
+ * "None", then every param in the picker's own order, a divider row naming
+ * each section ("Mini-JV / Filter", "Freeverb", "LFO 2", "Sends"). The cursor
+ * skips the dividers, so a turn runs straight through from one category into
+ * the next. Same targets, same commit; only the navigation differs.
+ *
+ * Letting go of the knob commits and returns to the grid; a jog click commits
+ * too. Back cancels -- nothing is written until then.
+ */
+let lfoTargetGroupingCache = Object.create(null);
+let lfoTargetGroupingOwner = null;
+let lfoTargetKnob = listKnobInit();
+let lfoTargetFlatRows = [];
+let lfoTargetFlatIndex = 0;
+let lfoTargetFlatStored = 0;
+/* Knob whose RELEASE commits the flat list, -1 otherwise. */
+let lfoTargetKnobCommit = -1;
+let lfoTargetKnobHeld = false;
+let lfoTargetKnobLastMs = 0;
+/* No release ever comes for a turn the touch sensor did not register. */
+const LFO_TARGET_KNOB_IDLE_COMMIT_MS = 1000;
+
+function isLfoTargetView(v) {
+    return v === VIEWS.LFO_TARGET_COMPONENT || v === VIEWS.LFO_TARGET_GROUP ||
+           v === VIEWS.LFO_TARGET_PARAM || v === VIEWS.LFO_TARGET_FLAT;
+}
+
+/* A component's sections (non-empty), or its flat list as one section with
+ * no label. Read once per picker visit -- two IPC reads a component. */
+function lfoTargetSectionsOf(compIdx) {
+    const comp = lfoTargetComponents[compIdx];
+    if (!comp || !lfoCtx) return [];
+    /* Scoped to this picker VISIT: enterLfoTargetPicker assigns a fresh
+     * component list every time, so a new list is a new cache. */
+    if (lfoTargetGroupingOwner !== lfoTargetComponents) {
+        lfoTargetGroupingOwner = lfoTargetComponents;
+        lfoTargetGroupingCache = Object.create(null);
+    }
+    if (lfoTargetGroupingCache[comp.key]) return lfoTargetGroupingCache[comp.key];
+    const g = lfoCtx.getTargetGroups
+        ? lfoCtx.getTargetGroups(comp.key)
+        : { grouped: false, flat: lfoCtx.getTargetParams(comp.key), groups: [] };
+    const sections = (g && g.grouped)
+        ? (g.groups || []).filter((x) => x && x.params && x.params.length)
+        : [{ label: null, params: (g && g.flat) || [] }].filter((x) => x.params.length);
+    /* Not cached when empty: a loaded module offering nothing is a read that
+     * did not complete, and the next visit should ask again. */
+    if (sections.length) lfoTargetGroupingCache[comp.key] = sections;
+    return sections;
+}
+
+function lfoTargetFlatAnnounce() {
+    const r = lfoTargetFlatRows[lfoTargetFlatIndex];
+    if (!r) return;
+    let section = "";
+    for (let i = lfoTargetFlatIndex; i >= 0; i--) {
+        if (lfoTargetFlatRows[i].type === "divider") { section = lfoTargetFlatRows[i].label; break; }
+    }
+    announceMenuItem(section ? r.label + ", " + section : r.label);
+}
+
+/* Move the flat cursor. `n` is already in rows (jog 1:1, knob accumulated). */
+function lfoTargetFlatMove(n) {
+    if (!n) return;
+    const before = lfoTargetFlatIndex;
+    lfoTargetFlatIndex = moveFlatCursor(lfoTargetFlatRows, lfoTargetFlatIndex, n);
+    if (lfoTargetFlatIndex !== before) lfoTargetFlatAnnounce();
+    needsRedraw = true;
+}
+
+/* A knob turn in any target view. Flat: scroll the list. Hierarchy: scroll
+ * the list on screen, exactly as the jog does. */
+function lfoTargetKnobTurn(delta) {
+    lfoTargetKnobLastMs = Date.now();
+    if (view === VIEWS.LFO_TARGET_FLAT) {
+        lfoTargetFlatMove(listKnobStep(lfoTargetKnob, delta, lfoTargetKnobLastMs,
+                                       lfoTargetFlatRows.length));
+        return;
+    }
+    const len = view === VIEWS.LFO_TARGET_COMPONENT ? lfoTargetComponents.length
+              : view === VIEWS.LFO_TARGET_GROUP ? lfoTargetGroups.length
+              : lfoTargetParams.length;
+    const n = listKnobStep(lfoTargetKnob, delta, lfoTargetKnobLastMs, len);
+    if (n) { handleJog(n); needsRedraw = true; }
+}
+
+/* The grid's Target cell was TURNED: open the flat list on the stored routing
+ * (that first detent only lands) and let this knob's release commit. */
+function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
+    const componentKey = paramPagesComponent();
+    const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+    if (componentKey !== "slot" && !isMaster) return false;
+    const m = isMaster
+        ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
+        : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+    if (!m) return false;
+    lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                      : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    lfoTargetFromGrid = true;
+    clearParamPagesTouch();
+    enterLfoTargetPicker();
+    lfoTargetKnob = listKnobInit();
+    /* The caption's room: from the label column to the scrollbar gutter,
+     * less the rule stubs either side. */
+    lfoTargetFlatRows = buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf,
+        { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 });
+    lfoTargetFlatStored = indexOfFlatRoute(lfoTargetFlatRows,
+        lfoCtx.getParam("target") || "", lfoCtx.getParam("target_param") || "");
+    lfoTargetFlatIndex = lfoTargetFlatStored;
+    setView(VIEWS.LFO_TARGET_FLAT);
+    lfoTargetKnobCommit = knob;
+    lfoTargetKnobHeld = !!held;
+    lfoTargetKnobLastMs = Date.now();
+    lfoTargetFlatAnnounce();
+    needsRedraw = true;
+    return true;
+}
+
+/* Commit the flat list's row: the same writes the picker makes. */
+function lfoTargetFlatCommit() {
+    lfoTargetKnobCommit = -1;
+    lfoTargetKnobHeld = false;
+    const r = lfoTargetFlatRows[lfoTargetFlatIndex];
+    if (r && r.route && lfoCtx) {
+        commitLfoTargetFromGrid(lfoCtx, r.route.target ? r.route : null);
+        announce(r.route.target ? "Target set: " + r.label : "Target cleared");
+    }
+    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+    needsRedraw = true;
+}
+
+function lfoTargetFlatCancel() {
+    lfoTargetKnobCommit = -1;
+    lfoTargetKnobHeld = false;
+    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+    announce("Target unchanged");
+    needsRedraw = true;
+}
+
+function lfoTargetKnobTick() {
+    if (lfoTargetKnobCommit < 0) return;
+    if (view !== VIEWS.LFO_TARGET_FLAT) { lfoTargetKnobCommit = -1; return; }
+    if (!lfoTargetKnobHeld &&
+        Date.now() - lfoTargetKnobLastMs >= LFO_TARGET_KNOB_IDLE_COMMIT_MS) {
+        lfoTargetFlatCommit();
+    }
+}
+
+function drawLfoTargetFlat() {
+    clear_screen();
+    /* The header names the MODULE the cursor is in: its divider scrolls off
+     * above a long section, and the position is what a flat list must never
+     * stop saying. */
+    let module = "";
+    for (let i = lfoTargetFlatIndex; i >= 0; i--) {
+        const r = lfoTargetFlatRows[i];
+        if (r && r.type === "divider" && !(r.level > 0)) { module = r.label; break; }
+    }
+    const title = lfoCtx ? lfoCtx.title : "LFO";
+    drawHeader(truncateText(module ? title + " > " + module : title + " Target", 22));
+    drawMenuList({
+        items: lfoTargetFlatRows,
+        selectedIndex: lfoTargetFlatIndex,
+        getLabel: (item) => item.label,
+        /* The routing it has now, so scrolling away still reads as leaving it. */
+        getValue: (item, i) => (i === lfoTargetFlatStored ? "*" : ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        announce: false,
+    });
+    drawFooter(["Release: set", "Back: cancel"]);
+}
+
+/*
+ * A FILE CELL, TURNED: the files in the current file's folder.
+ *
+ * The file browser is a hierarchy and the jog walks it -- hold the cell and
+ * click, then click into folders and Back out. TURNING the cell changes the
+ * file WITHIN ITS FOLDER instead: the folder's files (no subfolders, no ".."),
+ * the current one marked, and the knob scrolls them. Letting go loads the
+ * one it is on; Back cancels. Nothing is written while scrolling -- a module
+ * may load a sample inside set_param, so a write per detent would be a load
+ * per detent.
+ */
+let fileFlatRows = [];
+let fileFlatIndex = 0;
+let fileFlatStored = -1;
+let fileFlatKey = "";
+let fileFlatFolder = "";
+let fileFlatKnobState = listKnobInit();
+let fileFlatKnob = -1;
+let fileFlatHeld = false;
+let fileFlatLastMs = 0;
+
+function fileFlatEnter(slotIndex, fullKey, knob, held, info) {
+    const meta = info && info.meta;
+    if (!meta || meta.type !== "filepath" || !info.key) return false;
+    const current = getSlotParam(slotIndex, fullKey) || "";
+    const st = buildFilepathBrowserState(meta, current);
+    refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
+    const files = (st.items || []).filter((it) => it && it.kind === "file");
+    if (!files.length) {
+        announce("No files in this folder");
+        return true;
+    }
+    fileFlatRows = files;
+    fileFlatStored = files.findIndex((f) => f.path === current);
+    fileFlatIndex = fileFlatStored >= 0 ? fileFlatStored : 0;
+    fileFlatKey = info.key;
+    const dir = String(st.currentDir || "").replace(/\/+$/, "");
+    fileFlatFolder = dir.slice(dir.lastIndexOf("/") + 1) || (meta.name || info.key);
+    fileFlatKnobState = listKnobInit();
+    fileFlatKnob = knob;
+    fileFlatHeld = !!held;
+    fileFlatLastMs = Date.now();
+    clearParamPagesTouch();
+    setView(VIEWS.FILE_FLAT);
+    announceMenuItem(fileFlatRows[fileFlatIndex].label + ", " + fileFlatFolder);
+    needsRedraw = true;
+    return true;
+}
+
+function fileFlatMove(n) {
+    if (!n || !fileFlatRows.length) return;
+    const before = fileFlatIndex;
+    fileFlatIndex = Math.max(0, Math.min(fileFlatRows.length - 1, fileFlatIndex + n));
+    if (fileFlatIndex !== before) announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    needsRedraw = true;
+}
+
+function fileFlatKnobTurn(delta) {
+    fileFlatLastMs = Date.now();
+    fileFlatMove(listKnobStep(fileFlatKnobState, delta, fileFlatLastMs, fileFlatRows.length));
+}
+
+function fileFlatClose() {
+    fileFlatKnob = -1;
+    fileFlatHeld = false;
+    if (paramPagesActive()) setView(VIEWS.PARAM_PAGES);
+    needsRedraw = true;
+}
+
+function fileFlatCommit() {
+    const f = fileFlatRows[fileFlatIndex];
+    if (f && fileFlatIndex !== fileFlatStored) {
+        commitParamPagesValue(fileFlatKey, f.path);
+        announce("Loaded " + f.label);
+    }
+    fileFlatClose();
+}
+
+function fileFlatCancel() {
+    announce("File unchanged");
+    fileFlatClose();
+}
+
+function fileFlatTick() {
+    if (fileFlatKnob < 0) return;
+    if (view !== VIEWS.FILE_FLAT) { fileFlatKnob = -1; return; }
+    if (!fileFlatHeld && Date.now() - fileFlatLastMs >= LFO_TARGET_KNOB_IDLE_COMMIT_MS) fileFlatCommit();
+}
+
+function drawFileFlat() {
+    clear_screen();
+    drawHeader(truncateText(fileFlatFolder, 22));
+    drawMenuList({
+        items: fileFlatRows,
+        selectedIndex: fileFlatIndex,
+        getLabel: (item) => item.label,
+        getValue: (item, i) => (i === fileFlatStored ? "*" : ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        announce: false,
+    });
+    drawFooter(["Release: load", "Back: cancel"]);
 }
 
 function drawLfoTargetGroup() {
@@ -27578,6 +27923,8 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
         case VIEWS.LFO_TARGET_GROUP:     drawLfoTargetGroup(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
+        case VIEWS.LFO_TARGET_FLAT:      drawLfoTargetFlat(); break;
+        case VIEWS.FILE_FLAT:            drawFileFlat(); break;
         case VIEWS.NOTICE:               drawNotice(); break;
         case VIEWS.CONNECT:              drawConnect(); break;
         case VIEWS.EC4_SETUP:            drawEc4Setup(); break;
@@ -27591,6 +27938,8 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    lfoTargetKnobTick();
+    fileFlatTick();
     /* FIRST: MIDI was read just before this tick, so every E16 reply that has
      * arrived is delivered. Anything slow below must not age its ACK timers. */
     try { for (const sf of externalSurfaces()) if (sf.markInputRead) sf.markInputRead(); } catch (e) {}
@@ -29168,6 +29517,12 @@ globalThis.tick = function() {
         case VIEWS.LFO_TARGET_PARAM:
             drawLfoTargetParam();
             break;
+        case VIEWS.LFO_TARGET_FLAT:
+            drawLfoTargetFlat();
+            break;
+        case VIEWS.FILE_FLAT:
+            drawFileFlat();
+            break;
         case VIEWS.ENUM_PICKER:
             drawEnumPicker();
             break;
@@ -29946,6 +30301,14 @@ globalThis.onMidiMessageInternal = function(data) {
              * is for turning an enum blind on the grid; inside a list you are
              * looking straight at it.
              */
+            if (isLfoTargetView(view)) {
+                lfoTargetKnobTurn(delta);
+                return;
+            }
+            if (view === VIEWS.FILE_FLAT) {
+                fileFlatKnobTurn(delta);
+                return;
+            }
             if (view === VIEWS.ENUM_PICKER) {
                 /* Through the list accumulator, NOT enumPickerJog directly:
                  * 1:1 is right for the jog and much too fast for a knob
@@ -30040,6 +30403,14 @@ globalThis.onMidiMessageInternal = function(data) {
              * closes; only the drawing is suppressed.
              */
             if (view === VIEWS.ENUM_PICKER || view === VIEWS.FILEPATH_BROWSER) return;
+            if (isLfoTargetView(view)) {
+                if (knobIndex === lfoTargetKnobCommit) lfoTargetKnobHeld = true;
+                return;
+            }
+            if (view === VIEWS.FILE_FLAT) {
+                if (knobIndex === fileFlatKnob) fileFlatHeld = true;
+                return;
+            }
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
@@ -30106,6 +30477,16 @@ globalThis.onMidiMessageInternal = function(data) {
              */
             triggerKnobLastMs[knobIndex] = 0;
             triggerKnobLastKey[knobIndex] = null;
+            /* Letting go of the knob that opened a flat list by turning (LFO
+             * target, file) is the commit. */
+            if (lfoTargetKnobCommit === knobIndex && view === VIEWS.LFO_TARGET_FLAT) {
+                lfoTargetFlatCommit();
+                return;
+            }
+            if (fileFlatKnob === knobIndex && view === VIEWS.FILE_FLAT) {
+                fileFlatCommit();
+                return;
+            }
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();

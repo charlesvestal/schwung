@@ -819,6 +819,22 @@ declaring it has no `allowEnumPeek` to reach for. It asks the renderer's
 square and still peeks, and so does the dial layout, which draws no big cell.
 `tests/host/test_big_enum_no_peek.sh`.
 
+**A param may decline its own peek — `peek: false`.** The contract's version of
+`allowEnumPeek`, for an enum whose square already says everything: the LFO
+page's Mode (`UNI`/`BI`) and Sync (`FRE`/`SYN`) are two short words that flip on
+the next detent, and the panel on every flip covered the page to show the one
+other word. It travels with the declaration, so every host drawing the contract
+agrees. `tests/host/test_declared_peek_and_release_commit.sh`.
+
+**A param may commit on RELEASE — `commit: "release"`.** The cell, the header
+and the peek follow the knob; the device hears only where it stops. For a key
+whose every value is a consequence rather than a position: an LFO Target turned
+as an enum would otherwise re-route the modulation to every parameter it
+passes, one frame each. The value waits in `pendingWrite`, which the release
+already flushes; `RELEASE_COMMIT_IDLE_MS` (1 s of stillness) backstops a turn
+the cap sensor never saw. While it waits the read rotation skips the key, or
+the device's old value would be put back under the finger.
+
 Known and not fixed: 933 of 958 enum cells peek, and the peek is instant while
 the enum square's resize and the waveform morph take ~100ms — so those two
 animations are covered by the list at the moment they play. A short delay before

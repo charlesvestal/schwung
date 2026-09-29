@@ -125,6 +125,20 @@ Promise.all([
            "so this is a wrap or a rate limit rather than a gesture latch");
   }
 
+  /* ---- 2b. TURNING BACK flips it back, inside the same hold ------------- */
+  {
+    const st = K.knobInit(0);
+    let t = 1000;
+    for (; t <= 1300; t += 30) K.knobStep(st, CHOICE, 1, t);
+    if (st.value !== 1) fail("the forward flick did not flip it");
+    for (; t <= 1600; t += 30) K.knobStep(st, CHOICE, -1, t);
+    if (st.value !== 0)
+      fail("turning back without pausing left it at " + st.value + " — a reversal is a new " +
+           "gesture, or a held knob can flip a value and never flip it back");
+    for (; t <= 1900; t += 30) K.knobStep(st, CHOICE, 1, t);
+    if (st.value !== 1) fail("the third reversal did not flip it again");
+  }
+
   /* ---- 3. the clock runs on STILLNESS, not on elapsed time -------------- */
   {
     const st = K.knobInit(0);

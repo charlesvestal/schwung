@@ -718,6 +718,61 @@ channel value separates them. Parsed by the shim at init
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
 
+### A TURN on a door lists; a JOG CLICK navigates -- LFO Target and file cells
+
+Two cells on the knob grid open a HIERARCHY: an LFO's Target (the picker,
+component > section > param) and a file (the browser, folder > file). The
+jog walks both as hierarchies -- hold the knob, click, click in, Back out --
+and that is unchanged. TURNING the cell now does the other half: it opens a
+FLAT list and the knob scrolls it. Same targets, same files, same commit;
+only the navigation differs.
+
+- **The controller offers a turn on a door to the host** (`io.turnDoor(fullKey,
+  direction, knob, held, {key, meta})`, from `onKnobTurn`'s `!isTurnable`
+  branch). `held` matters: the host's own touch tracking is OFF while the grid
+  owns input (`handleParamPagesMidi` claims the touch notes), so it cannot
+  otherwise know a release is coming. A host that declines does nothing, as
+  before.
+- **LFO Target -> `VIEWS.LFO_TARGET_FLAT`** (`shared/lfo_target_flat.mjs`, pure).
+  "None", then every param in the picker's own order, with TWO levels of
+  divider: the MODULE with its position ("SYN Mini-JV", "FX1 Freeverb", "MF1
+  Arp", "LFO 2", "Sends") and its SECTIONS indented under it ("Filter" --
+  `drawMenuList`'s `level: 1`). The cursor skips dividers, so a turn runs
+  straight across categories; the header names the module the cursor is in,
+  because its divider scrolls off above a long section. One line for position
+  + module + section did not fit: the device font holds ~16 characters and a
+  long section cut every module to "Min.". A flat list screen-HOPPING through
+  the picker's own screens was tried first and was confusing.
+- **File -> `VIEWS.FILE_FLAT`**: the files in the CURRENT file's folder only --
+  no subfolders, no "..". Moving between folders is the browser's job.
+- **Release commits** (a jog click too); **Back cancels**; nothing is written
+  while scrolling. For a file that is load-bearing, not tidiness: a module may
+  load its sample inside `set_param` (granny), so a write per detent would be a
+  load per detent. With no release coming (a turn the touch sensor missed) the
+  pick lands after 1 s still. A file is written through the grid controller's
+  `commitValue`, so the cell shows it at once; the LFO through
+  `commitLfoTargetFromGrid`, as the picker does.
+- **Not yet on the file path**: `applyLinkedWavEndDefaultsForFilepath` (it reads
+  list-editor state) and live preview.
+- A knob inside the HIERARCHICAL picker scrolls the list on screen, like the jog.
+
+**On the grid an LFO has no Enabled cell: a target IS the LFO switched on**,
+None is off. `commitLfoTargetFromGrid` writes `enabled` WITH the routing -- and
+FIRST on the way on, because the chain gives a fresh LFO full depth only when it
+is enabled with no routing yet; enabling after the target left a routed LFO at
+0%. The LIST editor keeps its Enabled row. The page (`lfo_page.mjs`) is Target,
+Mode, Sync, Retrigger / Shape, Depth, Phase, Rate -- seven on Master FX, which
+has no Retrigger key; Rate is its own cell, outside the wave (`span: false`), so
+a synced division reads `1/4` and the wave draws it at the rate it plays
+(`lfoRateFrac`, nominal 120 BPM). Mode and Sync declare `peek: false`.
+
+**Target as a flat ENUM was the first version (#556, from schwung-movy) and was
+not taken here**: one knob over every param of every loaded module is the
+418-row list the picker grouping replaced. The library half stays --
+`lfoTargetOptions` / `lfoTargetParam` build that enum for a host that hands in
+`targets` (movy), and `createSlotGridIo`'s bridge is inert without
+`io.targetOptions`, which Schwung no longer passes.
+
 ### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
 
 An LFO's target was chosen from ONE flat list — every modulatable key the

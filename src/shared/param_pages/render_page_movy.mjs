@@ -29,7 +29,7 @@
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
 } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER, graphicValues } from "./render_page.mjs";
+import { asciiFold, fitText, fitHeadTail, shortenLabel, line, circle, notchCorners, CHECKER, graphicValues } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
@@ -864,7 +864,9 @@ export function drawHeader(ctx, left, right, inverted = false, padIcon = null) {
         ctx.fillRect(W - 1, 0, 1, 1, 0);
     }
     const color = inverted ? 0 : 1;
-    const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
+    /* Head first: a held LFO Target reads "Mini-JV: Cutoff", and cutting
+     * from the end hid the param behind the module name. */
+    const fit5 = (t, maxW) => caps(fitHeadTail(FONT4_MEASURE, caps(t), maxW));
 
     /*
      * The split between the two sides is MEASURED, not fixed.

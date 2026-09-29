@@ -939,6 +939,42 @@ function drawLinearWave(ctx, x0, xEnd, shape, cycles, phase, yOf, color = 1) {
     drawPolyline(ctx, pts, color);
 }
 
+/*
+ * A SYNCED RATE, drawn as the free rate it plays at.
+ *
+ * A division enum's own fraction is its option INDEX, and the index is not a
+ * speed: "16 bar".."1/32T" is 27 steps whose spacing is nothing like the
+ * 0.1..20 Hz range the free cell spans, so the two modes drew the same knob
+ * position at unrelated densities and switching Sync changed the picture for
+ * no reason the sound gave. Parsing the option into beats and reading it at a
+ * nominal 120 BPM puts both on ONE scale — 1/4 draws exactly as 2 Hz does.
+ *
+ * Nominal, not the live tempo: this drawer is pure, and the picture is a
+ * density, not a measurement. An option that is not a division (any other
+ * module's rate enum) keeps its index fraction, as before.
+ */
+const LFO_NOMINAL_BPM = 120;
+const LFO_RATE_HZ_MIN = 0.1;
+const LFO_RATE_HZ_MAX = 20;
+
+function divisionBeats(text) {
+    const t = String(text || "").trim();
+    let m = /^(\d+)\s*bars?$/i.exec(t);
+    if (m) return 4 * Number(m[1]);
+    m = /^1\/(\d+)\s*(T?)$/i.exec(t);
+    if (m && Number(m[1]) > 0) return (4 / Number(m[1])) * (m[2] ? 2 / 3 : 1);
+    return 0;
+}
+
+function lfoRateFrac(metaIndex, key, values) {
+    const beats = divisionBeats(optionText(metaIndex, key, values));
+    if (beats > 0) {
+        const hz = LFO_NOMINAL_BPM / 60 / beats;
+        return clamp01((hz - LFO_RATE_HZ_MIN) / (LFO_RATE_HZ_MAX - LFO_RATE_HZ_MIN));
+    }
+    return frac(metaIndex, key, values);
+}
+
 /**
  * schwung-movy renderer/lfo-wave.ts drawLfoWave, ported. Rate -> cycle
  * density, depth -> amplitude, mirroring Movy's `cycles`/`ampScale` fields.
@@ -957,7 +993,7 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
     const spanW = xEnd - x0;
 
     const shape = lfoShapeIdOf(optionText(metaIndex, roles.shape, values));
-    const rateFrac = frac(metaIndex, roles.rate, values);
+    const rateFrac = lfoRateFrac(metaIndex, roles.rate, values);
     const phase = roles.phase ? frac(metaIndex, roles.phase, values) : 0;
 
     /*

@@ -40,6 +40,7 @@ These are not style preferences. Break any one and the tool case stops working.
 | `page_controller.mjs` | interaction model — state, knob feel, staggered reads, rebuild |
 | `page_input.mjs` | Move MIDI → intents |
 | `child_key.mjs` | addressing repeated elements (pads, tones, parts) |
+| `lfo_page.mjs` | the slot / Master FX LFO page, as levels + params to merge into a hierarchy |
 | `page_controller.mjs` | the interaction model — state, knob feel, staggered reads, rebuild |
 | `page_input.mjs` | Move MIDI → intents |
 

@@ -369,9 +369,11 @@ function makeSlot(over) {
 /* ---- 4e. shape+rate+depth+phase draw as ONE row-wide graphic ------------ */
 {
   /*
-   * The four that describe the MOTION share a declared viz group, so the whole
-   * second row draws the actual waveform at its actual depth and phase instead
-   * of four separate cells.
+   * The four that describe the MOTION share a declared viz group, so Shape,
+   * Depth and Phase draw the actual waveform at its actual depth and phase
+   * instead of three separate cells. Rate is the fourth cell of the row and
+   * OUTSIDE the span (span:false): it keeps its own knob or division square,
+   * and still lends the wave its density.
    *
    * Declared, not detected: the detector requires rate and depth to share a
    * stem, and "rate_hz" against "depth" does not match, so it never fired. The
@@ -402,8 +404,8 @@ function makeSlot(over) {
            JSON.stringify(groups.map((g) => g.kind)));
       continue;
     }
-    if (lfo.slotStart !== 4 || lfo.slotSpan !== 4) {
-      fail("the lfo graphic should span the whole second row (slots 4..7), got " +
+    if (lfo.slotStart !== 4 || lfo.slotSpan !== 3) {
+      fail("the lfo graphic should span slots 4..6, Rate keeping slot 7, got " +
            lfo.slotStart + ".." + (lfo.slotStart + lfo.slotSpan - 1));
     }
     for (const role of ["shape", "rate", "depth", "phase"]) {
@@ -515,6 +517,60 @@ function makeSlot(over) {
   });
   if (bare.formatValue("slot:lfo1:target", "fx1", "cell") !== null)
     fail("without a resolver the target must fall through rather than throw");
+}
+
+/* ---- 8b. Target as a KNOB: index <-> routing at the io boundary ----------
+ *
+ * With the host list and commit injected, Target is an enum: the read turns
+ * the stored pair into its position, the write turns a position back into a
+ * routing and hands it to the HOST (which writes `enabled` with it), and the
+ * formatter reads the option the knob is ON — mid-turn that is not yet what
+ * the device stores, so it must come from `raw`, never from a read.
+ */
+{
+  const LP = await import(R + "/src/shared/param_pages/lfo_page.mjs");
+  for (const master of [false, true]) {
+    const pre = master ? "master_fx:" : "";
+    const full = (n, k) => (master ? "master_settings:" : "slot:") + pre + "lfo" + n + ":" + k;
+    const store = { [pre + "lfo1:target"]: "fx1", [pre + "lfo1:target_param"]: "mix" };
+    const commits = [], built = [];
+    const list = (current) => LP.lfoTargetOptions({
+      components: [{ key: "synth", label: "Synth: Braids" }, { key: "fx1", label: "FX 1: Freeverb" }],
+      paramsFor: (k) => (k === "synth" ? [{ key: "timbre", label: "Timbre" }]
+                                       : [{ key: "mix", label: "Mix" }]),
+      current,
+    });
+    const hooks = {
+      targetOptions: (i, current) => { built.push(i); return list(current); },
+      commitTarget: (i, route) => commits.push([i, route.target, route.param]),
+    };
+    const io = master
+      ? SG.createMasterGridIo(Object.assign({ readParam: (k) => store[k] || "",
+          writeParam: (k, v) => { store[k] = v; }, hasPreset: () => false }, hooks))
+      : SG.createSlotGridIo(Object.assign({ readSlotParam: (k) => store[k] || "",
+          writeSlotParam: (k, v) => { store[k] = v; }, isMpeMode: () => false,
+          setMpeMode: () => {}, hasPreset: () => false }, hooks));
+    const tag = master ? "master: " : "slot: ";
+    const cp = JSON.parse(io.getParam((master ? "master_settings:" : "slot:") + "chain_params"));
+    const decl = cp.find((p) => p.key === pre + "lfo1:target");
+    if (!decl || decl.type !== "enum" || decl.commit !== "release")
+      fail(tag + "Target should be declared a release-committed enum: " + JSON.stringify(decl));
+    else if (decl.options.join("|") !== "None|Braids: Timbre|Freeverb: Mix")
+      fail(tag + "Target options: " + decl.options.join("|"));
+    if (io.getParam(full(1, "target")) !== "2")
+      fail(tag + "the stored fx1/mix should read as option 2, got " + io.getParam(full(1, "target")));
+    if (io.getParam(full(2, "target")) !== "0") fail(tag + "an unrouted LFO should read None (0)");
+    io.setParam(full(1, "target"), "1");
+    io.setParam(full(2, "target"), "0");
+    if (JSON.stringify(commits) !== JSON.stringify([[0, "synth", "timbre"], [1, "", ""]]))
+      fail(tag + "the write should commit the routing through the host: " + JSON.stringify(commits));
+    if (store[pre + "lfo1:target"] !== "fx1")
+      fail(tag + "the index must never be written as a raw target");
+    if (io.formatValue(full(1, "target"), "1", "header") !== "Braids: Timbre")
+      fail(tag + "the header should name the option under the knob");
+    if (io.formatValue(full(1, "target"), "1", "cell") !== "Timbre")
+      fail(tag + "the cell should name the param alone");
+  }
 }
 
 /* ---- 9. declared defaults -----------------------------------------------
@@ -645,12 +701,12 @@ function makeMaster(over) {
     fail("the master values page should lead with " + SG.MFX_MIDI_CHANNEL_KEY +
          ", got " + got[0]);
 
-  /* Each LFO is exactly ONE page here too: nine params chunk to 8 + 1 unless
-     one rate cell is hidden, and an orphan page holding a single control would
-     land between LFO 1 and LFO 2. */
+  /* Each LFO is exactly ONE page here too, of SEVEN: the master bus has no
+     Retrigger, and both rate cells showing would chunk to 7 + 1 — an orphan
+     page holding a single control between LFO 1 and LFO 2. */
   for (const g of pages.filter((p) => p.kind === "knobs").slice(1)) {
-    if ((g.keys || []).length !== 8)
-      fail("master page " + JSON.stringify(g.name) + " should hold 8 knobs, got " +
+    if ((g.keys || []).length !== 7)
+      fail("master page " + JSON.stringify(g.name) + " should hold 7 knobs, got " +
            (g.keys || []).length);
   }
 
@@ -670,11 +726,19 @@ function makeMaster(over) {
  * that they are the SLOT pages with a prefix, param for param, condition for
  * condition. A second copy of lfoParams would pass every other test in this
  * file and fail here.
+ *
+ * The ONE declared difference is Retrigger — the master bus has no key for it
+ * — and it is an ARGUMENT of the one builder, so the comparison is against the
+ * slot builder asked for no retrigger, and the difference is pinned apart.
  */
 {
   const P = "master_fx:";
   for (const n of [1, 2]) {
-    const slotSide = SG.lfoParams(n);
+    if (!SG.lfoParams(n).some((p) => p.key === "lfo" + n + ":retrigger"))
+      fail("LFO " + n + " on a slot lost its Retrigger cell");
+    if (SG.lfoParams(n, P).some((p) => /retrigger$/.test(p.key)))
+      fail("LFO " + n + " on the master bus shows a Retrigger it has no key for");
+    const slotSide = SG.lfoParams(n, "", { retrigger: false });
     const masterSide = SG.lfoParams(n, P);
     if (slotSide.length !== masterSide.length)
       fail("LFO " + n + " has " + slotSide.length + " params on a slot and " +

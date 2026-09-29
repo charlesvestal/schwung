@@ -15,7 +15,7 @@ import { drawHeader as drawMovyHeader,
  * measures inside a pixel width; drawMenuList asks it for a COUNT (see
  * fitCharCount) because truncateText and the marquee scroller are both
  * character-budgeted. There is no second copy of that loop in this file. */
-import { fitText } from './param_pages/render_page.mjs';
+import { fitText, fitHeadTail } from './param_pages/render_page.mjs';
 /* The geometry itself comes from the LEAF, ../list_geometry.mjs — the single
  * definition every screen shares. This file re-exports each name because ~41
  * call sites import them from here; chain_ui_views.mjs re-exports the same set
@@ -331,6 +331,32 @@ export function drawArrowDown(x, y, ctx = DEVICE_CTX) {
     px(ctx, x + 2, y + 2, 1);
 }
 
+/*
+ * ROW HEIGHT FOLLOWS THE FONT THE CTX ACTUALLY DRAWS WITH.
+ *
+ * The list geometry is tuned for the device's 7px glyphs: a 9px row, the
+ * highlight one pixel above and one below. An embedding host that draws its
+ * own face through the ctx (movy's is 5px tall) kept those 9px rows, so the
+ * glyphs sat at the TOP of the highlight with three pixels under them and
+ * one over — off-centre on every row, and a row shorter than it could be.
+ *
+ * Measured widths already go through the ctx (measurer); this is the same
+ * idea for height. A ctx may declare `fontHeight`, and the row becomes the
+ * glyphs plus one pixel of highlight either side. Absent — the device ctx and
+ * every existing caller — nothing moves. An explicit argument always wins.
+ */
+function rowGeometry(ctx, lineHeight, highlightHeight, highlightOffset) {
+    const fh = ctx && typeof ctx.fontHeight === "number" && ctx.fontHeight > 0
+        ? ctx.fontHeight : 0;
+    const line = lineHeight !== undefined ? lineHeight : (fh ? fh + 2 : LIST_LINE_HEIGHT);
+    return {
+        lineHeight: line,
+        highlightHeight: highlightHeight !== undefined ? highlightHeight
+            : (fh ? line : LIST_HIGHLIGHT_HEIGHT),
+        highlightOffset: highlightOffset !== undefined ? highlightOffset : LIST_HIGHLIGHT_OFFSET,
+    };
+}
+
 export function drawMenuList({
     /* The draw surface. Defaults to the device globals, which is what every
      * shadow view module wants and what this file always did. The param-page
@@ -343,9 +369,11 @@ export function drawMenuList({
     selectedIndex,
     listArea,
     topY = LIST_TOP_Y,
-    lineHeight = LIST_LINE_HEIGHT,
-    highlightHeight = LIST_HIGHLIGHT_HEIGHT,
-    highlightOffset = LIST_HIGHLIGHT_OFFSET,
+    /* Left undefined so a ctx that names its own glyph height can size the
+     * rows — see rowGeometry. */
+    lineHeight,
+    highlightHeight,
+    highlightOffset,
     labelX = LIST_LABEL_X,
     valueX = LIST_VALUE_X,
     valueAlignRight = false,
@@ -366,10 +394,17 @@ export function drawMenuList({
     /* THE LABEL FLOOR, and it applies to EVERY row — see the long note above
      * the reservation itself. 0 opts a caller out entirely. */
     minLabelChars = 8,
+    /* A "Head: Tail" label gives up its HEAD first when it does not fit
+     * (fitHeadTail) — for a list whose options are routings, where the tail
+     * is the thing being chosen. Off: the ordinary cut and selected-row
+     * scroller, for every existing caller. */
+    shortenHead = false,
     announce = true  /* set false when the caller emits its own richer
                         screen-reader announcements (e.g. file-browser) to
                         avoid double-announcing each selection move */
 }) {
+    ({ lineHeight, highlightHeight, highlightOffset } =
+        rowGeometry(ctx, lineHeight, highlightHeight, highlightOffset));
     const totalItems = items.length;
     /* Every width below is MEASURED through the ctx this row is drawn with, so
      * the budget and the glyphs can never disagree. See measurer(). */
@@ -472,7 +507,10 @@ export function drawMenuList({
             const midY = y + Math.floor(itemHeight / 2);
             if (item.label) {
                 const captionW = measure(item.label);
-                const captionX = labelX;
+                /* `level: 1` is a divider UNDER a divider (a module's section
+                 * under the module): indented, so a flat list can still show
+                 * two levels. Absent -- every other caller -- nothing moves. */
+                const captionX = labelX + (item.level > 0 ? 10 : 0);
                 /* Line left of caption */
                 ctx.fillRect(0, midY, captionX - 2, 1, 1);
                 ctx.print(captionX, midY - 3, item.label, 1);
@@ -641,7 +679,11 @@ export function drawMenuList({
             maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         }
 
-        if (maxLabelChars > 0) {
+        if (shortenHead && fullLabel.indexOf(": ") > 0 && maxLabelChars < fullLabel.length) {
+            label = fitHeadTail({ textWidth: measure },
+                                fullLabel, Math.max(0, (displayValue ? resolvedValueX : indicatorX)
+                                                       - labelX - labelGap));
+        } else if (maxLabelChars > 0) {
             if (isSelected && fullLabel.length > maxLabelChars) {
                 /* Selected item with long text: use scroller */
                 label = labelScroller.getScrolledText(fullLabel, maxLabelChars);

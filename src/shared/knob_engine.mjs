@@ -356,9 +356,17 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
     if (isTwoWayMeta(meta)) {
         const t = typeof nowMs === "number" ? nowMs : 0;
         const last = state.lastTwoWayMs;
+        /* A REVERSAL is a new gesture too. The latch exists so one flick in
+         * ONE direction is one flip; turning back is the user undoing it, and
+         * swallowing that until the knob had been still for the gap meant a
+         * held knob could flip a value and never flip it back. Reported from
+         * the device on the LFO page's Mode and Sync. */
+        const dir = delta > 0 ? 1 : -1;
         const startsGesture = last === undefined
-            || (t - last) >= TWO_WAY_GESTURE_GAP_MS;
+            || (t - last) >= TWO_WAY_GESTURE_GAP_MS
+            || (state.lastTwoWayDir !== undefined && state.lastTwoWayDir !== dir);
         state.lastTwoWayMs = t;
+        state.lastTwoWayDir = dir;
         state.detentAccum = 0;
         if (!startsGesture) return state.value;
         state.value = Math.round(Number(state.value)) === 0 ? 1 : 0;
