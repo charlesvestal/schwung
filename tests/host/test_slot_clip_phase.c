@@ -45,9 +45,7 @@ uint32_t shadow_set_pages_published_gen(void) { return 0; }
 
 /* The file-era tables are still referenced elsewhere in the unit; nothing
  * under test reads them any more. */
-int shadow_clip_new_slot(int track) { (void)track; return -1; }
 const clip_state_t *clip_state_current(void) { return NULL; }
-const clip_regions_t *shadow_clip_regions(void) { return NULL; }
 int shadow_transport_pulses = 0;
 char sampler_current_set_name[128];
 char sampler_current_set_uuid[64];

@@ -16,8 +16,8 @@
 #include "lane_trace.h"
 #include "lane_store.h"   /* LANE_SLOT_PENDING */
 #include "playhead_anchor.h"
+#include "clip_state.h"       /* CLIP_TRACKS / CLIP_SLOTS */
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
-#include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "step_plock.h"       /* a held step button -> a phase, in one place */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
@@ -97,11 +97,6 @@ void (*shadow_chain_set_clip_phase)(void *instance, int valid,
                                     double phase_beats, double loop_len,
                                     int track, int clip_slot, int fp_valid,
                                     const double *fp) = NULL;
-/* The deletion half of the same seam, and optional for the same reason. A NULL
- * means a deleted clip's lanes are never orphaned -- they go stale instead, by
- * fingerprint, which is silent and retained either way. */
-void (*shadow_chain_set_clip_deleted)(void *instance, int track,
-                                      int slot) = NULL;
 host_api_v1_t shadow_host_api;
 
 /* Global send buses. Zero-initialised BSS: every position empty, both returns
@@ -166,10 +161,6 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * value no usable number rather than a plausible one. */
     *phase_beats = NAN;
     *loop_len = NAN;
-    if (slot < SHADOW_CHAIN_INSTANCES) {
-        g_write_unconfirmed[slot] = 0;
-        g_write_edit_len_x100[slot] = 0;
-    }
 
     static move_model_t m;          /* 2.5 KB: static, off the callback's stack */
     /* A torn read leaves `m` as the last good snapshot (move_model_get): use
@@ -2861,8 +2852,6 @@ int shadow_inprocess_load_chain(void) {
     shadow_chain_set_clip_phase =
         (void (*)(void *, int, double, double, int, int, int, const double *))
         dlsym(shadow_dsp_handle, "chain_set_clip_phase");
-    shadow_chain_set_clip_deleted = (void (*)(void *, int, int))
-        dlsym(shadow_dsp_handle, "chain_set_clip_deleted");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p midi_wake=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -2876,9 +2865,8 @@ int shadow_inprocess_load_chain(void) {
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: scene_morph=%p",
             (void*)shadow_chain_set_scene_morph);
     unified_log("shim", LOG_LEVEL_INFO,
-            "chain dlsym: clip_phase=%p clip_deleted=%p",
-            (void*)shadow_chain_set_clip_phase,
-            (void*)shadow_chain_set_clip_deleted);
+            "chain dlsym: clip_phase=%p",
+            (void*)shadow_chain_set_clip_phase);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);
@@ -3495,10 +3483,10 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  *
  * "<target> <param> <step> <value>" in; "<target> <param> <phase> <value>"
  * out, for the chain's `lanes:plock`. The gesture knows a STEP BUTTON and the
- * chain understands only a PHASE, and all four facts that bridge them live on
- * this side: the displayed bar (the strip's bold segment, read off Move's own
- * screen), the step grid and the time signature (clip_regions), and the clip's
- * length. So the arithmetic happens once -- neither the UI nor the chain
+ * chain understands only a PHASE, and the facts that bridge them live on this
+ * side: the step editor's page origin, the step grid and the clip's length,
+ * all read from Move's live model (shadow_lanes_step_phase). So the
+ * arithmetic happens once -- neither the UI nor the chain
  * carries a copy. This feature has already paid twice for computing one fact
  * in two places.
  *
@@ -3529,60 +3517,6 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  * the question this answers is "why did the one I just did not take", and a
  * stale reason surviving a success is how that gets answered wrongly. */
 static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
-/* THE BLIND-WINDOW ANCHOR'S OWN REPORT. See the pending branch in
- * shadow_slot_clip_phase; drained by shim_worker's 1 Hz line. */
-volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
-volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
-/* WHY THE ROW CAME BACK UNKNOWN, when it did. Diagnostic only, drained by the
- * same 1 Hz line as the rest of the blind-window report.
- *
- * It exists because one refusal path had no name. With no step strip for this
- * track, the file's answer is used only when it cannot be ambiguous -- which
- * means exactly one clip on the track. On a MULTI-CLIP track with no strip
- * there is nothing to disambiguate with, so the row stays unknown and the
- * chain reports the generic `no_clip`: from outside, identical to a track
- * with no clips at all, and to a slot with no chain. Two very different
- * things to be told when a p-lock does nothing.
- *
- * Not a param key: nothing acts on it, and the review of this feature is
- * clear that a getter with no consumer reads as plumbing that never landed.
- * A line in the log is what a support question needs. */
-/* MAY A WRITE USE THE ROW THIS RESOLVER JUST ANSWERED?
- *
- * The row is the PLAYING clip, which is what playback asks for. A p-lock asks
- * a different question -- which clip is on SCREEN -- and the two differ in
- * exactly one situation: a clip is playing while the user step-edits another
- * one. That situation is the wrong-clip bug, reproduced twice on hardware
- * 2026-09-18, and it is invisible to every branch below `cslot < 0` because
- * the live identity fills the row before they run.
- *
- * This is the shape of the removed `lane_edit_unconfirmed`, and the reason
- * that one failed was its SIGNAL, not its shape: it read the session pad
- * decode, which Move paints only in SESSION view, while p-locks happen in
- * NOTE view -- so its answer was always a latch from whenever the user last
- * visited Session, and it withheld the row from gestures aimed squarely at
- * the playing clip.
- *
- * The step strip does not have that problem. Move draws it in Note view,
- * which is when step editing happens, and it reports the edited clip's BAR
- * COUNT. So the discriminator is a bar-count comparison at the strip's own
- * resolution: a clip being edited whose bar count differs from the playing
- * clip's is a DIFFERENT clip, established rather than guessed.
- *
- * Residue, stated here so nobody discovers it later: a clip whose bar count
- * EQUALS the playing clip's is indistinguishable, so a write there still
- * takes the playing row. Bar count is the only positive evidence Move gives
- * us, which is the same reason two blind takes of equal length share a take.
- *
- * `edit_len` carries the EDITED clip's length off that same strip, because a
- * write keyed to the placeholder needs the length of the clip it is being
- * made on -- not the playing clip's, which is what `loop_len` reports. */
-volatile int g_write_unconfirmed[SHADOW_CHAIN_INSTANCES];
-volatile int g_write_edit_len_x100[SHADOW_CHAIN_INSTANCES];
-volatile int g_row_unknown_clips;   /* clips on the track, -1 = no answer */
-volatile int g_row_unknown_strip;   /* strip segments for the track */
-volatile int g_row_unknown_seen;
-
 /* The lock map's pending query, per slot. See lanes:step_locks_query. */
 static char g_step_locks_query[SHADOW_CHAIN_INSTANCES][544];
 /* Must equal LANE_MIN_POINT_BEATS (lane_store.h): "a point ON this step" has
@@ -3606,9 +3540,8 @@ const char *shadow_lanes_plock_reason_name(int rc) {
  *
  * Lifted whole out of the p-lock translate so that the WRITE and the READ
  * cannot disagree about what step 5 means. Everything it needs is host-side
- * and nowhere else: the displayed bar (the strip Move draws), the page origin
- * (`stepEditorScrollPosition`), the grid, the signature and the clip's
- * length. Returns a STEP_PLOCK_* code and writes *out_phase on OK.
+ * and nowhere else: the page origin (the clip's step-editor scroll), the grid
+ * and the clip's length, all from the live model. Returns a STEP_PLOCK_* code and writes *out_phase on OK.
  *
  * It exists because holding a step now asks a second question -- "what value
  * is locked here" -- and answering that from a second copy of this
