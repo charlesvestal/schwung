@@ -136,6 +136,14 @@ module directory; the Tools menu runs it via `launch-standalone.sh` and Move is
 restarted when it exits. Everything such a tool installs lives under its own
 `modules/tools/<id>/` — ableton-owned, like every module.
 
+Top-level `"standalone": true` is canonical; `capabilities.standalone` is
+accepted too (the shadow UI used to read only the top-level spelling, while
+`module_manager.c` matched either). **`standalone` wins over `tool_config`**: a
+tool declaring both is launched as a standalone program, never as an
+interactive or file-browser tool. It used to be tested last, so beside
+`tool_config.interactive` it was silently ignored. The order lives in
+`src/shared/tool_launch.mjs`.
+
 Some standalone tools need one privileged step of their own — a shim of their own
 that must reach `/usr/lib` setuid for glibc's AT_SECURE `LD_PRELOAD` check, or a
 service to pause. They cannot reuse `schwung-heal`: its paths are compile-time
