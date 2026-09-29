@@ -376,7 +376,8 @@ static void empty_marker_clears(void) {
     CHECK(!chain_mod_is_target_active(inst, "synth", "cutoff"), "and released the override");
     lane_param_set(inst, "state", "V 2\nL synth cutoff 0 0 0 8 3 60 1\nP 0 20 0\n");
     lane_param_set(inst, "state", "  \n");
-    CHECK(lane_param_get(inst, "state", (char[512]){0}, 512) == 0, "whitespace also empties");
+    CHECK(lane_param_get(inst, "state", (char[512]){0}, 512) > 0,
+          "a bare EMPTY document (a lost write) does NOT empty the store");
     /* A MALFORMED document still leaves the store alone. */
     lane_param_set(inst, "state", "V 2\nL synth cutoff 0 0 0 8 3 60 1\nP 0 20 0\n");
     lane_param_set(inst, "state", "garbage\n");

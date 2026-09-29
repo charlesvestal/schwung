@@ -914,15 +914,21 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
     /* "NO LANES" IS A DOCUMENT TOO. The snapshot writes "{}" for a slot that
      * had no lanes file, and the parser refused it, so a recall never took
      * automation away -- Shift+Delete left every lane recorded since the
-     * snapshot playing. An empty or "{}" document empties the store; a
-     * MALFORMED one still changes nothing (all-or-nothing, below). */
-    const char *p = doc;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-    const char *q = p;
-    if (q[0] == '{' && q[1] == '}') q += 2;
+     * snapshot playing. A "{}" document empties the store (so does
+     * `lanes:reset`, which sends one); a MALFORMED one still changes nothing
+     * (all-or-nothing, below), and so does a bare EMPTY string: that is what
+     * a lost or truncated write looks like, and wiping a slot's automation on
+     * it is the wrong direction to fail in. */
+    const char *q = doc;
     while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    int is_empty_doc = 0;
+    if (q[0] == '{' && q[1] == '}') {
+        q += 2;
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+        is_empty_doc = (*q == '\0');
+    }
     int applied;
-    if (*q == '\0') {
+    if (is_empty_doc) {
         lane_store_reset(&inst->lanes);
         applied = 1;
     } else {
@@ -1086,7 +1092,7 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
      * the unified history. This is lanes:state with an empty document:
      * releases, empties, drops the undo buffer, journals nothing. */
     if (strcmp(sub, "reset") == 0) {
-        if (val && atoi(val) != 0) lane_apply_state(inst, "");
+        if (val && atoi(val) != 0) lane_apply_state(inst, "{}");
         return;
     }
 
