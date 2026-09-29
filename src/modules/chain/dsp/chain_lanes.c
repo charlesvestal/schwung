@@ -175,6 +175,10 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
 CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
                                         const char *target, const char *param) {
     if (!inst || !target || !param) return 0;
+    /* DISARMED (lanes_off): lane_tick releases and drives nothing, so no
+     * parameter is automated -- claiming otherwise made the grid read
+     * `:effective` every tick for a value that can never change. */
+    if (!inst->lanes_enabled) return 0;
     /* THE SAME ROW PLAYBACK USES. lane_tick matches on lane_effective_slot --
      * an unknown row falls back to the last one we had an answer for -- while
      * this asked with the RAW row, so during those windows the lane kept
@@ -341,6 +345,11 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
         lane_t *twin = lane_find(&inst->lanes, ln->target, ln->param,
                                  inst->lane_track, adopt_row);
         if (twin && twin != ln) {
+            /* RELEASE BEFORE FREEING. A driving twin holds an override, and
+             * lane_release_all skips unused lanes -- so if the arriving take
+             * does not drive on the next block, nothing would ever hand the
+             * parameter back. */
+            if (twin->driving) lane_release_one(inst, twin);
             twin->used = 0;                 /* exactly one lane on the key */
             inst->lanes_adopt_displaced++;
         }
