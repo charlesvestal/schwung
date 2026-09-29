@@ -799,6 +799,20 @@ typedef struct shadow_control_t {
      * Shift+Volume back to Move.
      */
     volatile uint8_t scene_shift_vol;
+    /*
+     * PROGRAM CHANGE SELECTS A SCENE (scene_pc_select, scene_morph.h). The
+     * channel is 0 = off, 1..16 (Global Settings -> Shortcuts -> Scene PC Ch,
+     * default 16), restated by the UI. The UI owns the pairing table and the
+     * active scene and mirrors both here, so the shim can apply a PC on the
+     * frame it arrives rather than a UI tick later; `scene_pc_seq` is bumped
+     * when it does, and the UI adopts `scene_active` from it.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t scene_pc_channel;
+    volatile uint8_t scene_active;              /* 0..15, SCENE_NONE */
+    volatile uint8_t scene_pc_seq;
+    volatile uint8_t scene_pairs[32];           /* [2k] A snapshot, [2k+1] B; SCENE_NONE = none */
 } shadow_control_t;
 
 

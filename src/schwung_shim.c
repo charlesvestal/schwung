@@ -4583,6 +4583,13 @@ static void init_shadow_shm(void)
         shadow_control->scene_surface = 0;
         shadow_control->scene_unlock = 0;
         shadow_control->scene_shift_vol = 1;   /* shadow_ui restates the setting */
+        shadow_control->scene_pc_channel = 16; /* ... and this one */
+        shadow_control->scene_active = SCENE_NONE;
+        shadow_control->scene_pc_seq = 0;
+        for (int k = 0; k < 16; k++) {         /* scene k = Ak + Bk until the UI says */
+            shadow_control->scene_pairs[k * 2] = (uint8_t)k;
+            shadow_control->scene_pairs[k * 2 + 1] = (uint8_t)k;
+        }
     }
 
     /* Create/open UI shared memory (slot labels/state) */
@@ -9202,6 +9209,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                              cc_claim_shm->bits, st, cc_d1);
             if (route & CC_ROUTE_PUBLISH) shadow_ui_midi_publish(hw_midi[j], st, cc_d1, hw_midi[j + 3]);
             if (route & CC_ROUTE_SWALLOW) {
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
+        /*
+         * PROGRAM CHANGE SELECTS A SCENE -- third in the ownership order. On
+         * the frame it arrives: the ends go to the fader now, and the UI
+         * adopts the scene from scene_pc_seq. Taken out of BOTH buffers: the
+         * channel is the scenes', and a slot receiving All would otherwise
+         * change its preset on the same message.
+         */
+        if (!overtake_mode && cable == 0x02 && cin == 0x0C && shadow_control) {
+            uint8_t k, ha, hb;
+            if (scene_pc_select(shadow_control->scene_pc_channel, hw_midi[j + 1], hw_midi[j + 2],
+                                shadow_control->scene_pairs, &k, &ha, &hb)) {
+                shadow_control->scene_a = ha;
+                shadow_control->scene_b = hb;
+                shadow_control->scene_active = k;
+                shadow_control->scene_pc_seq++;
                 midi_in_swallow(sh_midi, hw_midi, j);
                 continue;
             }
