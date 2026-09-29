@@ -332,9 +332,11 @@ export function createScenesScreen(io) {
 
             /* THE PADS, EXACTLY AS THEY SIT UNDER YOUR HANDS: four rows of
              * eight, the scenes' A sides on the top two, B on the bottom two
-             * (pad k = scene k in both). Filled = that side holds locks;
-             * dotted = switched off; the active scene carries a dot; the
-             * side being edited is a box inside a box. */
+             * (pad k = scene k in both). ONE SHAPE PER STATE, nothing
+             * shared: outline = on, nothing locked (the knobs); filled = on,
+             * with locks; X = switched off; box-in-box = being edited. The
+             * active scene is the header's to name (and its pads light
+             * brightest) -- a dot here collided with the other marks. */
             const gx = 9, pitch = 9, cw = 8, chh = 6;
             const rowY = [12, 19, 28, 35];
             ctx.print(1, 15, "A", 1);
@@ -351,11 +353,13 @@ export function createScenesScreen(io) {
                         ctx.fillRect(x, y, cw, 1, 1); ctx.fillRect(x, y + chh - 1, cw, 1, 1);
                         ctx.fillRect(x, y, 1, chh, 1); ctx.fillRect(x + cw - 1, y, 1, chh, 1);
                     } else {
-                        /* OFF: a dotted outline -- "this end is the knobs" */
-                        for (let i = 0; i < cw; i += 2) { ctx.fillRect(x + i, y, 1, 1, 1); ctx.fillRect(x + i, y + chh - 1, 1, 1, 1); }
-                        for (let j = 2; j < chh - 1; j += 2) { ctx.fillRect(x, y + j, 1, 1, 1); ctx.fillRect(x + cw - 1, y + j, 1, 1, 1); }
+                        /* OFF: an X and no box -- nothing else here is a cross */
+                        for (let i = 0; i < chh; i++) {
+                            const dx = Math.round(i * (cw - 2) / (chh - 1));
+                            ctx.fillRect(x + dx, y + i, 2, 1, 1);
+                            ctx.fillRect(x + cw - 2 - dx, y + i, 2, 1, 1);
+                        }
                     }
-                    if (n === k) ctx.fillRect(x + 3, y + 2, 2, 2, on && has ? 0 : 1);
                     if (s.edit === h) {
                         ctx.fillRect(x + 1, y + 1, cw - 2, chh - 2, 0);
                         ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 1);
