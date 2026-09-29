@@ -11,6 +11,7 @@
 #include <string.h>
 #include "shadow_link_audio.h"
 #include "shadow_resample.h"  /* latency_comp_active */
+#include "link_audio_conceal.h"
 
 /* ============================================================================
  * Globals
@@ -66,6 +67,23 @@ volatile uint32_t la_trim_dropped[LINK_AUDIO_IN_SLOT_COUNT];
 static uint32_t nudge_drop_counter[LINK_AUDIO_IN_SLOT_COUNT];
 static uint32_t nudge_dup_counter[LINK_AUDIO_IN_SLOT_COUNT];
 
+/* Starve concealment and depth alignment -- see link_audio_conceal.h. All
+ * SPI-thread state; the counters are drained by the timing logger. */
+static la_conceal_t la_conceal[LINK_AUDIO_IN_SLOT_COUNT];
+static uint32_t la_align_run[LINK_AUDIO_IN_SLOT_COUNT];
+static uint32_t la_align_pending[LINK_AUDIO_IN_SLOT_COUNT];
+volatile uint32_t la_conceal_count[LINK_AUDIO_IN_SLOT_COUNT];
+volatile uint32_t la_align_count[LINK_AUDIO_IN_SLOT_COUNT];
+volatile uint32_t la_align_dropped[LINK_AUDIO_IN_SLOT_COUNT];
+
+static void la_conceal_align_reset(void) {
+    for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+        la_conceal_reset(&la_conceal[i]);
+        la_align_run[i] = 0;
+        la_align_pending[i] = 0;
+    }
+}
+
 void link_audio_reset_nudge_state(void) {
     for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
         nudge_drop_counter[i] = 0;
@@ -82,6 +100,7 @@ void shadow_link_audio_init(void) {
     memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
     la_avail_stats_reset();
     link_audio_reset_nudge_state();
+    la_conceal_align_reset();
 }
 
 void link_audio_reset_state(void) {
@@ -89,6 +108,30 @@ void link_audio_reset_state(void) {
      * reception, so there is no in-process channel state to clear.
      * Called from shadow_process.c during link-subscriber restart. */
     memset(shadow_slot_capture, 0, sizeof(shadow_slot_capture));
+    la_conceal_align_reset();
+}
+
+/* Decide, once per frame and before any slot is read, which tracks sit deeper
+ * than the shallowest and should be skipped forward to it. The reader applies
+ * the skip, crossfaded. Never while Latency Comp runs: its nudge is already a
+ * controller with a set-point, and two would fight. */
+void link_audio_align_tick(link_audio_in_shm_t *shm, int channels) {
+    if (!shm) return;
+    int n = channels < LINK_AUDIO_IN_SLOT_COUNT ? channels : LINK_AUDIO_IN_SLOT_COUNT;
+    if (n < 0) n = 0;
+    uint32_t avail[LINK_AUDIO_IN_SLOT_COUNT] = {0};
+    int active[LINK_AUDIO_IN_SLOT_COUNT] = {0};
+    __sync_synchronize();
+    for (int i = 0; i < n; i++) {
+        link_audio_in_slot_t *sl = &shm->slots[i];
+        active[i] = sl->active ? 1 : 0;
+        avail[i] = sl->write_pos - sl->read_pos;
+    }
+    for (int i = 0; i < n; i++) {
+        if (latency_comp_active) { la_align_run[i] = 0; continue; }
+        uint32_t skip = la_align_skip(avail, active, n, i, &la_align_run[i]);
+        if (skip) la_align_pending[i] = skip;
+    }
 }
 
 /* ============================================================================
@@ -139,6 +182,14 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
 
     if (avail < need) {
         __atomic_fetch_add(&slot->starve_count, 1, __ATOMIC_RELAXED);
+        la_align_pending[slot_idx] = 0;   /* depths moved; re-decide later */
+        /* Nothing is consumed: the stalled audio is still coming, and playing
+         * it when it lands is what keeps this latency-neutral in the long run.
+         * What changes is that this block is a faded mirror, not silence. */
+        if (la_conceal_fill(&la_conceal[slot_idx], out_lr, frames)) {
+            __atomic_fetch_add(&la_conceal_count[slot_idx], 1, __ATOMIC_RELAXED);
+            return 1;
+        }
         return 0;
     }
 
@@ -165,7 +216,9 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
      *
      * If true long-term drift exists, max_avail_seen rises steadily and
      * surfaces in the logger. */
+    int jumped = 0;
     if (avail > LINK_AUDIO_IN_CATCHUP_SAMPLES) {
+        jumped = 1;
         uint32_t new_rp = wp - need;
         __atomic_fetch_add(&slot->catchup_samples_dropped,
                            (new_rp - rp), __ATOMIC_RELAXED);
@@ -190,9 +243,33 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                                    (new_rp - rp), __ATOMIC_RELAXED);
                 __atomic_fetch_add(&la_trim_count[slot_idx], 1, __ATOMIC_RELAXED);
                 rp = new_rp;
+                jumped = 1;
             }
         } else {
             trim_high_run[slot_idx] = 0;
+        }
+    }
+
+    /* Depth alignment: skip forward to the shallowest track, crossfaded over
+     * this block. Only when the whole skipped-to block is already here. */
+    if (la_align_pending[slot_idx]) {
+        uint32_t skip = la_align_pending[slot_idx];
+        la_align_pending[slot_idx] = 0;
+        uint32_t now_avail = wp - rp;
+        if (!jumped && !latency_comp_active && now_avail >= skip + need &&
+            need <= LA_CONCEAL_BLOCK_SAMPLES) {
+            int16_t from[LA_CONCEAL_BLOCK_SAMPLES], to[LA_CONCEAL_BLOCK_SAMPLES];
+            for (uint32_t i = 0; i < need; i++) {
+                from[i] = slot->ring[(rp + i) & LINK_AUDIO_IN_RING_MASK];
+                to[i]   = slot->ring[(rp + skip + i) & LINK_AUDIO_IN_RING_MASK];
+            }
+            la_align_crossfade(from, to, out_lr, frames);
+            __atomic_fetch_add(&la_align_count[slot_idx], 1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&la_align_dropped[slot_idx], skip, __ATOMIC_RELAXED);
+            __sync_synchronize();
+            slot->read_pos = rp + skip + need;
+            la_conceal_real(&la_conceal[slot_idx], out_lr, frames);
+            return 1;
         }
     }
 
@@ -264,6 +341,7 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
         __sync_synchronize();
         slot->read_pos = rp + need;
     }
+    la_conceal_real(&la_conceal[slot_idx], out_lr, frames);
     return 1;
 }
 

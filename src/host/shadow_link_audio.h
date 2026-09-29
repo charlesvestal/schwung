@@ -35,9 +35,21 @@ void link_audio_reset_state(void);
 
 /* Read stereo-interleaved audio from a /schwung-link-in slot.
  * SPSC consumer helper: does NOT zero out_lr on starvation (caller zeros).
- * Returns 1 on full read, 0 on starvation / inactive slot / bad args. */
+ * Returns 1 on full read -- or on a starve it CONCEALED (see
+ * link_audio_conceal.h) -- and 0 on an unconcealed starvation / inactive slot /
+ * bad args. */
 int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                                 int16_t *out_lr, int frames);
+
+/* Once per frame, BEFORE the slots are read: pick tracks sitting deeper than
+ * the shallowest one to be skipped forward to it (see link_audio_conceal.h).
+ * `channels` is the number of Move channels the sidecar publishes. */
+void link_audio_align_tick(link_audio_in_shm_t *shm, int channels);
+
+/* Concealed starves and alignment skips, per slot. Drained by the logger. */
+extern volatile uint32_t la_conceal_count[];
+extern volatile uint32_t la_align_count[];
+extern volatile uint32_t la_align_dropped[];
 
 /* Latency compensation target — the steady-state ring fill we nudge toward
  * when `latency_comp_active` is set. 1400 stereo samples ≈ 15.9 ms at
