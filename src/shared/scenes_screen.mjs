@@ -74,7 +74,7 @@ export const COLORS = {
     b: { inScene: 3, locked: 72, empty: 68 },    /* BrightOrange / DarkOrange / VeryDarkOrangeRed */
     edit: 120,                                   /* White */
     stepActive: 7,                               /* VividYellow: the active scene */
-    stepPaired: 118,                             /* LightGrey: pairs something */
+    stepPaired: 118,                             /* LightGrey: the scene DOES something */
     stepEmpty: 0,
 };
 
@@ -272,9 +272,14 @@ export function createScenesScreen(io) {
             };
             const s = st(), sc = scn();
             for (let k = 0; k < SCENE_COUNT; k++) {
+                /* Lit when the fader would change something on this scene --
+                 * one of its ends holds locks. Being PAIRED says nothing: every
+                 * scene starts paired Ak + Bk, so that lit all sixteen. */
                 const p = pairOf(k);
+                const live = (p[0] >= 0 && halfLocks(halfA(p[0])) > 0) ||
+                             (p[1] >= 0 && halfLocks(halfB(p[1])) > 0);
                 send(NOTE_STEP_FIRST + k, k === sc.active ? COLORS.stepActive
-                                        : (p[0] >= 0 || p[1] >= 0) ? COLORS.stepPaired : COLORS.stepEmpty);
+                                        : live ? COLORS.stepPaired : COLORS.stepEmpty);
             }
             const ap = sc.active >= 0 ? pairOf(sc.active) : [-1, -1];
             for (const side of ["a", "b"]) {
