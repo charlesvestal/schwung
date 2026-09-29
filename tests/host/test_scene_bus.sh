@@ -46,4 +46,13 @@ ab_ln=$(grep -n 'shadow_set_scene_ab(' <<< "$push_body" | head -1 | cut -d: -f1 
   || fail "scenePushEnds must adopt a pending PC before it pushes the ends"
 grep -q 'setActive: (k) => { scenesAdoptPc(sceneState()); sceneActive = k; scenePushEnds(); }' src/shadow/shadow_ui.js \
   || fail "a scene tap must consume a pending PC before choosing, or the push adopts the PC over it"
+# Shift+Vol+Step 3 swallows BOTH edges: the press, and the release it owes
+# (latched, never gated on Shift/Vol still being held).
+s3=$(grep -n 'Shift + Volume + Step 3 (note 18) = the Scenes screen' src/schwung_shim.c | head -1 | cut -d: -f1 || true)
+[ -n "$s3" ] || fail "Shift+Vol+Step 3 handler not found"
+s3_body=$(sed -n "${s3},$((s3 + 20))p" src/schwung_shim.c)
+grep -q 'step3_release_owed = 1;' <<< "$s3_body" || fail "Shift+Vol+Step 3 must latch its owed release"
+grep -A2 'if (d1 == 18 && step3_release_owed && (type == 0x80 || (type == 0x90 && d2 == 0)))' <<< "$s3_body" \
+  | grep -q 'midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)' \
+  || fail "the Step 3 release must be swallowed from BOTH buffers"
 echo "PASS: scene bus wiring"

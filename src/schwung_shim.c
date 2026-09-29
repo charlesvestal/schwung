@@ -956,6 +956,11 @@ static uint8_t step2_longpress_fired;
 static struct timespec step3_press_time;
 static uint8_t step3_longpress_pending;
 static uint8_t step3_longpress_fired;
+/* Shift+Vol+Step 3 swallowed the PRESS, so the release is owed a swallow
+ * too: a lone step-up reaching Move for a press it never saw. Latched on the
+ * press, cleared by the release -- never gated on Shift or Vol still being
+ * held, since both are usually let go first. */
+static uint8_t step3_release_owed;
 
 static struct timespec step13_press_time;
 static uint8_t step13_longpress_pending;
@@ -10003,7 +10008,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();
                         midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        step3_release_owed = 1;
                     }
+                }
+                if (d1 == 18 && step3_release_owed && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    step3_release_owed = 0;
                 }
 
                 /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
