@@ -61,10 +61,14 @@ for (const side of ["a", "b"]) for (let i = 0; i < 16; i++) {
 step(2);
 eq("a step picks the active scene", scene.active, 2);
 eq("scene 3 starts as A3 + B3", scene.pairs[2], [2, 2]);
-tapPad(A(8));
-eq("tap A9: scene 3 is A9 + B3", scene.pairs[2], [8, 2]);
-tapPad(A(8));
-eq("tap the lit A again: A none (the knobs)", scene.pairs[2], [-1, 2]);
+pad(A(8), 1);
+eq("A9 pairs on the PRESS, before the release", scene.pairs[2], [8, 2]);
+pad(A(8), 0);
+eq("...and the release does not toggle it back", scene.pairs[2], [8, 2]);
+pad(A(8), 1);
+eq("pressing the lit A does nothing yet (a hold would edit it)", scene.pairs[2], [8, 2]);
+pad(A(8), 0);
+eq("tap the lit A again: A none (the knobs), on the release", scene.pairs[2], [-1, 2]);
 tapPad(B(4));
 eq("tap B5: just B5", scene.pairs[2], [-1, 4]);
 step(1);
@@ -72,9 +76,14 @@ tapPad(A(0));
 eq("scene 2 can use A1 too -- snapshots are shared", [scene.pairs[1][0], scene.pairs[0][0]], [0, 0]);
 
 /* editing */
+holdPad(B(1));
+eq("hold the lit B2: editing it, latched past the release", state.edit, D.halfB(1));
+eq("...and holding the lit pad does not unpair it", scene.pairs[1], [0, 1]);
+tapPad(B(1));
+eq("tap it again: done, still paired", [state.edit, scene.pairs[1]], [-1, [0, 1]]);
 holdPad(B(4));
 eq("hold B5: editing B5 (half 20), latched past the release", state.edit, D.halfB(4));
-eq("...and holding does not re-pair", scene.pairs[1], [0, 1]);
+eq("...and the press paired it first", scene.pairs[1], [0, 4]);
 tapPad(B(4));
 eq("tap the snapshot being edited: done", state.edit, -1);
 scene.active = 3; scene.pairs[3] = [-1, -1];
