@@ -98,6 +98,28 @@ static void test_tree(int keyfloat)
     CHECK(mm_tree_elems(fake_read, NULL, hdr, IMG_LO, IMG_HI, out, 8) == -1);
 }
 
+/* A KeyRandom is 20 random bytes, so its third word carries 4 bytes of
+ * stale PADDING above them -- often the high half of an old pointer. On
+ * hardware one landed inside the image range (0x55706e6073), the walker took
+ * it for the wrapper's vptr, read the real vptr as the element, refused, and
+ * every walk of that container failed until the next set load: the model
+ * stalled with mute/solo follow, lanes and Undo off. Each set load mints new
+ * keys, so it struck every few loads. */
+static void test_tree_key_looks_like_vptr(void)
+{
+    memset(mem, 0, sizeof mem);
+    uint64_t hdr = FAKE_BASE + 0x40;
+    uint64_t A = FAKE_BASE + 0x8000, B = FAKE_BASE + 0x9000, C = FAKE_BASE + 0xa000;
+    make_node(0, 0, 0, node_at(1), 0, A);
+    make_node(1, node_at(0), node_at(2), hdr + 8, 0, B);
+    make_node(2, 0, 0, node_at(1), 0, C);
+    put(node_at(1) + 0x38, IMG_LO + 0x6e6073);   /* the random key's tail, in the image */
+    put(hdr, node_at(0)); put(hdr + 8, node_at(1)); put(hdr + 16, 3);
+    uint64_t out[8];
+    int n = mm_tree_elems(fake_read, NULL, hdr, IMG_LO, IMG_HI, out, 8);
+    CHECK(n == 3 && out[0] == A && out[1] == B && out[2] == C);
+}
+
 static void test_position(void)
 {
     mm_clip_t c = { .exists = 1, .region_start = 0, .region_end = 8, .loop_start = 0, .loop_end = 8, .loop_on = 1 };
@@ -358,6 +380,7 @@ int main(void)
     test_sso();
     test_tree(1);
     test_tree(0);
+    test_tree_key_looks_like_vptr();
     test_position();
     if (fails) { printf("test_move_model: %d FAILED\n", fails); return 1; }
     printf("test_move_model: PASS\n");

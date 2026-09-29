@@ -195,8 +195,18 @@ int mm_tree_elems(mm_read_fn rd, void *ctx, uint64_t hdr, uint64_t img_lo, uint6
         uint64_t node[20];   /* left,right,parent,color, then key + wrapper */
         if (rd(ctx, n, node, sizeof node) != 0) return -1;
         uint64_t elem = 0;
-        for (int k = 5; k < 19; k++) {        /* k=4 is the key's own vptr */
-            if (in_img(node[k], img_lo, img_hi)) { elem = node[k + 1]; break; }
+        /* k=4 is the key's own vptr. The wrapper is the first image pointer
+         * FOLLOWED BY A HEAP POINTER: a KeyRandom's third word is 4 random
+         * bytes under 4 bytes of stale padding, which is often the high half
+         * of an old pointer and lands in the image about one key in a hundred
+         * (0x55706e6073, on hardware). Taking the first image-range word as
+         * the wrapper then read the real vptr as the element and failed every
+         * walk of that container until the next set load. */
+        for (int k = 5; k < 19; k++) {
+            if (in_img(node[k], img_lo, img_hi) && plausible_heap_ptr(node[k + 1], img_lo, img_hi)) {
+                elem = node[k + 1];
+                break;
+            }
         }
         if (!plausible_heap_ptr(elem, img_lo, img_hi)) return -1;
         if (count < max) out[count] = elem;
@@ -1310,7 +1320,8 @@ static void *reader_main(void *arg)
             double tn = now_s(), cn = thread_cpu_s();
             cpu_pct = 100.0 * (cn - cpu_c) / (tn - cpu_t);
             cpu_t = tn; cpu_c = cn;
-            if (diag) status("cpu %.2f%% of a core, walks=%d torn=%d plan=%d spans=%d torn_off=%ld", cpu_pct, walks, torn, g_nplan, g_nspan, g_torn_off);
+            if (diag) status("cpu %.2f%% of a core, walks=%d torn=%d plan=%d spans=%d torn_off=%ld fail_line=%d nt=%d",
+                             cpu_pct, walks, torn, g_nplan, g_nspan, g_torn_off, g_snap_fail_line, g_snap_nt);
         }
         int ok = 0;
         if (have_plan && tick % 500 != 0) {       /* a full walk every ~10 s regardless */
