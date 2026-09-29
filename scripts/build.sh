@@ -253,7 +253,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
     src/host/shadow_overtake_midi.c src/host/shadow_overtake_midi.h \
-    src/host/ext_midi_ring.h src/host/surface_live_shm.h \
+    src/host/ext_midi_ring.h src/host/surface_live_shm.h src/host/audio_live_shm.h \
     src/host/unified_log.c src/host/shim_worker.c \
     src/host/rt_thread_audit.c src/host/rt_thread_audit.h \
     src/host/spi_tally.c src/host/spi_tally.h \
@@ -853,7 +853,7 @@ fi
 # Build display server (live display SSE streaming to browser)
 if needs_rebuild build/display-server \
     src/host/display_server.c src/host/unified_log.c src/host/unified_log.h \
-    src/host/surface_live_shm.h src/host/e16_mirror_shm.h src/host/norns_display_shm.h; then
+    src/host/surface_live_shm.h src/host/audio_live_shm.h src/host/e16_mirror_shm.h src/host/norns_display_shm.h; then
     echo "Building display server..."
     "${CROSS_PREFIX}gcc" -g -O3 \
         src/host/display_server.c \

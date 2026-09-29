@@ -57,6 +57,12 @@ iecho() {
 scp_with_retry() {
   local src="$1"
   local dest="$2"
+  # A bare IPv6 --host needs brackets for scp ("user@[addr]:path") and must
+  # NOT have them for ssh, which rejects "[addr]" as a hostname. So --host
+  # stays bare and the bracket is added here, the one place every copy goes.
+  case "$hostname" in
+    *:*) case "$dest" in "$username@$hostname:"*) dest="$username@[$hostname]:${dest#"$username@$hostname:"}" ;; esac ;;
+  esac
   local max_retries=3
   local retry=0
   while [ $retry -lt $max_retries ]; do
@@ -512,7 +518,8 @@ reboot_and_wait_for_shim() {
   # device's display so the user sees something during the ~30s blank
   # period instead of assuming a freeze. Non-fatal if the endpoint isn't
   # available (older host without the route, manager down, etc.).
-  curl -s -m 3 -X POST "http://${hostname}:7700/api/show-rebooting" >/dev/null 2>&1 || true
+  case "$hostname" in *:*) _url_host="[$hostname]" ;; *) _url_host="$hostname" ;; esac
+  curl -s -m 3 -X POST "http://${_url_host}:7700/api/show-rebooting" >/dev/null 2>&1 || true
 
   # Background the reboot so the SSH connection doesn't block on it.
   ssh_root_with_retry "(sync; (sleep 1; reboot) &) >/dev/null 2>&1" || true

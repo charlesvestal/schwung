@@ -151,7 +151,9 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   half-open link the old comment-ping could not reveal plus `EventSource`
   closing permanently on a 502; the heartbeat is a real event now and the page
   reconnects itself. The byte after `3B` in the RGB LED SysEx is a CHANNEL (00
-  = note, 10 = CC). See DIAGNOSTICS.md.
+  = note, 10 = CC). Sound streams with it and is always recorded (Mute is
+  playback only); the PICTURE is delayed to match the sound's jitter buffer.
+  The browser encodes; the Move only copies PCM. See DIAGNOSTICS.md.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter

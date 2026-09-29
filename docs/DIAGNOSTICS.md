@@ -304,6 +304,29 @@ Gated by the same Mirror Display setting as the screen.
 - Animation (status channel 6-10 pulse, 11-15 blink; ch 16 is the steps' and
   white buttons' normal channel) is drawn at an assumed 120 BPM: no tempo
   reaches the page.
+- **Sound rides the same stream and is ALWAYS recorded; Mute only decides
+  whether the browser plays it** (muted by default). The shim appends each
+  block of the CAPTURE mix -- `unity_view`, what Skipback records, or on the
+  fast path Move's mailbox un-scaled by the same smoothed 1/mv so the level
+  does not jump when a slot loads -- to `/schwung-audio-live`
+  (`audio_live_shm.h`, a 371 ms ring, only while Mirror Display is on).
+  display-server sends what is new each pass as `event: pcm` (base64 int16,
+  `pos` = device frame index) to clients that asked with `&audio=1`, which the
+  page does only once a gesture has let it start an AudioContext. The Move
+  does NO encoding: the browser's MediaRecorder makes the .mp4/.webm.
+- **Sync is a DELAY, not a timestamp match.** Picture and sound arrive
+  together on one stream; only the sound then sits in a 150 ms jitter buffer.
+  So every visual update is applied exactly as late as the sound that
+  arrived with it will play (`later()`: the last scheduled chunk's lead plus
+  output latency). Measured by recording a flash-and-burst fixture through
+  the real page: 5-15 ms apart with the delay, ~180 ms without it (the
+  positive control).
+- **No secure-context APIs on this page.** `/mirror` is plain http, so an
+  AudioWorklet does not EXIST there. The first sound build used one; a
+  localhost test passed (localhost counts as secure) and on the device Unmute
+  did nothing and recordings silently lost their audio track. Sound is
+  scheduled AudioBuffers now, and `test_mirror_page_layout.sh` fails on any
+  secure-context-only API. Test pages from a LAN address, not localhost.
 
 ## Driving Move's own controls: `tools/inject/schwung_inject.c`
 
