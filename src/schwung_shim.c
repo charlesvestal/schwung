@@ -40,6 +40,7 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/display_pull.h"
 #include "host/e16_claim.h"
 #include "host/cc_claim.h"
 #include "host/surface_live_shm.h"
@@ -3014,6 +3015,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * the mailbox from Move's own write) survives. */
         int la_channel_count = shim_move_channel_count();
         int any_la_valid = 0;
+        /* Line the tracks up at the shallowest one's depth before reading
+         * any of them -- a decision across slots, so not per read. */
+        link_audio_align_tick(shadow_in_audio_shm, la_channel_count);
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
             la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
             if (la_cache_valid[s]) any_la_valid = 1;
@@ -4932,7 +4936,7 @@ static void shadow_check_screenreader_announcements(void) {
 static void shadow_swap_display(void)
 {
     static uint32_t ui_check_counter = 0;
-    static int display_phase = 0;  /* 0-6: phases of display push */
+    static display_pull_t display_pull;  /* latched panel frame; see display_pull.h */
     static int display_hidden_for_volume = 0;
 
     if (!shadow_display_shm || !global_mmap_addr) {
@@ -4952,14 +4956,14 @@ static void shadow_swap_display(void)
     }
 
     if (!shadow_display_mode) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         display_hidden_for_volume = 0;
         shadow_block_plain_volume_hide_until_release = 0;
         return;  /* Not in shadow mode */
     }
     /* Let Move's PIN screen show through during challenge so PIN scanner can read it */
     if (shadow_control->pin_challenge_active == 1) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         return;
     }
     /* Display-owner split (see shadow_display_owner_t in shadow_constants.h):
@@ -4969,7 +4973,7 @@ static void shadow_swap_display(void)
      * the OLED belongs to Move firmware — yield without tearing down the
      * session. */
     if (shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         return;
     }
     if (!shadow_volume_knob_touched) {
@@ -4980,18 +4984,18 @@ static void shadow_swap_display(void)
         if (shadow_block_plain_volume_hide_until_release) {
             /* Keep shadow UI visible until shortcut's volume touch is fully released. */
             if (display_hidden_for_volume) {
-                display_phase = 0;
+                display_pull_reset(&display_pull);
                 display_hidden_for_volume = 0;
             }
         } else {
             /* Let native Move volume overlay show while volume touch is held. */
-            display_phase = 0;
+            display_pull_reset(&display_pull);
             display_hidden_for_volume = 1;
             return;
         }
     } else if (display_hidden_for_volume) {
         /* Restart shadow slicing cleanly after releasing volume touch. */
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         display_hidden_for_volume = 0;
     }
     /* Composite overlays onto shadow display if active */
@@ -5025,40 +5029,12 @@ static void shadow_swap_display(void)
     /* Write full display to DISPLAY_OFFSET (768) */
     memcpy(global_mmap_addr + DISPLAY_OFFSET, display_src, DISPLAY_BUFFER_SIZE);
 
-    /* Write display using slice protocol - one slice per ioctl */
-    /* No rate limiting because we must overwrite Move every ioctl */
-
-    /*
-     * One panel frame is SIX slices across six consecutive ioctls, so the
-     * source must be held still for all of them.
-     *
-     * Read live, each slice sampled whatever the shadow UI had drawn at that
-     * instant — so any frame containing motion was stitched together from two
-     * or more different renders. Not dropped frames: tearing. It is invisible
-     * on static text, which is why it survived, and it is exactly what a
-     * moving modulation dot or a swept filter curve exposes as "jagged".
-     *
-     * Latched at phase 0 instead. 1 KB memcpy once per seven frames, on a path
-     * that already memcpys the same buffer every frame.
-     */
-    static uint8_t display_frame[DISPLAY_BUFFER_SIZE];
-
-    if (display_phase == 0) {
-        /* Phase 0: Zero out slice area - signals start of new frame. Latch the
-         * frame that phases 1-6 will send. */
-        memcpy(display_frame, display_src, DISPLAY_BUFFER_SIZE);
-        global_mmap_addr[80] = 0;
-        memset(global_mmap_addr + 84, 0, 172);
-    } else {
-        /* Phases 1-6: Write slices 0-5 from the latched frame */
-        int slice = display_phase - 1;
-        int slice_offset = slice * 172;
-        int slice_bytes = (slice == 5) ? 164 : 172;
-        global_mmap_addr[80] = slice + 1;
-        memcpy(global_mmap_addr + 84, display_frame + slice_offset, slice_bytes);
-    }
-
-    display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
+    /* Answer the XMOS's slice request, as Move does. This used to free-run its
+     * own 0..6 counter and send whatever slice the counter named; a slice sent
+     * against a different request is drawn in the wrong band of the panel --
+     * the wrapped screen. The frame is latched on slice 1 so all six slices of
+     * one panel frame come from one render (the #213 tearing fix). */
+    display_pull_serve(&display_pull, global_mmap_addr, display_src);
 }
 
 /* Callback for chain_mgmt: BPM query via sampler_get_bpm(NULL). */
@@ -11427,7 +11403,10 @@ static void *spi_timing_logger_thread(void *arg)
             {
                 extern volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
                 for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++)
-                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED)) any_nonzero = 1;
+                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_conceal_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_align_count[s], __ATOMIC_RELAXED))
+                        any_nonzero = 1;
             }
             uint32_t slot_starve[LINK_AUDIO_IN_SLOT_COUNT];
             uint32_t slot_catchup[LINK_AUDIO_IN_SLOT_COUNT];
@@ -11480,12 +11459,23 @@ static void *spi_timing_logger_thread(void *arg)
                         tc += __atomic_exchange_n(&la_trim_count[s], 0, __ATOMIC_RELAXED);
                         td += __atomic_exchange_n(&la_trim_dropped[s], 0, __ATOMIC_RELAXED);
                     }
+                    uint32_t cc = 0, ac = 0, ad = 0;
+                    for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                        cc += __atomic_exchange_n(&la_conceal_count[s], 0, __ATOMIC_RELAXED);
+                        ac += __atomic_exchange_n(&la_align_count[s], 0, __ATOMIC_RELAXED);
+                        ad += __atomic_exchange_n(&la_align_dropped[s], 0, __ATOMIC_RELAXED);
+                    }
                     /* backlog_trims counts sustained backlogs removed;
-                     * trim_dropped_ms is the latency reclaimed. */
+                     * trim_dropped_ms is the latency reclaimed. concealed is
+                     * starved blocks played as a faded mirror instead of
+                     * silence; aligns / align_dropped_ms is latency removed
+                     * lining a deeper track up with the shallowest. */
                     unified_log("link_audio", LOG_LEVEL_DEBUG,
                         "path: rebuild_flips=%u la_starve_fallback=%u "
-                        "backlog_trims=%u trim_dropped_ms=%u",
-                        flips, fallback, tc, (unsigned)(td / 2 / 44));
+                        "backlog_trims=%u trim_dropped_ms=%u "
+                        "concealed=%u aligns=%u align_dropped_ms=%u",
+                        flips, fallback, tc, (unsigned)(td / 2 / 44),
+                        cc, ac, (unsigned)(ad / 2 / 44));
                 }
             }
         }

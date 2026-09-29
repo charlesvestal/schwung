@@ -539,6 +539,19 @@ Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot a
 
 **A starved frame is captured as SILENCE, not skipped.** Skipping spliced the file across the gap, so a starve read as a waveform discontinuity indistinguishable from a real one.
 
+### A starved Link Audio block is CONCEALED, and depth is aligned, never added
+
+A track holds only what startup left it (~16 ms), and Move stalls ~15 ms now and
+then, so a track runs dry for one block. That block used to mix as silence — a
+click. Now it is the last block, time-mirrored so it joins without a step, faded
+out, with the next real block faded in (`src/host/link_audio_conceal.h`). It gives
+up after 4 blocks so a real outage still reaches the all-starve fallback. A track
+sitting >1 block deeper than the shallowest for 1 s is skipped forward to it,
+crossfaded — measured, the 29 ms trim target had left track 2 13 ms LATE against
+the others. **Do not answer starves with a deeper reserve**: +13 ms was rejected as
+latency. Measured settle under 4 playing synths: ~17 ms, 0 starves in 11 minutes.
+Log: `concealed=` / `aligns=` on the `link_audio path:` line.
+
 ### The IN ring is sized for Move's jitter, not for symmetry
 
 `LINK_AUDIO_IN_RING_BLOCKS` was `LINK_AUDIO_PUB_SHM_BLOCKS` (16 blocks = 4096 stereo samples = **46 ms**), inherited from the publish side because the two sit next to each other in `link_audio.h`. The directions do not have the same problem: we write the pub ring on a metronome, one block per SPI frame; **Move writes this one in bursts.**
