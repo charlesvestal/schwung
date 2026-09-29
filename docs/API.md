@@ -435,6 +435,19 @@ whose read did not complete is `null` (see the three-answer rule for
 `shadow_get_param`). Nothing is read while the overlay has no `onValues` hook or
 has been disabled after a throw.
 
+### Move's set (`host_get_move_info`)
+
+`host_get_move_info()` returns what Move's own set says, or `null` when this
+Schwung does not publish it. Same fields as `move_info.h` (docs/MODULES.md), in
+camelCase: `valid`, `changes` (bumps on any change), `playing`, `metronomeOn`,
+`midiClockSync`, `inputMonitoring`, `rootNote`, `selectedTrack`, `globalQuant`,
+`globalQuantName`, `tsUpper`, `tsLower`, `tempo`, `groove`, `masterDb`,
+`songBeats`, `scale`, and `tracks[4]` of `{name, colorId, type, muted, soloed,
+selected, volumeDb}`. Unknown values keep the header's convention (-1 / 255 /
+negative / `""`); treat everything as unknown while `valid` is false. A
+seqlock copy of a few hundred bytes — cheap enough to call from `tick()`;
+watch `changes` to redraw only when something moved.
+
 ### Scenes (shadow UI)
 
 The scene crossfader lives in shared memory, so these cost no IPC:

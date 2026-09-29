@@ -76,6 +76,11 @@ typedef struct {
     int       playing_slot;  /* 0..7, or -1 */
     double    start_beats;   /* transport beat the current clip started on */
     mm_clip_t slot[MM_SLOTS];
+    /* Track.mLabel and mTrackType. OPTIONAL members: a firmware without them
+     * leaves these at their unknown values (color_id/type -1, name ""). */
+    int       color_id;      /* Label.mColorId: Move's palette index for the track */
+    int       type;          /* TrackType: 0 master, 1 player, 2 return */
+    char      name[32];      /* Label.mName; "" when the user never named it */
 } mm_track_t;
 
 typedef struct {
@@ -98,6 +103,14 @@ typedef struct {
     int      master_valid;
     double   master_db;
     uint8_t  metronome_on;   /* Transport.mIsMetronomeOn */
+    /* SET-WIDE SETTINGS, for modules (move_info.h). All OPTIONAL: a member
+     * this firmware lacks leaves its unknown value, never fails the walk. */
+    double   groove;         /* Transport.mGrooveAmount manual value; -1 unknown */
+    uint8_t  clock_sync;     /* Transport.mIsMidiClockSyncEnabled; 255 unknown */
+    uint8_t  input_monitor;  /* Song.mIsAudioInputMonitoringEnabled; 255 unknown */
+    int      root_note;      /* Song.mRootNote, 0 = C .. 11; -1 unknown */
+    char     scale[24];      /* Song.mScale, Move's own name ("Major"); "" unknown */
+    int      global_quant;   /* Song.mGlobalQuantization, LaunchQuantization raw; -1 unknown */
     mm_track_t track[MM_TRACKS];
     /* MOVE'S UNDO STACK -- flip's History<HistoryStoreMemory>, read in place.
      * A step is its list node (nodes never move) plus its transaction number
@@ -174,6 +187,10 @@ int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t
  * hold still -- a tempo moving under Link made every pair disagree and the
  * model never published again. 1 = consistent. */
 int mm_pair_consistent(const move_model_t *a, const move_model_t *b);
+
+/* LaunchQuantization's name for a raw value, from the firmware's own enum
+ * table ("bar", "sixteenth", ...); NULL when unknown. Runtime half only. */
+const char *move_model_quant_name(int v);
 
 /* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
  *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag

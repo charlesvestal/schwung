@@ -35,6 +35,8 @@
 #include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
 #include "host/e16_mirror_shm.h"
+#define MOVE_INFO_NO_READER
+#include "host/move_info.h"   /* host_get_move_info(): Move's set, for JS modules */
 #include "host/cc_claim.h"          /* the CC map's claim table writer */
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
@@ -3285,6 +3287,62 @@ static JSValue js_host_move_model_state(JSContext *ctx, JSValueConst this_val,
     return arr;
 }
 
+/* host_get_move_info() -> what Move's own set says (host/move_info.h), or
+ * null when this Schwung is not publishing it. Every field keeps the header's
+ * UNKNOWN convention (-1 / 255 / negative / ""), and `valid` 0 means Move's
+ * document is not being read right now. Mapped read-only on first use; the
+ * copy is a seqlock read of a few hundred bytes, cheap enough per tick. */
+static const volatile move_info_shm_t *g_move_info_shm;
+static JSValue js_host_get_move_info(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!g_move_info_shm) {
+        static int tries;
+        if (tries++ % 64) return JS_NULL;          /* not there yet: retry now and then */
+        int fd = open("/dev/shm/schwung-move-info", O_RDONLY);
+        if (fd < 0) return JS_NULL;
+        void *p = mmap(NULL, sizeof(move_info_shm_t), PROT_READ, MAP_SHARED, fd, 0);
+        close(fd);
+        if (p == MAP_FAILED) return JS_NULL;
+        g_move_info_shm = (const volatile move_info_shm_t *)p;
+    }
+    move_info_t mi;
+    if (!move_info_copy(g_move_info_shm, &mi, sizeof mi)) return JS_NULL;
+    JSValue o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "valid", JS_NewBool(ctx, mi.valid));
+    JS_SetPropertyStr(ctx, o, "changes", JS_NewInt64(ctx, mi.changes));
+    JS_SetPropertyStr(ctx, o, "playing", JS_NewInt32(ctx, mi.playing));
+    JS_SetPropertyStr(ctx, o, "metronomeOn", JS_NewInt32(ctx, mi.metronome_on));
+    JS_SetPropertyStr(ctx, o, "midiClockSync", JS_NewInt32(ctx, mi.midi_clock_sync));
+    JS_SetPropertyStr(ctx, o, "inputMonitoring", JS_NewInt32(ctx, mi.input_monitoring));
+    JS_SetPropertyStr(ctx, o, "rootNote", JS_NewInt32(ctx, mi.root_note));
+    JS_SetPropertyStr(ctx, o, "selectedTrack", JS_NewInt32(ctx, mi.selected_track));
+    JS_SetPropertyStr(ctx, o, "globalQuant", JS_NewInt32(ctx, mi.global_quant));
+    JS_SetPropertyStr(ctx, o, "globalQuantName", JS_NewStringLen(ctx, mi.global_quant_name, strnlen(mi.global_quant_name, sizeof mi.global_quant_name)));
+    JS_SetPropertyStr(ctx, o, "tsUpper", JS_NewInt32(ctx, mi.ts_upper));
+    JS_SetPropertyStr(ctx, o, "tsLower", JS_NewInt32(ctx, mi.ts_lower));
+    JS_SetPropertyStr(ctx, o, "tempo", JS_NewFloat64(ctx, mi.tempo));
+    JS_SetPropertyStr(ctx, o, "groove", JS_NewFloat64(ctx, mi.groove));
+    JS_SetPropertyStr(ctx, o, "masterDb", JS_NewFloat64(ctx, mi.master_db));
+    JS_SetPropertyStr(ctx, o, "songBeats", JS_NewFloat64(ctx, mi.song_beats));
+    JS_SetPropertyStr(ctx, o, "scale", JS_NewStringLen(ctx, mi.scale, strnlen(mi.scale, sizeof mi.scale)));
+    JSValue tracks = JS_NewArray(ctx);
+    for (int t = 0; t < MOVE_INFO_TRACKS; t++) {
+        const move_info_track_t *T = &mi.track[t];
+        JSValue to = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, to, "name", JS_NewStringLen(ctx, T->name, strnlen(T->name, sizeof T->name)));
+        JS_SetPropertyStr(ctx, to, "colorId", JS_NewInt32(ctx, T->color_id));
+        JS_SetPropertyStr(ctx, to, "type", JS_NewInt32(ctx, T->type));
+        JS_SetPropertyStr(ctx, to, "muted", JS_NewInt32(ctx, T->muted));
+        JS_SetPropertyStr(ctx, to, "soloed", JS_NewInt32(ctx, T->soloed));
+        JS_SetPropertyStr(ctx, to, "selected", JS_NewInt32(ctx, T->selected));
+        JS_SetPropertyStr(ctx, to, "volumeDb", JS_NewFloat64(ctx, T->volume_db));
+        JS_SetPropertyUint32(ctx, tracks, (uint32_t)t, to);
+    }
+    JS_SetPropertyStr(ctx, o, "tracks", tracks);
+    return o;
+}
+
 static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
@@ -3878,6 +3936,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_move_model_state", JS_NewCFunction(ctx, js_host_move_model_state, "host_move_model_state", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_get_move_info", JS_NewCFunction(ctx, js_host_get_move_info, "host_get_move_info", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_e16_mirror", JS_NewCFunction(ctx, js_host_e16_mirror, "host_e16_mirror", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
