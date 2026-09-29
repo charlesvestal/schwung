@@ -1236,6 +1236,7 @@ static void *worker_main(void *arg) {
         if (tick % 7 == 0 || move_model_sync_misaligned()) shadow_poll_current_set();
         move_model_sync_housekeep();   /* liveness -> UI; expire an unresolvable misalignment */
         shadow_save_state_service();   /* the slot mix mutators only ask */
+        shadow_mix_log_service();      /* ...and only count; the log is here */
         tick++;
     }
     return NULL;
