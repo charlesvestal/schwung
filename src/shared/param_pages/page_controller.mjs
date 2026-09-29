@@ -4010,7 +4010,8 @@ export function createController(io = {}) {
          * and it has to know whether a release is coming. */
         if (!isTurnable(meta)) {
             if (typeof io.turnDoor === "function") {
-                io.turnDoor(fullKey(key), direction, slot, s.touchOrder.indexOf(slot) >= 0);
+                io.turnDoor(fullKey(key), direction, slot, s.touchOrder.indexOf(slot) >= 0,
+                            { key, meta });
             }
             return null;
         }
@@ -4246,6 +4247,23 @@ export function createController(io = {}) {
         const n = Array.isArray(meta.options) ? meta.options.length : 0;
         if (n > 0) i = Math.max(0, Math.min(n - 1, i));
         const wire = enumWireValue(meta, i);
+        cacheWritten(key, wire);
+        s.lastWriteMs[key] = now();
+        delete s.pendingWrite[key];
+        delete s.knobStates[key];
+        setParam(fullKey(key), wire);
+        replanIfCondition(key);
+        return wire;
+    }
+
+    /**
+     * Write a plain value chosen OUTSIDE a turn -- a host list that picked a
+     * file, say -- through the same tail commitEnum uses, so the cell shows
+     * it at once and the knob state does not snap back to the old one.
+     */
+    function commitValue(key, value) {
+        if (!key) return null;
+        const wire = String(value);
         cacheWritten(key, wire);
         s.lastWriteMs[key] = now();
         delete s.pendingWrite[key];
@@ -6506,7 +6524,7 @@ export function createController(io = {}) {
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
-        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum, commitValue,
         enumPeek,
         dismissPeek,
         /* The resolved graphics for the current page. Exposed so the host can
