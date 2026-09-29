@@ -75,6 +75,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_json_compact \
 	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
+	$(BUILD_DIR)/test_display_pull \
 	$(BUILD_DIR)/test_align_capture \
 	$(BUILD_DIR)/test_host_api_reserved_tail \
 	$(BUILD_DIR)/test_ui_flags_layout \
@@ -186,6 +187,10 @@ $(BUILD_DIR)/test_rt_thread_audit: test_rt_thread_audit.c ../../src/host/rt_thre
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit: display_pull_serve lives in display_pull.h.
+$(BUILD_DIR)/test_display_pull: test_display_pull.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Header-only unit: link_audio_in_trim_pos lives in link_audio.h, so the

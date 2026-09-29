@@ -112,6 +112,13 @@ Empty event detection: `(word & 0xFF) == 0` (low byte zero).
 - Index handshake: hardware sends display status index via RX, driver echoes it back and sends the corresponding chunk
   - Index 1-5: send chunk `(index-1) * 172` bytes
   - Index 6: send final chunk (remaining bytes)
+- **Every writer must ANSWER the request, never free-run.** Move, `boot-select.c`
+  and the JACK bridge always did; the shadow UI's `shadow_swap_display()` counted
+  0..6 on its own and sent whatever slice its counter named. Snapshots on 1.5.0
+  showed 42% of its slices going out against a different request, the XMOS
+  falling back to slice 1 or 2 each time. `src/host/display_pull.h` now serves the
+  request (latching the panel frame on slice 1), pinned by
+  `tests/host/test_display_pull.c`.
 
 ## ioctl Commands
 
