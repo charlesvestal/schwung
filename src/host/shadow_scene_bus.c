@@ -703,6 +703,19 @@ void shadow_scene_bus_note_write(int scope, int pos, const char *param, const ch
     if (!valid_bus_scope(scope) || !param || !val) return;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
+    /* A BULK write (a preset or a set restore) replaced every knob at this
+     * position, and each drive's base is the knob as it stood BEFORE -- so the
+     * next release, or a `state` save, would write the old value back over the
+     * one just loaded. Drop them WITHOUT writing: the plugin holds the load,
+     * and the next tick re-engages each drive with its base read from there. */
+    if (scene_write_is_bulk(param)) {
+        for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+            scene_drive_t *dd = &s_bus[scope].drives[i];
+            if (dd->active && strcmp(dd->target, target) == 0) memset(dd, 0, sizeof(*dd));
+        }
+        s_bus[scope].dirty = 1;
+        return;
+    }
     scene_drive_t *d = find_drive(&s_bus[scope], target, param);
     if (!d) return;
     void *slot = slot_for(scope, target);

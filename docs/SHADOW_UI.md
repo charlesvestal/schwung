@@ -1766,7 +1766,15 @@ value (`scene_send_mod`, `shadow_slot_volume_eff`, `shadow_send_return_eff`);
 LFO fields are written with the knob's value kept as their BASE. **In every
 case the user's value is never overwritten**, so every read and every save --
 `<comp>:state`, `lfo_config`, `master_fx:lfoN:config`, `slot:volume` -- sees the
-knob, not the morph. The one read that shows the morph is
+knob, not the morph. **A bulk write re-captures the base** (`scene_write_is_bulk`: `state`,
+`preset`, `load` -- a User Preset or a set restore): the chain rebases every
+modulated param of that component from the module
+(`chain_mod_after_set_param`, the exported `set_param` wrapper), and a bus
+drops that position's drives without writing so they re-engage from the
+plugin. Before, the base stayed on the PRE-load knob, so the next save and the
+next release both wrote the old value back over the one just loaded -- on a
+set switch, the previous set's knob for every param the outgoing bank locked.
+The one read that shows the morph is
 `<scope>:scenes:driven`, a DIAGNOSTIC that asks the plugin itself (or the
 host's applied override): it is how the Master FX and host paths were verified
 on hardware.

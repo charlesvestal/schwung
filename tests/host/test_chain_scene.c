@@ -246,6 +246,33 @@ int main(void) {
         frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
     }
 
+    /* A STATE WRITE (User Preset load, set restore) replaces the knob, and the
+     * base the scene captured must follow it. It used to stay on the pre-load
+     * knob, so every later save recorded it and a release wrote it back. What
+     * v2_set_param does: forward the blob, then chain_mod_rebase_target. */
+    {
+        chain_scene_set_param(inst, "lock", "6 synth cutoff 99 obxd");
+        knob_write(inst, "cutoff", "33");
+        frame(inst, 6, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(NEAR(cutoff(), 99), "scene drives cutoff before the preset load: %f", cutoff());
+        mod_target_state_t *e;
+        snprintf(v_cutoff, sizeof(v_cutoff), "50");     /* the module took the loaded state */
+        chain_mod_after_set_param(inst, "synth:cutoffx");  /* not bulk: nothing */
+        e = chain_mod_find_target_entry(inst, "synth", "cutoff");
+        CHECK(e && NEAR(e->base_value, 33), "a non-bulk key rebases nothing");
+        chain_mod_after_set_param(inst, "synth:state");
+        CHECK(NEAR(cutoff(), 99), "after the load the scene's lock is back on top: %f", cutoff());
+        e = chain_mod_find_target_entry(inst, "synth", "cutoff");
+        CHECK(e && NEAR(e->base_value, 50), "the base is the LOADED knob (50): %f", e ? e->base_value : -1.0f);
+        seen[0] = 0;
+        chain_scene_get_around_state(inst, "synth:state", buf, sizeof(buf), state_impl);
+        CHECK(NEAR((float)atof(seen), 50), "a save records the loaded knob, not the old one: %s", seen);
+        chain_scene_set_param(inst, "clear", "6");
+        frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+        CHECK(NEAR(cutoff(), 50), "released, the module keeps the loaded knob: %f", cutoff());
+        knob_write(inst, "cutoff", "33");
+    }
+
     /* rev moves on every table change and on nothing else. */
     uint16_t r0 = inst->scene_rev;
     frame(inst, 0, 1, 0.3f, SCENE_NONE);

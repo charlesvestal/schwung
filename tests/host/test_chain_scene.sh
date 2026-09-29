@@ -52,6 +52,13 @@ grep -q 'chain_scene_init(inst)' "$host" || fail "instance never initialises its
 grep -q '^uint32_t chain_set_scene_morph(void \*instance' src/modules/chain/dsp/chain_scene.c || fail "export missing"
 grep -q 'src/modules/chain/dsp/chain_scene.c' scripts/build.sh || fail "chain_scene.c not built"
 
+# A BULK write (state / preset / load) re-captures every modulated base, AFTER
+# the module has taken it: the exported set_param is a wrapper that runs the
+# whole route first, so no component route can be missed.
+grep -q 'static void v2_set_param(void \*i, const char \*k, const char \*v) { v2_set_param_impl(i, k, v); chain_mod_after_set_param(i, k); }' "$host" \
+  || fail "set_param must rebase modulated params after a state/preset write"
+grep -q '\.set_param = v2_set_param,' "$host" || fail "the plugin API must export the wrapper"
+
 # 64 targets: 32 cannot hold a scene's 64 pairs next to the LFOs.
 grep -q '^#define MAX_MOD_TARGETS 64' src/modules/chain/dsp/chain_internal.h || fail "MAX_MOD_TARGETS"
 
