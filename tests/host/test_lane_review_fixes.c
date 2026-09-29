@@ -463,6 +463,8 @@ int main(void) {
     move_keeps_one_source("move");
     move_keeps_one_source("insert");
     copies_follow_permutation();
+    undo_does_not_cross_restores();
+    empty_marker_clears();
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane review fixes\n");
     return 0;

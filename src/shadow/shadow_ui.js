@@ -10514,12 +10514,18 @@ function persistSlotLanes(i) {
 }
 
 /* Empty a slot's lanes with no announcement and no file write -- the restore
- * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:reset`
  * releases every override the store held, which is why this is not just a
  * matter of forgetting the document: leaving them asserted would strand the
- * parameters they were driving with no gesture that hands them back. */
+ * parameters they were driving with no gesture that hands them back.
+ *
+ * NOT `lanes:clear`, which is the USER's verb: it saves the outgoing store as
+ * undo and journals a clear, so after a set change "Undo automation" swapped
+ * the PREVIOUS set's lanes into this one (and the autosave then wrote them into
+ * this set's file). `lanes:reset` is a restore: it drops the undo buffer and
+ * journals nothing. */
 function clearSlotLanesQuietly(i) {
-    setSlotParam(i, "lanes:clear", "1");
+    setSlotParam(i, "lanes:reset", "1");
     lastWrittenLaneJson[i] = null;
 }
 
@@ -11089,11 +11095,15 @@ function snapshotRecall() {
      * rather than an accumulation: if the snapshot was taken before any
      * automation existed, recalling it must take the automation away again.
      * `lanes:clear` also releases the overrides, so no parameter is left
-     * stranded where a lane stopped driving it. */
+     * stranded where a lane stopped driving it.
+     *
+     * "{}" IS ABSENT. snapshotCopyFrom writes that marker for a slot with no
+     * lanes file, and pushing it as `lanes:state` was refused by the parser,
+     * so the automation recorded since the snapshot survived the recall. */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         let laneDoc = null;
         try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
-        if (laneDoc && laneDoc.length > 0) {
+        if (laneDoc && laneDoc.trim().length > 0 && laneDoc.trim() !== "{}") {
             setSlotParam(i, "lanes:state", laneDoc);
             lastWrittenLaneJson[i] = laneDoc;
         } else {

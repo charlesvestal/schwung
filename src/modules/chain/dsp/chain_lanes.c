@@ -911,7 +911,28 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
      * indistinguishable from one that worked. */
     inst->lanes_last_discarded = lane_store_provisional_count(&inst->lanes);
     lane_release_all(inst);
-    lane_store_deserialize(&inst->lanes, doc);
+    /* "NO LANES" IS A DOCUMENT TOO. The snapshot writes "{}" for a slot that
+     * had no lanes file, and the parser refused it, so a recall never took
+     * automation away -- Shift+Delete left every lane recorded since the
+     * snapshot playing. An empty or "{}" document empties the store; a
+     * MALFORMED one still changes nothing (all-or-nothing, below). */
+    const char *p = doc;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    const char *q = p;
+    if (q[0] == '{' && q[1] == '}') q += 2;
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    int applied;
+    if (*q == '\0') {
+        lane_store_reset(&inst->lanes);
+        applied = 1;
+    } else {
+        applied = lane_store_deserialize(&inst->lanes, doc);
+    }
+    /* AND THE UNDO BUFFER IS THE OUTGOING SET'S. This is the set-change and
+     * snapshot hook, and the buffer held whatever the last clear or edit
+     * saved -- so "Undo automation" in the new set swapped the PREVIOUS set's
+     * lanes in, and the autosave then wrote them into this set's file. */
+    if (applied) inst->lanes_undo_valid = 0;
 
     /* AND THE REMEMBERED ROWS GO WITH THE OUTGOING SET.
      *
@@ -995,7 +1016,7 @@ static int lane_edit_kind_of(const char *sub) {
         return LANE_EDIT_CLEAR;
     if (!strcmp(sub, "paste_span") || !strcmp(sub, "journal") || !strcmp(sub, "stash") ||
         !strcmp(sub, "unstash") || !strcmp(sub, "double") || !strcmp(sub, "copy_clip") ||
-        !strcmp(sub, "state") || !strcmp(sub, "undo"))
+        !strcmp(sub, "state") || !strcmp(sub, "reset") || !strcmp(sub, "undo"))
         return -1;
     return 0;
 }
@@ -1031,12 +1052,13 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * recall, Slot Settings' swap Undo): every entry journaled before it
      * describes lanes that are gone, and undoing one would splice pre-restore
      * content into the restored state. Void them here and tell the host. */
-    if (!strcmp(sub, "state") || !strcmp(sub, "undo")) {
+    const int restore = !strcmp(sub, "state") || !strcmp(sub, "reset");
+    if (restore || !strcmp(sub, "undo")) {
         for (int k = 0; k < LANE_SJOURNAL_DEPTH; k++) inst->lanes_sjournal[k].id = 0;
         lane_edit_event(inst, 0, LANE_EDIT_RESET);
     }
     /* ...and the take that was open is about another set's lanes. */
-    if (inst->lane_armed && strcmp(sub, "state") != 0) lane_edit_mark(inst, LANE_EDIT_TAKE);
+    if (inst->lane_armed && !restore) lane_edit_mark(inst, LANE_EDIT_TAKE);
 }
 
 /* The host takes each journaled own-edit once (chain_take_lane_edit). */
@@ -1055,6 +1077,16 @@ static void lane_param_set_impl(chain_instance_t *inst, const char *sub, const c
     /* The whole store as one opaque document. */
     if (strcmp(sub, "state") == 0) {
         lane_apply_state(inst, val ? val : "");
+        return;
+    }
+    /* A RESTORE OF "NO LANES" -- the set change or snapshot recall for a slot
+     * with no lanes file. It used to be `lanes:clear`, which is the USER's
+     * verb: it saved the outgoing set's whole store as undo (so Undo in the
+     * new set brought the old set's lanes back) and journaled a CLEAR into
+     * the unified history. This is lanes:state with an empty document:
+     * releases, empties, drops the undo buffer, journals nothing. */
+    if (strcmp(sub, "reset") == 0) {
+        if (val && atoi(val) != 0) lane_apply_state(inst, "");
         return;
     }
 

@@ -1252,7 +1252,8 @@ stop.
 
 | Key | Direction | Meaning |
 |---|---|---|
-| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was. |
+| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was — but an empty or `{}` document (the snapshot's no-lanes marker) EMPTIES it. A set that applies also drops the undo buffer: it belonged to the outgoing set. |
+| `lanes:reset` | set | The RESTORE of "no lanes" — a set change or snapshot recall for a slot with no lanes file. Same as `lanes:state` with an empty document: releases, empties, drops the undo buffer, journals nothing. **Not** `lanes:clear`, which is the user's verb and saves the outgoing store as undo — so after a set change Undo swapped the previous set's lanes in. |
 | `lanes:armed` | get / set | Move's Record button, pushed by the shim on change. Readable because the UI has no other source for it. Disarming releases nothing and clears nothing — a take must keep driving its parameter the moment Record goes out. |
 | `lanes:clear` | set | Throw this slot's automation away. Releases first, then resets. Guarded on a non-zero value so a stray `=0` cannot destroy a set's automation. |
 | `lanes:cleared` | get | How many lanes the last clear threw away. Written unconditionally, so a second press answers `0` rather than repeating the first take's number. |
