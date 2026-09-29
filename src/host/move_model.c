@@ -891,6 +891,13 @@ static void derive(move_model_t *m)
 }
 
 /* The full walk. Records the plan when g_rec == m. */
+/* Which exit the last failed snapshot() took (its source line) and, for the
+ * track-count guard, what it counted -- what the stall line reports. Seen on
+ * hardware: after some set loads the list holds the old four beside the new
+ * four and the new tracks' clips fail to read until the NEXT load. */
+static int g_snap_fail_line, g_snap_nt = -1;
+#define SNAP_FAIL() do { g_snap_fail_line = __LINE__; return -1; } while (0)
+
 static int snapshot(move_model_t *m)
 {
     memset(m, 0, sizeof *m);
@@ -903,21 +910,21 @@ static int snapshot(move_model_t *m)
         f_int(tr + OFF(O_TR_TIMESIG) + OFF(O_TS_LOWER), &m->ts_lower) ||
         f_int(S + OFF(O_SONG_STEPRES), &m->step_resolution) ||
         f_bool(tr + OFF(O_TR_METRO), &m->metronome_on))
-        return -1;
+        SNAP_FAIL();
     if (g_vp_outmix.n) {   /* the master volume knob; optional -- its absence only loses this */
         uint64_t oc[8];
         int no = walk(S + OFF(O_SONG_OUTDEV) + OFF(O_DEV_COMPONENTS) + V_WORD, oc, 8);
-        if (no < 0) return -1;
+        if (no < 0) SNAP_FAIL();
         for (int k = 0; k < no && k < 8; k++) {
             if (!vp_is(&g_vp_outmix, guard(oc[k]))) continue;
-            if (f_f64(oc[k] + OFF(O_OUTMIX_VOLUME) + OFF(O_PARAM_VALUE), &m->master_db)) return -1;
+            if (f_f64(oc[k] + OFF(O_OUTMIX_VOLUME) + OFF(O_PARAM_VALUE), &m->master_db)) SNAP_FAIL();
             m->master_valid = 1;
         }
     }
     if (g_clock_pinned) {
         uint64_t cm = tr + OFF(O_TR_CTRLMSG);
         int64_t pl = 0;
-        if (RD(cm + CTRL_PLAYING, &pl, 8) || RD(cm + CTRL_BEATS, &m->song_beats, 8)) return -1;
+        if (RD(cm + CTRL_PLAYING, &pl, 8) || RD(cm + CTRL_BEATS, &m->song_beats, 8)) SNAP_FAIL();
         m->playing = (int)pl;
         rec(cm + CTRL_PLAYING, PK_INT, 8, &m->playing, 0);
         rec(cm + CTRL_BEATS, PK_F64, 8, &m->song_beats, 0);
@@ -928,7 +935,7 @@ static int snapshot(move_model_t *m)
      * the new tracks before removing the old -- measured 8 and then 12
      * elements mid-swap -- and a walk that took the first four of those would
      * publish a hybrid of two sets. */
-    if (nt != MM_TRACKS) return -1;
+    if (nt != MM_TRACKS) { g_snap_nt = nt; SNAP_FAIL(); }
     m->doc_id = 1469598103934665603ull;                      /* FNV-1a over the track ids */
     for (int t = 0; t < nt; t++) {
         uint64_t id = rq(tracks[t] + OBJ_ID);
@@ -937,11 +944,11 @@ static int snapshot(move_model_t *m)
     for (int t = 0; t < nt && t < MM_TRACKS; t++) {
         mm_track_t *T = &m->track[t];
         T->playing_slot = -1;
-        if (f_bool(tracks[t] + OFF(O_TRACK_SELECTED), &T->selected)) return -1;
+        if (f_bool(tracks[t] + OFF(O_TRACK_SELECTED), &T->selected)) SNAP_FAIL();
         {   /* the mixer: Track.mTrackMixerDevice -> its AudioMixerParameters component */
             uint64_t dcomps[8];
             int nd = walk(tracks[t] + OFF(O_TRACK_MIXER) + OFF(O_DEV_COMPONENTS) + V_WORD, dcomps, 8);
-            if (nd < 0) return -1;
+            if (nd < 0) SNAP_FAIL();
             for (int k = 0; k < nd && k < 8; k++) {
                 if (!vp_is(&g_vp_mixparams, guard(dcomps[k]))) continue;
                 uint64_t mp = dcomps[k];
@@ -949,30 +956,30 @@ static int snapshot(move_model_t *m)
                     f_f64(mp + OFF(O_MIX_PAN) + OFF(O_PARAM_VALUE), &T->pan) ||
                     f_f64(mp + OFF(O_MIX_SOLO) + OFF(O_PARAM_VALUE), &T->solo_value) ||
                     f_f64(mp + OFF(O_MIX_SPEAKER) + OFF(O_PARAM_VALUE), &T->speaker_value))
-                    return -1;
+                    SNAP_FAIL();
                 T->mixer_valid = 1;
             }
         }
         uint64_t comps[8];
         int nc = walk(tracks[t] + OFF(O_TRACK_COMPONENTS) + V_WORD, comps, 8);
-        if (nc < 0) return -1;
+        if (nc < 0) SNAP_FAIL();
         uint64_t clips = 0;
         for (int k = 0; k < nc && k < 8; k++) if (vp_is(&g_vp_clips, guard(comps[k]))) clips = comps[k];
         if (!clips) continue;                                 /* an audio-only shape, say */
         uint64_t ps = clips + OFF(O_CLIPS_PLAYSTATE);
         if (f_int(ps + OFF(O_PS_MODE), &T->mode) || f_f64(ps + OFF(O_PS_START), &T->start_beats))
-            return -1;
+            SNAP_FAIL();
         uint64_t ref = guard(ps + OFF(O_PS_SLOT) + V_REFOBJ);  /* a launch re-walks: rare */
         uint64_t slots[MM_SLOTS + 8];
         int ns = walk(clips + OFF(O_CLIPS_SLOTS) + V_WORD, slots, MM_SLOTS + 8);
-        if (ns < 0) return -1;
+        if (ns < 0) SNAP_FAIL();
         for (int s = 0; s < ns && s < MM_SLOTS; s++) {
             if (ref && rq(slots[s] + OBJ_ID) == ref) T->playing_slot = s;
             uint64_t sc[2];
             int n1 = walk(slots[s] + OFF(O_SLOT_CLIP) + V_WORD, sc, 2);
-            if (n1 < 0) return -1;
+            if (n1 < 0) SNAP_FAIL();
             if (n1 >= 1 && vp_is(&g_vp_sessionclip, guard(sc[0])))
-                if (read_clip(sc[0], &T->slot[s], t, s)) return -1;
+                if (read_clip(sc[0], &T->slot[s], t, s)) SNAP_FAIL();
         }
     }
     derive(m);
@@ -1296,7 +1303,8 @@ static void *reader_main(void *arg)
          * word (every consumer reads it as stale and stands down). Say so once
          * per stall, armed or not: the status file is the always-on channel. */
         if (tick - last_pub_tick == 250)
-            status("stalled: no publish for ~5 s, torn=%d refind=%d torn_off=%ld", torn, refinds, g_torn_off);
+            status("stalled: no publish for ~5 s, torn=%d refind=%d torn_off=%ld snap_fail_line=%d nt=%d",
+                   torn, refinds, g_torn_off, g_snap_fail_line, g_snap_nt);
         if (tick % 50 == 0) diag = (access(DIAG_FLAG, F_OK) == 0);
         if (tick % 250 == 0 && tick) {            /* the reader's own cost, every ~5 s */
             double tn = now_s(), cn = thread_cpu_s();
