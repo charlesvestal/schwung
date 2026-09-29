@@ -318,6 +318,11 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
          */
         controller = createController(Object.assign({
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
+            /* A turn on a door the host gives meaning to -- see
+             * page_controller's io.turnDoor. */
+            turnDoor: (fullKey, direction, knob, held) =>
+                (typeof ctx.turnParamDoor === 'function')
+                    ? ctx.turnParamDoor(currentSlot, fullKey, direction, knob, held) : false,
             /* A write while Record is lit and the clip phase is UNKNOWN records
              * no lane, and the user has to be told -- Record lit plus a moving
              * knob plus no lane is indistinguishable from a broken feature.

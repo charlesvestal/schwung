@@ -129,6 +129,7 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
 import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+import * as LFO_SCROLL from '/data/UserData/schwung/shared/lfo_target_scroll.mjs';
 /* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
  * context a widget and a card get, so a module author writes one thing. */
 import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
@@ -16402,11 +16403,6 @@ function slotGridIoFor(slotIndex) {
          * routing differently, and cached per scope because a miss is a dozen
          * IPC round trips inside a draw. */
         describeTarget: (lfoIndex) => describeLfoTargetFor(makeSlotLfoCtx(slotIndex, lfoIndex)),
-        /* Target as a knob — see lfoTargetOptionsFor / commitLfoTargetFromGrid. */
-        targetOptions: (lfoIndex, current) =>
-            lfoTargetOptionsFor(makeSlotLfoCtx(slotIndex, lfoIndex), current),
-        commitTarget: (lfoIndex, route) =>
-            commitLfoTargetFromGrid(makeSlotLfoCtx(slotIndex, lfoIndex), route),
         /* Only the LFO params reach this — see createSlotGridIo.isModulated. */
         isModulated: (realKey) => isHierarchyParamModulated(slotIndex, realKey),
     });
@@ -16471,8 +16467,6 @@ function masterGridIoFor() {
          * list can never describe one routing differently, and cached per scope
          * because a miss is a dozen IPC round trips inside a draw. */
         describeTarget: (lfoIndex) => describeLfoTargetFor(makeMfxLfoCtx(lfoIndex)),
-        targetOptions: (lfoIndex, current) => lfoTargetOptionsFor(makeMfxLfoCtx(lfoIndex), current),
-        commitTarget: (lfoIndex, route) => commitLfoTargetFromGrid(makeMfxLfoCtx(lfoIndex), route),
         isModulated: (realKey) => isHierarchyParamModulated(0, realKey),
         runAction: (action) => runMasterFxActionFromGrid(action),
     });
@@ -24811,6 +24805,16 @@ function handleSelect() {
 }
 
 function handleBack() {
+    /* Back while a knob is scrolling the target picker CANCELS: nothing has
+     * been written, so leaving is the whole of it. */
+    if (lfoTargetKnobCommit >= 0 && isLfoTargetView(view)) {
+        lfoTargetKnobCommit = -1;
+        lfoTargetKnobHeld = false;
+        if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+        announce("Target unchanged");
+        needsRedraw = true;
+        return;
+    }
     /* Pre-emption: in component-edit, let a module with a custom chain_ui
      * handle Back for its own internal navigation. Truthy = consumed;
      * falsy/absent falls through to the host unload logic below. */
@@ -26297,6 +26301,8 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.turnParamDoor = (slot, fullKey, dir, knob, held) =>
+        lfoTargetKnobEnter(slot, fullKey, dir, knob, held);
     /* Slot-settings actions (Save / Delete / LFO / Knob Mapping). Exposed so
      * every branch can be EXECUTED by the tests: this code was previously
      * reachable only by pressing a specific row on a specific screen, and a
@@ -27191,6 +27197,186 @@ function enterLfoTargetGroupParams(groupIndex) {
     }
 }
 
+/*
+ * THE TARGET PICKER, DRIVEN BY A KNOB: one continuous scroll.
+ *
+ * The picker is a hierarchy (component > section > param) and the JOG walks
+ * it as one -- click in, Back out. A KNOB walks the same menus as if they were
+ * one list: every param of every section of every component, in the picker's
+ * own order, crossing from one section's screen into the next when a list
+ * runs out, and ending on [Clear Target]. Same screens, same rows, same
+ * commit (handleSelect); only the navigation differs.
+ *
+ * Two ways in, from the grid's Target cell:
+ *   hold + jog click   the picker, navigated as a hierarchy (unchanged)
+ *   turn               the picker at the stored routing, and the turn scrolls
+ *                      it; LETTING GO commits and returns to the grid. Back
+ *                      while scrolling cancels -- nothing is written before.
+ * A knob also scrolls a picker that was opened by clicking; that one still
+ * commits with a jog click.
+ */
+let lfoTargetGroupingCache = Object.create(null);
+let lfoTargetGroupingOwner = null;
+let lfoTargetKnob = listKnobInit();
+/* Knob whose RELEASE commits (entered by turning), -1 otherwise. */
+let lfoTargetKnobCommit = -1;
+let lfoTargetKnobHeld = false;
+let lfoTargetKnobLastMs = 0;
+/* No release ever comes for a turn the touch sensor did not register. */
+const LFO_TARGET_KNOB_IDLE_COMMIT_MS = 1000;
+
+function isLfoTargetView(v) {
+    return v === VIEWS.LFO_TARGET_COMPONENT || v === VIEWS.LFO_TARGET_GROUP ||
+           v === VIEWS.LFO_TARGET_PARAM;
+}
+
+/* A component's sections (non-empty), or its flat list as one section with
+ * no label. Read once per picker visit -- two IPC reads a component. */
+function lfoTargetSectionsOf(compIdx) {
+    const comp = lfoTargetComponents[compIdx];
+    if (!comp || !lfoCtx) return [];
+    /* Scoped to this picker VISIT: enterLfoTargetPicker assigns a fresh
+     * component list every time, so a new list is a new cache. */
+    if (lfoTargetGroupingOwner !== lfoTargetComponents) {
+        lfoTargetGroupingOwner = lfoTargetComponents;
+        lfoTargetGroupingCache = Object.create(null);
+    }
+    if (lfoTargetGroupingCache[comp.key]) return lfoTargetGroupingCache[comp.key];
+    const g = lfoCtx.getTargetGroups
+        ? lfoCtx.getTargetGroups(comp.key)
+        : { grouped: false, flat: lfoCtx.getTargetParams(comp.key), groups: [] };
+    const sections = (g && g.grouped)
+        ? (g.groups || []).filter((x) => x && x.params && x.params.length)
+        : [{ label: null, params: (g && g.flat) || [] }].filter((x) => x.params.length);
+    /* Not cached when empty: a loaded module offering nothing is a read that
+     * did not complete, and the next visit should ask again. */
+    if (sections.length) lfoTargetGroupingCache[comp.key] = sections;
+    return sections;
+}
+
+/* The picker's current leaf as a scroll position, or null off a leaf. */
+function lfoTargetPosNow() {
+    const comp = lfoTargetComponents[selectedLfoTargetComp];
+    if (!comp) return null;
+    if (view === VIEWS.LFO_TARGET_COMPONENT && comp.key === LFO_SCROLL.CLEAR_KEY) {
+        return { comp: selectedLfoTargetComp, sec: -1, param: -1 };
+    }
+    if (view !== VIEWS.LFO_TARGET_PARAM) return null;
+    const p = lfoTargetParams[selectedLfoTargetParam];
+    return p ? LFO_SCROLL.landOn(lfoTargetComponents, lfoTargetSectionsOf,
+                                 selectedLfoTargetComp, "stored", p.key) : null;
+}
+
+/* Show a scroll position on the picker's own screens. */
+function lfoTargetShowPos(pos) {
+    if (!pos) return false;
+    selectedLfoTargetComp = pos.comp;
+    if (pos.sec < 0) {
+        lfoTargetGroups = [];
+        lfoTargetParams = [];
+        setView(VIEWS.LFO_TARGET_COMPONENT);
+        return true;
+    }
+    const sections = lfoTargetSectionsOf(pos.comp);
+    const grouped = sections.length && sections[0].label !== null;
+    lfoTargetGroups = grouped ? sections : [];
+    selectedLfoTargetGroup = pos.sec;
+    lfoTargetParams = sections[pos.sec].params;
+    selectedLfoTargetParam = pos.param;
+    setView(VIEWS.LFO_TARGET_PARAM);
+    return true;
+}
+
+function lfoTargetAnnounceLeaf() {
+    if (view === VIEWS.LFO_TARGET_PARAM && lfoTargetParams[selectedLfoTargetParam]) {
+        const g = lfoTargetGroups.length ? lfoTargetGroups[selectedLfoTargetGroup] : null;
+        announceMenuItem(lfoTargetParams[selectedLfoTargetParam].label +
+                         (g ? ", " + g.label : ""));
+    } else if (lfoTargetComponents[selectedLfoTargetComp]) {
+        announceMenuItem(lfoTargetComponents[selectedLfoTargetComp].label);
+    }
+}
+
+/* A knob turn inside the picker. Off a leaf (a component or section screen of
+ * a picker opened by clicking) the first move DESCENDS to that entry's first
+ * param rather than stepping past it. */
+function lfoTargetKnobScroll(delta) {
+    lfoTargetKnobLastMs = Date.now();
+    const n = listKnobStep(lfoTargetKnob, delta, lfoTargetKnobLastMs, 1 << 20);
+    if (!n) return;
+    let pos = lfoTargetPosNow();
+    if (!pos) {
+        if (view === VIEWS.LFO_TARGET_GROUP) {
+            pos = { comp: selectedLfoTargetComp, sec: 0, param: 0 };
+            const sections = lfoTargetSectionsOf(selectedLfoTargetComp);
+            const want = lfoTargetGroups[selectedLfoTargetGroup];
+            const at = want ? sections.findIndex((x) => x.label === want.label) : -1;
+            if (at >= 0) pos.sec = at;
+            if (!sections.length) pos = null;
+        } else {
+            pos = LFO_SCROLL.landOn(lfoTargetComponents, lfoTargetSectionsOf,
+                                    selectedLfoTargetComp, "first")
+               || LFO_SCROLL.stepOne(lfoTargetComponents, lfoTargetSectionsOf,
+                                     { comp: selectedLfoTargetComp, sec: -1, param: -1 }, 1);
+        }
+    } else {
+        pos = LFO_SCROLL.step(lfoTargetComponents, lfoTargetSectionsOf, pos, n);
+    }
+    lfoTargetShowPos(pos);
+    lfoTargetAnnounceLeaf();
+    needsRedraw = true;
+}
+
+/* The grid's Target cell was TURNED. Open the picker on the stored routing
+ * (that first detent only lands) and let this knob's release commit. */
+function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
+    const componentKey = paramPagesComponent();
+    const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+    if (componentKey !== "slot" && !isMaster) return false;
+    const m = isMaster
+        ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
+        : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+    if (!m) return false;
+    lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                      : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    lfoTargetFromGrid = true;
+    clearParamPagesTouch();
+    enterLfoTargetPicker();
+    lfoTargetKnob = listKnobInit();
+    const c = lfoTargetComponents.findIndex((x) => x.key === (lfoCtx.getParam("target") || ""));
+    const stored = lfoCtx.getParam("target_param") || "";
+    let pos = c >= 0 ? LFO_SCROLL.landOn(lfoTargetComponents, lfoTargetSectionsOf, c, "stored", stored) : null;
+    /* No routing: land on [Clear Target] -- "None" is where it is. */
+    if (!pos) {
+        const clr = lfoTargetComponents.findIndex((x) => x.key === LFO_SCROLL.CLEAR_KEY);
+        if (clr >= 0) pos = { comp: clr, sec: -1, param: -1 };
+    }
+    lfoTargetShowPos(pos);
+    lfoTargetKnobCommit = knob;
+    lfoTargetKnobHeld = !!held;
+    lfoTargetKnobLastMs = Date.now();
+    lfoTargetAnnounceLeaf();
+    needsRedraw = true;
+    return true;
+}
+
+/* Commit what the knob is on -- exactly what a jog click would pick. */
+function lfoTargetKnobCommitNow() {
+    lfoTargetKnobCommit = -1;
+    lfoTargetKnobHeld = false;
+    if (isLfoTargetView(view)) handleSelect();
+    needsRedraw = true;
+}
+
+function lfoTargetKnobTick() {
+    if (lfoTargetKnobCommit < 0) return;
+    if (!isLfoTargetView(view)) { lfoTargetKnobCommit = -1; return; }
+    if (!lfoTargetKnobHeld &&
+        Date.now() - lfoTargetKnobLastMs >= LFO_TARGET_KNOB_IDLE_COMMIT_MS) {
+        lfoTargetKnobCommitNow();
+    }
+}
+
 function drawLfoTargetGroup() {
     clear_screen();
     const compIdx = selectedLfoTargetComp;
@@ -27725,6 +27911,7 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    lfoTargetKnobTick();
     /* FIRST: MIDI was read just before this tick, so every E16 reply that has
      * arrived is delivered. Anything slow below must not age its ACK timers. */
     try { for (const sf of externalSurfaces()) if (sf.markInputRead) sf.markInputRead(); } catch (e) {}
@@ -30080,6 +30267,10 @@ globalThis.onMidiMessageInternal = function(data) {
              * is for turning an enum blind on the grid; inside a list you are
              * looking straight at it.
              */
+            if (isLfoTargetView(view)) {
+                lfoTargetKnobScroll(delta);
+                return;
+            }
             if (view === VIEWS.ENUM_PICKER) {
                 /* Through the list accumulator, NOT enumPickerJog directly:
                  * 1:1 is right for the jog and much too fast for a knob
@@ -30174,6 +30365,10 @@ globalThis.onMidiMessageInternal = function(data) {
              * closes; only the drawing is suppressed.
              */
             if (view === VIEWS.ENUM_PICKER || view === VIEWS.FILEPATH_BROWSER) return;
+            if (isLfoTargetView(view)) {
+                if (knobIndex === lfoTargetKnobCommit) lfoTargetKnobHeld = true;
+                return;
+            }
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
@@ -30228,6 +30423,12 @@ globalThis.onMidiMessageInternal = function(data) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
             knobTouched[knobIndex] = false;
+            /* Letting go of the knob that opened the target picker by turning
+             * is the commit. */
+            if (lfoTargetKnobCommit === knobIndex && isLfoTargetView(view)) {
+                lfoTargetKnobCommitNow();
+                return;
+            }
             /*
              * LETTING GO ENDS A TRIGGER GESTURE, immediately.
              *

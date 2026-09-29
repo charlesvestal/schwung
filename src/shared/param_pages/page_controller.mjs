@@ -4003,8 +4003,17 @@ export function createController(io = {}) {
         }
 
         /* A filepath or canvas cannot be turned — it opens. Swallow the motion
-         * rather than writing nonsense into it. */
-        if (!isTurnable(meta)) return null;
+         * rather than writing nonsense into it -- unless the HOST says a turn
+         * on this door means something (io.turnDoor). The LFO target is the
+         * case: a turn opens its picker and scrolls it. `held` because the
+         * host's own touch tracking is not running while the grid owns input,
+         * and it has to know whether a release is coming. */
+        if (!isTurnable(meta)) {
+            if (typeof io.turnDoor === "function") {
+                io.turnDoor(fullKey(key), direction, slot, s.touchOrder.indexOf(slot) >= 0);
+            }
+            return null;
+        }
 
         const t = nowMs === undefined ? now() : nowMs;
 
