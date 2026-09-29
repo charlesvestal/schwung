@@ -10009,6 +10009,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                 /* Volume knob touch (note 8) */
                 if (d1 == 8) {
+                    /* SHIFT + VOLUME IS THE SCENE FADER, so Move must not see
+                     * the TOUCH either: the turns are withheld above, and a
+                     * touch alone still raises Move's volume overlay over the
+                     * scene slider. Both edges, latched -- Shift is usually let
+                     * go before the knob, and a lone release for a touch Move
+                     * never saw is an orphan. Tracked below regardless: the
+                     * Shift+Vol combos read shadow_volume_knob_touched. */
+                    static int scene_vol_touch_swallow = 0;
+                    if (touched && shadow_shift_held && shadow_control &&
+                        shadow_control->scene_shift_vol && shadow_control->overtake_mode == 0)
+                        scene_vol_touch_swallow = 1;
+                    if (scene_vol_touch_swallow) {
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        if (!touched) scene_vol_touch_swallow = 0;
+                    }
                     if (touched != shadow_volume_knob_touched) {
                         shadow_volume_knob_touched = touched;
                         volumeTouched = touched;
