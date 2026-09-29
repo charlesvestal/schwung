@@ -37,6 +37,22 @@ setsid bash -c '
     log "Binary: $BINARY"
     sleep 1
 
+    # Let shadow_ui SAVE before anything else dies. SIGTERM makes it raise
+    # should_exit and run the same save-and-leave path a restart uses, which
+    # also stops the shim respawning it -- so this must happen while the shim
+    # (which serves its param reads) is still alive. Bounded: a wedged
+    # shadow_ui is killed below like everything else.
+    pids=$(pidof shadow_ui 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        log "SIGTERM shadow_ui (save): $pids"
+        kill $pids 2>/dev/null || true
+        n=0
+        while [ $n -lt 30 ] && pidof shadow_ui >/dev/null 2>&1; do
+            sleep 0.1; n=$((n+1))
+        done
+        log "shadow_ui quiesced after $((n*100)) ms"
+    fi
+
     # Two-phase kill
     for name in MoveMessageDisplay MoveLauncher Move MoveOriginal schwung shadow_ui; do
         pids=$(pidof $name 2>/dev/null || true)

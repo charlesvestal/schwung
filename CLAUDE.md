@@ -1284,6 +1284,10 @@ component load gate, and the input-dispatch order. Read it before editing
   could not be open over `COMPONENT_EDIT`, which a module-owned grid's `Save
   As` row ends — it wrote 0 over a running module's claim. Same answer as the
   exits: the close hands the decision back to the reconcile.
+- **A requested exit is not a crash.** While `should_exit` is up the shim's
+  watchdog does not respawn shadow_ui (it used to, within ~750 ms, reloading
+  every slot un-faded), and SIGTERM now saves through that same path. A
+  teardown must signal shadow_ui BEFORE killing the shim that serves its reads.
 - **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
   "this position is empty" made a filled chain position open the module picker —
   and the *correct* read milliseconds later is what made it permanent, by matching.

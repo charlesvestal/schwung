@@ -149,9 +149,25 @@ static int shadow_ui_rapid_relaunches = 0;
 static time_t shadow_ui_last_launch_sec = 0;
 static int shadow_ui_backoff_active = 0;
 
+/* A REQUESTED exit is not a death. `shadow_control_t.should_exit` asks
+ * shadow_ui to save and leave -- the restart path sets it, and so does a
+ * second host (dbxhost) quiescing this one before it takes the device. The
+ * watchdog used to answer that within ~750 ms with a fresh shadow_ui, which
+ * reloaded every slot un-faded (and, finding should_exit still set, exited
+ * again after doing so). While the flag is up, nothing respawns; a crash --
+ * the flag down -- still does. The shim's init clears it, and so does an
+ * explicit user request for the UI below, so an abandoned quiesce cannot
+ * leave the shadow UI gone for the session. */
+static volatile uint8_t *shadow_ui_exit_flag = NULL;
+
+void shadow_ui_set_exit_flag(volatile uint8_t *flag) {
+    shadow_ui_exit_flag = flag;
+}
+
 void launch_shadow_ui_reset_backoff(void) {
     shadow_ui_rapid_relaunches = 0;
     shadow_ui_backoff_active = 0;
+    if (shadow_ui_exit_flag) *shadow_ui_exit_flag = 0;
 }
 
 int shadow_ui_relaunch_backoff_active(void) {
@@ -173,6 +189,10 @@ void launch_shadow_ui(void) {
      * touches the filesystem (/proc, the pid file, access()), and this is the
      * SPI path — the give-up state must not pay that cost on every call. */
     if (shadow_ui_backoff_active) return;
+
+    /* A requested exit parks the watchdog (see shadow_ui_set_exit_flag). One
+     * byte read, so it costs the SPI path nothing. */
+    if (shadow_ui_exit_flag && *shadow_ui_exit_flag) return;
 
     shadow_ui_refresh_pid();
     if (shadow_ui_started && shadow_ui_pid > 0) return;

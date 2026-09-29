@@ -4454,6 +4454,7 @@ static void init_shadow_shm(void)
         shadow_control->display_mode = 1;
         shadow_control->shadow_ready = 1;
         shadow_control->should_exit = 0;
+        shadow_ui_set_exit_flag(&shadow_control->should_exit);
         shadow_control->midi_ready = 0;
         shadow_control->write_idx = 0;
         shadow_control->read_idx = 0;
