@@ -15,6 +15,7 @@
  *
  * Pure: no globals, no host calls. The caller hands in a readFile.
  */
+import { compareNames } from './name_sort.mjs';
 
 export const CATALOG_CACHE_PATH = "/data/UserData/schwung/manager-cache/catalog.json";
 export const OTHER_LABEL = "Other";
@@ -93,7 +94,7 @@ export function groupRowsByCategory(rows, componentType, catalog) {
     for (const s of known) if (groups.has(s.id)) ordered.push(s.id);
     const unknown = [...groups.keys()]
         .filter(k => k && labelOf[k] === undefined)
-        .sort((a, b) => humanise(a).localeCompare(humanise(b)));
+        .sort((a, b) => compareNames(humanise(a), humanise(b)));
     ordered.push(...unknown);
     if (groups.has("")) ordered.push("");
 

@@ -4,6 +4,7 @@
  * Common functions for catalog fetching, module installation, and version comparison.
  * Used by both the Module Store UI and Shadow UI store picker.
  */
+import { compareNames } from './name_sort.mjs';
 
 import * as std from 'std';
 import * as os from 'os';
@@ -294,7 +295,7 @@ export function loadCatalogFromCache(onProgress, networkAvailable) {
 export function getModulesForCategory(catalog, categoryId) {
     if (!catalog || !catalog.modules) return [];
     return catalog.modules.filter(m => m.component_type === categoryId)
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => compareNames(a.name, b.name));
 }
 
 /* Get module install status */
