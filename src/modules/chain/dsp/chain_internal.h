@@ -882,6 +882,19 @@ typedef struct chain_instance {
     int scene_dirty;
     int scene_revalidate;
     uint16_t scene_rev;        /* bumped on every change to `scenes` */
+    /* Scene-driven SLOT SETTINGS (chain_scene.c): the two slot sends are an
+     * OFFSET beside the LFO's main_send_mod -- the saved level is never
+     * written -- and the LFO fields are written with their base kept here,
+     * so a read and a save still see the knob. */
+    int scene_send_mod[BUS_MIX_SENDS];
+    struct {
+        int active;
+        int lfo;               /* 0 or 1 */
+        char param[16];
+        float base;
+        float last;
+        int has_last;
+    } scene_lfo_drive[16];
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];

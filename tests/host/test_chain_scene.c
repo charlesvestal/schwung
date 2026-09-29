@@ -58,6 +58,14 @@ static int state_impl(void *i, const char *k, char *b, int n) {
 }
 static int wave(void) { return atoi(v_wave); }
 
+/* The LFO config serialiser: records the depth it saw. */
+static float saw_depth;
+static int lfo_cfg_impl(void *i, const char *k, char *b, int n) {
+    (void)k;
+    saw_depth = ((chain_instance_t *)i)->lfos[0].depth;
+    return snprintf(b, n, "{}");
+}
+
 static void setup(chain_instance_t *inst) {
     snprintf(v_cutoff, sizeof(v_cutoff), "10");
     snprintf(v_wave, sizeof(v_wave), "0");
@@ -244,6 +252,82 @@ int main(void) {
     CHECK(inst->scene_rev == r0, "a fader move is not a table change");
     chain_scene_set_param(inst, "clear", "4");
     CHECK(inst->scene_rev != r0, "a clear is");
+
+    /* ---- SLOT SETTINGS: the two slot sends ride an offset, never the level. */
+    setup(inst);
+    inst->main_send_level[0] = 40;
+    chain_scene_set_param(inst, "lock", "0 slot main_send1 100 chain");
+    frame(inst, 0, SCENE_NONE, 0.0f, SCENE_NONE);
+    CHECK(inst->scene_send_mod[0] == 60 && inst->main_send_level[0] == 40,
+          "A's send reaches the drain as an offset: mod=%d level=%d", inst->scene_send_mod[0], inst->main_send_level[0]);
+    frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+    CHECK(inst->scene_send_mod[0] == 30, "half way to 'none' is half the offset: %d", inst->scene_send_mod[0]);
+    inst->main_send_level[0] = 80;   /* the knob turned mid-morph */
+    frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+    CHECK(inst->scene_send_mod[0] == 10, "the unlocked end follows the live level: %d", inst->scene_send_mod[0]);
+    frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+    CHECK(inst->scene_send_mod[0] == 0, "no scene, no offset");
+
+    /* Armed, a send write is a lock with module "chain", and not a level change. */
+    frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, 2);
+    CHECK(chain_scene_route_set(inst, "buses:main_send2", "50") == 1, "an armed send write is consumed");
+    int si = scene_find(&inst->scenes, "slot", "main_send2");
+    CHECK(si >= 0 && (inst->scenes.pairs[si].mask & (1u << 2)) &&
+          NEAR(inst->scenes.pairs[si].values[2], 50) && !strcmp(inst->scenes.pairs[si].module, "chain"),
+          "... as a lock in the armed snapshot");
+    CHECK(chain_scene_get_around_state(inst, "buses:main_send2", buf, sizeof(buf), state_impl) > 0 &&
+          !strcmp(buf, "50"), "an armed send read answers the lock: %s", buf);
+    CHECK(chain_scene_route_set(inst, "buses:bus1:level", "50") == 0, "an unlisted buses key is not a lock");
+
+    /* ---- LFO fields: written into the LFO, with the knob kept as the base. */
+    setup(inst);
+    inst->lfos[0].depth = 0.2f;
+    chain_scene_set_param(inst, "lock", "0 lfo1 depth 1 chain");
+    frame(inst, 0, SCENE_NONE, 0.0f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 1.0f), "A drives the LFO depth: %f", inst->lfos[0].depth);
+    frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.6f), "half way to the knob: %f", inst->lfos[0].depth);
+    CHECK(chain_scene_get_around_state(inst, "lfo1:depth", buf, sizeof(buf), state_impl) > 0 &&
+          NEAR((float)atof(buf), 0.2f), "a read of a driven field answers the KNOB: %s", buf);
+
+    /* a knob turn while driven is the new base; the morph re-applies over it */
+    CHECK(chain_scene_route_set(inst, "lfo1:depth", "0.4") == 0, "an unarmed LFO write is not consumed");
+    inst->lfos[0].depth = 0.4f;      /* what v2_set_param then does */
+    frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.7f), "... and the morph runs from the new base: %f", inst->lfos[0].depth);
+
+    /* a patch save reads the base, and the morph is back straight after */
+    {
+        saw_depth = -9;
+        chain_scene_get_around_state(inst, "lfo_config", buf, sizeof(buf), lfo_cfg_impl);
+        CHECK(NEAR(saw_depth, 0.4f), "lfo_config saves the knob, not the morph: %f", saw_depth);
+        frame(inst, 0, SCENE_NONE, 0.5f, SCENE_NONE);
+        CHECK(NEAR(inst->lfos[0].depth, 0.7f), "... and the morph returns: %f", inst->lfos[0].depth);
+    }
+
+    /* enum fields switch at the midpoint; unlocking hands the field back */
+    inst->lfos[0].shape = 0;
+    chain_scene_set_param(inst, "lock", "1 lfo1 shape 3 chain");
+    frame(inst, 0, 1, 0.4f, SCENE_NONE);
+    CHECK(inst->lfos[0].shape == 0, "below 0.5 the shape is A's (the knob)");
+    frame(inst, 0, 1, 0.6f, SCENE_NONE);
+    CHECK(inst->lfos[0].shape == 3, "above 0.5 it is B's: %d", inst->lfos[0].shape);
+    chain_scene_set_param(inst, "clear", "0");
+    chain_scene_set_param(inst, "clear", "1");
+    frame(inst, 0, 1, 0.6f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[0].depth, 0.4f) && inst->lfos[0].shape == 0,
+          "cleared, every driven field is back on its knob: depth=%f shape=%d",
+          inst->lfos[0].depth, inst->lfos[0].shape);
+
+    /* armed LFO write is a lock and auditions */
+    frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, 3);
+    inst->lfos[1].rate_hz = 1.0f;
+    CHECK(chain_scene_route_set(inst, "lfo2:rate_hz", "5") == 1, "an armed LFO write is consumed");
+    CHECK(NEAR(inst->lfos[1].rate_hz, 5.0f), "... and auditioned at once: %f", inst->lfos[1].rate_hz);
+    frame(inst, SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE);
+    CHECK(NEAR(inst->lfos[1].rate_hz, 1.0f), "disarmed with no scene, the rate is the knob again: %f",
+          inst->lfos[1].rate_hz);
+    CHECK(chain_scene_route_set(inst, "lfo2:target", "synth") == 0, "the LFO's target is not a scene field");
 
     /* The cap refuses visibly. */
     setup(inst);

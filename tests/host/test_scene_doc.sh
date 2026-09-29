@@ -26,7 +26,8 @@ pairs[3] = [-1, 4];
 eq("ends: just B5 -- A is none, the knobs", D.endsFor(3, pairs), { a: -1, b: 20 });
 eq("ends: no active scene, no ends", D.endsFor(-1, pairs), { a: -1, b: -1 });
 
-eq("seven scopes", D.SCOPES.map(s => s.id), ["slot0","slot1","slot2","slot3","mfx","send1","send2"]);
+eq("eight scopes", D.SCOPES.map(s => s.id), ["slot0","slot1","slot2","slot3","mfx","send1","send2","host"]);
+eq("the host scope verbs", D.scopeKey(D.SCOPES[7], "dump"), { slot: 0, key: "host:scenes:dump" });
 eq("mfx key", D.scopeKey(D.SCOPES[4], "load"), { slot: 0, key: "master_fx:scenes:load" });
 
 eq("null dump is null, not empty", D.parseDump(null), null);
@@ -35,16 +36,18 @@ eq("half 31 parses", D.parseDump("31 synth cutoff 1 m\n").length, 1);
 eq("half 32 is malformed", D.parseDump("32 synth cutoff 1 m\n"), null);
 
 const dumps = { slot0: "4 synth cutoff 0.25 obxd\n5 synth cutoff 0.75 obxd\n", slot1: "", slot2: "", slot3: "",
-                mfx: "5 fx1 mix 0.5 cloudseed\n", send1: "", send2: "" };
+                mfx: "5 fx1 mix 0.5 cloudseed\n", send1: "", send2: "",
+                host: "5 slot2 volume 0.5 host\n" };
 const doc = D.buildDoc({ active: 2, pairs, dumps });
 eq("doc active + pairs", [doc.active, doc.pairs[2], doc.pairs[3]], [2, [8, 2], [-1, 4]]);
-eq("doc groups by half", doc.halves.map(h => [h.n, h.locks.length]), [[4, 1], [5, 2]]);
+eq("doc groups by half", doc.halves.map(h => [h.n, h.locks.length]), [[4, 1], [5, 3]]);
 eq("a missing scope makes NO document", D.buildDoc({ active: 2, pairs, dumps: { ...dumps, send2: null } }), null);
 
 const back = D.parseDoc(JSON.stringify(doc));
 eq("round trip keeps active and pairs", [back.active, back.pairs[2], back.pairs[3]], [2, [8, 2], [-1, 4]]);
 const loads = D.docToLoads(back);
 eq("round trip: slot0", loads.slot0, dumps.slot0);
+eq("round trip: host", loads.host, dumps.host);
 eq("round trip: an unused scope loads EMPTY", loads.send1, "");
 eq("v1/v2 (never shipped) read as an empty bank with default pairs, not files to protect",
    [D.parseDoc(JSON.stringify({ v: 2, halves: [{n: 4}] })).halves.length, D.parseDoc(JSON.stringify({ v: 1 })).legacy,

@@ -23,7 +23,32 @@
 #include <stdint.h>
 #include "scene_morph.h"
 
-#define SCENE_BUS_SCOPES 3          /* master_fx, send1, send2 */
+#define SCENE_BUS_SCOPES 4          /* master_fx, send1, send2, host */
+#define SCENE_HOST_SCOPE 3
+
+/*
+ * THE HOST SCOPE: settings the shim itself holds, with no plugin behind them.
+ *
+ *   target "slot1".."slot4"      params volume (0..4), pan (-1..1)
+ *   target "send1", "send2"      param  return (0..127); send1 also to_send2
+ *   target "mfx_lfo1", "mfx_lfo2" the Master FX LFO fields
+ *
+ * Pairs carry the module id "host" and are never dormant. They are applied
+ * EVERY frame, not on dirty: the host keeps the user's value (the BASE) and a
+ * scene only ever supplies an OVERRIDE beside it (`apply(on=1, v)`), so the
+ * morph always runs from the live base and a save never sees the scene. When
+ * a pair stops contributing it is switched off (`apply(on=0)`).
+ */
+#define SCENE_HOST_MODULE "host"
+typedef struct {
+    int  (*get)(const char *target, const char *param, float *out);   /* the BASE */
+    void (*apply)(const char *target, const char *param, int on, float v);
+} scene_host_io_t;
+void shadow_scene_host_bind(const scene_host_io_t *io);
+/* The edit arm for a host setting: 1 when consumed as a lock. */
+int  shadow_scene_host_edit_write(const char *target, const char *param, const char *val);
+/* Armed and locked: the lock, else -1 (the host answers its base). */
+int  shadow_scene_host_read(const char *target, const char *param, char *buf, int len);
 
 /* Plugin access, abstracted so a test can fake it without the shim. */
 typedef struct {
@@ -38,7 +63,7 @@ typedef struct {
 void shadow_scene_bus_bind(const scene_bus_io_t *io);
 void shadow_scene_bus_reset(void);
 
-/* "master_fx" -> 0, "send1" -> 1, "send2" -> 2, else -1. */
+/* "master_fx" -> 0, "send1" -> 1, "send2" -> 2, "host" -> 3, else -1. */
 int  shadow_scene_bus_scope(const char *prefix, int prefix_len);
 
 /* The table verbs ("lock", "unlock", "clear", "copy", "load"); 1 = handled. */
@@ -74,5 +99,7 @@ typedef struct {
 int  scene_bus_param_meta(const char *json, const char *param, scene_bus_meta_t *out);
 /* An enum value by option NAME -> index, or -1. */
 int  scene_bus_option_index(const char *json, const char *param, const char *name);
+/* A host setting's shape; 0 when (target, param) is not one. */
+int  scene_host_meta(const char *target, const char *param, scene_bus_meta_t *out);
 
 #endif

@@ -48,6 +48,22 @@ static const scene_bus_io_t io = { slot_at, positions, module_id, chain_params, 
 
 static float mix(int sc, int p) { return (float)atof(fx[sc][p].mix); }
 
+/* ---- a fake HOST: its user values, and the override a scene supplies. */
+static float h_vol_base = 1.0f, h_ret_base = 64;
+static int h_vol_on = 0, h_ret_on = 0, h_applies = 0;
+static float h_vol_ov = 0, h_ret_ov = 0;
+static int h_get(const char *t, const char *p, float *out) {
+    if (!strcmp(t, "slot2") && !strcmp(p, "volume")) { *out = h_vol_base; return 1; }
+    if (!strcmp(t, "send1") && !strcmp(p, "return")) { *out = h_ret_base; return 1; }
+    return 0;
+}
+static void h_apply(const char *t, const char *p, int on, float v) {
+    h_applies++;
+    if (!strcmp(t, "slot2") && !strcmp(p, "volume")) { h_vol_on = on; h_vol_ov = v; }
+    if (!strcmp(t, "send1") && !strcmp(p, "return")) { h_ret_on = on; h_ret_ov = v; }
+}
+static const scene_host_io_t host_io = { h_get, h_apply };
+
 int main(void) {
     scene_bus_meta_t m;
     CHECK(scene_bus_param_meta(PARAMS, "mix", &m) && m.kind == SCENE_KIND_FLOAT && NEAR(m.max, 2) && NEAR(m.def, 0.5),
@@ -151,7 +167,48 @@ int main(void) {
 
     shadow_scene_bus_get_verb(0, "locks", buf, sizeof(buf));
     CHECK(strcmp(buf, "1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0, "locks per scene: %s", buf);
-    CHECK(shadow_scene_bus_get_verb(3, "dump", buf, sizeof(buf)) == -1, "an out-of-range scope is refused");
+    CHECK(shadow_scene_bus_get_verb(3, "dump", buf, sizeof(buf)) == -1, "the host scope is refused until bound");
+    CHECK(shadow_scene_bus_get_verb(4, "dump", buf, sizeof(buf)) == -1, "an out-of-range scope is refused");
+
+    /* ---- THE HOST SCOPE: an override beside the user's value, never a write to it. */
+    shadow_scene_host_bind(&host_io);
+    CHECK(shadow_scene_bus_scope("host", 4) == SCENE_HOST_SCOPE, "\"host\" names the host scope");
+    CHECK(scene_host_meta("slot4", "pan", NULL) && !scene_host_meta("slot5", "pan", NULL) &&
+          scene_host_meta("send1", "to_send2", NULL) && !scene_host_meta("send2", "to_send2", NULL) &&
+          scene_host_meta("mfx_lfo2", "depth", NULL) && !scene_host_meta("mfx_lfo1", "target", NULL),
+          "the host table knows exactly its settings");
+    shadow_scene_bus_set_verb(SCENE_HOST_SCOPE, "lock", "0 slot2 volume 3 host");
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(h_vol_on && NEAR(h_vol_ov, 3.0f) && NEAR(h_vol_base, 1.0f), "A overrides the volume: %f", h_vol_ov);
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.0f), "half way to the user's level: %f", h_vol_ov);
+    h_vol_base = 2.0f;               /* the user moved the level mid-morph */
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(NEAR(h_vol_ov, 2.5f), "the unlocked end follows it the same frame: %f", h_vol_ov);
+    int before = h_applies;
+    shadow_scene_bus_tick(0, SCENE_NONE, 0.5f, SCENE_NONE, 0);
+    CHECK(h_applies == before, "an unchanged override is not re-applied");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(!h_vol_on, "no scene: the override is switched OFF");
+
+    /* armed: a host write is a lock, and its read answers the lock */
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 5, 0);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "200") == 1, "an armed return write is consumed");
+    CHECK(h_ret_on && NEAR(h_ret_ov, 127), "... clamped and auditioned at once: %f", h_ret_ov);
+    CHECK(shadow_scene_host_read("send1", "return", buf, sizeof(buf)) > 0 && !strcmp(buf, "127"),
+          "an armed read answers the lock: %s", buf);
+    CHECK(shadow_scene_host_read("slot2", "volume", buf, sizeof(buf)) == -1,
+          "a setting not locked in the armed snapshot answers the host's own value");
+    CHECK(shadow_scene_host_edit_write("send2", "to_send2", "5") == 0, "a setting the host does not have is not a lock");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, 5, SCENE_EDIT_UNLOCK);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "3") == 1 && !h_ret_on,
+          "Delete + turn removes it, and the override goes with it");
+    shadow_scene_bus_tick(SCENE_NONE, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    CHECK(shadow_scene_host_edit_write("send1", "return", "3") == 0, "disarmed, a write is the host's");
+    shadow_scene_bus_set_verb(SCENE_HOST_SCOPE, "lock", "1 slot2 volume 0 host");
+    shadow_scene_bus_tick(1, SCENE_NONE, 0.0f, SCENE_NONE, 0);
+    shadow_scene_bus_reset();
+    CHECK(!h_vol_on, "a reset switches every host override off");
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

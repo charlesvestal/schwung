@@ -111,6 +111,8 @@ host_api_v1_t shadow_host_api;
 master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
 volatile int shadow_send_return_level[SEND_BUSES];
 volatile int shadow_send_a_to_b;
+volatile int shadow_scene_return_ov[SEND_BUSES] = { -1, -1 };
+volatile int shadow_scene_a_to_b_ov = -1;
 
 /* Look up the slot owning a chain plugin instance and return its live
  * receive channel. Used by chain MIDI FX in Pre mode to address Move
@@ -214,6 +216,9 @@ master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
 static float mfx_lfo_base_value[MASTER_FX_LFO_COUNT];
 static int mfx_lfo_base_valid[MASTER_FX_LFO_COUNT];
+/* A SCENE driving a Master FX LFO field: the field holds the morph, `base`
+ * the user's value, which every read and the config save answer instead. */
+static struct { uint8_t on; float base; } mfx_lfo_scene[MASTER_FX_LFO_COUNT][8];
 #define MFX_RUNTIME_CHAIN_PARAMS_MAX MASTER_FX_CHAIN_PARAMS_MAX
 #define MFX_RUNTIME_CHAIN_PARAMS_REFRESH_MS 500
 /* OWNED BUFFERS, NEVER NULL — same contract as master_fx_slot_t.chain_params_cache;
@@ -357,8 +362,94 @@ static int scene_bus_route_request(shadow_param_t *sp, uint8_t req_type, uint32_
     return 1;
 }
 
+/* ---- SCENES on the shim's own SETTINGS (the host scope). */
+static const char *const MFX_LFO_FIELDS[8] = {
+    "enabled", "shape", "rate_hz", "rate_div", "sync", "depth", "polarity", "phase_offset",
+};
+static int mfx_lfo_field_index(const char *p) {
+    for (int i = 0; i < 8; i++) if (strcmp(MFX_LFO_FIELDS[i], p) == 0) return i;
+    return -1;
+}
+static float mfx_lfo_field_get(const lfo_state_t *l, int f) {
+    switch (f) {
+    case 0: return (float)l->enabled;   case 1: return (float)l->shape;
+    case 2: return l->rate_hz;          case 3: return (float)l->rate_div;
+    case 4: return (float)l->sync;      case 5: return l->depth;
+    case 6: return (float)l->bipolar;   default: return l->phase_offset;
+    }
+}
+static void mfx_lfo_field_put(lfo_state_t *l, int f, float v) {
+    const int iv = (int)lroundf(v);
+    switch (f) {
+    case 0: l->enabled = iv ? 1 : 0; break;  case 1: l->shape = iv; break;
+    case 2: l->rate_hz = v; break;           case 3: l->rate_div = iv; break;
+    case 4: l->sync = iv ? 1 : 0; break;     case 5: l->depth = v; break;
+    case 6: l->bipolar = iv ? 1 : 0; break;  default: l->phase_offset = v; break;
+    }
+}
+/* "slot3" -> 2, "send2" -> 1, "mfx_lfo1" -> 0; else -1. */
+static int scene_host_index(const char *target, const char *prefix, int count) {
+    size_t n = strlen(prefix);
+    if (strncmp(target, prefix, n) != 0 || !target[n] || target[n + 1]) return -1;
+    int i = target[n] - '1';
+    return (i >= 0 && i < count) ? i : -1;
+}
+static int scene_host_get(const char *t, const char *p, float *out) {
+    int i;
+    if ((i = scene_host_index(t, "slot", SHADOW_CHAIN_INSTANCES)) >= 0) {
+        if (!strcmp(p, "volume")) { *out = shadow_chain_slots[i].volume; return 1; }
+        if (!strcmp(p, "pan")) { *out = shadow_chain_slots[i].pan; return 1; }
+        return 0;
+    }
+    if ((i = scene_host_index(t, "send", SEND_BUSES)) >= 0) {
+        if (!strcmp(p, "return")) { *out = (float)shadow_send_return_level[i]; return 1; }
+        if (i == 0 && !strcmp(p, "to_send2")) { *out = (float)shadow_send_a_to_b; return 1; }
+        return 0;
+    }
+    if ((i = scene_host_index(t, "mfx_lfo", MASTER_FX_LFO_COUNT)) >= 0) {
+        int f = mfx_lfo_field_index(p);
+        if (f < 0) return 0;
+        *out = mfx_lfo_scene[i][f].on ? mfx_lfo_scene[i][f].base
+                                      : mfx_lfo_field_get(&shadow_master_fx_lfos[i], f);
+        return 1;
+    }
+    return 0;
+}
+static void scene_host_apply(const char *t, const char *p, int on, float v) {
+    int i;
+    if ((i = scene_host_index(t, "slot", SHADOW_CHAIN_INSTANCES)) >= 0) {
+        shadow_chain_slot_t *s = &shadow_chain_slots[i];
+        if (!strcmp(p, "volume")) { s->scene_volume = v; s->scene_volume_on = on ? 1 : 0; }
+        else if (!strcmp(p, "pan")) { s->scene_pan = v; s->scene_pan_on = on ? 1 : 0; }
+        return;
+    }
+    if ((i = scene_host_index(t, "send", SEND_BUSES)) >= 0) {
+        const int lv = on ? (int)lroundf(v) : -1;
+        if (!strcmp(p, "return")) shadow_scene_return_ov[i] = lv;
+        else if (i == 0 && !strcmp(p, "to_send2")) shadow_scene_a_to_b_ov = lv;
+        return;
+    }
+    if ((i = scene_host_index(t, "mfx_lfo", MASTER_FX_LFO_COUNT)) >= 0) {
+        int f = mfx_lfo_field_index(p);
+        if (f < 0) return;
+        lfo_state_t *l = &shadow_master_fx_lfos[i];
+        if (on) {
+            if (!mfx_lfo_scene[i][f].on) {
+                mfx_lfo_scene[i][f].base = mfx_lfo_field_get(l, f);
+                mfx_lfo_scene[i][f].on = 1;
+            }
+            mfx_lfo_field_put(l, f, v);
+        } else if (mfx_lfo_scene[i][f].on) {
+            mfx_lfo_field_put(l, f, mfx_lfo_scene[i][f].base);
+            mfx_lfo_scene[i][f].on = 0;
+        }
+    }
+}
+static const scene_host_io_t scene_host_io = { scene_host_get, scene_host_apply };
+
 void chain_mgmt_init(const chain_mgmt_host_t *h) {
     host = *h;
+    shadow_scene_host_bind(&scene_host_io);
     shadow_scene_bus_bind(&scene_bus_io);
     shadow_scene_bus_reset();
     /* Earliest point on a thread that can survive a failed malloc. Every
@@ -3162,6 +3253,12 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
             return 1;
         }
     }
+    if (strcmp(key, "slot:pan") == 0 || strcmp(key, "slot:volume") == 0) {
+        /* Armed, a level or pan turn is a scene LOCK, not a change. */
+        char t[8];
+        snprintf(t, sizeof(t), "slot%d", slot + 1);
+        if (shadow_scene_host_edit_write(t, key + 5, value)) return 1;
+    }
     if (strcmp(key, "slot:pan") == 0) {
         float p = (float)atof(value);
         if (!(p >= -1.0f)) p = -1.0f;
@@ -3257,6 +3354,12 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     {
         const int es = empty_send_index(slot, key);
         if (es >= 0) return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
+    }
+    if (strcmp(key, "slot:volume") == 0 || strcmp(key, "slot:pan") == 0) {
+        char t[8];
+        snprintf(t, sizeof(t), "slot%d", slot + 1);
+        int n = shadow_scene_host_read(t, key + 5, buf, buf_len);
+        if (n >= 0) return n;
     }
     if (strcmp(key, "slot:volume") == 0) {
         /* Four places, not two: a surface stepping the level in dB (the E16
@@ -4848,7 +4951,17 @@ void shadow_inprocess_handle_param_request(void) {
 
             if (send_fx < 0) {
                 /* Bus-level keys. */
-                if (strcmp(send_param, "return") == 0) {
+                char scene_t[8];
+                snprintf(scene_t, sizeof(scene_t), "send%d", send_idx + 1);
+                int scene_n = 0;
+                if ((strcmp(send_param, "return") == 0 || strcmp(send_param, "to_send2") == 0) &&
+                    (is_set ? shadow_scene_host_edit_write(scene_t, send_param, shadow_param->value)
+                            : (scene_n = shadow_scene_host_read(scene_t, send_param, shadow_param->value,
+                                                                SHADOW_PARAM_VALUE_LEN)) >= 0)) {
+                    /* Armed: a lock, and its read answers the lock. */
+                    shadow_param->error = 0;
+                    shadow_param->result_len = is_set ? 0 : scene_n;
+                } else if (strcmp(send_param, "return") == 0) {
                     if (is_set) {
                         int v = atoi(shadow_param->value);
                         if (v < 0) v = 0;
@@ -5182,8 +5295,36 @@ void shadow_inprocess_handle_param_request(void) {
             int lfo_idx = (fx_key[3] == '1') ? 0 : 1;
             const char *lfo_param = fx_key + 5;
             lfo_state_t *lfo = &shadow_master_fx_lfos[lfo_idx];
+            char scene_t[12];
+            snprintf(scene_t, sizeof(scene_t), "mfx_lfo%d", lfo_idx + 1);
+            const int scene_f = mfx_lfo_field_index(lfo_param);
+            const int scene_driven = scene_f >= 0 && mfx_lfo_scene[lfo_idx][scene_f].on;
+            float scene_morph = 0.0f;
+            if (scene_driven) scene_morph = mfx_lfo_field_get(lfo, scene_f);
+            /* The field a scene drives holds the MORPH: a save must see the
+             * user's value, so those go back in for the config read only. */
+            float scene_held[8];
+            const int scene_is_config = (req_type == 2 && strcmp(lfo_param, "config") == 0);
+            if (scene_is_config) {
+                for (int f = 0; f < 8; f++) {
+                    scene_held[f] = mfx_lfo_field_get(lfo, f);
+                    if (mfx_lfo_scene[lfo_idx][f].on) mfx_lfo_field_put(lfo, f, mfx_lfo_scene[lfo_idx][f].base);
+                }
+            }
 
-            if (req_type == 1) {  /* SET */
+            if (req_type == 1 && shadow_scene_host_edit_write(scene_t, lfo_param, shadow_param->value)) {
+                /* Armed: a scene lock, not a change. */
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2 &&
+                       shadow_scene_host_read(scene_t, lfo_param, shadow_param->value, SHADOW_PARAM_VALUE_LEN) >= 0) {
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (req_type == 2 && scene_driven) {
+                snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%.2f", mfx_lfo_scene[lfo_idx][scene_f].base);
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (req_type == 1) {  /* SET */
                 if (strcmp(lfo_param, "enabled") == 0) {
                     lfo->enabled = atoi(shadow_param->value);
                     if (lfo->enabled) {
@@ -5226,6 +5367,12 @@ void shadow_inprocess_handle_param_request(void) {
                     lfo->param[sizeof(lfo->param) - 1] = '\0';
                     mfx_lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
                 }
+                if (scene_driven) {
+                    /* The user's turn is the new BASE; the field keeps the
+                     * morph, which the next frame re-derives from it. */
+                    mfx_lfo_scene[lfo_idx][scene_f].base = mfx_lfo_field_get(lfo, scene_f);
+                    mfx_lfo_field_put(lfo, scene_f, scene_morph);
+                }
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;
             } else if (req_type == 2) {  /* GET */
@@ -5265,6 +5412,8 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_param->error = 0;
                 shadow_param->result_len = strlen(result);
             }
+            if (scene_is_config)
+                for (int f = 0; f < 8; f++) mfx_lfo_field_put(lfo, f, scene_held[f]);
             shadow_param_publish_response(req_id);
             return;
         }

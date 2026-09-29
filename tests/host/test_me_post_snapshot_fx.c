@@ -28,6 +28,8 @@ master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
 volatile int shadow_send_return_level[SEND_BUSES];
 volatile int shadow_send_a_to_b;
+volatile int shadow_scene_return_ov[SEND_BUSES] = { -1, -1 };   /* no scene */
+volatile int shadow_scene_a_to_b_ov = -1;
 
 static void dummy_process(void *instance, int16_t *buf, int frames) {
     (void)instance; (void)buf; (void)frames;
