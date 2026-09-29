@@ -30,6 +30,7 @@
  */
 
 import { SCENE_COUNT, SNAP_COUNT, halfA, halfB } from "./scene_doc.mjs";
+import { fontWidth4x5, fontPrint4x5 } from "./param_pages/font4x5.mjs";
 
 export const HOLD_MS = 500;
 export const FADER_DETENT = 1 / 64;
@@ -378,6 +379,15 @@ export function createScenesScreen(io) {
                         ctx.fillRect(x + 2, y + 2, cw - 4, chh - 4, 1);
                     }
                 }
+            }
+
+            /* How to edit from ANY screen, beside the map it edits: the
+             * shortcut is otherwise only in the help. In the FOOTER's 4x5 face
+             * -- it is a hint, and it reads as one -- centred in the space the
+             * 8-wide grid leaves (x 82..127). */
+            for (const [i, line] of ["SHIFT +/-", "EDIT A/B"].entries()) {
+                const w = fontWidth4x5(line);
+                fontPrint4x5(ctx, 82 + Math.floor((46 - w) / 2), 20 + i * 8, line, 1);
             }
 
             /* The fader: A |####....| B, the position as a notch. */
