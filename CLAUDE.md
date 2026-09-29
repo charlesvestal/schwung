@@ -1475,8 +1475,9 @@ Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
   `reserved16`); the JS binding presents one flat word.
 ### Scenes (Octatrack-style morphing) — `docs/SHADOW_UI.md`, `docs/CHAIN.md`
 
-16 scenes of locks across the four slots, Master FX and both sends; A and B on
-one crossfader (Shift+Vol+Step3 opens the Scenes screen).
+32 SNAPSHOTS of locks (A1-16, B1-16, on the pads) and 16 SCENES (steps), each
+a pairing of one A and one B, across the slots, Master FX, both sends and the
+host's own settings; one crossfader (Shift+Vol+Step3 opens the Scenes screen).
 
 - **The DSP morphs; the UI moves ONE byte.** Slots through a MORPH contribution
   in `chain_mod` that stores the two ENDS and resolves them against the LIVE
@@ -1493,9 +1494,20 @@ one crossfader (Shift+Vol+Step3 opens the Scenes screen).
 - **`scenes.json` is never written for a set before its bank is CONFIRMED
   loaded** (read back per scope), a save needs every scope's answer, and a
   shadow_ui restart ADOPTS the live bank rather than reloading the file.
-- **Scenes live on the PADS, and only while the Scenes screen is up** (top two
-  rows A, bottom two B). Steps and Shift+steps stay Move's everywhere.
-  `scene_pads` strips Move's pad LED repaints and restores them on release.
+- **Snapshots are on the PADS and scenes on the STEPS, only while the Scenes
+  screen is up**; Shift+steps always reach Move. `scene_surface` strips Move's
+  LED repaints and restores them on release.
+- **The user's value is never overwritten** -- module params morph through
+  `chain_mod`, sends / volume / pan / returns through an override the mix reads,
+  LFO fields keep a base -- so every read and save sees the knob. The one read
+  that shows the morph is the `scenes:driven` diagnostic.
+- **A knob turned on a driven param is HEARD** (the live takeover): anchored at
+  the fader, morphing from there toward whichever end the fader heads for,
+  released at an end. Applied as a CHANGE to what is heard, because the UI's
+  knob works from the knob's own value.
+- **Program Change on Scene PC Ch (default 16)**: 0-15 select a scene -- applied
+  by the SHIM from a mirrored pairing table, on the frame it arrives -- 126 / 127
+  take / recall the snapshot (never a toggle).
 
 ### USB-C Audio-Out Source
 
