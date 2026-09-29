@@ -48,6 +48,7 @@ import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 import { drawEnumList } from "./enum_list.mjs";
 import { drawParamCard } from "./param_card.mjs";
+import { createFooterPanel, beginFooterPanel, PANEL_H as FOOTER_PANEL_H } from "../footer_panel.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -797,7 +798,7 @@ export function createController(io = {}) {
         /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
         lockMap: null,
         lockMapFor: -1,
-        lockMapAnim: null,
+        lockMapPanel: createFooterPanel(),
         /* Delete held while a step is: armed, and whether a knob was picked. */
         stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
@@ -6012,64 +6013,30 @@ export function createController(io = {}) {
      * also answers "which one am I on".
      */
     /*
-     * It RISES OVER THE FOOTER, and that is where the room is. The header is
-     * the held-knob readout -- the one line telling you which parameter you are
-     * changing -- and the grid is eight cells; covering either would take away
-     * what you are holding the step to see. The footer names gestures you
-     * already have your hands on, so for the length of the hold it is the
-     * cheapest nine rows on the screen.
-     *
-     * And it SLIDES, because appearing and disappearing in place over an
-     * existing band reads as a glitch: the motion is what says "this replaced
-     * the footer and the footer is coming back".
+     * It RISES OVER THE FOOTER and SLIDES, as every such band does: the motion
+     * and the geometry are footer_panel.mjs, shared with the scene fader. The
+     * header is the held-knob readout and the grid is eight cells; covering
+     * either would take away what you are holding the step to see.
      */
-    const LOCK_MAP_BOTTOM = FOOTER_Y + FOOTER_H;   /* 64 — the last row the footer owns */
-    const LOCK_MAP_H = LOCK_MAP_BOTTOM - RULE_Y;   /* 9 — the rule and the footer */
-    const LOCK_MAP_ANIM_MS = 110;
     const LOCK_MAP_BLINK_MS = 620;
 
     function lockMapFrame() {
-        const want = lockMap();
         const t = now();
-        const a = s.lockMapAnim;
-        if (want) {
-            if (!a || !a.open) s.lockMapAnim = { open: true, since: t, map: want };
-            else a.map = want;
-        } else if (a && a.open) {
-            /* Keep the last map for the way out: the read is gone the instant
-             * the step is released, and a panel that vanishes mid-slide is the
-             * glitch the slide exists to avoid. */
-            s.lockMapAnim = { open: false, since: t, map: a.map };
-        }
-        const cur = s.lockMapAnim;
-        if (!cur) return null;
-        let p = (t - cur.since) / LOCK_MAP_ANIM_MS;
-        if (!(p >= 0)) p = 0;
-        if (p > 1) p = 1;
-        if (!cur.open && p >= 1) { s.lockMapAnim = null; return null; }
-        /* Ease out: fast off the edge, settling onto the rule. */
-        const e = cur.open ? 1 - (1 - p) * (1 - p) : p * p;
-        const off = Math.round((cur.open ? 1 - e : e) * LOCK_MAP_H);
+        const f = s.lockMapPanel.update(t, lockMap());
+        if (!f) return null;
         /* The blink is computed HERE rather than in the draw so the draw stays
          * a pure function of the frame it is handed -- the same reason the
          * slide's offset is. Duty is deliberately long-on: the outline is a
          * position marker first and an animation second, so it is present
          * more often than not. */
         const phase = (t % LOCK_MAP_BLINK_MS) / LOCK_MAP_BLINK_MS;
-        return { map: cur.map, y: RULE_Y + off, outline: phase < 0.65 };
+        return { map: f.payload, y: f.y, outline: phase < 0.65 };
     }
 
     function drawLockMap(ctx, frame) {
         const { map } = frame;
-        const y = frame.y, h = LOCK_MAP_H, cell = 8;
-        /* Blank exactly the rows the panel covers, never the whole band: the
-         * footer is already in the framebuffer from render(), so clearing only
-         * under the panel lets it be covered on the way in and UNCOVERED row by
-         * row on the way out. Clearing the band instead leaves the footer
-         * missing for the length of the slide and snapping back at the end,
-         * which is the thing that reads as a glitch. */
-        ctx.fillRect(0, y, SCREEN_WIDTH, LOCK_MAP_BOTTOM - y, 0);
-        ctx.fillRect(0, y, SCREEN_WIDTH, 1, 1);
+        const y = frame.y, h = FOOTER_PANEL_H, cell = 8;
+        beginFooterPanel(ctx, y, SCREEN_WIDTH);
         for (let i = 0; i < 16; i++) {
             const x = i * cell;
             const onPage = (map.page >> i) & 1;
