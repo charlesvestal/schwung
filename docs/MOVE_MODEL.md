@@ -145,6 +145,23 @@ optimistic toggle (Mute+Track, which also wrote the state file on the SPI
 callback) is gone under the model, and the per-set chain config no longer
 overrides the mixer when a set loads.
 
+**Master volume, track volume, the metronome and the selection too** (#567).
+Each was inferred -- master volume from Move's on-screen volume bar (coarse,
+only while the overlay shows), track volume from the spoken "Track Volume X
+dB" while a Track button was held, the metronome from "Metronome On/Off", the
+selected track from whichever Track presses Schwung saw. The document holds
+each exactly:
+
+| What | Field | Applied |
+|---|---|---|
+| master volume | `Song.mOutputMixerDevice` → `OutputMixerParameters.mVolume` (dB; -70 = the knob's bottom = silence) | SPI thread, every frame; the bar scan stands down |
+| track volume | the mixer `mVolume` already walked for mute | EDGES only, through the same ring as mute -- a set load keeps the set's saved slot levels. An edge goes through the scene hooks like any `slot:volume` write: a lock while a snapshot is armed, a takeover otherwise |
+| metronome | `Transport.mIsMetronomeOn` | assigned from the reader (`levels_from_model`); the announcement classifier stands down |
+| selected track | `Track.mIsSelected` | SPI thread (`move_model_sync_take_selected`) |
+
+Every old path stays as the fallback on a firmware the model cannot resolve,
+and whenever the model is not live.
+
 **Set changes land in ~10 ms, not ~3 s.** A set load replaces the document:
 the new tracks are inserted before the old are removed, over ~180 ms, and
 Move rewrites `Settings.json`'s `currentSongIndex` within ~12 ms of the swap

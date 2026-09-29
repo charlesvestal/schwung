@@ -440,8 +440,9 @@ has been disabled after a throw.
 The scene crossfader lives in shared memory, so these cost no IPC:
 
 ```javascript
-shadow_get_scene_state()      // { a, b, edit, flash, xfade, rev, active, pcSeq }
+shadow_get_scene_state()      // { a, b, edit, flash, xfade, rev, active, pcSeq, turnSeq }
                               //   a/b/edit are HALVES 0..31 (A i = i, B i = 16+i) or -1
+                              //   turnSeq bumps on every Shift+Volume detent, even a clamped one
 shadow_set_scene_ab(a, b)     // the fader's two ends, as halves; -1 = none
 shadow_set_scene_xfade(x)     // 0..1; the shim slews it
 shadow_set_scene_edit(n)      // arm half n for editing, -1 disarms
