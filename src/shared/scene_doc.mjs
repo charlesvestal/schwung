@@ -8,10 +8,14 @@
  * it SAVES what the seven scopes report and LOADS a saved document back into
  * them. A second model of the bank here would be a copy that drifts.
  *
- * A bank spans SEVEN SCOPES, each with its own table and verbs:
+ * A bank spans EIGHT SCOPES, each with its own table and verbs:
  *   slot0..slot3   chain slot N           key "scenes:<verb>"            slot N
+ *                  (its modules, its two sends, its LFOs)
  *   mfx            Master FX              key "master_fx:scenes:<verb>"  slot 0
  *   send1, send2   the send buses         key "send<N>:scenes:<verb>"    slot 0
+ *   host           the shim's own settings: slot volume / pan, send
+ *                  returns, Send A->B, the Master FX LFOs
+ *                                         key "host:scenes:<verb>"       slot 0
  *
  * The wire line is "<n> <target> <param> <value> <module>" (scene_morph.h).
  *
@@ -61,6 +65,7 @@ export const SCOPES = [
     { id: "mfx", slot: 0, prefix: "master_fx:" },
     { id: "send1", slot: 0, prefix: "send1:" },
     { id: "send2", slot: 0, prefix: "send2:" },
+    { id: "host", slot: 0, prefix: "host:" },
 ];
 
 /** The param-channel address of a scope's verb. */

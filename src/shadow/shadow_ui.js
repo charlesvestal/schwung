@@ -112,6 +112,8 @@ import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
 /* SCENES: the screen, and the bank as a saved document. */
 import { createScenesScreen, drawArmBadge, armBadgeText, editLabel as sceneEditLabel }
     from '/data/UserData/schwung/shared/scenes_screen.mjs';
+import { createSceneFaderOverlay, drawSceneFaderOverlay }
+    from '/data/UserData/schwung/shared/scene_fader_overlay.mjs';
 import { SCOPES as SCENE_SCOPES, scopeKey as sceneScopeKey, buildDoc as buildSceneDoc,
          parseDoc as parseSceneDoc, docToLoads as sceneDocToLoads,
          expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts,
@@ -12036,6 +12038,28 @@ function sceneClaimedCcs() {
     if (view === VIEWS.SCENES) return scenesScreen.claimedCcs();
     const st = sceneState();
     return (st && st.edit >= 0) ? [119] : [];
+}
+
+/* ---- the fader overlay: the A-B slider that rises over the footer when the
+ * fader moves anywhere but the Scenes screen (scene_fader_overlay.mjs). ---- */
+const sceneFaderOverlay = createSceneFaderOverlay({ now: () => Date.now() });
+function sceneFaderLabel() {
+    const p = (sceneActive >= 0 && scenePairs[sceneActive]) || [-1, -1];
+    return { a: p[0] >= 0 ? "A" + (p[0] + 1) : "A-", b: p[1] >= 0 ? "B" + (p[1] + 1) : "B-" };
+}
+/* Once per tick, before the redraw gate: a move must be seen on Move's own
+ * screen too, where nothing else asks for a redraw. */
+function sceneFaderObserve() {
+    const st = sceneState();
+    if (!st) return;
+    sceneFaderOverlay.observe(st.xfade, sceneFaderLabel(),
+                              view === VIEWS.SCENES && !shadowDisplayHidden());
+}
+const sceneFaderCtx = () => ({ fillRect: fill_rect, print, textWidth: text_width });
+/* The shadow UI is the screen: paint over the view just drawn. */
+function drawSceneFaderOnTop() {
+    if (shadowDisplayHidden()) return;
+    drawSceneFaderOverlay(sceneFaderCtx(), sceneFaderOverlay.frame());
 }
 
 /* ---- the badge ---- */
@@ -28748,7 +28772,8 @@ globalThis.tick = function() {
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
-    if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+    sceneFaderObserve();
+    if (!needsRedraw && !overlayActive && !snapshotToastActive() && !sceneFaderOverlay.busy() &&
         !snapshotQueuedPending &&
         (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
@@ -28825,6 +28850,21 @@ globalThis.tick = function() {
             shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
+    }
+
+    /* The scene fader over MOVE's screen: drawn on the scratch surface and
+     * blitted in as a rect, like the toasts above. The rect follows the slide,
+     * so Move's picture is uncovered row by row on the way out. */
+    if (shadowDisplayHidden() && sceneFaderOverlay.busy()) {
+        const fr = sceneFaderOverlay.frame();
+        if (fr) {
+            clear_screen();
+            const r = drawSceneFaderOverlay(sceneFaderCtx(), fr);
+            if (r && typeof shadow_set_display_overlay === "function") {
+                shadow_set_display_overlay(1, r.x, r.y, r.w, r.h);
+            }
+            if (r) return;
+        }
     }
 
     /* No overlay active - clear overlay display mode */
@@ -29232,6 +29272,8 @@ globalThis.tick = function() {
         drawSnapshotPendingMark();
         drawCcLearnFooter();
         drawSceneBadge();
+        /* Over the footer, under nothing: it is what the hand is doing now. */
+        drawSceneFaderOnTop();
         /* ...and the p-lock mark, which outlives neither: it is its own
          * 600 ms and belongs on top of both, since it reports something that
          * happened just now. */

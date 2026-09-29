@@ -3664,8 +3664,8 @@ skip_la_rebuild:
          * says out loud that send_out[0] is only THIS frame's audio when the
          * sb == 0 iteration actually ran — a skipped bus leaves the buffer
          * holding whatever the last active frame put there. */
-        if (sb == 1 && shadow_send_a_to_b > 0 && shadow_send_bus_active(0)) {
-            int lvl = (shadow_send_a_to_b * shadow_send_return_level[0]) /
+        if (sb == 1 && shadow_send_a_to_b_eff() > 0 && shadow_send_bus_active(0)) {
+            int lvl = (shadow_send_a_to_b_eff() * shadow_send_return_eff(0)) /
                       BUS_MIX_SEND_LEVEL_MAX;
             bus_mix_send(send_out[1], send_out[0], FRAMES_PER_BLOCK * 2, lvl);
         }
@@ -3706,7 +3706,7 @@ skip_la_rebuild:
          * them and scale the stem block differently from the block that
          * reached the master -- which is precisely the exactness the comment
          * above promises. */
-        int send_lvl = shadow_send_return_level[sb];
+        int send_lvl = shadow_send_return_eff(sb);
         if (send_lvl < 0) send_lvl = 0;
         if (send_lvl > BUS_MIX_SEND_LEVEL_MAX) send_lvl = BUS_MIX_SEND_LEVEL_MAX;
 

@@ -9,6 +9,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "bus_mix.h"     /* BUS_MIX_SEND_LEVEL_MAX */
+#include "lfo_common.h"  /* LFO_NUM_SHAPES, LFO_NUM_DIVISIONS */
+
 #define SCENE_BUS_REVALIDATE_FRAMES 32
 #define SCENE_BUS_INT_MIN_INTERVAL_MS 50   /* as chain_mod's MOD_INT_ENUM_MIN_INTERVAL_MS */
 
@@ -36,7 +39,11 @@ typedef struct {
 static scene_bus_t s_bus[SCENE_BUS_SCOPES];
 static scene_table_t s_load_scratch;
 static const scene_bus_io_t *s_io = NULL;
+static const scene_host_io_t *s_host = NULL;
 static uint8_t s_flash = SCENE_FLASH_NONE;
+
+static void changed(int scope);
+static scene_drive_t *find_drive(scene_bus_t *bus, const char *target, const char *param);
 
 static uint8_t s_a = SCENE_NONE, s_b = SCENE_NONE, s_edit = SCENE_NONE, s_edit_flags = 0;
 static float s_x = 0.0f;
@@ -48,8 +55,16 @@ static uint64_t scene_bus_now_ms(void) {
 }
 
 void shadow_scene_bus_bind(const scene_bus_io_t *io) { s_io = io; }
+void shadow_scene_host_bind(const scene_host_io_t *io) { s_host = io; }
 
 void shadow_scene_bus_reset(void) {
+    /* A host override left on would outlive its table. */
+    if (s_host) {
+        for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+            scene_drive_t *d = &s_bus[SCENE_HOST_SCOPE].drives[i];
+            if (d->active) s_host->apply(d->target, d->param, 0, 0.0f);
+        }
+    }
     memset(s_bus, 0, sizeof(s_bus));
     for (int i = 0; i < SCENE_BUS_SCOPES; i++) s_bus[i].dirty = 1;
     s_flash = SCENE_FLASH_NONE;
@@ -61,10 +76,149 @@ int shadow_scene_bus_scope(const char *prefix, int n) {
     if (n == 9 && strncmp(prefix, "master_fx", 9) == 0) return 0;
     if (n == 5 && strncmp(prefix, "send1", 5) == 0) return 1;
     if (n == 5 && strncmp(prefix, "send2", 5) == 0) return 2;
+    if (n == 4 && strncmp(prefix, "host", 4) == 0) return SCENE_HOST_SCOPE;
     return -1;
 }
 
-static int valid_scope(int scope) { return scope >= 0 && scope < SCENE_BUS_SCOPES && s_io; }
+static int valid_scope(int scope) {
+    if (scope == SCENE_HOST_SCOPE) return s_host != NULL;
+    return scope >= 0 && scope < SCENE_BUS_SCOPES && s_io;
+}
+
+/* The positional verbs are the plugin buses' only. */
+static int valid_bus_scope(int scope) { return scope >= 0 && scope < SCENE_HOST_SCOPE && s_io; }
+
+/* ---- host settings -------------------------------------------------------- */
+
+typedef struct { const char *param; int kind; float min, max; } host_meta_row_t;
+static const host_meta_row_t HOST_SLOT[] = {
+    { "volume", SCENE_KIND_FLOAT, 0.0f, 4.0f },
+    { "pan",    SCENE_KIND_FLOAT, -1.0f, 1.0f },
+    { NULL, 0, 0, 0 },
+};
+static const host_meta_row_t HOST_SEND1[] = {
+    { "return",   SCENE_KIND_INT, 0, BUS_MIX_SEND_LEVEL_MAX },
+    { "to_send2", SCENE_KIND_INT, 0, BUS_MIX_SEND_LEVEL_MAX },
+    { NULL, 0, 0, 0 },
+};
+static const host_meta_row_t HOST_SEND2[] = {
+    { "return", SCENE_KIND_INT, 0, BUS_MIX_SEND_LEVEL_MAX },
+    { NULL, 0, 0, 0 },
+};
+static const host_meta_row_t HOST_LFO[] = {
+    { "enabled",      SCENE_KIND_ENUM, 0, 1 },
+    { "shape",        SCENE_KIND_ENUM, 0, LFO_NUM_SHAPES - 1 },
+    { "rate_hz",      SCENE_KIND_FLOAT, 0.1f, 20.0f },
+    { "rate_div",     SCENE_KIND_ENUM, 0, LFO_NUM_DIVISIONS - 1 },
+    { "sync",         SCENE_KIND_ENUM, 0, 1 },
+    { "depth",        SCENE_KIND_FLOAT, -1.0f, 1.0f },
+    { "polarity",     SCENE_KIND_ENUM, 0, 1 },
+    { "phase_offset", SCENE_KIND_FLOAT, 0.0f, 1.0f },
+    { NULL, 0, 0, 0 },
+};
+
+int scene_host_meta(const char *target, const char *param, scene_bus_meta_t *out) {
+    if (!target || !param) return 0;
+    const host_meta_row_t *t = NULL;
+    if (strncmp(target, "slot", 4) == 0 && target[4] >= '1' && target[4] <= '4' && !target[5]) t = HOST_SLOT;
+    else if (strcmp(target, "send1") == 0) t = HOST_SEND1;
+    else if (strcmp(target, "send2") == 0) t = HOST_SEND2;
+    else if (strcmp(target, "mfx_lfo1") == 0 || strcmp(target, "mfx_lfo2") == 0) t = HOST_LFO;
+    if (!t) return 0;
+    for (int i = 0; t[i].param; i++) {
+        if (strcmp(t[i].param, param) != 0) continue;
+        if (out) {
+            memset(out, 0, sizeof(*out));
+            out->kind = t[i].kind;
+            out->min = t[i].min;
+            out->max = t[i].max;
+            out->def = t[i].min;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static float host_clamp(const scene_bus_meta_t *m, float v) {
+    if (v < m->min) v = m->min;
+    if (v > m->max) v = m->max;
+    return m->kind == SCENE_KIND_FLOAT ? v : roundf(v);
+}
+
+/* Every frame: overrides for what contributes, off for what stopped. */
+static void tick_host(int a, int b, float x) {
+    if (!s_host) return;
+    scene_bus_t *bus = &s_bus[SCENE_HOST_SCOPE];
+    for (int i = 0; i < SCENE_MAX_PAIRS; i++) {
+        scene_drive_t *d = &bus->drives[i];
+        if (!d->active) continue;
+        int pi = scene_find(&bus->table, d->target, d->param);
+        int ha, hb; float va, vb;
+        if (pi >= 0 && scene_resolve(&bus->table.pairs[pi], a, b, &ha, &va, &hb, &vb)) continue;
+        s_host->apply(d->target, d->param, 0, 0.0f);
+        memset(d, 0, sizeof(*d));
+    }
+    for (int i = 0; i < bus->table.count; i++) {
+        const scene_pair_t *p = &bus->table.pairs[i];
+        scene_bus_meta_t m;
+        if (!scene_host_meta(p->target, p->param, &m)) continue;
+        int ha, hb; float va, vb;
+        if (!scene_resolve(p, a, b, &ha, &va, &hb, &vb)) continue;
+        float base = m.def;
+        if (!s_host->get(p->target, p->param, &base)) continue;
+        const float v = host_clamp(&m, scene_morph_value(ha, va, hb, vb, base, x, m.kind));
+        scene_drive_t *d = find_drive(bus, p->target, p->param);
+        if (!d) {
+            for (int j = 0; j < SCENE_MAX_PAIRS && !d; j++) if (!bus->drives[j].active) d = &bus->drives[j];
+            if (!d) continue;
+            memset(d, 0, sizeof(*d));
+            d->active = 1;
+            memcpy(d->target, p->target, sizeof(d->target));
+            memcpy(d->param, p->param, sizeof(d->param));
+            d->kind = m.kind;
+        }
+        if (d->has_last && fabsf(v - d->last) < 1e-6f) continue;
+        s_host->apply(p->target, p->param, 1, v);
+        d->last = v;
+        d->has_last = 1;
+    }
+}
+
+int shadow_scene_host_edit_write(const char *target, const char *param, const char *val) {
+    if (!s_host || s_edit == SCENE_NONE || !target || !param || !val) return 0;
+    scene_bus_meta_t m;
+    if (!scene_host_meta(target, param, &m)) return 0;
+    char *end = NULL;
+    float v = strtof(val, &end);
+    if (!end || end == val) return 0;
+    v = host_clamp(&m, v);
+    scene_bus_t *bus = &s_bus[SCENE_HOST_SCOPE];
+    if (s_edit_flags & SCENE_EDIT_UNLOCK) {
+        if (scene_unlock(&bus->table, s_edit, target, param) == SCENE_OK) {
+            changed(SCENE_HOST_SCOPE);
+            tick_host(s_edit, SCENE_NONE, 0.0f);
+        }
+        return 1;
+    }
+    int rc = scene_lock(&bus->table, s_edit, target, param, v, SCENE_HOST_MODULE);
+    if (rc == SCENE_ERR_FULL) { s_flash = SCENE_FLASH_FULL; return 0; }
+    if (rc != SCENE_OK) return 0;
+    changed(SCENE_HOST_SCOPE);
+    tick_host(s_edit, SCENE_NONE, 0.0f);
+    return 1;
+}
+
+int shadow_scene_host_read(const char *target, const char *param, char *buf, int len) {
+    if (!s_host || s_edit == SCENE_NONE || !target || !param || !buf || len < 2) return -1;
+    scene_bus_meta_t m;
+    if (!scene_host_meta(target, param, &m)) return -1;
+    scene_bus_t *bus = &s_bus[SCENE_HOST_SCOPE];
+    int i = scene_find(&bus->table, target, param);
+    if (i < 0 || !(bus->table.pairs[i].mask & (1u << s_edit))) return -1;
+    float v = bus->table.pairs[i].values[s_edit];
+    return m.kind == SCENE_KIND_FLOAT ? snprintf(buf, len, "%.4f", v)
+                                      : snprintf(buf, len, "%d", (int)lroundf(v));
+}
 
 /* ---- chain_params reading ------------------------------------------------
  *
@@ -333,7 +487,7 @@ static void tick_bus(int scope, int a, int b, float x) {
 }
 
 void shadow_scene_bus_tick(uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t edit_flags) {
-    if (!s_io) return;
+    if (!s_io && !s_host) return;
     s_edit_flags = edit_flags;
     if (a != s_a || b != s_b || edit != s_edit || fabsf(x - s_x) > 1e-6f) {
         s_a = a; s_b = b; s_edit = edit; s_x = x;
@@ -342,7 +496,8 @@ void shadow_scene_bus_tick(uint8_t a, uint8_t b, float x, uint8_t edit, uint8_t 
     int ea = a, eb = b;
     float ex = x;
     if (edit != SCENE_NONE) { ea = edit; eb = SCENE_NONE; ex = 0.0f; }
-    for (int i = 0; i < SCENE_BUS_SCOPES; i++) tick_bus(i, ea, eb, ex);
+    for (int i = 0; i < SCENE_HOST_SCOPE; i++) if (s_io) tick_bus(i, ea, eb, ex);
+    tick_host(ea, eb, ex);
 }
 
 uint16_t shadow_scene_bus_rev(void) {
@@ -394,7 +549,7 @@ int shadow_scene_bus_get_verb(int scope, const char *verb, char *buf, int len) {
 }
 
 int shadow_scene_bus_edit_write(int scope, int pos, const char *param, const char *val) {
-    if (!valid_scope(scope) || s_edit == SCENE_NONE || !param || !val) return 0;
+    if (!valid_bus_scope(scope) || s_edit == SCENE_NONE || !param || !val) return 0;
     if (!scene_edit_subkey_eligible(param)) return 0;
     if (pos < 0 || pos >= s_io->positions(scope)) return 0;
     void *slot = s_io->slot_at(scope, pos);
@@ -432,7 +587,7 @@ int shadow_scene_bus_edit_write(int scope, int pos, const char *param, const cha
 }
 
 int shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int len) {
-    if (!valid_scope(scope) || !param || !buf || len < 2) return -1;
+    if (!valid_bus_scope(scope) || !param || !buf || len < 2) return -1;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
     scene_bus_t *bus = &s_bus[scope];
@@ -455,7 +610,7 @@ int shadow_scene_bus_read(int scope, int pos, const char *param, char *buf, int 
 }
 
 void shadow_scene_bus_state_begin(int scope, int pos) {
-    if (!valid_scope(scope)) return;
+    if (!valid_bus_scope(scope)) return;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
     void *slot = slot_for(scope, target);
@@ -468,7 +623,7 @@ void shadow_scene_bus_state_begin(int scope, int pos) {
 }
 
 void shadow_scene_bus_state_end(int scope, int pos) {
-    if (!valid_scope(scope)) return;
+    if (!valid_bus_scope(scope)) return;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
     void *slot = slot_for(scope, target);
@@ -481,7 +636,7 @@ void shadow_scene_bus_state_end(int scope, int pos) {
 }
 
 void shadow_scene_bus_note_write(int scope, int pos, const char *param, const char *val) {
-    if (!valid_scope(scope) || !param || !val) return;
+    if (!valid_bus_scope(scope) || !param || !val) return;
     char target[SCENE_TARGET_LEN];
     snprintf(target, sizeof(target), "fx%d", pos + 1);
     scene_drive_t *d = find_drive(&s_bus[scope], target, param);

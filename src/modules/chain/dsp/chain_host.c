@@ -2897,7 +2897,7 @@ void chain_drain_main_send(void *instance, int16_t *const *accum, int n_sends,
         if (!accum[sd]) continue;
         /* base + the LFO's offset, clamped. main_send_level itself is never
          * written by modulation -- see main_send_mod in chain_internal.h. */
-        int amt = inst->main_send_level[sd] + inst->main_send_mod[sd];
+        int amt = inst->main_send_level[sd] + inst->main_send_mod[sd] + inst->scene_send_mod[sd];
         if (amt < 0) amt = 0;
         if (amt > BUS_MIX_SEND_LEVEL_MAX) amt = BUS_MIX_SEND_LEVEL_MAX;
         int lvl = (amt * slot_volume_0_127) / BUS_MIX_SEND_LEVEL_MAX;

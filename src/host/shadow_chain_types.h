@@ -36,6 +36,13 @@ typedef struct shadow_chain_slot_t {
     int active;
     float volume;           /* 0.0 to 1.0, user-set level (never modified by mute/solo) */
     float pan;              /* -1 left .. 0 centre .. +1 right: a stereo BALANCE (see shadow_pan_gain) */
+    /* A SCENE's override of volume / pan (shadow_scene_bus.c's host scope).
+     * Consumed by shadow_effective_volume / shadow_pan_gains only -- never
+     * written into the two fields above, so no save can record a morph. */
+    float scene_volume;
+    float scene_pan;
+    uint8_t scene_volume_on;
+    uint8_t scene_pan_on;
     uint8_t empty_send[2];  /* Send A/B 0..127 for a slot with NO module (its chain holds them otherwise) */
     int muted;              /* 1 = muted (Mute+Track or Move speakerOn sync) */
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
