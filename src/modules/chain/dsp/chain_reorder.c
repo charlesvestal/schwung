@@ -52,6 +52,8 @@
  * chain_alloc_position_storage rather than trusting what is written here.
  */
 #define PERM_FIELD(arr) { (void *)(arr), sizeof((arr)[0]), 0 }
+_Static_assert(sizeof(chain_child_keys_t) <= CHAIN_PERM_MAX_ELEM,
+               "chain_child_keys_t permutes by value: over CHAIN_PERM_MAX_ELEM every fx:move is refused");
 #define PERM_OWNED(arr, bytes) { (void *)(arr), sizeof((arr)[0]), (bytes) }
 #define PERM_PARAMS_BYTES (MAX_CHAIN_PARAMS * sizeof(chain_param_info_t))
 
@@ -65,6 +67,7 @@ static int chain_perm_collect_fx(chain_instance_t *inst, chain_perm_array_t *out
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_on_midi);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_param_counts);
+    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_child_keys);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_smoothers);
@@ -81,6 +84,7 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->current_midi_fx_modules);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_param_counts);
+    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_child_keys);
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_midi_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_pre_capable);
@@ -145,6 +149,37 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
         inst->scene_dirty = 1;
     }
 
+    /* AND THE AUTOMATION LANES, which were the FOURTH table and were missed.
+     *
+     * A lane names its position by the same string ("fx3"), so this is exactly
+     * the failure chain_perm_retarget's own comment describes: a permutation
+     * that moves the arrays and not the routings "would silently re-aim every
+     * routing at whatever slid into the position it named". Insert a module at
+     * fx1 and a lane recorded against fx3's `mix` drove the module now sitting
+     * at fx3 — and `mix`, `level` and `feedback` are ubiquitous, so it usually
+     * FOUND a parameter to drive. The clip fingerprint cannot catch it: it
+     * checks which CLIP the lane belongs to, never which module.
+     *
+     * A lane whose module LEFT is marked `orphaned` rather than emptied.
+     * chain_perm_retarget clears the id on -1, which is right for a routing —
+     * there is nowhere to point — but a lane holds the user's recorded
+     * automation, and an empty target is one the lock map cannot show and the
+     * clear verbs cannot name. `orphaned` already means exactly what is wanted
+     * here: retained, SILENT (lane_eval refuses it), and restarted rather than
+     * resurrected by the next write, because a different module at that
+     * position is a different thing. So the target is put back and the flag
+     * set instead. */
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used) continue;
+        char keep[sizeof(ln->target)];
+        snprintf(keep, sizeof(keep), "%s", ln->target);
+        if (chain_perm_retarget(ln->target, sizeof(ln->target),
+                                prefix, max, map, count) < 0) {
+            snprintf(ln->target, sizeof(ln->target), "%s", keep);
+            ln->orphaned = 1;
+        }
+    }
 }
 
 /* Which section a request names, resolved once so the three verbs below cannot

@@ -647,7 +647,31 @@ static JSValue js_shadow_get_display_mode(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->display_mode);
 }
 
+/* shadow_get_plock_seq() -> int
+ *
+ * How many p-locks have been ACCEPTED since the shim started. The UI compares
+ * it for INEQUALITY and draws its mark on a change -- never magnitude, so the
+ * wrap at 2^32 is not a case. Straight out of the SHM: the alternative is a
+ * `lanes:plocked` param read per frame, and one round trip (~2.8 ms) costs
+ * more than redrawing the whole screen.
+ */
+static JSValue js_shadow_get_plock_seq(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewUint32(ctx, shadow_control->plock_seq);
+}
 
+/* shadow_get_lanes_driving_mask() -> int
+ *
+ * Bit per slot: a lane is driving a parameter there RIGHT NOW. Published by
+ * the shim every LANES_DRIVING_PUBLISH_FRAMES; read free from SHM, because a
+ * `lanes:driving` param read per frame is ~2.8 ms.
+ */
+static JSValue js_shadow_get_lanes_driving_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->lanes_driving_mask);
+}
 
 /* shadow_get_held_step() -> int
  *
@@ -3184,6 +3208,24 @@ static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
  * sees them -- pads arrive on cable 0, and a playing clip arrives nowhere --
  * so "is Move transmitting right now" has to come from the shim or not at all.
  */
+/* host_move_model_state() -> [ready, move_doc_gen, set_doc_gen]
+ *
+ * The live song model's view of set alignment (move_model_sync.h). ready is 0
+ * on a firmware the model cannot resolve, and then both generations are 0 --
+ * which reads as aligned, so callers keep their pre-model behaviour. */
+static JSValue js_host_move_model_state(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t ready = shadow_control ? shadow_control->move_model_ready : 0;
+    uint32_t doc = shadow_control ? shadow_control->move_doc_gen : 0;
+    uint32_t set = shadow_control ? shadow_control->set_doc_gen : 0;
+    JS_SetPropertyUint32(ctx, arr, 0, JS_NewInt32(ctx, (int32_t)ready));
+    JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt64(ctx, (int64_t)doc));
+    JS_SetPropertyUint32(ctx, arr, 2, JS_NewInt64(ctx, (int64_t)set));
+    return arr;
+}
+
 static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
@@ -3649,6 +3691,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_plock_seq", JS_NewCFunction(ctx, js_shadow_get_plock_seq, "shadow_get_plock_seq", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step", JS_NewCFunction(ctx, js_shadow_get_held_step, "shadow_get_held_step", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_scene_state", JS_NewCFunction(ctx, js_shadow_get_scene_state, "shadow_get_scene_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_scene_ab", JS_NewCFunction(ctx, js_shadow_set_scene_ab, "shadow_set_scene_ab", 2));
@@ -3659,6 +3702,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_scene_pads", JS_NewCFunction(ctx, js_host_scene_pads, "host_scene_pads", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step_is_hold", JS_NewCFunction(ctx, js_shadow_get_held_step_is_hold, "shadow_get_held_step_is_hold", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_delete_held", JS_NewCFunction(ctx, js_shadow_get_delete_held, "shadow_get_delete_held", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_lanes_driving_mask", JS_NewCFunction(ctx, js_shadow_get_lanes_driving_mask, "shadow_get_lanes_driving_mask", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_restore_knob_leds", JS_NewCFunction(ctx, js_shadow_restore_knob_leds, "shadow_restore_knob_leds", 0));
@@ -3771,6 +3815,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_move_model_state", JS_NewCFunction(ctx, js_host_move_model_state, "host_move_model_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_e16_mirror", JS_NewCFunction(ctx, js_host_e16_mirror, "host_e16_mirror", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));

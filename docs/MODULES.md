@@ -1775,7 +1775,13 @@ When that happens the gate keys of the WHOLE hierarchy are eligible, not just
 those of the level you are standing on — a level that is currently hidden must
 be able to come back. A gate declared on a child level is read for the
 instance the grid is showing (`pad3_type` for a `{ "param": "type" }` on a
-`child_prefix: "pad"` level), exactly as the condition itself is evaluated. They share the cap and the budget of a canvas page's
+`child_prefix: "pad"` level) when the gate is per-instance. **List the key
+on the level** to make it so: that is the rule the condition itself is
+evaluated by. (The gate lane also treats a key as per-instance when the
+module declares the concrete key, `pad3_type`, but the evaluator does not,
+so do not rely on that alone.) A key the level does not list is module-wide
+and read bare, like `ui_engine` above, which describes the FOCUSED pad and
+is served under that one name. They share the cap and the budget of a canvas page's
 `extra_keys`: at most four, one read per stop.
 
 **Four counts distinct gate PARAMS, not values or levels.** A drum machine

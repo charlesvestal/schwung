@@ -596,6 +596,39 @@ static void test_refusal_is_inert(void) {
     EXPECT_INT(inst->fx_count, 2, "a refused edit changed the chain length");
 }
 
+/* ======================================================================== */
+/* 5. AN FX RACK'S TEMPLATED KEYS FOLLOW THE MODULE ACROSS A MOVE           */
+/* ======================================================================== */
+/*
+ * An effect may declare a rack the way a drum synth does (a multiband:
+ * `band{index}_{key}`). Its templates and resolved aliases are per-POSITION
+ * state, so they must travel with the module -- left behind, the FX that
+ * slides into the old position would answer `band2_gain` with the rack's
+ * metadata, and the moved one would stop resolving it at all.
+ */
+static void test_fx_rack_keys_follow_move(void) {
+    seed_chain(4, 0);
+    memset(inst->fx_child_keys, 0, sizeof(inst->fx_child_keys));
+    snprintf(inst->fx_params[1][1].key, sizeof(inst->fx_params[1][1].key), "gain");
+    inst->fx_params[1][1].min_val = -24.0f;
+    inst->fx_params[1][1].max_val = 24.0f;
+    inst->fx_param_counts[1] = 2;
+    chain_child_keys_t *ck = &inst->fx_child_keys[1];
+    snprintf(ck->tmpl[0].tmpl, sizeof(ck->tmpl[0].tmpl), "band{index}_{key}");
+    ck->tmpl[0].base = 1;
+    ck->tmpl[0].count = 3;
+    ck->ntmpl = 1;
+
+    chain_param_info_t *g = find_param_by_key(inst, "fx2", "band2_gain");
+    if (!g || strcmp(g->key, "gain") != 0 || g->max_val != 24.0f) failf("fx2 band2_gain did not resolve to gain");
+    if (find_param_by_key(inst, "fx2", "band4_gain")) failf("band 4 of 3 resolved");
+
+    EXPECT_INT(chain_reorder_move(inst, 0, 1, 3), 1, "move fx2 to fx4 accepted");
+    g = find_param_by_key(inst, "fx4", "band2_gain");
+    if (!g || strcmp(g->key, "gain") != 0) failf("the rack's keys did not follow it to fx4");
+    if (find_param_by_key(inst, "fx2", "band2_gain")) failf("fx2 (now another module) still answers band2_gain");
+}
+
 int main(void) {
     inst = calloc(1, sizeof(*inst));
     if (!inst || !chain_alloc_position_storage(inst)) {
@@ -607,6 +640,7 @@ int main(void) {
     test_remove_clears_lfo();
     test_knob_mapping_follows();
     test_refusal_is_inert();
+    test_fx_rack_keys_follow_move();
 
     chain_free_position_storage(inst);
     free(inst);

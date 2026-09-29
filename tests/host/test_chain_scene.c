@@ -124,6 +124,20 @@ int main(void) {
     chain_scene_get_param(inst, "count", buf, sizeof(buf));
     CHECK(strcmp(buf, "1") == 0, "count = 1 pair: %s", buf);
 
+    /* An AUTOMATION LANE is the unlocked end: the scene holds its value where
+     * it locks one and hands back to the lane, not the knob, where it does not
+     * -- in either allocation order. */
+    chain_mod_emit_override(inst, "lane", "synth", "cutoff", 80.0f, 1);
+    frame(inst, 0, 1, 0.0f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 20), "lane + scene, x=0: the scene's lock: %f", cutoff());
+    frame(inst, 0, 1, 1.0f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 80), "lane + scene, x=1 (B unlocked): the LANE, not the knob: %f", cutoff());
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 50), "lane + scene, x=0.5: between lock and lane: %f", cutoff());
+    chain_mod_emit_override(inst, "lane", "synth", "cutoff", 0.0f, 0);
+    frame(inst, 0, 1, 0.5f, SCENE_NONE);
+    CHECK(NEAR(cutoff(), 30), "lane cleared: the knob is the unlocked end again: %f", cutoff());
+
     /* Neither end: the parameter goes back to the knob. */
     frame(inst, 2, 3, 0.5f, SCENE_NONE);
     CHECK(NEAR(cutoff(), 40), "locked in neither end: back to the knob: %f", cutoff());

@@ -34,6 +34,7 @@
 #include "metronome_announce.h"
 #include "editor_bar_announce.h"
 #include "mute_follow.h"
+#include "move_model_sync.h"
 
 /* ============================================================================
  * Internal state
@@ -324,7 +325,10 @@ static void shadow_dbus_handle_text(const char *text)
      */
     {
         mute_announce_t ma = mute_announce_classify(text);
-        if (ma != MUTE_ANNOUNCE_NONE) {
+        /* The live model reads Move's mixer itself (move_model_sync.c); this
+         * text-plus-gesture inference is the fallback for a firmware it cannot
+         * resolve. */
+        if (ma != MUTE_ANNOUNCE_NONE && !move_model_sync_active()) {
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC, &ts);
             uint64_t now_ms = (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
