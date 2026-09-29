@@ -101,11 +101,16 @@ static inline int lane_write_slot(const chain_instance_t *inst) {
 static void lane_source_id(const lane_t *ln, char *buf, int len) {
     snprintf(buf, len, "lane:%s:%s", ln->target, ln->param);
 }
+/* The widest lane id must fit the mod bus, or chain_mod refuses it and the
+ * lane never drives. sizeof counts each NUL, which pays for the ':'s. */
+_Static_assert(sizeof("lane:") + sizeof(((lane_t *)0)->target) +
+               sizeof(((lane_t *)0)->param) <= MOD_SOURCE_ID_LEN,
+               "a lane's mod source id does not fit MOD_SOURCE_ID_LEN");
 
 /* Hand the parameter back to the user's knob. chain_mod_emit_override with
  * enabled=0 drops this source and restores the base with a forced write. */
 static void lane_release_one(chain_instance_t *inst, lane_t *ln) {
-    char sid[64];
+    char sid[MOD_SOURCE_ID_LEN];
     lane_source_id(ln, sid, sizeof(sid));
     chain_mod_emit_override(inst, sid, ln->target, ln->param, 0.0f, 0);
     ln->driving = 0;
@@ -628,7 +633,7 @@ void lane_tick(chain_instance_t *inst) {
             continue;
         }
 
-        char sid[64];
+        char sid[MOD_SOURCE_ID_LEN];
         lane_source_id(ln, sid, sizeof(sid));
         chain_mod_emit_override(inst, sid, ln->target, ln->param, v, 1);
         ln->driving = 1;
@@ -2066,13 +2071,17 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
          * defect class this file keeps finding in itself. */
         int off = snprintf(buf, buf_len,
                            "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d "
-                           "disp=%d prov=%d",
+                           "disp=%d prov=%d sidref=%d",
                            inst->clip_phase_beats, inst->clip_phase_valid ? 1 : 0,
                            inst->clip_loop_start, inst->clip_loop_len,
                            inst->lane_armed ? 1 : 0,
                            lane_is_recording(inst) ? 1 : 0,
                            inst->lanes_adopt_displaced,
-                           lane_store_provisional_count(&inst->lanes));
+                           lane_store_provisional_count(&inst->lanes),
+                           /* mod-bus emits refused for an id too long to
+                            * store (chain_mod_source_id_fits) -- nonzero
+                            * means a source silently never drove. */
+                           inst->mod_source_id_refused);
         for (int i = 0; i < LANE_MAX && off > 0 && off < buf_len; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used) continue;

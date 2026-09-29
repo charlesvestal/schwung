@@ -131,6 +131,10 @@ static mod_source_contribution_t *chain_mod_find_source_contribution(mod_target_
 static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mod_target_state_t *entry,
                                                                                const char *source_id) {
     if (!entry || !source_id || !source_id[0]) return NULL;
+    /* Never truncate: a stored prefix fails every later strcmp against the
+     * full id. The emitters refuse (and count) before reaching here; this is
+     * the backstop for any caller that does not. */
+    if (strnlen(source_id, MOD_SOURCE_ID_LEN) >= MOD_SOURCE_ID_LEN) return NULL;
 
     mod_source_contribution_t *source_entry = chain_mod_find_source_contribution(entry, source_id);
     if (source_entry) return source_entry;
@@ -140,7 +144,7 @@ static mod_source_contribution_t *chain_mod_find_or_alloc_source_contribution(mo
         if (source_entry->active) continue;
         memset(source_entry, 0, sizeof(*source_entry));
         source_entry->active = 1;
-        strncpy(source_entry->source_id, source_id, sizeof(source_entry->source_id) - 1);
+        memcpy(source_entry->source_id, source_id, strlen(source_id) + 1);
         return source_entry;
     }
 
@@ -521,6 +525,20 @@ int chain_mod_get_effective_for_subkey(chain_instance_t *inst,
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 
+/* DOES THIS SOURCE ID FIT THE BUS? A refusal is COUNTED
+ * (inst->mod_source_id_refused) and the emit fails -- never a truncation.
+ * Truncating was the defect: the stored prefix never matched the full id
+ * again, so each block allocated a new source until all
+ * MAX_MOD_SOURCES_PER_TARGET were taken, the parameter froze, and the release
+ * could not find its own source, leaving the knob dead until the module was
+ * unloaded. Checked BEFORE the target entry is allocated, so a refused id
+ * leaves nothing behind. */
+static int chain_mod_source_id_fits(chain_instance_t *inst, const char *source_id) {
+    if (strnlen(source_id, MOD_SOURCE_ID_LEN) < MOD_SOURCE_ID_LEN) return 1;
+    inst->mod_source_id_refused++;
+    return 0;
+}
+
 /* Runtime modulation callback (initial stateful implementation).
  * Applies non-destructive contribution math and stores effective values. */
 int chain_mod_emit_value(void *ctx,
@@ -539,6 +557,7 @@ int chain_mod_emit_value(void *ctx,
         chain_mod_clear_source(inst, source_id);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
@@ -609,6 +628,7 @@ int chain_mod_emit_override(void *ctx,
         chain_mod_clear_source(inst, source_id);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
     if (!pinfo) {
@@ -664,6 +684,7 @@ int chain_mod_emit_morph(chain_instance_t *inst, const char *source_id,
         chain_mod_clear_source_at(inst, source_id, target, param);
         return 0;
     }
+    if (!chain_mod_source_id_fits(inst, source_id)) return -1;
 
     /* FAST PATH: already engaged. A fader sweep re-emits every locked pair on
      * every block, and the param lookup below is a scan of the component's
