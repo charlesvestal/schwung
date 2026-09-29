@@ -30,6 +30,10 @@ pc_body=$(grep -n 'scene_pc_select(shadow_control->scene_pc_channel' src/schwung
 [ -n "$pc_body" ] || fail "the shim never applies a scene Program Change"
 sed -n "${pc_body},$((pc_body + 10))p" src/schwung_shim.c | grep -q 'midi_in_swallow(sh_midi, hw_midi, j)' \
   || fail "a scene PC must be taken out of BOTH buffers"
+grep -q 'SHADOW_UI_FLAG_SNAPSHOT_TAKE : snapshot_recall_pc()' src/schwung_shim.c \
+  || fail "PC 126/127 must raise the same flags as Shift+Copy / Shift+Delete"
+grep -A3 '^static uint16_t snapshot_recall_pc(void)' src/schwung_shim.c | grep -q 'recall_pending_target >= 0) return 0' \
+  || fail "a repeated PC 127 must never CANCEL a queued recall"
 grep -q 'shadow_set_scene_pairs(flat, sceneActive)' src/shadow/shadow_ui.js || fail "the UI never mirrors its pairings to the shim"
 grep -q 'scenesAdoptPc(sceneState())' src/shadow/shadow_ui.js || fail "the UI never adopts a PC's scene"
 echo "PASS: scene bus wiring"

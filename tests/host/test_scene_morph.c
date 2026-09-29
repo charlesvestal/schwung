@@ -186,6 +186,11 @@ int main(void) {
         CHECK(!scene_pc_select(0, 0xCF, 2, pairs, &k, &a, &b), "channel 0 is OFF");
         CHECK(!scene_pc_select(1, 0xB0, 2, pairs, &k, &a, &b) && scene_pc_select(1, 0xC0, 0, pairs, &k, &a, &b) && k == 0,
               "only a Program Change, on the channel set");
+        CHECK(scene_pc_snapshot(16, 0xCF, 126) == SCENE_PC_SNAPSHOT_TAKE &&
+              scene_pc_snapshot(16, 0xCF, 127) == SCENE_PC_SNAPSHOT_RECALL, "PC 126 takes, PC 127 recalls");
+        CHECK(!scene_pc_snapshot(16, 0xC0, 127) && !scene_pc_snapshot(0, 0xCF, 127) &&
+              !scene_pc_snapshot(16, 0xCF, 4) && !scene_pc_select(16, 0xCF, 127, pairs, &k, &a, &b),
+              "... on the scene channel only, and neither is a scene");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

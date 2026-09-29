@@ -466,6 +466,21 @@ static inline int scene_pc_select(int channel, uint8_t status, uint8_t program,
     return 1;
 }
 
+/*
+ * ...and the two top programs on the same channel are the global SNAPSHOT
+ * (Shift+Copy / Shift+Delete): PC 126 takes it, PC 127 recalls it. Returns
+ * SCENE_PC_SNAPSHOT_TAKE / _RECALL, or 0 when the message is neither.
+ */
+#define SCENE_PC_SNAPSHOT_TAKE    1
+#define SCENE_PC_SNAPSHOT_RECALL  2
+static inline int scene_pc_snapshot(int channel, uint8_t status, uint8_t program) {
+    if (channel < 1 || channel > 16) return 0;
+    if (status != (uint8_t)(0xC0 | (channel - 1))) return 0;
+    if (program == 126) return SCENE_PC_SNAPSHOT_TAKE;
+    if (program == 127) return SCENE_PC_SNAPSHOT_RECALL;
+    return 0;
+}
+
 /* Fader position <-> the uint16 the control struct carries. */
 static inline float scene_xfade_from_q(uint16_t q) { return (float)q / 65535.0f; }
 static inline uint16_t scene_xfade_to_q(float x) {
