@@ -93,7 +93,8 @@ void move_model_sync_apply_pending(void)                /* SPI thread */
 
 /* ---- HOUSEKEEPING, from the shim worker every tick ----------------------- */
 #define MISALIGN_GIVEUP_MS 15000
-void move_model_sync_housekeep(void)
+void move_model_sync_housekeep(void) { move_model_sync_housekeep_at(now_ms()); }
+void move_model_sync_housekeep_at(uint64_t now)
 {
     shadow_control_t *ctl = g_ctl ? *g_ctl : NULL;
     if (!ctl) return;
@@ -107,16 +108,27 @@ void move_model_sync_housekeep(void)
      * no set dir -- then every edit of the session would be lost on reboot.
      * After 15 s with no set change pending, align to what Move has and say
      * so; that is where the pre-model behaviour would have saved anyway. */
-    /* ...and ONLY when nothing was read since the load: a read that exists
-     * is pending (the consume waits for it to settle), and forcing alignment
-     * over it would let autosave run before the UI has switched sets. */
+    /* ...and only 15 s after the LATER of the load and the last NEW read: a
+     * read that just changed may still be pending (the consume waits for it
+     * to settle), and forcing alignment over it would let autosave run before
+     * the UI has switched sets. A read unchanged for 15 s has been consumed;
+     * with SET_CHANGED clear the UI has handled it, and only its ack is
+     * missing -- one lost `set_aligned` write used to gate autosave for the
+     * whole session.
+     *
+     * NEVER key this on "last PUBLISH": the worker republishes the same read
+     * every tick while misaligned, so that clock is always "just now" and the
+     * give-up could never fire in exactly the state it exists for. */
     const uint64_t edge = atomic_load(&g_edge_ms);
+    const uint64_t read = shadow_set_pages_last_read_ms();
+    const uint64_t since = read > edge ? read : edge;
     if (live && ctl->move_doc_gen != ctl->set_doc_gen &&
         !(ctl->ui_flags & SHADOW_UI_FLAG_SET_CHANGED) &&
-        shadow_set_pages_last_publish_ms() < edge &&
-        now_ms() - edge > MISALIGN_GIVEUP_MS) {
+        now > since && now - since > MISALIGN_GIVEUP_MS) {
         ctl->set_doc_gen = ctl->move_doc_gen;
-        shadow_log("move_model: set alignment gave up after 15 s (no set read); autosave resumes");
+        shadow_log(read > edge
+            ? "move_model: set alignment gave up after 15 s (set read, no ack); autosave resumes"
+            : "move_model: set alignment gave up after 15 s (no set read); autosave resumes");
     }
 }
 

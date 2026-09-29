@@ -430,6 +430,24 @@ Not hardware-verified yet -- the History candidates are logged to
   backs off to a minute.
 - **A misalignment nothing can resolve expires after 15 s** (no SET_CHANGED
   pending): an unreadable Settings.json otherwise gated autosave all session.
+  The 15 s run from the later of the load edge and the last NEW read
+  (`shadow_set_pages_last_read_ms` -- a different name, uuid or generation),
+  never from the last PUBLISH: the worker republishes the same read every tick
+  while misaligned, so a publish clock never goes quiet, and keying on it
+  meant the give-up could not fire in the state it exists for.
+- **The `set_aligned` ack is verified and resent** (`armAlignAck` /
+  `alignAckTick`, one short write per 500 ms, at most 20) until
+  `host_move_model_state()[2]` reports it or the generations agree. One lost
+  ack -- sent once, result ignored, behind the set change's slot writes --
+  otherwise left the set unacked: the same-set path refuses it, the cleared
+  flag is never raised again, and autosave stayed off for the session.
+  `tests/host/test_set_alignment_ui.sh`, and the lost-ack case in
+  `test_set_alignment.sh` / `test_move_model_sync.c`.
+- **The scene bank follows the same two rules as slot state.** Its periodic
+  save is skipped (kept dirty) while `setAlignmentPending()`, and the outgoing
+  set's scenes are saved with the other outgoing saves at step 1 -- before the
+  pending-set migration moves that folder. Saved after it, the write went into
+  the deleted path and step 8c loaded the stale copy over the live bank.
 - **Mute/solo are applied on the SPI thread**, posted by the reader through a
   ring (`move_model_sync_apply_pending`), so the slot mix flags have one writer
   with `slot:muted` / `slot:soloed`. The mutators now only REQUEST a state save

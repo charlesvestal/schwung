@@ -4,6 +4,7 @@
  * generation and liveness stubbed. */
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "shadow_set_pages.h"
 
 static int fails;
@@ -87,6 +88,39 @@ int main(void)
     CHECK(!shadow_set_pages_consume_read("E", "E", 6, 1, 50), "a 50 ms read waits");
     CHECK(!shadow_set_pages_consume_read("E", "E", 5, 1, 1000), "a read from the old generation is dropped");
     CHECK(shadow_set_pages_consume_read("E", "E", 6, 1, 1000), "the settled read lands");
+
+    /* THE LOST ACK. G is loaded and handled, but the one `set_aligned` write
+     * never lands (the param channel is at its busiest right here). Every
+     * later read names the set the UI already switched to, so the same-set
+     * path refuses (unacked) and the cleared flag is never raised again:
+     * the shim alone cannot recover. Two things do -- the UI RETRIES the ack
+     * until the shim reports it, and the housekeep give-up keys on the last
+     * NEW read, which a republish does not advance. */
+    ctl->move_doc_gen = 7; m_gen = 7;
+    CHECK(read_set("G", 7) && raised(), "G raises SET_CHANGED");
+    uint32_t handled_g = shadow_set_pages_published_gen();
+    ui_clear();                                   /* ...and the ack is lost */
+    for (int i = 0; i < 1000; i++) read_set("G", 7);
+    CHECK(ctl->set_doc_gen != 7 && !raised(), "without the ack, re-reads leave G misaligned");
+    shadow_set_pages_ack_aligned(handled_g);      /* the UI's retry lands late */
+    CHECK(ctl->set_doc_gen == 7 && !raised(), "a late ack still aligns (%u)", ctl->set_doc_gen);
+
+    /* The worker's republish of the SAME read must not look like a new one. */
+    struct timespec pause = { 0, 5 * 1000 * 1000 };
+    shadow_set_pages_publish("H", "H");
+    uint64_t r1 = shadow_set_pages_last_read_ms();
+    CHECK(r1 != 0, "a first read is stamped");
+    nanosleep(&pause, NULL);
+    for (int i = 0; i < 50; i++) shadow_set_pages_publish("H", "H");
+    CHECK(shadow_set_pages_last_read_ms() == r1, "a republish of the same read keeps its time");
+    nanosleep(&pause, NULL);
+    shadow_set_pages_publish("I", "I");
+    CHECK(shadow_set_pages_last_read_ms() > r1, "a different read is new");
+    uint64_t r2 = shadow_set_pages_last_read_ms();
+    nanosleep(&pause, NULL);
+    m_gen = 8;
+    shadow_set_pages_publish("I", "I");
+    CHECK(shadow_set_pages_last_read_ms() > r2, "the same name under a new generation is new");
 
     /* No model: every read is consumed, generations are all 0 (pre-model). */
     m_active = 0;

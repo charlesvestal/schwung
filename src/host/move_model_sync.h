@@ -59,6 +59,8 @@ void     move_model_sync_apply_pending(void);
 /* Shim worker, every tick: publish liveness to the UI (move_model_ready) and
  * expire a set misalignment nothing can resolve. */
 void     move_model_sync_housekeep(void);
+/* The same, at a given CLOCK_MONOTONIC ms (tests/host drive the clock). */
+void     move_model_sync_housekeep_at(uint64_t now_ms);
 
 /* SPI thread: Move's master volume (the knob) as a linear gain, from the
  * model. 0 = not known (no model, or it cannot read the output mixer): the
