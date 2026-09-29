@@ -79,11 +79,11 @@ tapPad(B(4));
 eq("tap the snapshot being edited: done", state.edit, -1);
 scene.active = 3; scene.pairs[3] = [-1, -1];
 scr.toggleEdit("a");
-eq("Shift+Up on a scene with no A: pairs A4 (its own number) and edits it", [scene.pairs[3], state.edit], [[3, -1], D.halfA(3)]);
+eq("Shift+- on a scene with no A: pairs A4 (its own number) and edits it", [scene.pairs[3], state.edit], [[3, -1], D.halfA(3)]);
 scr.toggleEdit("a");
 eq("again: done", state.edit, -1);
 scr.toggleEdit("b");
-eq("Shift+Down: B4 paired and edited", [scene.pairs[3], state.edit], [[3, 3], D.halfB(3)]);
+eq("Shift++: B4 paired and edited", [scene.pairs[3], state.edit], [[3, 3], D.halfB(3)]);
 scr.toggleEdit("b");
 
 /* fader */
