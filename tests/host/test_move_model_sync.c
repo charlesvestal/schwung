@@ -3,6 +3,7 @@
  * handshake that gates autosave. The mutators are recording stubs. */
 #define _GNU_SOURCE   /* CLOCK_MONOTONIC under -std=c11 on Linux */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "move_model.h"
 #include "move_model_sync.h"
@@ -22,6 +23,9 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4])
 }
 void shadow_apply_mute(int slot, int v) { n_mute++; last_slot = slot; last_val = v; }
 void shadow_apply_solo(int slot, int v) { n_solo++; last_slot = slot; last_val = v; }
+static int n_vol, vol_slot; static float vol_val;
+void shadow_apply_volume(int slot, float v) { n_vol++; vol_slot = slot; vol_val = v; }
+volatile int shadow_metronome_on = 0;
 void shadow_poll_current_set(void) { n_poll++; }
 static move_model_tick_fn g_tick;
 void move_model_set_tick_hook(move_model_tick_fn fn) { g_tick = fn; }
@@ -272,6 +276,52 @@ int main(void)
     fake_pub_age_ms = -1;
     CHECK(!move_model_sync_active());                     /* never published */
     fake_pub_age_ms = 0;
+
+    /* ---- MIXER AND TRANSPORT FACTS from the model ------------------------ */
+    {
+        move_model_t a2 = doc(40), b2;
+        a2.master_valid = 1; a2.master_db = -70.0; a2.metronome_on = 1; a2.selected_track = 2;
+        FIRE(&a2, &h);                                     /* a new document: levels */
+        float mvl = -1;
+        CHECK(move_model_sync_master_volume(&mvl) && mvl == 0.0f);          /* the knob's bottom is SILENCE */
+        CHECK(shadow_metronome_on == 1);
+        CHECK(move_model_sync_take_selected() == 2);
+        CHECK(move_model_sync_take_selected() == -1);                     /* once */
+
+        b2 = a2; b2.master_db = -6.0;
+        FIRE(&b2, &a2);
+        CHECK(move_model_sync_master_volume(&mvl) && fabsf(mvl - 0.501187f) < 1e-4f);
+        b2.master_db = 0.0; a2 = b2; FIRE(&b2, &a2);
+        CHECK(move_model_sync_master_volume(&mvl) && fabsf(mvl - 1.0f) < 1e-6f);
+
+        /* Track volume follows EDGES (Schwung's own slot level holds between). */
+        a2 = b2; n_vol = 0;
+        b2.track[1].volume = -12.0;
+        FIRE(&b2, &a2);
+        CHECK(n_vol == 1 && vol_slot == 1 && fabsf(vol_val - 0.251189f) < 1e-4f);
+        a2 = b2; n_vol = 0;
+        FIRE(&b2, &a2);                                     /* nothing moved */
+        CHECK(n_vol == 0);
+        /* ...and a set load does not overwrite the set's saved slot levels. */
+        move_model_t c2 = doc(41); c2.track[1].volume = -30.0; n_vol = 0;
+        FIRE(&c2, &b2);
+        CHECK(n_vol == 0);
+
+        /* Metronome off, selection moved. */
+        move_model_t d2 = c2; d2.metronome_on = 0; d2.selected_track = 3;
+        FIRE(&d2, &c2);
+        CHECK(shadow_metronome_on == 0 && move_model_sync_take_selected() == 3);
+
+        /* No output mixer read: no claim, the fallback keeps it. */
+        move_model_t e2 = d2; e2.master_valid = 0;
+        FIRE(&e2, &d2);
+        CHECK(!move_model_sync_master_volume(&mvl));
+        /* A dead model claims nothing either. */
+        move_model_t f2 = d2; FIRE(&f2, &e2);
+        fake_pub_age_ms = 5000;
+        CHECK(!move_model_sync_master_volume(&mvl));
+        fake_pub_age_ms = 0;
+    }
 
     if (fails) { printf("test_move_model_sync: %d FAILED\n", fails); return 1; }
     printf("test_move_model_sync: PASS\n");
