@@ -385,7 +385,7 @@ export function createScenesScreen(io) {
              * shortcut is otherwise only in the help. In the FOOTER's 4x5 face
              * -- it is a hint, and it reads as one -- centred in the space the
              * 8-wide grid leaves (x 82..127). */
-            for (const [i, line] of ["GLOBAL", "SHIFT +/-", "EDIT A/B"].entries()) {
+            for (const [i, line] of ["GLOBAL", "SHIFT +/-:", "EDIT A/B"].entries()) {
                 const w = fontWidth4x5(line);
                 fontPrint4x5(ctx, 82 + Math.floor((46 - w) / 2), 16 + i * 8, line, 1);
             }
