@@ -51,6 +51,7 @@ retest:
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
+	$(BUILD_DIR)/test_surface_live \
 	$(BUILD_DIR)/test_move_model \
 	$(BUILD_DIR)/test_lane_edit \
 	$(BUILD_DIR)/test_undo_timeline \

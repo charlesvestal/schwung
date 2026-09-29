@@ -4283,17 +4283,11 @@ func main() {
 	// Module web UI assets (custom web_ui.html and related files).
 	mux.HandleFunc("GET /api/remote-ui/module-assets/{id}/{filepath...}", app.handleModuleWebUIAsset)
 
-	// Display server proxy (/mirror, /stream-auto and /stream-e16).
+	// Display server proxy (/stream-auto and /stream-e16).
 	displayProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
 			req.URL.Host = *displayBackend
-			if strings.HasPrefix(req.URL.Path, "/mirror") {
-				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/mirror")
-				if req.URL.Path == "" {
-					req.URL.Path = "/"
-				}
-			}
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -4301,8 +4295,11 @@ func main() {
 			http.Error(w, "Display server unavailable", http.StatusBadGateway)
 		},
 	}
-	mux.Handle("GET /mirror", displayProxy)
-	mux.Handle("GET /mirror/", displayProxy)
+	// /mirror is the manager's own page (static/mirror.html): the screen plus
+	// the control surface, over ONE display-server stream. display-server's
+	// built-in page still answers on :7681 for anything that goes there.
+	mux.HandleFunc("GET /mirror", app.handleMirror)
+	mux.HandleFunc("GET /mirror/", app.handleMirror)
 	// THE STREAMS ARE ENDLESS, so the server WriteTimeout (60 s) must not apply
 	// to them: Go enforces it on every response, and it cut each mirror feed
 	// once a minute -- the page froze until the EventSource reconnected. The
