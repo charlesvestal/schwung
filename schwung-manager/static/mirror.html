@@ -246,7 +246,8 @@ setInterval(() => {
   }
 }, 500);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && Date.now() - lastEvent > 2500) connect();
+  if (document.hidden) flushLater();   /* rAF stops now; do not strand the queue */
+  else if (Date.now() - lastEvent > 2500) connect();
 });
 window.addEventListener('online', () => connect());
 window.addEventListener('pageshow', e => { if (e.persisted) connect(); });
@@ -619,10 +620,21 @@ function pcmEvent(data) {
   audioDelay = audioDelay ? audioDelay + (want - audioDelay) * 0.1 : want;
 }
 
-/* Visual updates wait out the sound's buffer while sound is on. */
+/* Visual updates wait out the sound's buffer while sound is on.
+ *
+ * Only runLater() drains the queue, and it runs from requestAnimationFrame --
+ * which a browser PAUSES in a background tab while EventSource and the
+ * AudioContext keep going. So a hidden tab queued every screen frame and
+ * surface snapshot it received, without bound (~100 MB an hour), and ran them
+ * all in one frame on return. A hidden page has no picture to line up with
+ * the sound, so while hidden an update applies at once; and the queue is
+ * capped anyway, by applying its oldest early rather than dropping anything
+ * (a draw is cheap; an out-of-order or lost one is not). */
 const pending = [];
+const PENDING_MAX = 256;
 function later(fn) {
-  if (!audioOn || !actx || !audioPrimed) { fn(); return; }
+  if (!audioOn || !actx || !audioPrimed || document.hidden) { flushLater(); fn(); return; }
+  while (pending.length >= PENDING_MAX) pending.shift()[1]();
   /* exactly as long as the sound that arrived with it will wait: the lead of
    * the last scheduled chunk's end, plus the output latency */
   const lead = Math.max(0, nextTime - actx.currentTime) + (actx.baseLatency || 0) + (actx.outputLatency || 0);
