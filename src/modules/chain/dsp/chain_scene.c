@@ -550,8 +550,69 @@ static int chain_scene_setting_read(chain_instance_t *inst, const char *key, cha
                                        : snprintf(buf, buf_len, "%d", (int)lroundf(v));
 }
 
+/*
+ * THE KNOB GRID'S VIEW of a slot SETTING a scene (or a slot LFO) drives:
+ * `<key>:modulated`, `:effective`, `:base` -- the three reads a module param
+ * already answers through chain_mod, so the settings draw the same pointer on
+ * the knob and the same dot riding the value. Without them a send or an LFO
+ * depth under a scene sat still on screen while the sound moved.
+ * Keys: "buses:main_send<N>:<suffix>", "lfo<N>:<field>:<suffix>". -1 = not ours.
+ */
+static int chain_scene_setting_view(chain_instance_t *inst, const char *key, char *buf, int buf_len) {
+    const char *sfx = key ? strrchr(key, ':') : NULL;
+    if (!sfx) return -1;
+    const int which = !strcmp(sfx, ":modulated") ? 0 : !strcmp(sfx, ":effective") ? 1
+                    : !strcmp(sfx, ":base") ? 2 : -1;
+    if (which < 0) return -1;
+    char k[64];
+    const size_t n = (size_t)(sfx - key);
+    if (n == 0 || n >= sizeof(k)) return -1;
+    memcpy(k, key, n);
+    k[n] = '\0';
+
+    if (!strncmp(k, "buses:main_send", 15)) {
+        const int sd = !strcmp(k + 15, "1") ? 0 : !strcmp(k + 15, "2") ? 1 : -1;
+        if (sd < 0 || sd >= BUS_MIX_SENDS) return -1;
+        const int level = inst->main_send_level[sd];
+        if (which == 2) return snprintf(buf, buf_len, "%d", level);
+        int eff = level + inst->main_send_mod[sd] + inst->scene_send_mod[sd];
+        if (eff < 0) eff = 0;
+        if (eff > BUS_MIX_SEND_LEVEL_MAX) eff = BUS_MIX_SEND_LEVEL_MAX;
+        if (which == 1) return snprintf(buf, buf_len, "%d", eff);
+        /* Driven: a scene pair resolves for it now, or a slot LFO targets it. */
+        int driven = 0;
+        int si = scene_find(&inst->scenes, "slot", k + 6);
+        if (si >= 0) {
+            int a, b, ha, hb; float x, va, vb;
+            chain_scene_ends(inst, &a, &b, &x);
+            driven = scene_resolve(&inst->scenes.pairs[si], a, b, &ha, &va, &hb, &vb);
+        }
+        for (int li = 0; li < LFO_COUNT && !driven; li++) {
+            const lfo_state_t *l = &inst->lfos[li];
+            if (l->enabled && !strcmp(l->target, "buses") && !strcmp(l->param, k + 6)) driven = 1;
+        }
+        return snprintf(buf, buf_len, "%d", driven);
+    }
+    if (!strncmp(k, "lfo1:", 5) || !strncmp(k, "lfo2:", 5)) {
+        const int li = k[3] - '1';
+        const chain_setting_meta_t *m = chain_setting_meta(li ? "lfo2" : "lfo1", k + 5);
+        if (!m) return -1;
+        const int d = lfo_drive_find(inst, li, k + 5);
+        if (which == 0) return snprintf(buf, buf_len, "%d", d >= 0 ? 1 : 0);
+        const float v = (which == 2 && d >= 0) ? inst->scene_lfo_drive[d].base
+                                               : lfo_field_get(&inst->lfos[li], k + 5);
+        return m->kind == SCENE_KIND_FLOAT ? snprintf(buf, buf_len, "%.6f", v)
+                                           : snprintf(buf, buf_len, "%d", (int)lroundf(v));
+    }
+    return -1;
+}
+
 int chain_scene_get_around_state(chain_instance_t *inst, const char *key, char *buf, int buf_len,
                                  chain_get_param_fn impl) {
+    if (inst) {
+        int r = chain_scene_setting_view(inst, key, buf, buf_len);
+        if (r >= 0) return r;
+    }
     if (inst && inst->scenes.count) {
         int r = chain_scene_setting_read(inst, key, buf, buf_len);
         if (r >= 0) return r;
