@@ -393,6 +393,19 @@ Not hardware-verified yet -- the History candidates are logged to
   that slot's entries -- undoing one would splice pre-restore content in.
 - **An empty commit never touches the ring** (counted first), so it cannot
   destroy the oldest still-claimable entry.
+- **A stalled reader claims nothing.** `undo_claim` asks
+  `move_model_sync_active()` (a publish in the last 2 s), not the
+  never-cleared `g_active`: while the Song is being re-found, the last
+  published claim describes a Move history nobody is reading, so the press is
+  Move's. `tests/host/test_move_model_sync.c`.
+- **A claim Move outran is counted, not replayed.** The claim is republished
+  every model tick; if Move pushes a history step between that publish and the
+  take, the press has already been swallowed (both edges) and `ut_take_undo`
+  refuses -- neither history moves. It is logged from the model thread and
+  counted (`move_model_sync_undo_refused()`). Replaying the press to Move was
+  declined: it would add a producer on Move's MIDI_IN from the shim, and the
+  injected Undo would re-enter this claim path. Realistic trigger: a device
+  knob turn immediately followed by Undo.
 
 ### Known limits
 

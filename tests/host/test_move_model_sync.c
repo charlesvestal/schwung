@@ -250,6 +250,30 @@ int main(void)
         g_tick(&blind);
         CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
         CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* A STALLED READER CLAIMS NOTHING. The claim it last published is
+         * about a Move history it has stopped reading: Move edits made
+         * meanwhile are invisible to it, so swallowing Undo would undo the
+         * wrong thing and leave Move's own Undo undone. */
+        g_tick(&v2);
+        move_model_sync_on_lane_edit(3, 0x80000002u, 1);
+        g_tick(&v2);
+        fake_pub_age_ms = 5000;                                      /* reader stopped */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* Move gets it */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);            /* and its release */
+        fake_pub_age_ms = 0;
+
+        /* A CLAIM MOVE OUTRAN: swallowed, then refused by the timeline
+         * because Move pushed an edit between the claim and the take. It is
+         * counted (and logged) rather than vanishing. */
+        const unsigned refused0 = move_model_sync_undo_refused();
+        const int jrn0 = n_jrn;
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);          /* live again: ours */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);
+        move_model_t v3 = v2; v3.hist_undo_node = 0x30; v3.hist_undo_nbr = 3;
+        g_tick(&v3); drain_cmds();
+        CHECK(n_jrn == jrn0);
+        CHECK(move_model_sync_undo_refused() == refused0 + 1);
     }
 
     /* ---- the reader posts, the SPI thread applies ----------------------- */

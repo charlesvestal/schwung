@@ -205,6 +205,8 @@ static atomic_uint g_uq_w, g_uq_r;
 static ut_t g_ut;
 static atomic_ullong g_claim_undo, g_claim_redo;   /* (slot + 1) << 32 | jid, 0 = Move's */
 static int g_undo_latch;                            /* SPI thread only */
+static atomic_uint g_undo_refused;
+unsigned move_model_sync_undo_refused(void) { return atomic_load(&g_undo_refused); }
 
 static void push_uev(int type, int slot, uint32_t jid, int kind)   /* SPI thread */
 {
@@ -242,8 +244,26 @@ static void undo_tick(const move_model_t *now)                     /* model thre
         switch (e->type) {
         case UE_EDIT: ut_on_schwung_edit(&g_ut, e->slot, e->jid, e->kind, e->t_ms); break;
         case UE_ARM:  ut_on_arm(&g_ut, e->kind, e->t_ms); break;
-        case UE_UNDO: ut_take_undo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL); break;
-        case UE_REDO: ut_take_redo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL); break;
+        /* A REFUSED TAKE: the press was already swallowed from Move (both
+         * edges, on the SPI thread) against a claim Move has since outrun --
+         * it pushed a history step between the claim's publish and this take.
+         * Neither history moves. Replaying the press to Move is not done: it
+         * would be a new producer on Move's MIDI_IN, and the injected Undo
+         * would re-enter this claim path. Counted and logged (this thread is
+         * SCHED_OTHER) so the silence has a name. */
+        case UE_UNDO:
+        case UE_REDO: {
+            const int ok = (e->type == UE_UNDO)
+                ? ut_take_undo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL)
+                : ut_take_redo(&g_ut, e->slot, e->jid, enqueue_cmd, NULL);
+            if (!ok) {
+                atomic_fetch_add(&g_undo_refused, 1);
+                shadow_log(e->type == UE_UNDO
+                    ? "move_model: Undo swallowed for Schwung but its claim was stale; nothing undone"
+                    : "move_model: Redo swallowed for Schwung but its claim was stale; nothing redone");
+            }
+            break;
+        }
         }
         atomic_store_explicit(&g_uq_r, ++r, memory_order_release);
     }
@@ -263,6 +283,10 @@ static int undo_claim(uint8_t d2)
         /* Every press decides afresh: a latch left by a release that never
          * came here (overtake began mid-press) must not swallow this one's. */
         g_undo_latch = 0;
+        /* LIVE, not "worked once" (g_active is never cleared). A stalled
+         * reader's last claim describes a Move history it has stopped
+         * reading; the press is Move's. */
+        if (!move_model_sync_active()) return 0;
         const int redo = g_gest.shift_held;
         uint64_t c = atomic_exchange(redo ? &g_claim_redo : &g_claim_undo, 0);
         if (!c) return 0;
