@@ -510,6 +510,34 @@ static inline void shadow_pan_gains(int slot, float *gl, float *gr) {
     *gr = (p < 0.0f) ? cosf(-p * 1.57079632679f) : 1.0f;
 }
 
+/* ~5 ms one-pole at 44.1 kHz: 1 - exp(-1 / (0.005 * 44100)). Fast enough that
+ * a fader sweep tracks the hand, slow enough that a 1/127 CC step or a block
+ * boundary is not heard as a click. */
+#define SHADOW_MIX_SMOOTH 0.00452f
+
+/* Once per block, before a slot's mix loop: the level and balance to glide
+ * toward. The first block after a slot appears snaps, so nothing fades in
+ * from silence that should not. */
+static inline void shadow_mix_targets(int slot) {
+    shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+    s->mix_vol_t = shadow_effective_volume(slot);
+    shadow_pan_gains(slot, &s->mix_pan_l_t, &s->mix_pan_r_t);
+    if (!s->mix_init) {
+        s->mix_vol = s->mix_vol_t;
+        s->mix_pan_l = s->mix_pan_l_t;
+        s->mix_pan_r = s->mix_pan_r_t;
+        s->mix_init = 1;
+    }
+}
+
+/* Once per stereo frame, beside shadow_fade_advance. */
+static inline void shadow_mix_advance(int slot) {
+    shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+    s->mix_vol += (s->mix_vol_t - s->mix_vol) * SHADOW_MIX_SMOOTH;
+    s->mix_pan_l += (s->mix_pan_l_t - s->mix_pan_l) * SHADOW_MIX_SMOOTH;
+    s->mix_pan_r += (s->mix_pan_r_t - s->mix_pan_r) * SHADOW_MIX_SMOOTH;
+}
+
 /* Advance the fade envelope by one sample. Call once per stereo frame in mix loop. */
 static inline void shadow_fade_advance(int slot) {
     slot_fade_t *f = &shadow_chain_slots[slot].fade;

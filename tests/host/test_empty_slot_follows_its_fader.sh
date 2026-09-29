@@ -14,7 +14,7 @@ block=$(awk '/\} else if \(have_move_track\) \{/,/skip_la_rebuild:/' "$SRC")
 [ -n "$block" ] || { echo "FAIL: the empty-slot passthrough branch is gone; re-pin"; exit 1; }
 echo "$block" | grep -q "shadow_effective_volume(s)" \
   || { echo "FAIL: the empty-slot passthrough ignores the slot volume / mute / solo"; exit 1; }
-echo "$block" | grep -q "shadow_pan_gains(s" \
+echo "$block" | grep -qE "shadow_pan_gains\(s|shadow_mix_targets\(s\)" \
   || { echo "FAIL: the empty-slot passthrough ignores the slot pan"; exit 1; }
 if echo "$block" | grep -q "shadow_stem_store(s, move_track, 1.0f)"; then
   echo "FAIL: the empty-slot stem is still taken at unity"; exit 1; fi
