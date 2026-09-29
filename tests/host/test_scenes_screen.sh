@@ -2,10 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# src/shared/scenes_screen.mjs: a scene is an A/B PAIR. Steps pick the scene,
-# the top half of the pads is its A and the bottom half its B (tap on/off, hold
-# to edit, latched). Driven through a fake io, and drawn into the real 128x64
-# framebuffer -- PNGs in build/tests/scenes_*.png, to LOOK at.
+# src/shared/scenes_screen.mjs: 32 SNAPSHOTS on the pads (A1-16 top, B1-16
+# bottom) and 16 SCENES on the steps, each a pairing of one A and one B.
+# Driven through a fake io, and drawn into the real 128x64 framebuffer -- PNGs
+# in build/tests/scenes_*.png, to LOOK at.
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 mkdir -p build/tests
@@ -23,7 +23,7 @@ const eq = (what, got, want) => { const a = JSON.stringify(got), b = JSON.string
 /* ---- a fake device ---- */
 let t = 1000;
 const state = { edit: -1, xfade: 0, rev: 0, flash: 0 };
-const scene = { active: -1, enables: D.defaultEnables() };
+const scene = { active: -1, pairs: D.defaultPairs() };
 let bank = "", applied = [], leds = new Map(), sends = 0;
 const counts = new Array(32).fill(0); counts[D.halfB(2)] = 3; counts[D.halfA(5)] = 1;
 const io = {
@@ -31,13 +31,12 @@ const io = {
   state: () => ({ ...state }),
   scene: () => scene,
   setActive: (k) => { scene.active = k; },
-  setEnable: (k, side, on) => { scene.enables[k][side === "a" ? 0 : 1] = on; },
-  copyEnables: (s, d) => { scene.enables[d] = scene.enables[s].slice(); },
+  setPair: (k, p) => { scene.pairs[k] = [p[0], p[1]]; },
   setXfade: (x) => { state.xfade = x; },
   setEdit: (n) => { state.edit = n; },
   applyAll: (verb, val) => { applied.push(verb + " " + val); bank += verb; state.rev++; return true; },
-  snapshot: () => ({ bank }),
-  restore: (s) => { bank = s.bank; state.rev++; return true; },
+  snapshot: () => ({ bank, pairs: scene.pairs.map(p => p.slice()) }),
+  restore: (s) => { bank = s.bank; scene.pairs = s.pairs.map(p => p.slice()); state.rev++; return true; },
   lockCounts: () => counts.slice(),
   setLed: (n, c) => { leds.set(n, c); sends++; return true; },
   announce: () => {},
@@ -49,45 +48,43 @@ const step = (k) => { scr.onMidi(0x90, 16 + k, 100, false); scr.onMidi(0x80, 16 
 const pad = (note, on) => scr.onMidi(on ? 0x90 : 0x80, note, on ? 100 : 0, false);
 const tapPad = (note) => { pad(note, 1); t += 100; pad(note, 0); };
 const holdPad = (note) => { pad(note, 1); t += 501; scr.tick(); pad(note, 0); };
+const A = (i) => S.snapPad("a", i), B = (i) => S.snapPad("b", i);
 
-eq("pad map: pad k is scene k, A on top, B below",
-   [S.padHalf(92), S.padHalf(91), S.padHalf(76), S.padHalf(75), S.padHalf(20)],
-   [{ side: "a", k: 0 }, { side: "a", k: 15 }, { side: "b", k: 0 }, { side: "b", k: 15 }, null]);
-for (const side of ["a", "b"]) for (let k = 0; k < 16; k++) {
-  const h = S.padHalf(S.halfPad(side, k)); if (!h || h.side !== side || h.k !== k) fail("round trip " + side + k);
+eq("pad map: A1 top-left, A16 end of row 2, B1 row 3, B16 bottom-right",
+   [S.padSnap(92), S.padSnap(91), S.padSnap(76), S.padSnap(75), S.padSnap(20)],
+   [{ side: "a", i: 0 }, { side: "a", i: 15 }, { side: "b", i: 0 }, { side: "b", i: 15 }, null]);
+for (const side of ["a", "b"]) for (let i = 0; i < 16; i++) {
+  const r = S.padSnap(S.snapPad(side, i)); if (!r || r.side !== side || r.i !== i) fail("round trip " + side + i);
 }
-const A = (k) => S.halfPad("a", k), B = (k) => S.halfPad("b", k);
 
+/* pairing */
 step(2);
 eq("a step picks the active scene", scene.active, 2);
-tapPad(A(4));
-eq("tap another scene pad: it becomes active, nothing switched", [scene.active, scene.enables[4]], [4, [true, true]]);
-tapPad(A(4));
-eq("tap the active scene A: A off", scene.enables[4], [false, true]);
-tapPad(A(4));
-eq("tap again: A on", scene.enables[4], [true, true]);
-scene.active = 2;
+eq("scene 3 starts as A3 + B3", scene.pairs[2], [2, 2]);
+tapPad(A(8));
+eq("tap A9: scene 3 is A9 + B3", scene.pairs[2], [8, 2]);
+tapPad(A(8));
+eq("tap the lit A again: A none (the knobs)", scene.pairs[2], [-1, 2]);
+tapPad(B(4));
+eq("tap B5: just B5", scene.pairs[2], [-1, 4]);
+step(1);
+tapPad(A(0));
+eq("scene 2 can use A1 too -- snapshots are shared", [scene.pairs[1][0], scene.pairs[0][0]], [0, 0]);
 
 /* editing */
-holdPad(B(2));
-eq("hold B of the active scene: editing half 5, latched past the release", state.edit, D.halfB(2));
-tapPad(B(2));
-eq("tap the side being edited: done, and it stays on", [state.edit, scene.enables[2][1]], [-1, true]);
-scene.enables[7][0] = false;
-holdPad(A(7));
-eq("hold another scene pad: selects it, switches the side on, edits it", [scene.active, scene.enables[7][0], state.edit], [7, true, 14]);
-step(5);
-eq("picking another scene stops editing", [scene.active, state.edit], [5, -1]);
-
-/* the global shortcut */
-scr.toggleEdit("b");
-eq("Shift+Vol+Down: edit the active scene B", state.edit, D.halfB(5));
-scr.toggleEdit("b");
-eq("again: stop", state.edit, -1);
-scene.active = -1;
+holdPad(B(4));
+eq("hold B5: editing B5 (half 20), latched past the release", state.edit, D.halfB(4));
+eq("...and holding does not re-pair", scene.pairs[1], [0, 1]);
+tapPad(B(4));
+eq("tap the snapshot being edited: done", state.edit, -1);
+scene.active = 3; scene.pairs[3] = [-1, -1];
 scr.toggleEdit("a");
-eq("with no scene active: scene 1 becomes active and its A is edited", [scene.active, state.edit], [0, 0]);
+eq("Shift+Up on a scene with no A: pairs A4 (its own number) and edits it", [scene.pairs[3], state.edit], [[3, -1], D.halfA(3)]);
 scr.toggleEdit("a");
+eq("again: done", state.edit, -1);
+scr.toggleEdit("b");
+eq("Shift+Down: B4 paired and edited", [scene.pairs[3], state.edit], [[3, 3], D.halfB(3)]);
+scr.toggleEdit("b");
 
 /* fader */
 cc(14, 32); cc(14, 32);
@@ -98,34 +95,36 @@ cc(78, 64 + 64 - 16);
 eq("knob 8 is the fader too", state.xfade, 0.75);
 
 /* copy / clear / undo */
-cc(60, 127); step(5); step(9); cc(60, 0);
-eq("copy scene: both halves", applied.splice(-2), ["copy 10 18", "copy 11 19"]);
+cc(60, 127); step(2); step(9); cc(60, 0);
+eq("Copy + 2 steps copies the PAIRING", scene.pairs[9], scene.pairs[2]);
+cc(60, 127); pad(A(5), 1); pad(A(5), 0); pad(B(7), 1); pad(B(7), 0); cc(60, 0);
+eq("Copy + 2 pads copies a SNAPSHOT (A6 -> B8)", applied.pop(), "copy " + D.halfA(5) + " " + D.halfB(7));
 cc(119, 127); step(9); cc(119, 0);
-eq("delete + step clears both halves", applied.splice(-2), ["clear 18", "clear 19"]);
-scene.active = 9;
-cc(119, 127); pad(B(9), 1); pad(B(9), 0); cc(119, 0);
-eq("delete + pad clears that side only", applied.pop(), "clear 19");
-const before = bank;
-cc(56, 127); cc(56, 127);
-eq("undo twice is redo", bank, before);
+eq("Delete + step empties the pairing", scene.pairs[9], [-1, -1]);
+cc(119, 127); pad(A(5), 1); pad(A(5), 0); cc(119, 0);
+eq("Delete + pad clears the snapshot", applied.pop(), "clear " + D.halfA(5));
+cc(56, 127);
+eq("Undo brings the snapshot back", bank.endsWith("clear"), false);
+cc(56, 127);
 
 /* LEDs */
 {
-  scene.active = 2; scene.enables = D.defaultEnables(); scene.enables[2] = [true, false]; state.edit = -1;
+  scene.active = 2; scene.pairs[2] = [8, 2]; state.edit = -1;
   leds.clear(); scr.paintLeds(true);
   eq("the active scene step is white", leds.get(16 + 2), S.COLORS.stepActive);
-  eq("a scene with locks: step lit", leds.get(16 + 5), S.COLORS.stepLocked);
-  eq("the active scene A pad is bright", leds.get(A(2)), S.COLORS.a.active);
-  eq("the active scene B, switched off: dark", leds.get(B(2)), S.COLORS.b.off);
-  eq("another scene A with locks: dim", leds.get(A(5)), S.COLORS.a.locked);
-  eq("another scene with nothing: darkest", leds.get(B(7)), S.COLORS.b.empty);
+  eq("a paired scene is lit", leds.get(16 + 5), S.COLORS.stepPaired);
+  eq("an empty pairing is dark", leds.get(16 + 9), S.COLORS.stepEmpty);
+  eq("the scene A (A9) is bright", leds.get(A(8)), S.COLORS.a.inScene);
+  eq("the scene B (B3) is bright", leds.get(B(2)), S.COLORS.b.inScene);
+  eq("another A with locks: dim", leds.get(A(5)), S.COLORS.a.locked);
+  eq("an empty snapshot: darkest", leds.get(B(7)), S.COLORS.b.empty);
   const n0 = sends; scr.paintLeds(); eq("nothing changed, nothing sent", sends, n0);
-  state.edit = D.halfA(2); scr.paintLeds();
-  eq("the side being edited is white", leds.get(A(2)), 120);
+  state.edit = D.halfA(8); scr.paintLeds();
+  eq("the snapshot being edited is white", leds.get(A(8)), 120);
   eq("...and only that pad was sent", sends - n0, 1);
   state.edit = -1;
 }
-eq("badge", [S.editLabel(D.halfB(2)), S.editLabel(-1)], ["S3 B", ""]);
+eq("badge", [S.armBadgeText(D.halfB(11), 0), S.armBadgeText(D.halfA(2), 0), S.armBadgeText(-1, 0)], ["EDIT B12", "EDIT A3", ""]);
 
 /* ---- pictures ---- */
 async function render(name, st, sc) {
@@ -142,10 +141,11 @@ async function render(name, st, sc) {
   if (fb.clipped()) fail(name + ": " + fb.clipped() + " pixels drawn off the panel");
   if (fb.missingGlyphs.size) fail(name + ": missing glyphs " + [...fb.missingGlyphs].join(""));
 }
-const en2 = D.defaultEnables(); en2[2] = [false, true];
-await render("idle", { edit: -1, xfade: 0.4 }, { active: 2, enables: en2 });
-await render("editing", { edit: D.halfB(2), xfade: 0.4 }, { active: 2, enables: en2 });
-await render("none", { edit: -1, xfade: 0 }, { active: -1, enables: D.defaultEnables() });
+const p2 = D.defaultPairs(); p2[2] = [8, 2];
+await render("idle", { edit: -1, xfade: 0.4 }, { active: 2, pairs: p2 });
+await render("editing", { edit: D.halfB(2), xfade: 0.4 }, { active: 2, pairs: p2 });
+const p3 = D.defaultPairs(); p3[4] = [-1, 11];
+await render("justb", { edit: -1, xfade: 0.9 }, { active: 4, pairs: p3 });
 
 if (failures) { console.error(failures + " failure(s)"); process.exit(1); }
 console.log("PASS: scenes screen (PNGs in build/tests/scenes_*.png)");
