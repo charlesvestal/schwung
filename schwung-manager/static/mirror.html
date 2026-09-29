@@ -531,63 +531,26 @@ document.getElementById('logbtn').addEventListener('click', e => {
 
 /* ---------------- sound ----------------
  * `pcm` events carry the capture mix (audio_live_shm.h): 44.1 kHz stereo
- * int16, with `pos` the device's frame index so a gap is visible. A worklet
- * keeps a jitter buffer of JITTER_S, filling small gaps with silence and
- * trimming itself when a Wi-Fi burst overfills it. Everything VISUAL is then
- * applied that much later (later() below), so picture and sound line up --
- * they arrive together on one stream, and only the sound waits in a buffer. */
+ * int16, with `pos` the device's frame index so a gap is visible. Each chunk
+ * is scheduled as an AudioBuffer JITTER_S ahead of the context clock, back to
+ * back; a gap is left as silence, an underrun re-primes, an overfull queue
+ * jumps back to the target. Everything VISUAL is then applied that much later
+ * (later() below), so picture and sound line up -- they arrive together on one
+ * stream, and only the sound waits.
+ *
+ * Scheduled buffers, NOT an AudioWorklet: a worklet exists only in a SECURE
+ * context (HTTPS or localhost), and /mirror is plain http on move.local. The
+ * first build used one, worked in a localhost test, and on the device the
+ * button did nothing and recordings silently lost their audio track. */
 const JITTER_S = 0.15;
-const WORKLET = `
-class MirrorPcm extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.cap = 44100 * 2;
-    this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
-    this.w = 0; this.r = 0; this.count = 0; this.primed = false; this.expect = -1;
-    this.target = Math.round(${JITTER_S} * 44100);
-    this.step = 44100 / sampleRate; this.frac = 0; this.reportIn = 0;
-    this.port.onmessage = e => this.push(e.data.pos, e.data.s);
-  }
-  put(l, r) {
-    if (this.count >= this.cap) { this.r = (this.r + 1) % this.cap; this.count--; }
-    this.L[this.w] = l; this.R[this.w] = r; this.w = (this.w + 1) % this.cap; this.count++;
-  }
-  push(pos, s) {
-    const n = s.length >> 1;
-    if (this.expect >= 0 && pos !== this.expect) {
-      const gap = pos - this.expect;
-      if (gap > 0 && gap < 22050) for (let i = 0; i < gap; i++) this.put(0, 0);
-      else { this.w = this.r = this.count = 0; this.primed = false; }
-    }
-    for (let i = 0; i < n; i++) this.put(s[2 * i] / 32768, s[2 * i + 1] / 32768);
-    this.expect = pos + n;
-    const over = this.count - (this.target + 13230);        /* > 300 ms past target */
-    if (over > 0) { this.r = (this.r + over) % this.cap; this.count -= over; }
-  }
-  process(inputs, outputs) {
-    const o = outputs[0], L = o[0], R = o[1] || o[0];
-    for (let i = 0; i < L.length; i++) {
-      if (!this.primed) { if (this.count >= this.target) this.primed = true; else { L[i] = R[i] = 0; continue; } }
-      if (this.count < 2) { this.primed = false; L[i] = R[i] = 0; continue; }
-      L[i] = this.L[this.r]; R[i] = this.R[this.r];
-      this.frac += this.step;
-      while (this.frac >= 1 && this.count > 1) { this.frac -= 1; this.r = (this.r + 1) % this.cap; this.count--; }
-    }
-    if ((this.reportIn -= L.length) <= 0) {
-      this.reportIn = sampleRate / 4;
-      this.port.postMessage({ buffered: this.count / 44100, primed: this.primed });
-    }
-    return true;
-  }
-}
-registerProcessor('mirror-pcm', MirrorPcm);`;
 
 /* Sound is ALWAYS streamed and recorded; the button only says whether this
  * browser plays it, and starts muted. A browser will not start audio before a
  * user gesture, so the first click anywhere on the page (Record included)
  * starts it, and only then is the stream asked for `pcm`. */
-let audioOn = false, audioBroken = false, actx = null, pcmNode = null, listenGain = null, recDest = null;
+let audioOn = false, audioBroken = false, actx = null, bus = null, listenGain = null, recDest = null;
 let audioDelay = 0, audioPrimed = false, listening = false;
+let nextTime = 0, expectPos = -1;
 const muteBtn = document.getElementById('mute');
 
 let audioStarting = null;
@@ -606,24 +569,15 @@ function ensureAudio() {
 
 async function startAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC || !window.AudioWorkletNode) return false;
+  if (!AC) return false;
   try { actx = new AC({ sampleRate: 44100, latencyHint: 'interactive' }); } catch (_) { actx = new AC(); }
-  const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
-  await actx.audioWorklet.addModule(url);
-  URL.revokeObjectURL(url);
-  pcmNode = new AudioWorkletNode(actx, 'mirror-pcm', { outputChannelCount: [2] });
-  pcmNode.port.onmessage = e => {
-    audioPrimed = e.data.primed;
-    const want = e.data.buffered + (actx.baseLatency || 0) + (actx.outputLatency || 0);
-    audioDelay = audioDelay ? audioDelay + (want - audioDelay) * 0.2 : want;   /* smoothed */
-  };
+  bus = actx.createGain();
   listenGain = actx.createGain();
   listenGain.gain.value = listening ? 1 : 0;
-  recDest = actx.createMediaStreamDestination();
-  pcmNode.connect(listenGain).connect(actx.destination);    /* also what keeps the node pulled */
-  pcmNode.connect(recDest);
+  bus.connect(listenGain).connect(actx.destination);
+  if (actx.createMediaStreamDestination) { recDest = actx.createMediaStreamDestination(); bus.connect(recDest); }
   await actx.resume();
-  return true;
+  return actx.state === 'running';
 }
 
 muteBtn.addEventListener('click', async () => {
@@ -636,20 +590,45 @@ for (const ev of ['pointerdown', 'keydown'])
   window.addEventListener(ev, () => { ensureAudio(); }, { capture: true, passive: true });
 
 function pcmEvent(data) {
-  if (!audioOn || !pcmNode) return;
+  if (!audioOn || !actx) return;
   let p; try { p = JSON.parse(data); } catch (_) { return; }
-  const raw = atob(p.d || '');
-  const buf = new ArrayBuffer(raw.length);
-  const u = new Uint8Array(buf);
-  for (let i = 0; i < raw.length; i++) u[i] = raw.charCodeAt(i);
-  pcmNode.port.postMessage({ pos: p.pos, s: new Int16Array(buf) }, [buf]);
+  const raw = atob(p.d || ''), n = raw.length >> 2;
+  if (!n) return;
+  const rate = p.rate || 44100;
+  const now = actx.currentTime;
+  if (expectPos >= 0 && p.pos !== expectPos) {
+    const gap = p.pos - expectPos;
+    nextTime = (gap > 0 && gap < rate / 2) ? nextTime + gap / rate : 0;   /* small gap: silence */
+  }
+  expectPos = p.pos + n;
+  if (nextTime < now + 0.01) nextTime = now + JITTER_S;                 /* start, or underrun */
+  else if (nextTime > now + JITTER_S + 0.3) nextTime = now + JITTER_S;  /* a burst overfilled it */
+  const buf = actx.createBuffer(2, n, rate);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  for (let i = 0, o = 0; i < n; i++, o += 4) {
+    let l = raw.charCodeAt(o) | (raw.charCodeAt(o + 1) << 8); if (l & 0x8000) l -= 0x10000;
+    let r = raw.charCodeAt(o + 2) | (raw.charCodeAt(o + 3) << 8); if (r & 0x8000) r -= 0x10000;
+    L[i] = l / 32768; R[i] = r / 32768;
+  }
+  const src = actx.createBufferSource();
+  src.buffer = buf; src.connect(bus); src.start(nextTime);
+  nextTime += n / rate;
+  audioPrimed = true;
+  /* the picture waits as long as this chunk will: scheduled lead + output */
+  const want = (nextTime - n / rate - now) + (actx.baseLatency || 0) + (actx.outputLatency || 0);
+  audioDelay = audioDelay ? audioDelay + (want - audioDelay) * 0.1 : want;
 }
 
 /* Visual updates wait out the sound's buffer while sound is on. */
 const pending = [];
 function later(fn) {
-  if (!audioOn || !audioDelay) { fn(); return; }
-  pending.push([performance.now() + audioDelay * 1000, fn]);
+  if (!audioOn || !actx || !audioPrimed) { fn(); return; }
+  /* exactly as long as the sound that arrived with it will wait: the lead of
+   * the last scheduled chunk's end, plus the output latency */
+  const lead = Math.max(0, nextTime - actx.currentTime) + (actx.baseLatency || 0) + (actx.outputLatency || 0);
+  const at = performance.now() + lead * 1000;
+  /* never reorder: a visual cannot land before one that arrived earlier */
+  pending.push([pending.length ? Math.max(at, pending[pending.length - 1][0]) : at, fn]);
 }
 function runLater(now) {
   while (pending.length && pending[0][0] <= now) pending.shift()[1]();

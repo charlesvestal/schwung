@@ -30,4 +30,12 @@ while read -r key val; do
   fi
   if [ "$got" = "$val" ]; then echo "ok   $key = $val"; else echo "FAIL $key: header $val, page ${got:-missing}"; fails=$((fails+1)); fi
 done < "$T/want"
+# /mirror is served over plain http (move.local, 172.16.254.1), which is NOT a
+# secure context, so any API gated on one is simply absent there. The first
+# sound build used an AudioWorklet: it passed a localhost test and on the
+# device Unmute did nothing and recordings silently lost their audio track.
+for api in audioWorklet AudioWorkletNode navigator.clipboard serviceWorker crypto.subtle; do
+  if grep -q "$api" "$PAGE"; then echo "FAIL $PAGE uses $api, which plain http does not have"; fails=$((fails+1));
+  else echo "ok   no $api"; fi
+done
 [ "$fails" -eq 0 ]

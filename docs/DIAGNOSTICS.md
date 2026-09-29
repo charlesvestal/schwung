@@ -316,10 +316,17 @@ Gated by the same Mirror Display setting as the screen.
   does NO encoding: the browser's MediaRecorder makes the .mp4/.webm.
 - **Sync is a DELAY, not a timestamp match.** Picture and sound arrive
   together on one stream; only the sound then sits in a 150 ms jitter buffer.
-  So every visual update is applied that much later (`later()`), tracking the
-  worklet's reported fill plus the context's output latency. Measured by
-  recording a flash-and-burst fixture through the real page: 3-4 ms apart
-  with the delay, ~180 ms without it (the positive control).
+  So every visual update is applied exactly as late as the sound that
+  arrived with it will play (`later()`: the last scheduled chunk's lead plus
+  output latency). Measured by recording a flash-and-burst fixture through
+  the real page: 5-15 ms apart with the delay, ~180 ms without it (the
+  positive control).
+- **No secure-context APIs on this page.** `/mirror` is plain http, so an
+  AudioWorklet does not EXIST there. The first sound build used one; a
+  localhost test passed (localhost counts as secure) and on the device Unmute
+  did nothing and recordings silently lost their audio track. Sound is
+  scheduled AudioBuffers now, and `test_mirror_page_layout.sh` fails on any
+  secure-context-only API. Test pages from a LAN address, not localhost.
 
 ## Driving Move's own controls: `tools/inject/schwung_inject.c`
 
