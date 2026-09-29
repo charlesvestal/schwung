@@ -59,14 +59,6 @@ func (a *App) handleClipStateArm(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/clip-state", http.StatusSeeOther)
 }
 
-// POST /clip-state/reset — zero the phase-check tallies.
-func (a *App) handleClipStateReset(w http.ResponseWriter, r *http.Request) {
-	if f, err := os.Create("/data/UserData/schwung/clip_check_reset"); err == nil {
-		f.Close()
-	}
-	http.Redirect(w, r, "/clip-state", http.StatusSeeOther)
-}
-
 func (a *App) handleClipState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(clipStateHTML))
@@ -107,39 +99,12 @@ const clipStateHTML = `<!doctype html>
  .k.ex{background:#1a1a1a;color:#999;border:1px solid #333}
 </style></head><body>
 <h1>Clip State</h1>
-<p class="sub">What the shim has decoded from Move&rsquo;s LED stream and Song.abl. Updates ~1&nbsp;Hz.</p>
+<p class="sub">What the shim has decoded from Move&rsquo;s LED stream. Updates ~1&nbsp;Hz. (Clip geometry and phase come from Move&rsquo;s live model now; see <code>phase_model.log</code>.)</p>
 <div id="armbox"></div>
 <div id="ctx" class="ctx"></div>
 <table><thead><tr><th>Track</th><th>Clip</th><th>Loop</th><th>Phase</th><th>Position</th></tr></thead>
 <tbody id="rows"></tbody></table>
 <div class="bar" id="bar"></div>
-<h2 style="font-size:14px;margin:22px 0 6px">Phase check</h2>
-<p class="sub" style="margin:0 0 10px">Our computed phase vs Move&rsquo;s own step
- playhead &mdash; an independent measure.
- <b>Within bar</b> compares the lit step button; it is mod 16 steps, so a lane
- anchored exactly one bar out scores 100% there.
- <b>Bar level</b> compares our computed page against Move&rsquo;s announced
- &ldquo;Bar N&rdquo;, which is the only thing that catches a whole-bar error &mdash;
- it needs you to change step page at least once.</p>
-<div id="pc" class="ctx"></div>
-
-<h2 style="font-size:14px;margin:22px 0 6px">Step strip (read off Move&rsquo;s screen)</h2>
-<p class="sub" style="margin:0 0 10px">Move&rsquo;s step editor draws the clip&rsquo;s
- committed bar count and a loop-relative playhead &mdash; the two facts
- <code>Song.abl</code> is ~35&nbsp;s late with on a clip you just made. Nothing
- depends on this yet: it is here to be <b>checked</b>. On the step editor it
- should read <b>valid</b> with the bar count you can see; on any other Move
- screen it should <b>refuse</b>, and say which gate refused. A frame counter
- that never moves means frames are not arriving at all &mdash; a different
- fault from a refusal.</p>
-<div id="ss" class="ctx"></div>
-
-<h2 style="font-size:14px;margin:22px 0 6px">Grid as decoded</h2>
-<p class="sub" style="margin:0 0 10px">Rows are tracks, columns clips 1&ndash;8.
- <span class="k live">live</span> what we think is playing &middot;
- <span class="k sel">file</span> the selection Song.abl restored &middot;
- <span class="k ex">&middot;</span> a clip exists &middot; blank = empty</p>
-<div id="grid"></div>
 <script>
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 async function tick(){
@@ -203,112 +168,10 @@ async function tick(){
   /* The mode is shown because the clip gate depends on it: outside Session
      the pads are not clips, and the rejection is silent. */
   document.getElementById('ctx').innerHTML =
-    'Set <b>'+esc(d.set||'?')+'</b> \u00b7 editor bar <b>'+
-    (d.editor_bar?esc(d.editor_bar):'not announced yet')+'</b> \u00b7 Move UI mode <b>'+
+    'Move UI mode <b>'+
     esc(MODES[d.ui_mode]!==undefined?MODES[d.ui_mode]:d.ui_mode)+'</b>'+
-    (d.ui_mode===1?'':' <span class="k sel">pads are not clips in this mode</span>')+
-    ' \u00b7 Song.abl '+(d.regions_valid?'loaded':'<b>not loaded</b>');
+    (d.ui_mode===1?'':' <span class="k sel">pads are not clips in this mode</span>');
 
-  const pc=d.phase_check;
-  if(pc){
-    let h='<form method="post" action="/clip-state/reset" style="display:inline">'+
-          '<button>Reset counters</button></form> &nbsp; <b>'+pc.events+'</b> playhead events observed';
-    if(pc.events===0) h+=' &mdash; play a clip with the step editor visible';
-    h+='<table style="margin-top:8px"><tr><th>Track</th>'+
-       '<th>Within bar</th><th>Offset</th>'+
-       '<th>Bar level</th><th>Offset</th></tr>';
-    for(const t of pc.tracks){
-      const pctv = t.seen ? Math.round(100*t.hit/t.seen) : 0;
-      /* Offset is in STEPS: 4 = one beat out at 1/16. */
-      const off = t.seen ? (t.last_diff===0?'0':(t.last_diff>0?'+':'')+t.last_diff+' steps') : '\u2014';
-      const cls = !t.seen ? 'off' : (pctv>=95?'ok':(pctv>=5?'warn':'off'));
-      /* The bar column is the one that matters: the step comparison is mod
-         16 steps = mod one bar, so a lane anchored exactly a bar out scores
-         100% on the left and fails here. */
-      const bp = t.bar_seen ? Math.round(100*t.bar_hit/t.bar_seen) : 0;
-      const bcls = !t.bar_seen ? 'off' : (bp>=95?'ok':(bp>=5?'warn':'off'));
-      const boff = t.bar_seen ? (t.bar_diff===0?'0':(t.bar_diff>0?'+':'')+t.bar_diff+' bars') : '\u2014';
-      h+='<tr><td>'+t.track+'</td>'+
-         '<td>'+(t.seen?'<span class="pill '+cls+'">'+pctv+'% <small>('+t.seen+')</small></span>':'\u2014')+'</td>'+
-         '<td class="n">'+off+'</td>'+
-         '<td>'+(t.bar_seen?'<span class="pill '+bcls+'">'+bp+'% <small>('+t.bar_seen+')</small></span>':'\u2014')+'</td>'+
-         '<td class="n">'+boff+'</td></tr>';
-    }
-    document.getElementById('pc').innerHTML=h+'</table>';
-  }
-  const ss=d.step_strip;
-  if(ss){
-    /* Named for the enum in step_strip.h -- a bare number would make the one
-       interesting case ("we saw a strip and did not believe it") unreadable. */
-    const REJ={0:'ok',1:'no strip on the row',2:'not full width',
-               3:'a hole no bar boundary explains',4:'too many bars',
-               5:'segments not uniform',6:'no displayed-bar thickening (with 2+ bars)'};
-    const EV=['none','stub only','interruption only','stub + interruption'];
-    let h;
-    if(!ss.seq) h='<span class="pill off">no frame decoded yet</span> '+
-      '&mdash; Move&rsquo;s frames are not reaching the accumulator';
-    else if(ss.valid) h='<span class="pill ok">valid</span> '+
-      '<b>'+ss.segments+'</b> bar'+(ss.segments===1?'':'s')+
-      ' &middot; displayed bar <b>'+(ss.bold_segment||'\u2014')+'</b>'+
-      ' &middot; track <b>'+(ss.track>0?('T'+ss.track):'none selected')+'</b>'+
-      ' &middot; playhead '+(ss.playhead_col>=0
-          ? 'x='+ss.playhead_col+' ('+(100*ss.phase_frac).toFixed(1)+'% of the loop, '+
-            esc(EV[ss.evidence]||ss.evidence)+')'
-          : '<span class="pill warn">not located</span>');
-    else h='<span class="pill warn">refused</span> '+esc(REJ[ss.reject]||ss.reject)+
-      ' <small>(gate '+ss.reject+')</small>';
-    if(ss.valid && ss.strip_quarters>0){
-      /* The bar count AS A LENGTH, beside the file's own number. With the clip
-         present the file's length must fall INSIDE the range. A segment is a
-         BAR (Move's manual), and the count is rounded up, so the strip answers
-         to bar resolution and never better. An 11/8 set is what told bars
-         apart from 16-step pages: 16 quarters is 2.91 bars but exactly 4
-         pages, and the strip drew 3. */
-      /* A RANGE, not a number: the segment count is bars ROUNDED UP, so the
-         file's length only has to fall inside it. Comparing against the upper
-         end alone would call every fractional loop a disagreement. */
-      /* INCLUSIVE at the lower end: Move can draw one bar more than the loop
-         holds (the next bar it offers you), measured by lengthening a loop --
-         16.5 quarters, exactly 3 bars of 11/8, drew four segments. */
-      const agree = ss.file_quarters>0
-        ? ((ss.file_quarters>=ss.strip_quarters_min-0.001 &&
-            ss.file_quarters<=ss.strip_quarters+0.001)
-            ? '<span class="pill ok">the file falls in that range</span>'
-            : '<span class="pill off">the file says '+
-              (+ss.file_quarters).toFixed(2)+', OUTSIDE it</span>')
-        : '<span class="pill warn">clip not in the file yet</span>';
-      h+='<div style="margin-top:6px">'+ss.segments+' bar'+(ss.segments===1?'':'s')+
-         ' &times; '+(+ss.quarters_per_bar).toFixed(2)+' quarters/bar = <b>'+
-         (+ss.strip_quarters_min).toFixed(2)+'&ndash;'+
-         (+ss.strip_quarters).toFixed(2)+'</b> quarters &nbsp; '+agree+
-         ' &nbsp; <small>signature '+esc(ss.sig||'?')+', grid '+
-         esc(ss.grid||'?')+(ss.single_thin?', one bar (thin line, ambiguous)':'')+
-         '</small></div>';
-    }
-    h+='<div class="sub" style="margin-top:6px">frame '+ss.seq+
-       ' &middot; cached bar counts per track: '+
-       ss.segments_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
-       '</div>';
-    document.getElementById('ss').innerHTML=h;
-  }
-  if(d.grid){
-    let h='<table class="g"><tr><th></th>';
-    for(let s=1;s<=8;s++) h+='<th>'+s+'</th>';
-    h+='</tr>';
-    for(let t=1;t<=4;t++){
-      h+='<tr><th>T'+t+'</th>';
-      for(let s=1;s<=8;s++){
-        const c=d.grid.find(g=>g.t===t&&g.s===s)||{};
-        let cls='', txt='';
-        if(c.live){ cls='live'; txt='\u25cf'; }
-        else if(c.file_sel){ cls='sel'; txt='\u25cb'; }
-        else if(c.exists){ cls='ex'; txt='\u00b7'; }
-        h+='<td class="'+cls+'" title="'+(c.len?('loop '+c.len+' beats'):'')+'">'+txt+'</td>';
-      }
-      h+='</tr>';
-    }
-    document.getElementById('grid').innerHTML=h+'</table>';
-  }
 }
 tick(); setInterval(tick,1000);
 </script></body></html>`

@@ -58,8 +58,6 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_undo_timeline \
 	$(BUILD_DIR)/test_edit_follow \
 	$(BUILD_DIR)/test_move_model_sync \
-	$(BUILD_DIR)/test_editor_bar_announce \
-	$(BUILD_DIR)/test_clip_regions \
 	$(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
@@ -313,9 +311,6 @@ $(BUILD_DIR)/test_lane_edit: test_lane_edit.c ../../src/host/lane_edit.c ../../s
 $(BUILD_DIR)/test_edit_follow: test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c -lm
 
-$(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
-
 # shadow_slot_clip_phase — slot -> track -> clip phase (Task 2 of automation
 # lanes). Includes shadow_chain_mgmt.c rather than linking it, the way
 # test_master_fx_permute.c does: the file is 5000 lines with file-static state
@@ -326,8 +321,8 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # lane_trace.c is LINKED, not stubbed: it owns the ring
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
-$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c | $(BUILD_DIR)
-	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c -lm
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
@@ -355,6 +350,3 @@ $(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/ho
 $(BUILD_DIR)/test_rec_arm: test_rec_arm.c ../../src/host/rec_arm.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rec_arm.c
 
-# Header-only; the .c is the whole test.
-$(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_editor_bar_announce.c

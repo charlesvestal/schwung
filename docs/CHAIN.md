@@ -1347,6 +1347,10 @@ another set. There is no second serializer.
 
 #### Move's own screen carries the length, and we read it rather than model it
 
+> **RETIRED.** `step_strip.c` is deleted, with the `clip_state.json` / `/clip-state`
+> strip readout; clip length and page come from Move's live model
+> (`docs/MOVE_MODEL.md`). Kept as the record of what was measured.
+
 Make a clip in Move's step editor, press Play, try to record automation:
 refused. `T1 -`, `loop_len 0.00`, `has_phase false`. The clip is not in
 `Song.abl` yet — Move saves about **35 s** after an edit — so there is no

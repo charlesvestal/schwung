@@ -178,7 +178,14 @@ one silently loaded an old one's leftovers.
 
 `shadow_slot_clip_phase()` and `shadow_lanes_step_phase()`
 (`shadow_chain_mgmt.c`) answer from the model; the ~365-line LED / step-strip /
-Song.abl resolver they replaced is gone. The chain seam
+Song.abl resolver they replaced is gone. So are the inference paths that went
+on running beside it -- the worker's background Song.abl re-parse
+(`clip_regions`) and its deleted/copied/new-row channels, the "Bar N"
+screen-reader capture, the OLED step-strip decoder (it ran on the SPI
+callback), the `lanes:new_row` / `edit_unconfirmed` / `edit_len` / `double`
+pushes and the phase-check scoring that measured them: retired, the model
+answers this. The chain still parses `lanes:new_row` and holds pending rows
+(saved lane files can contain them); nothing sends it one. The chain seam
 (`chain_set_clip_phase`) is unchanged.
 
 - **Clip** = the track's `PlayingState` clip; **loop** from its region;
@@ -192,7 +199,7 @@ Song.abl resolver they replaced is gone. The chain seam
 - **A held step** is `scroll + step × step_beats` (triplets skip the dead
   fourth button); refused past the clip's end, pending with no current clip.
 - **Deletions and copies** come from diffing the model (`move_model_sync.c` →
-  the worker's clip-event channels): a deleted clip ORPHANS its lanes at once
+  `edit_follow.c`'s lane commands, applied on the callback): a deleted clip ORPHANS its lanes at once
   (it waited for Move's save before — long enough for a clip made in the same
   slot to inherit them); a clip that arrives with the same notes and geometry
   as one on its track is a COPY, and its lanes are copied.

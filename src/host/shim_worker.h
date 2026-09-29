@@ -57,7 +57,6 @@
 #define SHIM_FLAG_LANES_OFF      (1u << 11) /* lanes_off -- the kill switch */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
-#include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
 
 extern volatile uint32_t shim_debug_flags;
 
@@ -113,17 +112,6 @@ extern volatile int shim_step_tap_emitted;   /* packets actually written */
 extern volatile int shim_step_tap_noroom;    /* MIDI_IN full, deferred */
 extern volatile int shim_step_hold_ms_last;  /* the last release's held time */
 extern char shim_step_plock_key[64];         /* the key that last spent a press */
-
-/* The blind-window anchor's decision — see shadow_slot_clip_phase. */
-extern volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
-extern volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
-/* Why a clip row came back unknown -- see shadow_chain_mgmt.c. Diagnostic
- * only; drained by row_unknown_tick(). */
-extern volatile int g_row_unknown_clips, g_row_unknown_strip, g_row_unknown_seen;
-/* Whether a WRITE may use the row shadow_slot_clip_phase answered, per slot,
- * and the edited clip'''s length when it may not. See shadow_chain_mgmt.c. */
-extern volatile int g_write_unconfirmed[];
-extern volatile int g_write_edit_len_x100[];
 
 /* Has the press on `step` been down long enough to be a HOLD rather than a
  * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so
@@ -226,15 +214,5 @@ void perf_shm_attach_tick(void);
 
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
-
-/* The live clip geometry parsed from Song.abl, or NULL before the first parse.
- * Exposed rather than re-parsed: a second copy of a >1 MB parse on a different
- * schedule is two answers to one question, and a reader needs the very table
- * the worker seeded clip_state from. Check ->valid.
- *
- * Worker writes, SPI callback reads. The worker overwrites the struct in
- * place, so a torn read is possible; nothing here gates audio, and a lane that
- * reads a half-written loop length loses one block of phase. */
-const clip_regions_t *shadow_clip_regions(void);
 
 #endif /* SHIM_WORKER_H */
