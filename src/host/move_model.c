@@ -248,6 +248,38 @@ double mm_clip_position(const mm_clip_t *c, double start_beats, double song_beat
     return pos;
 }
 
+/* Byte offset of the first difference the last failed tear check saw: a pair
+ * that NEVER agrees stalls the model, and the offset names the field. */
+static long g_torn_off = -1;
+
+int mm_pair_consistent(const move_model_t *a, const move_model_t *b)
+{
+    /* TEAR detection: did the document change SHAPE between two back-to-back
+     * reads? Continuously-valued scalars are not shape. Each is one aligned
+     * 8-byte read, so it cannot itself tear, and one that keeps moving --
+     * tempo under a Link session or mid-change, a level mid-turn -- made
+     * EVERY pair disagree: the reader never published again, the model read
+     * as stale, and mute/solo/volume follow, lanes and Undo all stood down
+     * for the rest of the session (found on hardware, torn at +40 = tempo). */
+    move_model_t x = *a, y = *b;
+    x.song_beats = y.song_beats = 0;
+    x.playing = y.playing = 0;
+    x.doc_gen = y.doc_gen = 0;
+    x.tempo = y.tempo = 0;
+    x.master_db = y.master_db = 0;
+    for (int t = 0; t < MM_TRACKS; t++) {
+        x.track[t].volume = y.track[t].volume = 0;
+        x.track[t].pan = y.track[t].pan = 0;
+        x.track[t].speaker_value = y.track[t].speaker_value = 0;
+        x.track[t].solo_value = y.track[t].solo_value = 0;
+    }
+    if (memcmp(&x, &y, sizeof x) == 0) return 1;
+    const uint8_t *px = (const uint8_t *)&x, *py = (const uint8_t *)&y;
+    for (size_t i = 0; i < sizeof x; i++)
+        if (px[i] != py[i]) { g_torn_off = (long)i; break; }
+    return 0;
+}
+
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)   /* the runtime half; tests/host builds only the pure half (-DMOVE_MODEL_PURE_ONLY) */
 /* ====================================================================== */
 /* Runtime: memory access                                                 */
@@ -1141,6 +1173,8 @@ static void publish(const move_model_t *m)
 }
 
 /* Structure equality: everything but the clock, which moves every read. */
+/* CHANGE detection: everything but the transport clock. A difference here is
+ * news for the listener (mute, solo and volume follow ride on it). */
 static int same_shape(const move_model_t *a, const move_model_t *b)
 {
     move_model_t x = *a, y = *b;
@@ -1255,20 +1289,26 @@ static void *reader_main(void *arg)
     uint32_t doc_gen = 0;
     unsigned tick = 0;
     double t0 = now_s(), last_json = 0, cpu_t = now_s(), cpu_c = thread_cpu_s(), cpu_pct = 0;
+    unsigned last_pub_tick = 0;
     for (;; tick++) {
         usleep(20 * 1000);
+        /* A reader that stops publishing turns the whole model off without a
+         * word (every consumer reads it as stale and stands down). Say so once
+         * per stall, armed or not: the status file is the always-on channel. */
+        if (tick - last_pub_tick == 250)
+            status("stalled: no publish for ~5 s, torn=%d refind=%d torn_off=%ld", torn, refinds, g_torn_off);
         if (tick % 50 == 0) diag = (access(DIAG_FLAG, F_OK) == 0);
         if (tick % 250 == 0 && tick) {            /* the reader's own cost, every ~5 s */
             double tn = now_s(), cn = thread_cpu_s();
             cpu_pct = 100.0 * (cn - cpu_c) / (tn - cpu_t);
             cpu_t = tn; cpu_c = cn;
-            if (diag) status("cpu %.2f%% of a core, walks=%d torn=%d plan=%d spans=%d", cpu_pct, walks, torn, g_nplan, g_nspan);
+            if (diag) status("cpu %.2f%% of a core, walks=%d torn=%d plan=%d spans=%d torn_off=%ld", cpu_pct, walks, torn, g_nplan, g_nspan, g_torn_off);
         }
         int ok = 0;
         if (have_plan && tick % 500 != 0) {       /* a full walk every ~10 s regardless */
             int r1 = plan_replay(&skel, &a);
             int r2 = r1 ? r1 : plan_replay(&skel, &b);
-            if (r1 == 0 && r2 == 0 && same_shape(&a, &b)) ok = 1;
+            if (r1 == 0 && r2 == 0 && mm_pair_consistent(&a, &b)) ok = 1;
             else if (r1 == 0 && r2 == 0) { torn++; continue; }
             else have_plan = 0;                    /* the shape moved: walk now */
         }
@@ -1293,7 +1333,7 @@ static void *reader_main(void *arg)
                 else refind_wait = 2;
                 continue;
             }
-            if (ra || snapshot(&b) || !same_shape(&a, &b)) { torn++; have_plan = 0; continue; }
+            if (ra || snapshot(&b) || !mm_pair_consistent(&a, &b)) { torn++; have_plan = 0; continue; }
             walks++;
             skel = a;
             have_plan = !g_plan_overflow && plan_compile() == 0;
@@ -1313,6 +1353,7 @@ static void *reader_main(void *arg)
         edited_clip_update(&b);
         int changed = !same_shape(&b, &prev) || prev.valid != b.valid || prev.playing != b.playing;
         publish(&b);
+        last_pub_tick = tick;
         if (changed && g_listener) g_listener(&b, &prev);
         if (g_tick_hook) g_tick_hook(&b);
         if (changed) atomic_fetch_add(&g_changes, 1);

@@ -324,8 +324,33 @@ static void test_notes_lanes(void)
     CHECK(mm_decode_notes_buf(buf, 0, nt, 64, pool, 256) == 0);   /* an empty clip is not unknown */
 }
 
+/* The reader's tear check must not treat a moving scalar as a torn read:
+ * tempo moving under Link made every pair disagree and the model never
+ * published again (hardware, 2026-09-29). Structure must still tear. */
+static void test_pair_consistent(void)
+{
+    static move_model_t a, b;
+    memset(&a, 0, sizeof a);
+    a.valid = 1; a.tempo = 120.0; a.master_db = -6.0;
+    a.track[0].volume = -2.0; a.track[0].pan = 0.1;
+    a.track[0].slot[0].exists = 1; a.track[0].slot[0].clip_id = 42;
+    b = a;
+    CHECK(mm_pair_consistent(&a, &b) == 1);
+    b.tempo = 120.0000001; b.song_beats = 3.5; b.master_db = -6.5;
+    b.track[0].volume = -2.1; b.track[0].pan = 0.2;
+    b.track[0].speaker_value = 0.5; b.track[0].solo_value = 0.5;
+    CHECK(mm_pair_consistent(&a, &b) == 1);      /* values moved, shape did not */
+    b.track[0].slot[0].clip_id = 43;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* a different clip IS a tear */
+    b = a; b.track[0].muted = 1;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* derived flags stay compared */
+    b = a; b.doc_id = 7;
+    CHECK(mm_pair_consistent(&a, &b) == 0);      /* a set load mid-read is a tear */
+}
+
 int main(void)
 {
+    test_pair_consistent();
     test_notes_lanes();
     test_history();
     test_resolution();
