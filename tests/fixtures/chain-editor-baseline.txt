@@ -210,8 +210,8 @@ send/b/len2/sel-fx1 8671d317947e6f7f07510b24328b34fe3fca331d
 send/b/len2/sel-settings 23d13b687d448ce3bbfe4df594bc58126fd423ca
 settings/master/actions 99766709ce326a9341f1aa4126d782a9086a32a1
 settings/master/actions-nopreset 06fb4f813100c2454ddc16f6ba99cf6e123d4db2
-settings/master/lfo1-free 1ca97f188d7cb3d0bb2fc2007ea2bdfd258752b3
-settings/master/lfo2-sync a75c29f62e026915f937c4c52c4f87146c993f7c
+settings/master/lfo1-free 6ca793b3e3d4261f0f8aafb5161d54f64259ca45
+settings/master/lfo2-sync a5746007abd88714dc1c5f33763940add003d177
 settings/master/main-all 6cc38ca3d20a1723c17f6b97baac6dbd35f6e108
 settings/master/main-ch10 2e346d05805d5d0c5783b6529722a3dec124cc01
 settings/send1/sel-return f0047eb3ae8c654f7b550c9c20eeecc06bf8ab31
