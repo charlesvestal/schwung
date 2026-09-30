@@ -873,7 +873,7 @@ static JSValue js_host_scene_surface(JSContext *ctx, JSValueConst this_val, int 
     return JS_TRUE;
 }
 
-/* shadow_get_step_menu() -> null | { seq, field, step, cond, vel, lenC, page[16] }
+/* shadow_get_step_menu() -> null | { seq, field, step, cond, vel, lenC, flags, track, page[16] }
  *
  * The step menu (hold one step, press Menu) -- the SHIM owns the gesture and
  * fills shadow_control_t.step_menu_* (src/host/step_menu.c); this only reads.
@@ -890,6 +890,8 @@ static JSValue js_shadow_get_step_menu(JSContext *ctx, JSValueConst this_val, in
     JS_SetPropertyStr(ctx, o, "cond", JS_NewInt32(ctx, shadow_control->step_menu_cond));
     JS_SetPropertyStr(ctx, o, "vel", JS_NewInt32(ctx, shadow_control->step_menu_vel));
     JS_SetPropertyStr(ctx, o, "lenC", JS_NewInt32(ctx, shadow_control->step_menu_len_c));
+    JS_SetPropertyStr(ctx, o, "flags", JS_NewInt32(ctx, shadow_control->step_menu_flags));
+    JS_SetPropertyStr(ctx, o, "track", JS_NewInt32(ctx, shadow_control->step_menu_track));
     JSValue pg = JS_NewArray(ctx);
     for (int i = 0; i < 16; i++)
         JS_SetPropertyUint32(ctx, pg, (uint32_t)i, JS_NewInt32(ctx, shadow_control->step_menu_page[i]));

@@ -48,6 +48,9 @@ int main(void) {
     CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 1, "1:2 on pass 2 plays");
     note(in, 0, 36, MOVE_MIDI_SOURCE_EXTERNAL);
 
+    chance_param_get(in, "stats", buf, sizeof buf);
+    CHECK(strcmp(buf, "3 1") == 0, "chance:stats counts matched and dropped");
+
     /* only Move's notes roll */
     chain_set_clip_pass(in, 1);
     CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_HOST) == 1, "host-generated MIDI is never rolled");

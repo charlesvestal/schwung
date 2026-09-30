@@ -32,6 +32,8 @@ typedef struct {
     double   last_start;
     int      last_play;
     uint32_t rng;               /* xorshift32; 0 = unseeded */
+    uint32_t matched;           /* note-ons that carried a condition */
+    uint32_t dropped_n;         /* ...and of those, how many lost */
 } sc_gate_t;
 
 static inline uint32_t sc_gate_rand(sc_gate_t *g)
@@ -69,6 +71,7 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
     const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &start);
     if (cond == SC_ALWAYS) return 1;
 
+    g->matched++;
     int play;
     if (g->last_valid && g->last_row == row && g->last_pass == pass &&
         g->last_start == start) {
@@ -78,7 +81,7 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
         g->last_valid = 1; g->last_row = row; g->last_pass = pass;
         g->last_start = start; g->last_play = play;
     }
-    if (!play) g->dropped[ch][note >> 3] |= bit;
+    if (!play) { g->dropped[ch][note >> 3] |= bit; g->dropped_n++; }
     return play;
 }
 

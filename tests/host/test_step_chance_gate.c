@@ -62,6 +62,9 @@ int main(void) {
         played += a;
     }
     assert(split == 0);
+    /* the counters: 1200 matched note-ons, and dropped = 3 x the passes lost */
+    assert(g.matched == 1200);
+    assert(g.dropped_n == (uint32_t)(1200 - 3 * played));
     /* and it really is ~50%, not stuck on one answer */
     assert(played > 150 && played < 250);
 

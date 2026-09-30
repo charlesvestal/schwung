@@ -138,6 +138,17 @@ static void *slot_instance(int track)
     return shadow_chain_slots[track].instance;
 }
 
+/* Does the track's slot hold a Schwung SYNTH? A chain with no sound
+ * generator is a Move-only track as far as chance is concerned. */
+static int slot_has_synth(int track)
+{
+    void *inst = slot_instance(track);
+    if (!inst || !shadow_plugin_v2->get_param) return 0;
+    char buf[64];
+    const int n = shadow_plugin_v2->get_param(inst, "synth_module", buf, sizeof buf);
+    return n > 0 && buf[0] != 0;
+}
+
 /* The notes the menu is about on `button`: nearest-step, then scoped to the
  * selected drum voice. */
 static int button_notes(const sm_page_t *pg, int button, int *idx, int max, int voice)
@@ -164,7 +175,7 @@ static void apply_chance(int dir)
 {
     if (!dir || !page_read(&g_pg) || !g_pg.valid) return;
     void *inst = slot_instance(g_pg.track);
-    if (!inst || !shadow_plugin_v2->set_param) return;
+    if (!inst || !shadow_plugin_v2->set_param || !slot_has_synth(g_pg.track)) return;
     int idx[16];
     const int k = button_notes(&g_pg, g_sm.step, idx, 16, selected_voice_pitch());
     if (k <= 0) return;
@@ -260,6 +271,8 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
 
     ctl->step_menu_field = g_sm.field;
     ctl->step_menu_step = g_sm.step;
+    ctl->step_menu_track = (uint8_t)(g_pg.valid ? g_pg.track : 0);
+    ctl->step_menu_flags = (g_pg.valid && !slot_has_synth(g_pg.track)) ? SM_FLAG_NO_SYNTH : 0;
     ctl->step_menu_cond = SM_CELL_EMPTY;
     ctl->step_menu_vel = 0;
     ctl->step_menu_len_c = 0;

@@ -1503,6 +1503,11 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   to that voice when it is on the step, else to every note on the step.
 - **Persistence**: `chance_<i>.txt` in the set's state dir, the same rev skip,
   three-answer rule and restore readback as `lanes_<i>.json`.
+- **A track with no Schwung synth says "Move only"** on the Chance field
+  (`SM_FLAG_NO_SYNTH`), and the jog does nothing there -- a value that cannot
+  move reads as broken. `chance:stats` ("matched dropped") is how chance is
+  verified on a device nobody can hear, and tells "does nothing" from a
+  routing problem (Move track MIDI Out Off: nothing ever matches).
 - **Unknown is never "drop"**: stopped transport, no clip, no row, unknown pass
   -- all play the note.
 

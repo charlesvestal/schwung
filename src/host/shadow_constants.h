@@ -841,10 +841,16 @@ typedef struct shadow_control_t {
     volatile uint8_t step_menu_vel;             /* held note's velocity, 0..127 */
     volatile uint16_t step_menu_len_c;          /* held note's length, hundredths of a step */
     volatile uint8_t step_menu_page[16];
+    volatile uint8_t step_menu_flags;           /* SM_FLAG_* */
+    volatile uint8_t step_menu_track;           /* 0..3, the track the page is on */
 } shadow_control_t;
 
 #define SM_CELL_EMPTY 255
 #define SM_CELL_OFF   254
+/* The track's slot holds no Schwung synth: Chance has nothing to act on (it
+ * gates notes into Schwung's instrument, never Move's), so the card says so
+ * instead of taking a jog that silently does nothing. */
+#define SM_FLAG_NO_SYNTH 0x01
 
 
 /* Values for shadow_control_t.speaker_eq_mode. */

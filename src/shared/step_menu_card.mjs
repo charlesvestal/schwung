@@ -31,6 +31,16 @@ import {
 export const SM_CELL_EMPTY = 255;
 export const SM_CELL_OFF = 254;
 export const SM_FIELD_NAMES = ["Chance", "Length", "Velocity"];
+/* The track's slot has no Schwung synth (SM_FLAG_NO_SYNTH). */
+export const SM_FLAG_NO_SYNTH = 0x01;
+
+/* Chance on a track with no Schwung synth does nothing -- it gates notes into
+ * Schwung's instrument, never Move's -- so the card SAYS so rather than
+ * showing a value the jog cannot move. Length and Velocity are Move's and
+ * work either way. */
+export function chanceUnavailable(state) {
+    return state.field === 0 && !!(state.flags & SM_FLAG_NO_SYNTH);
+}
 
 /* Mirrors src/host/step_chance.h -- test_step_menu_card.sh pins the two. */
 const PERCENT_LADDER = [99, 98, 96, 94, 91, 87, 81, 75, 67, 59, 50, 41, 33, 25, 19, 13, 9, 6, 4, 3, 1];
@@ -59,6 +69,7 @@ export function condName(idx) {
 
 /** The focused field's value, as Move would print it. */
 export function fieldValue(state) {
+    if (chanceUnavailable(state)) return "Move only";
     if (state.cond === SM_CELL_EMPTY) return "No note";
     if (state.field === 1) return (state.lenC / 100).toFixed(2).replace(/0$/, "");
     if (state.field === 2) return String(state.vel);
@@ -97,6 +108,15 @@ export function drawStepMenuCard(ctx, state) {
     c.print(cx + Math.floor((cw - vw) / 2), cy, val, 1);
     cy += LINE_H;
 
+    if (chanceUnavailable(state)) {
+        const msg = "Slot " + ((state.track || 0) + 1) + " has no synth";
+        const mw = c.textWidth(msg);
+        c.print(cx + Math.floor((cw - mw) / 2), cy + 3, msg, 1);
+        const gx0 = Math.max(0, x - GUTTER), gy0 = Math.max(0, y - GUTTER);
+        return { ...r, blit: { x: gx0, y: gy0,
+            w: Math.min(SCREEN_WIDTH - gx0, w + (x - gx0) + GUTTER),
+            h: Math.min(SCREEN_HEIGHT - gy0, h + (y - gy0) + GUTTER) } };
+    }
     const rowW = 16 * BAR_PITCH - 1;
     const bx0 = cx + Math.floor((cw - rowW) / 2);
     const base = cy + BAR_H - 1;

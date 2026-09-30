@@ -98,6 +98,12 @@ int chance_param_get(chain_instance_t *inst, const char *sub, char *buf, int buf
     if (!inst || !sub || !buf || buf_len <= 0) return -1;
     if (strcmp(sub, "rev") == 0)
         return snprintf(buf, buf_len, "%u", (unsigned)inst->chance.rev);
+    /* "matched dropped": note-ons that carried a condition, and how many of
+     * them lost -- how chance is VERIFIED on a device nobody can hear, and
+     * how a "chance does nothing" report is told from a routing problem. */
+    if (strcmp(sub, "stats") == 0)
+        return snprintf(buf, buf_len, "%u %u", (unsigned)inst->chance_gate.matched,
+                        (unsigned)inst->chance_gate.dropped_n);
     if (strcmp(sub, "count") == 0)
         return snprintf(buf, buf_len, "%d", sc_store_count(&inst->chance));
     if (strcmp(sub, "state") == 0) {

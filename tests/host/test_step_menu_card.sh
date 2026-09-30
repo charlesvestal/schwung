@@ -58,6 +58,16 @@ if (o4 !== 0) fail('an OFF cell drew something');
 /* held-step marker under bar 2 */
 if (!px(col0 + 2 * pitch + 2, bot0 + 2)) fail('no marker under the held step');
 if (px(col0 + 1 * pitch + 2, bot0 + 2)) fail('marker under the wrong step');
+/* Move-only: Chance says so, and draws no bars */
+const fb2 = createFramebuffer(); const c2 = drawContext(fb2);
+const g2 = drawStepMenuCard(c2, { field: 0, step: 2, cond: 11, vel: 100, lenC: 100, page, flags: 1, track: 1 });
+const px2 = (x, y) => fb2.pixels[y * 128 + x];
+let solid = 0;
+for (let x = g2.x + 3; x < g2.x + g2.w - 3; x++) { let run = 0; for (let y = g2.y + 23; y < g2.y + g2.h - 3; y++) { run = px2(x, y) ? run + 1 : 0; if (run >= 14) solid++; } }
+if (solid) fail('a Move-only card still draws bars');
+const { fieldValue } = await import('$PWD/src/shared/step_menu_card.mjs');
+if (fieldValue({ field: 0, flags: 1, cond: 11 }) !== 'Move only') fail('Move-only chance value');
+if (fieldValue({ field: 1, flags: 1, cond: 11, lenC: 120 }) !== '1.2') fail('Length must still work on a Move-only track');
 console.log('PASS: card draws the page');
 " || exit 1
 
