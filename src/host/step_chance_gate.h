@@ -6,8 +6,9 @@
  * off alone would be harmless to most synths and wrong to every one that
  * counts voices or latches (an arp's held set, a mono synth's note stack).
  *
- * One roll per STEP per PASS: every note starting on the same step in the
- * same pass shares the first note's result, so a chord drops as a unit
+ * One roll per TRIG per PASS: every note set on the same step (sc_entry_t.grp)
+ * in the same pass shares the first note's result -- a chord played in live
+ * starts a few ms apart per note, so the start itself cannot be the key -- so a chord drops as a unit
  * rather than thinning note by note. Elektron behaves the same way -- the
  * condition belongs to the trig, not to each note in it.
  *
@@ -29,7 +30,7 @@ typedef struct {
     int      last_valid;
     int      last_row;
     long     last_pass;
-    double   last_start;
+    double   last_grp;
     int      last_play;
     uint32_t rng;               /* xorshift32; 0 = unseeded */
     uint32_t matched;           /* note-ons that carried a condition */
@@ -67,9 +68,9 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
     g->dropped[ch][note >> 3] &= (uint8_t)~bit;
     if (!st || !phase_valid || row < 0) return 1;
 
-    double start = 0.0;
+    double grp = 0.0;
     int wrap = 0;
-    const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &start, &wrap);
+    const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &grp, &wrap);
     if (cond == SC_ALWAYS) return 1;
     /* Matched across the wrap: the note starts the NEXT pass. */
     if (pass >= 0) pass += wrap;
@@ -78,12 +79,12 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
     g->matched++;
     int play;
     if (g->last_valid && g->last_row == row && g->last_pass == pass &&
-        g->last_start == start) {
+        g->last_grp == grp) {
         play = g->last_play;
     } else {
         play = sc_should_play(cond, pass, sc_gate_rand(g));
         g->last_valid = 1; g->last_row = row; g->last_pass = pass;
-        g->last_start = start; g->last_play = play;
+        g->last_grp = grp; g->last_play = play;
     }
     if (!play) { g->dropped[ch][note >> 3] |= bit; g->dropped_n++; }
     return play;

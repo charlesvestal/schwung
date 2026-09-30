@@ -82,6 +82,23 @@ int main(void) {
     /* and it really is ~50%, not stuck on one answer */
     assert(played > 150 && played < 250);
 
+    /* ---- a chord PLAYED IN LIVE: starts a few ms apart, one trig ---------
+     * Measured on a real clip: 17.425 / 17.428 / 17.434. Set together on one
+     * step (group 17.25), they must still roll as one. */
+    memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
+    sc_store_set_grp(&st, 0, 21, 73, 1.425, p50, 1.25);
+    sc_store_set_grp(&st, 0, 22, 64, 1.428, p50, 1.25);
+    sc_store_set_grp(&st, 0, 23, 71, 1.434, p50, 1.25);
+    split = 0; played = 0;
+    for (long pass = 0; pass < 400; pass++) {
+        int a = on(&g, 0, 73, 1.425, pass), b = on(&g, 0, 64, 1.428, pass), c = on(&g, 0, 71, 1.434, pass);
+        off(&g, 0, 73); off(&g, 0, 64); off(&g, 0, 71);
+        if (!(a == b && b == c)) split++;
+        played += a;
+    }
+    assert(split == 0);
+    assert(played > 150 && played < 250);
+
     /* ---- unknown phase / no row: deliver, never roll -------------------- */
     memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
     sc_store_set(&st, 0, 1, 36, 0.0, r12);

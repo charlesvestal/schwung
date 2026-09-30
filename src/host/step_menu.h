@@ -267,11 +267,16 @@ static inline double sm_note_cap(const sm_note_t *all, int n, int self, double c
     return lim - all[self].start;
 }
 
-/* Notes on `button` of the page at `scroll`: every note whose start is
- * NEAREST that button's step -- a note Move nudged early still belongs to its
- * step, which is where Move draws it and where hold-step + jog edits it.
- * A triplet grid's dead button (every 4th) holds nothing. Returns the count
- * written to idx[] (indices into notes[]). */
+/* Notes on `button` of the page at `scroll`: every note that STARTS inside
+ * that step's span [step, step + 1 step) -- where Move draws it and what its
+ * hold-step edit takes. Measured on a clip played in live (2026-09-30): a
+ * chord at 17.425 q showed on the step spanning 17.25-17.5, not on the
+ * nearest step start (17.5). "Nearest" also SPLIT live chords that straddle
+ * the half-step point (18.871 / 18.872 / 18.892 landed on two buttons).
+ * A hair of tolerance absorbs the float error in Move's stored starts ("0.0"
+ * is stored as -0.0 and neighbours). A triplet grid's dead button (every 4th)
+ * holds nothing. Returns the count written to idx[]. */
+#define SM_SPAN_EPS 1e-6
 static inline int sm_button_notes(const sm_note_t *notes, int n, double scroll,
                                   double step_beats, int triplet, double clip_len,
                                   int button, int *idx, int max)
@@ -279,7 +284,7 @@ static inline int sm_button_notes(const sm_note_t *notes, int n, double scroll,
     double ph = 0.0;
     if (step_plock_phase_from_scroll(scroll, button, step_beats, triplet,
                                      clip_len, &ph) != STEP_PLOCK_OK) return 0;
-    const double lo = ph - step_beats * 0.5, hi = ph + step_beats * 0.5;
+    const double lo = ph - SM_SPAN_EPS, hi = ph + step_beats - SM_SPAN_EPS;
     int k = 0;
     for (int i = 0; i < n && k < max; i++)
         if (notes[i].start >= lo && notes[i].start < hi) idx[k++] = i;

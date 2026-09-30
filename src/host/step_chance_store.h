@@ -38,6 +38,10 @@ typedef struct {
     uint8_t cond;      /* step_chance.h index; never SC_ALWAYS while used */
     double  start;     /* clip time, quarters -- Move's own coordinate */
     int64_t id;        /* Move's note id (flip) */
+    double  grp;       /* the STEP it was set on (clip time): notes sharing it
+                        * are one trig and roll once. A chord played in live
+                        * starts a few ms apart per note, so its starts cannot
+                        * be the key (measured: 17.425 / 17.428 / 17.434). */
 } sc_entry_t;
 
 typedef struct {
@@ -68,8 +72,17 @@ static inline int sc_store_get(const sc_store_t *st, int row, int64_t id)
 
 /* Set a note's condition; SC_ALWAYS removes it. 1 = done, 0 = refused (an
  * invalid condition, or the store is full). A full store never overwrites. */
+static inline int sc_store_set_grp(sc_store_t *st, int row, int64_t id, int pitch,
+                                   double start, int cond, double grp);
 static inline int sc_store_set(sc_store_t *st, int row, int64_t id, int pitch,
                                double start, int cond)
+{
+    return sc_store_set_grp(st, row, id, pitch, start, cond, start);
+}
+
+/* Set a note's condition as part of a step's trig: `grp` is the step. */
+static inline int sc_store_set_grp(sc_store_t *st, int row, int64_t id, int pitch,
+                                   double start, int cond, double grp)
 {
     if (!sc_valid(cond) || row < 0 || row > 255 || pitch < 0 || pitch > 127) return 0;
     int i = sc__find(st, row, id);
@@ -81,7 +94,7 @@ static inline int sc_store_set(sc_store_t *st, int row, int64_t id, int pitch,
         for (int k = 0; k < SC_STORE_MAX; k++) if (!st->e[k].used) { i = k; break; }
         if (i < 0) return 0;
     }
-    st->e[i] = (sc_entry_t){ 1, (uint8_t)row, (uint8_t)pitch, (uint8_t)cond, start, id };
+    st->e[i] = (sc_entry_t){ 1, (uint8_t)row, (uint8_t)pitch, (uint8_t)cond, start, id, grp };
     st->rev++;
     return 1;
 }
@@ -92,6 +105,7 @@ static inline void sc_store_relocate(sc_store_t *st, int row, int64_t id, int pi
     int i = sc__find(st, row, id);
     if (i < 0 || pitch < 0 || pitch > 127) return;
     if (st->e[i].pitch == pitch && st->e[i].start == start) return;
+    st->e[i].grp += start - st->e[i].start;   /* a nudged note keeps its offset in the trig */
     st->e[i].pitch = (uint8_t)pitch;
     st->e[i].start = start;
     st->rev++;
@@ -129,7 +143,7 @@ static inline int sc_store_prune_window(sc_store_t *st, int row, double lo, doub
  * parity whenever a frame landed there (13 drops in 30 passes of 1:2, on
  * hardware). -1 for the mirror case, 0 for a direct match. */
 static inline int sc_store_match_ex(const sc_store_t *st, int row, int pitch, double phase,
-                                    double loop_start, double loop_len, double *start_out,
+                                    double loop_start, double loop_len, double *grp_out,
                                     int *wrap_out)
 {
     (void)loop_start;
@@ -145,7 +159,7 @@ static inline int sc_store_match_ex(const sc_store_t *st, int row, int pitch, do
             if (w < d) { d = w; wrap = -1; }
         }
         if (d < SC_MATCH_TOL) {
-            if (start_out) *start_out = e->start;
+            if (grp_out) *grp_out = e->grp;
             if (wrap_out) *wrap_out = wrap;
             return e->cond;
         }
@@ -169,8 +183,8 @@ static inline int sc_store_serialize(const sc_store_t *st, char *buf, int len)
     for (int i = 0; i < SC_STORE_MAX; i++) {
         const sc_entry_t *e = &st->e[i];
         if (!e->used || e->row >= SC_ROW_PARK) continue;
-        int w = snprintf(buf + n, (size_t)(len - n), "%d %lld %d %.17g %d\n",
-                         e->row, (long long)e->id, e->pitch, e->start, e->cond);
+        int w = snprintf(buf + n, (size_t)(len - n), "%d %lld %d %.17g %d %.17g\n",
+                         e->row, (long long)e->id, e->pitch, e->start, e->cond, e->grp);
         if (w < 0 || w >= len - n) return -1;
         n += w;
     }
@@ -196,12 +210,21 @@ static inline int sc_store_parse(sc_store_t *st, const char *doc)
         char line[96];
         if (ll >= sizeof line || k >= SC_STORE_MAX) return -1;
         memcpy(line, p, ll); line[ll] = 0;
-        int row, pitch, cond, used = 0; long long id; double start;
+        int row, pitch, cond, used = 0; long long id; double start, grp;
         if (sscanf(line, "%d %lld %d %lf %d%n", &row, &id, &pitch, &start, &cond, &used) != 5 ||
-            line[used] != 0 || row < 0 || row > 255 || pitch < 0 || pitch > 127 ||
+            row < 0 || row > 255 || pitch < 0 || pitch > 127 ||
             !sc_valid(cond) || cond == SC_ALWAYS || !isfinite(start))
             return -1;
-        tmp.e[k++] = (sc_entry_t){ 1, (uint8_t)row, (uint8_t)pitch, (uint8_t)cond, start, (int64_t)id };
+        /* The group is an optional 6th field: a document written before it
+         * existed groups each note by its own start, as it always did. */
+        grp = start;
+        if (line[used] != 0) {
+            int used2 = 0;
+            if (sscanf(line + used, " %lf%n", &grp, &used2) != 1 || line[used + used2] != 0 ||
+                !isfinite(grp))
+                return -1;
+        }
+        tmp.e[k++] = (sc_entry_t){ 1, (uint8_t)row, (uint8_t)pitch, (uint8_t)cond, start, (int64_t)id, grp };
         p += ll + (eol ? 1 : 0);
     }
     *st = tmp;

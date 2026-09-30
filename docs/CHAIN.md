@@ -1505,8 +1505,14 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   step + Menu + release is a tap to Move and toggles the note -- deleting the
   one being edited. A release within 700 ms of a press the menu used is
   withheld and handed to Move at 700 ms, after compaction.
-- **One roll per step per pass**: every note starting on the step in that pass
-  shares the first note's result, so a chord drops whole.
+- **A step is the span a note STARTS in**, not the nearest step start --
+  Move's own rule, measured on a clip played in live (a chord at 17.425 q shows
+  on the step spanning 17.25-17.5). "Nearest" also split live chords that
+  straddle the half-step point.
+- **One roll per TRIG per pass**: notes set together on a step share its
+  position as `sc_entry_t.grp` (sent as `g=` on `chance:notes`, saved as an
+  optional 6th field), so a chord drops whole even played in live, where its
+  notes start a few ms apart and no start time is shared.
 - **Keyed by Move's note id, matched by pitch + clip phase.** A note-on is bare
   MIDI; Move's notes arrive exactly on their start phase (measured 2026-09-17),
   so the match tolerance is 0.03 q and wraps at the loop window. Because the
