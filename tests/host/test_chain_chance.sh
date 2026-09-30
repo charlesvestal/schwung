@@ -29,4 +29,8 @@ pre=$(grep -n 'if (inst->midi_fx_pre_mode && !chance_filter(inst, msg, len, sour
 [ -n "$echo_" ] && [ -n "$pre" ] || fail "the Pre-mode chance gate or the echo filter is missing"
 [ "$pre" -gt "$echo_" ] || fail "Pre-mode chance runs BEFORE the echo filter (line $pre vs $echo_)"
 grep -q 'chain_set_clip_pass' src/host/shadow_chain_mgmt.c || fail "the shim never dlsyms chain_set_clip_pass"
+# The shim transposes Move's notes BEFORE v2_on_midi (shadow_midi.c), so the
+# gate must be told the slot's transpose or a transposed slot never matches.
+grep -q '"chance:transpose"' src/schwung_shim.c || fail "the shim never pushes chance:transpose (a transposed slot's chance matches nothing)"
+grep -q 'shadow_chain_slots\[s\]\.transpose' src/schwung_shim.c || fail "chance:transpose is not taken from the slot's transpose"
 echo "PASS: chance gate sits ahead of LFO/MIDI FX/synth (Post) and after the echo filter (Pre)"

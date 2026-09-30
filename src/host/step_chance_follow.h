@@ -45,6 +45,22 @@ static inline int sc__in(double x, double lo, double len)
     return x >= lo - 1e-9 && x < lo + len - 1e-9;
 }
 
+/* A RESTORED document's ids are HINTS. Move renumbers its notes when it
+ * loads a set, so the id a condition was saved under can belong to a
+ * different note now -- and the follow, which trusts ids, relocated the
+ * condition onto it and pruned the rest of the chord (hardware, 2026-10-01).
+ * Every restored entry takes a synthetic id instead, so the page follow
+ * ADOPTS it by pitch + position, exactly as it does a copy. Playback never
+ * needed the id: matching is by pitch + phase. Returns how many. */
+static inline int sc_store_unbind_ids(sc_store_t *st)
+{
+    int n = 0;
+    for (int i = 0; i < SC_STORE_MAX; i++)
+        if (st->e[i].used) st->e[i].id = -(int64_t)(++n);
+    if (n) st->rev++;
+    return n;
+}
+
 /* A fresh synthetic id: one below the lowest in the store. */
 static inline int64_t sc__synth_id(const sc_store_t *st)
 {

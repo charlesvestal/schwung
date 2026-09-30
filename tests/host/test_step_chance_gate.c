@@ -108,6 +108,28 @@ int main(void) {
     /* unknown PASS on an A:B plays (step_chance.h) */
     assert(on(&g, 9, 36, 0.0, -1) == 1);
 
+    /* ---- SLOT TRANSPOSE: the gate sees the note AFTER the shim moved it ----
+     * The store holds Move's pitch (64); a slot at +12 delivers 76. Matched
+     * on the delivered pitch, nothing on a transposed slot ever rolled
+     * (chance:stats "0 0" on hardware, 2026-10-01). The off arrives
+     * transposed too, so the dropped set stays keyed on the DELIVERED pitch. */
+    memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
+    sc_store_set(&st, 0, 1, 64, 0.0, r12);
+    g.transpose = 12;
+    assert(on(&g, 1, 76, 0.0, 0) == 1);
+    assert(off(&g, 1, 76) == 1);
+    assert(on(&g, 1, 76, 0.0, 1) == 0);   /* the losing pass drops... */
+    assert(off(&g, 1, 76) == 0);          /* ...with its off, at the delivered pitch */
+    assert(g.matched == 2 && g.dropped_n == 1);
+    /* the untransposed pitch is now a DIFFERENT note: it must not match */
+    assert(on(&g, 1, 64, 0.0, 1) == 1);
+    /* a transpose pushing the match pitch out of range matches nothing */
+    g.transpose = 100;
+    assert(on(&g, 1, 76, 0.0, 1) == 1);
+    g.transpose = -60;
+    assert(on(&g, 1, 76, 0.0, 1) == 1);
+    g.transpose = 0;
+
     /* ---- non-note messages pass untouched ------------------------------- */
     { uint8_t cc[3] = { 0xB0, 74, 10 }, pb[3] = { 0xE0, 0, 64 };
       assert(sc_gate(&g, &st, cc, 3, 1, 0.0, 0.0, 4.0, 0, 1) == 1);

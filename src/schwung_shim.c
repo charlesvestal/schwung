@@ -2302,6 +2302,27 @@ static void shadow_inprocess_render_to_buffer(void) {
                                                     "lanes:enabled", en ? "1" : "0");
                     }
                 }
+
+                /* THE SLOT'S TRANSPOSE, for step chance. shadow_midi.c moves
+                 * Move's notes before v2_on_midi sees them, and the chance
+                 * store holds the pitch MOVE played -- so without this every
+                 * condition on a transposed slot matched nothing (hardware,
+                 * 2026-10-01: +12, chance:stats "0 0"). On change, and keyed
+                 * on the INSTANCE as lane_armed is: a reloaded slot's gate
+                 * starts at 0 from calloc. */
+                if (shadow_plugin_v2->set_param && s < SHADOW_CHAIN_INSTANCES) {
+                    static void *tr_inst[SHADOW_CHAIN_INSTANCES];
+                    static int   tr_last[SHADOW_CHAIN_INSTANCES];
+                    void *tinst = shadow_chain_slots[s].instance;
+                    const int tr = shadow_chain_slots[s].transpose;
+                    if (tr_inst[s] != tinst || tr_last[s] != tr) {
+                        char tv[8];
+                        snprintf(tv, sizeof tv, "%d", tr);
+                        shadow_plugin_v2->set_param(tinst, "chance:transpose", tv);
+                        tr_inst[s] = tinst;
+                        tr_last[s] = tr;
+                    }
+                }
             }
 
             /* Move's Record button, decoded from its LED (rec_arm.h). ON

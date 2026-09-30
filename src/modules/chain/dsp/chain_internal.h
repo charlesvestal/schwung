@@ -1233,6 +1233,21 @@ typedef struct chain_instance {
     /* Following Move's edits (step_chance_follow.h), off the lanes' verbs. */
     sc_journal_t chance_journal[SC_JOURNAL];   /* pastes, by edit_follow's jid */
     uint32_t     chance_stash_sid[SC_STASHES]; /* which clip delete each stash row holds */
+    /* The last CHANCE_DIAG note-ons the gate saw (chance:diag): what it was
+     * handed, where it thought the clip was, and how far the nearest stored
+     * note of that pitch sat. "matched nothing" is otherwise unexplainable
+     * from outside -- a phase off by a pulse and a wrong pitch read alike. */
+#define CHANCE_DIAG 16
+    struct {
+        uint8_t pitch;        /* as delivered (after the slot's transpose) */
+        int8_t  result;       /* 1 played, 0 dropped, -1 no condition matched */
+        int8_t  phase_valid;
+        int8_t  row;
+        double  phase;
+        long    pass;
+        double  nearest;      /* |phase - start| to the nearest same-pitch entry, wrap-aware; -1 none */
+    } chance_diag[CHANCE_DIAG];
+    uint32_t chance_diag_n;
 } chain_instance_t;
 
 /*
