@@ -15,8 +15,11 @@
  * still a button event to Move. The release is owed even if the step was
  * let go first.
  *
- * Only over MOVE's screen (the caller passes `eligible`): with the shadow UI
- * up, a held step is the p-lock gesture and Menu is the UI's own.
+ * Over MOVE's screen and the shadow UI alike (the caller passes `eligible`).
+ * On a screen that WITHHOLDS steps from Move for the p-lock gesture, the shim
+ * hands the held press to Move when the menu opens (sm_owe_release carries
+ * its release back) -- Length and Velocity are Move's own hold-step edits,
+ * and they need Move to be holding the step.
  *
  * Pure, so tests/host drives it; RT-safe.
  */
@@ -232,6 +235,17 @@ static inline uint32_t sm_due_releases(sm_state_t *s, uint64_t now_ms)
         }
     }
     return m;
+}
+
+/* A step release the CALLER took from Move and owes it, due no earlier than
+ * `due_ms`: the shim's hand-off of a withheld step (see the header). Same
+ * queue as the tap guard's, so the same post-compaction injection delivers
+ * it -- and a press of that step before it is due is one long hold to Move,
+ * exactly as for the tap guard's own. */
+static inline void sm_owe_release(sm_state_t *s, int step, uint64_t due_ms)
+{
+    if (step < 0 || step >= 16) return;
+    s->owe_ms[step] = due_ms ? due_ms : 1;
 }
 
 /* The next condition index for a jog detent, clamped to the list. */

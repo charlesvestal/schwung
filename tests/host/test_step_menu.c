@@ -38,7 +38,7 @@ int main(void) {
     /* Shift+Menu is the screen reader / Master FX: never ours */
     assert(cc(S5, 1, 1, 50, 127) == SM_PASS && !s.open);
     cc(S5, 1, 1, 50, 0);
-    /* shadow UI up: not eligible */
+    /* not eligible (the shadow UI disabled): Move's */
     assert(cc(S5, 0, 0, 50, 127) == SM_PASS && !s.open);
     cc(S5, 0, 0, 50, 0);
 
@@ -237,6 +237,22 @@ int main(void) {
     assert(sm_drum_cell_pitch(68) == 36 && sm_drum_cell_pitch(69) == 37);
     assert(sm_drum_cell_pitch(76) == 40 && sm_drum_cell_pitch(95) == 51);
     assert(sm_drum_cell_pitch(72) == -1 && sm_drum_cell_pitch(67) == -1);
+
+    /* ---- the shim's HAND-OFF release rides the same owed queue ---------- *
+     * A step withheld from Move and handed to it when the menu opened: the
+     * shim takes the release and owes it here, due SM_HOLD_SAFE_MS after the
+     * hand-off. Never before -- sooner is a tap to Move, a toggled note. */
+    memset(&s, 0, sizeof s);
+    sm_owe_release(&s, 3, 90000);
+    assert(sm_due_releases(&s, 89999) == 0);
+    assert(sm_due_releases(&s, 90000) == (1u << 3));
+    assert(sm_due_releases(&s, 99999) == 0);          /* handed over ONCE */
+    /* a due time of 0 still owes (the next frame), never "nothing owed" */
+    sm_owe_release(&s, 4, 0);
+    assert(sm_due_releases(&s, 1) == (1u << 4));
+    /* out of range is ignored, not a write past the arrays */
+    sm_owe_release(&s, 16, 5); sm_owe_release(&s, -1, 5);
+    assert(sm_due_releases(&s, 1u << 30) == 0);
 
     printf("test_step_menu: PASS\n");
     return 0;
