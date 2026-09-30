@@ -35,11 +35,22 @@
 enum { SM_PASS = 0, SM_SWALLOW = 1, SM_REWRITE = 2 };
 enum { SM_FIELD_CHANCE = 0, SM_FIELD_LENGTH = 1, SM_FIELD_VELOCITY = 2, SM_FIELDS = 3 };
 
+/* MOVE DECIDES TAP-vs-HOLD ON THE RELEASE, at ~500 ms (measured 2.1.x:
+ * 500 ms toggled the note, 520 ms did not). The Menu press is swallowed, so
+ * to Move a quick step + Menu + let go IS a tap -- and it toggles the note:
+ * deletes the one you opened the menu to edit, or adds one to an empty step.
+ * So a release that comes too soon after a press the menu USED is withheld
+ * and handed to Move once the press is SM_HOLD_SAFE_MS old. */
+#define SM_HOLD_SAFE_MS 700
+
 typedef struct {
     uint8_t open;
     uint8_t field;
     uint8_t step;         /* 0..15, the held step the menu is about */
     uint8_t menu_latch;   /* a Menu press we swallowed; its release is owed */
+    uint64_t press_ms[16];/* when each step went down (0 = not seen) */
+    uint8_t used[16];     /* the menu opened during this press */
+    uint64_t owe_ms[16];  /* a withheld release, due at this time (0 = none) */
 } sm_state_t;
 
 /* The one held step in a mask, or -1 for none / more than one. */
@@ -64,16 +75,43 @@ static inline int sm_jog_dir(uint8_t v)
  * jog direction when the Chance field takes a detent, else 0. */
 static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held, int eligible,
                               uint8_t status, uint8_t d1, uint8_t d2,
-                              uint8_t out[3], int *chance_dir)
+                              uint8_t out[3], int *chance_dir, uint64_t now_ms)
 {
     if (chance_dir) *chance_dir = 0;
     const uint8_t type = status & 0xF0;
+
+    /* Step presses and releases: the tap/hold guard. */
+    if ((type == 0x90 || type == 0x80) && d1 >= SM_STEP_NOTE0 && d1 < SM_STEP_NOTE0 + 16) {
+        const int i = d1 - SM_STEP_NOTE0;
+        const int is_on = (type == 0x90 && d2 > 0);
+        if (is_on) {
+            if (s->owe_ms[i]) {
+                /* Pressed again while Move still holds the first press: to
+                 * Move it is one long hold. Swallow, and owe nothing yet. */
+                s->owe_ms[i] = 0;
+                return SM_SWALLOW;
+            }
+            s->press_ms[i] = now_ms ? now_ms : 1;
+            s->used[i] = 0;
+            return SM_PASS;
+        }
+        if (s->open && i == s->step) s->open = 0;
+        if (s->used[i] && s->press_ms[i] &&
+            now_ms < s->press_ms[i] + SM_HOLD_SAFE_MS) {
+            s->owe_ms[i] = s->press_ms[i] + SM_HOLD_SAFE_MS;
+            return SM_SWALLOW;
+        }
+        s->used[i] = 0;
+        s->press_ms[i] = 0;
+        return SM_PASS;
+    }
 
     if (type == 0xB0 && d1 == SM_CC_MENU) {
         if (d2 > 0) {
             const int step = sm_single_step(held_mask);
             if (!eligible || shift_held || step < 0) return SM_PASS;
             s->menu_latch = 1;
+            s->used[step] = 1;
             if (!s->open || s->step != step) {
                 s->open = 1; s->field = SM_FIELD_CHANCE; s->step = (uint8_t)step;
             } else {
@@ -86,12 +124,6 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
     }
 
     if (!s->open) return SM_PASS;
-
-    /* The held step let go: the menu is about a step no longer held. */
-    if ((type == 0x80 || (type == 0x90 && d2 == 0)) && d1 == SM_STEP_NOTE0 + s->step) {
-        s->open = 0;
-        return SM_PASS;
-    }
 
     if (type == 0xB0 && d1 == SM_CC_JOG) {
         const int dir = sm_jog_dir(d2);
@@ -115,6 +147,20 @@ static inline void sm_validate(sm_state_t *s, uint32_t held_mask, int eligible)
 {
     if (!s->open) return;
     if (!eligible || sm_single_step(held_mask) != s->step) s->open = 0;
+}
+
+/* Withheld releases now due: a mask of steps whose note-off the caller must
+ * hand to Move this frame. Each is returned once. */
+static inline uint32_t sm_due_releases(sm_state_t *s, uint64_t now_ms)
+{
+    uint32_t m = 0;
+    for (int i = 0; i < 16; i++) {
+        if (s->owe_ms[i] && now_ms >= s->owe_ms[i]) {
+            s->owe_ms[i] = 0; s->used[i] = 0; s->press_ms[i] = 0;
+            m |= 1u << i;
+        }
+    }
+    return m;
 }
 
 /* The next condition index for a jog detent, clamped to the list. */

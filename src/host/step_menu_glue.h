@@ -12,7 +12,9 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
 /* SPI CALLBACK, per cable-0 MIDI_IN event: SM_PASS / SM_SWALLOW / SM_REWRITE
  * (then `out` holds the replacement bytes). */
 int step_menu_on_input(uint8_t status, uint8_t d1, uint8_t d2, uint8_t out[3],
-                       uint32_t held_mask, int shift_held, int eligible);
+                       uint32_t held_mask, int shift_held, int eligible, uint64_t now_ms);
+/* SPI CALLBACK, after compaction: steps whose withheld release is now due. */
+uint32_t step_menu_take_due_releases(uint64_t now_ms);
 /* SPI CALLBACK, once per frame after the scan. */
 void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible);
 

@@ -13,11 +13,15 @@ static sm_state_t s;
 static uint8_t out[3];
 static int cd;
 
+static uint64_t now = 10000;   /* ms; tests advance it by hand */
 static int cc(uint32_t held, int shift, int elig, int n, int v) {
-    return sm_on_input(&s, held, shift, elig, 0xB0, (uint8_t)n, (uint8_t)v, out, &cd);
+    return sm_on_input(&s, held, shift, elig, 0xB0, (uint8_t)n, (uint8_t)v, out, &cd, now);
 }
 static int step_off(uint32_t held, int step) {
-    return sm_on_input(&s, held, 0, 1, 0x80, (uint8_t)(16 + step), 0, out, &cd);
+    return sm_on_input(&s, held, 0, 1, 0x80, (uint8_t)(16 + step), 0, out, &cd, now);
+}
+static int step_on(uint32_t held, int step) {
+    return sm_on_input(&s, held, 0, 1, 0x90, (uint8_t)(16 + step), 100, out, &cd, now);
 }
 
 int main(void) {
@@ -92,6 +96,34 @@ int main(void) {
     /* ---- validate: the display coming up closes it ---------------------- */
     sm_validate(&s, 1u << 9, 0);
     assert(!s.open);
+
+    /* ---- THE TAP GUARD: Move toggles a note on a release < ~500 ms -------- */
+    memset(&s, 0, sizeof s);
+    /* a plain quick tap with no menu is Move's, untouched */
+    now = 20000; assert(step_on(0, 3) == SM_PASS);
+    now += 100;  assert(step_off(1u << 3, 3) == SM_PASS);
+    assert(sm_due_releases(&s, now + 5000) == 0);
+    /* step + Menu + quick release: the release is WITHHELD... */
+    now = 30000; step_on(0, 3);
+    now += 150; cc(1u << 3, 0, 1, 50, 127); cc(1u << 3, 0, 1, 50, 0);
+    now += 100; assert(step_off(1u << 3, 3) == SM_SWALLOW);
+    assert(!s.open);                                     /* the menu closes */
+    assert(sm_due_releases(&s, 30000 + SM_HOLD_SAFE_MS - 1) == 0);
+    /* ...and handed to Move once the press is old enough, exactly once */
+    assert(sm_due_releases(&s, 30000 + SM_HOLD_SAFE_MS) == (1u << 3));
+    assert(sm_due_releases(&s, 30000 + SM_HOLD_SAFE_MS + 50) == 0);
+    /* a slow release after the menu is Move's own, straight through */
+    now = 40000; step_on(0, 3);
+    now += 100; cc(1u << 3, 0, 1, 50, 127); cc(1u << 3, 0, 1, 50, 0);
+    now += 900; assert(step_off(1u << 3, 3) == SM_PASS);
+    /* re-pressed while the release is still owed: one long hold to Move */
+    now = 50000; step_on(0, 3);
+    now += 100; cc(1u << 3, 0, 1, 50, 127); cc(1u << 3, 0, 1, 50, 0);
+    now += 100; assert(step_off(1u << 3, 3) == SM_SWALLOW);
+    now += 100; assert(step_on(0, 3) == SM_SWALLOW);     /* Move never saw it go up */
+    assert(sm_due_releases(&s, now + 5000) == 0);        /* nothing owed while held */
+    now += 50;  assert(step_off(1u << 3, 3) == SM_SWALLOW); /* still < 700 from the FIRST press */
+    assert(sm_due_releases(&s, 50000 + SM_HOLD_SAFE_MS) == (1u << 3));
 
     /* ---- condition stepping clamps -------------------------------------- */
     assert(sm_step_cond(0, -1, 57) == 0);

@@ -49,6 +49,20 @@ int main(void) {
     { uint8_t m[3] = { 0x99, 36, 0 };
       assert(sc_gate(&g, &st, m, 3, 1, 0.0, 0.0, 4.0, 0, 3) == 0); }
 
+    /* ---- THE LOOP BOUNDARY: a note on the first beat, seen a hair early ----
+     * phase 3.995 of a 4-beat loop is the NEXT pass's beat 1. Counted as the
+     * ending pass, 1:2 flipped parity (13 drops in 30 passes on hardware). */
+    memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
+    sc_store_set(&st, 0, 1, 36, 0.0, r12);
+    for (long pass = 0; pass < 40; pass++) {
+        /* odd passes: the frame lands just before the wrap (still pass-1) */
+        const double ph = (pass % 3 == 1) ? 3.995 : 0.0;
+        const long counted = (ph > 3.0) ? pass - 1 : pass;
+        const int played = on(&g, 9, 36, ph, counted);
+        off(&g, 9, 36);
+        assert(played == (pass % 2 == 0));
+    }
+
     /* ---- a CHORD drops as a unit: one roll per step per pass ----------- */
     memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
     sc_store_set(&st, 0, 10, 60, 1.0, p50);

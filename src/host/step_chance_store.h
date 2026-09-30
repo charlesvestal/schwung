@@ -119,21 +119,33 @@ static inline int sc_store_prune_window(sc_store_t *st, int row, double lo, doub
 /* The condition for a note-on of `pitch` at clip phase `phase` on `row`.
  * A note on the window's first beat can be seen a hair under its END (the
  * frame fell before the wrap), so with a known window the distance wraps. */
+/* `*wrap_out` is +1 when the note was matched ACROSS the wrap -- the phase
+ * read a hair under the window's end for a note on its first beat. That note
+ * belongs to the pass that is STARTING, and a caller counting passes from the
+ * same clock is still on the one ending: A:B on the loop's first step flipped
+ * parity whenever a frame landed there (13 drops in 30 passes of 1:2, on
+ * hardware). -1 for the mirror case, 0 for a direct match. */
 static inline int sc_store_match_ex(const sc_store_t *st, int row, int pitch, double phase,
-                                    double loop_start, double loop_len, double *start_out)
+                                    double loop_start, double loop_len, double *start_out,
+                                    int *wrap_out)
 {
     (void)loop_start;
     for (int i = 0; i < SC_STORE_MAX; i++) {
         const sc_entry_t *e = &st->e[i];
         if (!e->used || e->row != row || e->pitch != pitch) continue;
         double d = fabs(phase - e->start);
+        int wrap = 0;
         if (loop_len > 0.0) {
             double w = fabs(phase - loop_len - e->start);
-            if (w < d) d = w;
+            if (w < d) { d = w; wrap = 1; }
             w = fabs(phase + loop_len - e->start);
-            if (w < d) d = w;
+            if (w < d) { d = w; wrap = -1; }
         }
-        if (d < SC_MATCH_TOL) { if (start_out) *start_out = e->start; return e->cond; }
+        if (d < SC_MATCH_TOL) {
+            if (start_out) *start_out = e->start;
+            if (wrap_out) *wrap_out = wrap;
+            return e->cond;
+        }
     }
     return SC_ALWAYS;
 }
@@ -141,7 +153,7 @@ static inline int sc_store_match_ex(const sc_store_t *st, int row, int pitch, do
 static inline int sc_store_match(const sc_store_t *st, int row, int pitch, double phase,
                                  double loop_start, double loop_len)
 {
-    return sc_store_match_ex(st, row, pitch, phase, loop_start, loop_len, NULL);
+    return sc_store_match_ex(st, row, pitch, phase, loop_start, loop_len, NULL, NULL);
 }
 
 /* "SC 1\n" then one "row id pitch start cond\n" per entry. Starts are %.17g,

@@ -68,8 +68,12 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
     if (!st || !phase_valid || row < 0) return 1;
 
     double start = 0.0;
-    const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &start);
+    int wrap = 0;
+    const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &start, &wrap);
     if (cond == SC_ALWAYS) return 1;
+    /* Matched across the wrap: the note starts the NEXT pass. */
+    if (pass >= 0) pass += wrap;
+    if (pass < 0 && wrap < 0) pass = -1;
 
     g->matched++;
     int play;

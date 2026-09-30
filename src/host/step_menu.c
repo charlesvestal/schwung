@@ -195,11 +195,12 @@ static void apply_chance(int dir)
 
 /* SPI CALLBACK: one cable-0 MIDI_IN event. SM_SWALLOW / SM_REWRITE / SM_PASS. */
 int step_menu_on_input(uint8_t status, uint8_t d1, uint8_t d2, uint8_t out[3],
-                       uint32_t held_mask, int shift_held, int eligible)
+                       uint32_t held_mask, int shift_held, int eligible, uint64_t now_ms)
 {
     const uint8_t was_open = g_sm.open, was_field = g_sm.field, was_step = g_sm.step;
     int dir = 0;
-    const int a = sm_on_input(&g_sm, held_mask, shift_held, eligible, status, d1, d2, out, &dir);
+    const int a = sm_on_input(&g_sm, held_mask, shift_held, eligible, status, d1, d2, out, &dir,
+                              now_ms);
     if (dir) apply_chance(dir);
     if (g_sm.open != was_open || g_sm.field != was_field || g_sm.step != was_step) g_dirty = 1;
     /* Length and Velocity are edited by MOVE; the model reports the result a
@@ -301,4 +302,11 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
     }
     ctl->step_menu_open = 1;
     ctl->step_menu_seq++;
+}
+
+/* SPI CALLBACK, after compaction: the step releases withheld from Move by
+ * the tap guard (step_menu.h) that are now old enough to be a HOLD. */
+uint32_t step_menu_take_due_releases(uint64_t now_ms)
+{
+    return sm_due_releases(&g_sm, now_ms);
 }
