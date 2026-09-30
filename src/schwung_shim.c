@@ -68,6 +68,7 @@
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_scene_bus.h"
 #include "host/shadow_link_audio.h"
+#include "host/child_signals.h"
 #include "host/link_audio_conceal.h"
 #include "host/align_capture.h"
 
@@ -1107,6 +1108,7 @@ static int shim_run_command(const char *const argv[]) {
          * driver (same fix as shadow_process.c's launchers). */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+        child_reset_signals();
         dup2(STDOUT_FILENO, STDERR_FILENO);
         execvp(argv[0], (char *const *)argv);
         _exit(127);
@@ -4439,6 +4441,7 @@ static void init_shadow_shm(void)
         shadow_control->display_mode = 1;
         shadow_control->shadow_ready = 1;
         shadow_control->should_exit = 0;
+        shadow_ui_set_exit_flag(&shadow_control->should_exit);
         shadow_control->midi_ready = 0;
         shadow_control->write_idx = 0;
         shadow_control->read_idx = 0;

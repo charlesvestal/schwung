@@ -136,6 +136,25 @@ module directory; the Tools menu runs it via `launch-standalone.sh` and Move is
 restarted when it exits. Everything such a tool installs lives under its own
 `modules/tools/<id>/` — ableton-owned, like every module.
 
+Top-level `"standalone": true` is canonical; `capabilities.standalone` is
+accepted too (the shadow UI used to read only the top-level spelling, while
+`module_manager.c` matched either). **`standalone` wins over `tool_config`**: a
+tool declaring both is launched as a standalone program, never as an
+interactive or file-browser tool. It used to be tested last, so beside
+`tool_config.interactive` it was silently ignored. The order lives in
+`src/shared/tool_launch.mjs`.
+
+**Move's supervisor is stood down while a standalone tool runs.**
+`move-launcher.service` is `Restart=on-failure`, so killing MoveLauncher by
+name used to bring the whole stock stack back ~2 s later, alongside the tool,
+both driving `/dev/ablspi0.0`. `launch-standalone.sh` now asks `schwung-heal
+--pause-launcher` to stop the unit before its kill sweep, and `--resume-launcher`
+restarts it when the tool exits — the real boot path, not a bare exec of
+`/opt/move/Move` with no supervisor. It only pauses when the unit is
+`KillMode=process` and heal is blessed; otherwise the old behaviour stands.
+shadow_ui is sent SIGTERM first and saves before anything else dies. A
+standalone binary therefore must NOT start Move itself on exit.
+
 Some standalone tools need one privileged step of their own — a shim of their own
 that must reach `/usr/lib` setuid for glibc's AT_SECURE `LD_PRELOAD` check, or a
 service to pause. They cannot reuse `schwung-heal`: its paths are compile-time

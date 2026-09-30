@@ -270,6 +270,7 @@ import {
     feedbackGateDraw,
     feedbackGateInput,
 } from '/data/UserData/schwung/shared/feedback_gate.mjs';
+import { toolLaunchKind } from '/data/UserData/schwung/shared/tool_launch.mjs';
 
 import {
     buildFilepathBrowserState,
@@ -13529,20 +13530,24 @@ function launchToolConfirmed(tool) {
         return;
     }
     debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-    if (tool.tool_config && tool.tool_config.set_picker) {
-        debugLog("TOOLS SELECT: entering set picker");
-        enterToolSetPicker(tool);
-    } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
-        debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
-        startInteractiveTool(tool, "");
-    } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
-        debugLog("TOOLS SELECT: entering file browser");
-        enterToolFileBrowser(tool);
-    } else if (tool.standalone) {
+    /* The order lives in tool_launch.mjs: `standalone` wins over every
+     * tool_config branch (it used to be tested last and was silently ignored
+     * beside tool_config.interactive). */
+    const launchKind = toolLaunchKind(tool);
+    if (launchKind === "standalone") {
         debugLog("TOOLS SELECT: launching standalone binary");
         announce(`Launching ${tool.name}`);
         const binaryPath = tool.path + "/standalone";
         host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
+    } else if (launchKind === "set_picker") {
+        debugLog("TOOLS SELECT: entering set picker");
+        enterToolSetPicker(tool);
+    } else if (launchKind === "interactive") {
+        debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
+        startInteractiveTool(tool, "");
+    } else if (launchKind === "file_browser") {
+        debugLog("TOOLS SELECT: entering file browser");
+        enterToolFileBrowser(tool);
     } else {
         debugLog("TOOLS SELECT: tool not available");
         announce("Tool not available");

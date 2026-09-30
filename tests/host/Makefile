@@ -104,6 +104,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
+	$(BUILD_DIR)/test_heal_args \
 	$(BUILD_DIR)/test_audio_in_restore \
 	$(BUILD_DIR)/test_lane_trace \
 	$(BUILD_DIR)/test_lane_lookahead \
@@ -210,6 +211,10 @@ $(BUILD_DIR)/test_link_audio_conceal: test_link_audio_conceal.c | $(BUILD_DIR)
 # itself cannot be exercised here (it setuid(0)s and bails when not root), so
 # the filter is only testable as long as it stays out of the binary.
 $(BUILD_DIR)/test_heal_tool_id: test_heal_tool_id.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit, same reason: heal's command line lives in heal_args.h.
+$(BUILD_DIR)/test_heal_args: test_heal_args.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)

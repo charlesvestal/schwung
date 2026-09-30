@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "shadow_set_pages.h"
+#include "child_signals.h"
 #include "shadow_sampler.h"  /* for SAMPLER_SETS_DIR, sampler_read_set_tempo */
 #include "shadow_chain_mgmt.h"  /* for MASTER_FX_SLOTS */
 #include "move_model_sync.h"   /* the set-load edge and document generation */
@@ -891,6 +892,7 @@ static void set_page_dbus_fire_and_forget(const char *const argv[])
 {
     pid_t pid = fork();
     if (pid == 0) {
+        child_reset_signals();
         /* Child: redirect stderr to /dev/null, exec */
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }

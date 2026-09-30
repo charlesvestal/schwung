@@ -1976,3 +1976,32 @@ left unblocked precisely so Move's selected track follows the slot), and the
 tap for Move when it fires). Suppressing either would claim SESSION while Move
 was in NOTE, which opens the clip gate over a keyboard and invents clip launches
 — strictly worse than the bug above.
+
+### A requested exit is not a crash: `should_exit` parks the watchdog, and SIGTERM saves
+
+`shadow_control_t.should_exit` is the only way shadow_ui saves and leaves
+(`shadow_save_state_now()` at the top of its loop). Two things around it were
+wrong, both surfaced by dbxhost (legsmechanical), a second host that has to
+quiesce this one before it takes the device:
+
+- **The shim's watchdog answered a requested exit with a fresh shadow_ui**
+  within ~750 ms (`launch_shadow_ui()` runs every 256 frames). The new one
+  reloaded every chain slot un-faded — an audible burst — then saw
+  `should_exit` still set and exited again, repeating until the rapid-relaunch
+  backoff gave up. `launch_shadow_ui()` now returns while the flag is up (one
+  byte read, after the reap, before the `/proc` read and the fork). A crash
+  leaves the flag down and still respawns. The shim's init clears it, and so
+  does `launch_shadow_ui_reset_backoff()` — the path every explicit user
+  shortcut takes — so an abandoned quiesce cannot leave the UI gone for the
+  session.
+- **SIGTERM killed it with nothing saved.** Every teardown script sends it.
+  The handler now only records the request (`term_requested`, `SA_RESTART`
+  so a blocked param read is not turned into a failed one); the loop raises
+  `should_exit` from it and takes the normal save-and-leave path, which also
+  parks the watchdog.
+
+**Saving needs the SHIM alive** — every read the save makes is served by it.
+So a script that tears Move down must signal shadow_ui FIRST and wait, and only
+then kill MoveOriginal. `launch-standalone.sh` does (bounded at 3 s);
+`restart-move.sh` does not need to, because the restart path raises
+`should_exit` before it runs. `tests/host/test_shadow_ui_requested_exit.sh`.
