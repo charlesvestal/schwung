@@ -45,6 +45,7 @@
 #include "host/cc_claim.h"
 #include "host/surface_live_shm.h"
 #include "host/audio_live_shm.h"
+#include "host/mix_soft_clip.h"
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
@@ -3030,6 +3031,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     /* Cache Link Audio reads to avoid redundant ring buffer access + barriers */
     int16_t la_cache[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
+    /* The Move->Schwung rebuild sum, with headroom. Only meaningful while
+     * rebuild_from_la; see mix_soft_clip.h for why it is not the mailbox. */
+    int32_t la_acc[FRAMES_PER_BLOCK * 2];
     int la_cache_valid[SHADOW_CHAIN_INSTANCES];
     memset(la_cache_valid, 0, sizeof(la_cache_valid));
     /* Move's native mailbox, kept for the first rebuilt frame after a
@@ -3077,8 +3081,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
             la_native_xfade_valid = 1;
         }
 
-        /* Zero the mailbox — all audio reconstructed from Link Audio */
+        /* Zero the mailbox — all audio reconstructed from Link Audio. The
+         * sum itself is built in la_acc (int32, headroom) and converted ONCE,
+         * through mix_soft_clip, before Master FX. See mix_soft_clip.h. */
         memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        memset(la_acc, 0, sizeof(la_acc));
 
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -3265,10 +3272,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
                     float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     float gain = vol;
-                    int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
-                    if (mixed > 32767) mixed = 32767;
-                    if (mixed < -32768) mixed = -32768;
-                    mailbox_audio[i] = (int16_t)mixed;
+                    la_acc[i] += (int32_t)lroundf((float)fx_buf[i] * gain);
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
@@ -3325,11 +3329,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
                     const float g = ms->mix_vol * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
-                    int32_t mixed = (int32_t)mailbox_audio[i] +
-                        (g == 1.0f ? (int32_t)move_track[i] : (int32_t)lroundf((float)move_track[i] * g));
-                    if (mixed > 32767) mixed = 32767;
-                    if (mixed < -32768) mixed = -32768;
-                    mailbox_audio[i] = (int16_t)mixed;
+                    la_acc[i] += (g == 1.0f ? (int32_t)move_track[i]
+                                            : (int32_t)lroundf((float)move_track[i] * g));
                     if (i & 1) shadow_mix_advance(s);
                 }
                 /* Publish Move track audio to ME channel even without a synth loaded */
@@ -3459,10 +3460,7 @@ skip_la_rebuild:
     }
     if (rebuild_from_la) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)shadow_deferred_dsp_buffer[i];
-            if (mixed > 32767) mixed = 32767;
-            if (mixed < -32768) mixed = -32768;
-            mailbox_audio[i] = (int16_t)mixed;
+            la_acc[i] += (int32_t)shadow_deferred_dsp_buffer[i];
         }
     }
 
@@ -3536,7 +3534,13 @@ skip_la_rebuild:
     if (!overtake_fx_eoc && overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
         struct timespec of_t0, of_t1;
         clock_gettime(CLOCK_MONOTONIC, &of_t0);
+        /* An FX processes int16, so the rebuild sum is converted for it and
+         * picked up again afterwards for the send returns. */
+        if (rebuild_from_la)
+            mix_soft_clip_block(la_acc, mailbox_audio, FRAMES_PER_BLOCK * 2);
         overtake_dsp_fx->process_block(overtake_dsp_fx_inst, fx_target, FRAMES_PER_BLOCK);
+        if (rebuild_from_la)
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) la_acc[i] = mailbox_audio[i];
         clock_gettime(CLOCK_MONOTONIC, &of_t1);
         {
             uint64_t of_us = (of_t1.tv_sec - of_t0.tv_sec) * 1000000ULL +
@@ -3634,8 +3638,19 @@ skip_la_rebuild:
             shadow_stem_store(SAMPLER_STEM_SEND_A + sb, send_ret, 1.0f);
         }
 
-        bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
+        if (rebuild_from_la)
+            bus_mix_send_i32(la_acc, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
+        else
+            bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
     }
+
+    /* THE conversion of the rebuild sum: slots, pass-through tracks, overtake
+     * DSP and send returns, summed with headroom and brought to int16 through
+     * the soft clip rather than clamped add by add (mix_soft_clip.h). Below
+     * the knee this is the identity; above it an over is a shoulder, not a
+     * pop. Master FX and everything after work on the result. */
+    if (rebuild_from_la)
+        mix_soft_clip_block(la_acc, mailbox_audio, FRAMES_PER_BLOCK * 2);
 
     /* The A->B block above names send 1 by index. Raising SEND_BUSES turns that
      * from "the second of two" into "one arbitrary bus", which needs a routing

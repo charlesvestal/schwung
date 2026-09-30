@@ -284,4 +284,16 @@ static inline void bus_mix_send(int16_t *dst, const int16_t *src, int n, int lev
     }
 }
 
+/* bus_mix_send into an int32 accumulator: the same integer scaling (so the
+ * send stem, which recomputes it, stays exact), with no clamp -- the caller
+ * owns the one conversion to int16 (mix_soft_clip.h). The Move->Schwung
+ * rebuild sums its returns here. */
+static inline void bus_mix_send_i32(int32_t *dst, const int16_t *src, int n, int level)
+{
+    if (level <= 0) return;
+    if (level > BUS_MIX_SEND_LEVEL_MAX) level = BUS_MIX_SEND_LEVEL_MAX;
+    for (int i = 0; i < n; i++)
+        dst[i] += ((int32_t)src[i] * (int32_t)level) / BUS_MIX_SEND_LEVEL_MAX;
+}
+
 #endif /* BUS_MIX_H */
