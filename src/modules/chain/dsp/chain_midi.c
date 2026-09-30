@@ -781,7 +781,7 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     /* STEP CHANCE: a note that lost its roll never happened -- so it must be
      * dropped before the LFO retrigger, the MIDI FX and the synth all see it,
      * and its note-off with it (chain_chance.c). */
-    if (!chance_filter(inst, msg, len, source)) return;
+    if (!inst->midi_fx_pre_mode && !chance_filter(inst, msg, len, source)) return;
 
     /* LFO retrigger: reset phase on first note-on of new phrase */
     lfo_process_midi(inst->lfos, msg, len);
@@ -804,6 +804,13 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
      * The pad-originated event (what the user played) is not tracked, so
      * it passes through normally. */
     if (pre_mode_is_echo(inst, msg, len)) return;
+
+    /* STEP CHANCE in Pre mode (Schw+Move): AFTER the echo filter, so only real
+     * notes are rolled. Rolled before it, a dropped ECHO would never reach
+     * pre_mode_is_echo and its count would stay up -- and a later real
+     * note-off would be taken for an echo. A note dropped here never reaches
+     * the MIDI FX, so neither the synth nor Move's injected copy plays it. */
+    if (inst->midi_fx_pre_mode && !chance_filter(inst, msg, len, source)) return;
 
     /* Pre-mode pad-held tracker: only real (non-echo) pad notes reach here.
      * Track so the tick-path can avoid injecting notes the user is

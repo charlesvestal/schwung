@@ -63,9 +63,11 @@ int main(void) {
     in->clip_phase_valid = 0;
     CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 1, "unknown phase plays");
     in->clip_phase_valid = 1;
-    /* Pre mode stands down */
+    /* Pre mode (Schw+Move) rolls too -- v2_on_midi decides WHERE (after the
+     * echo filter; pinned in the .sh), the gate itself does not stand down */
     in->midi_fx_pre_mode = 1;
-    CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 1, "Pre mode never rolls");
+    CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "Pre mode rolls (1:2 drops pass 1)");
+    note(in, 0, 36, MOVE_MIDI_SOURCE_EXTERNAL);
     in->midi_fx_pre_mode = 0;
 
     /* ---- persistence round trip ---- */
