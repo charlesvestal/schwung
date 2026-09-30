@@ -56,7 +56,10 @@ int main(void) {
     /* Menu again: Length. The jog is Move's own length edit. */
     assert(cc(S5, 0, 1, 50, 127) == SM_SWALLOW && s.field == SM_FIELD_LENGTH);
     assert(cc(S5, 0, 1, 50, 0) == SM_SWALLOW);
-    assert(cc(S5, 0, 1, 14, 1) == SM_PASS && cd == 0);
+    /* ...ALWAYS as a rewrite, even unchanged: over the shadow UI the jog has
+     * already been filtered out of Move's copy, and a PASS delivers nothing. */
+    assert(cc(S5, 0, 1, 14, 1) == SM_REWRITE && cd == 0);
+    assert(out[0] == 0xB0 && out[1] == 14 && out[2] == 1);
 
     /* Menu again: Velocity. The jog becomes a Volume detent, same value. */
     cc(S5, 0, 1, 50, 127); cc(S5, 0, 1, 50, 0);
@@ -134,15 +137,15 @@ int main(void) {
     now = 60000; step_on(0, 4); now += 100;
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Chance */
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Length */
-    /* a slow turn is Move's own: passed through untouched */
-    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
-    now += 200; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
+    /* a slow turn is Move's own detent, delivered as the SAME bytes */
+    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1);
+    now += 200; assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1);
     /* a fast spin is rewritten into bigger detents, IN PLACE (still CC 14) */
     now += 60;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[1] == 14 && out[2] == 3);
     now += 30;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 8);
     now += 10;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 16);
     /* a reversal starts over at x1, even fast */
-    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_PASS);
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_REWRITE && out[2] == 112);
     /* Velocity: rewritten to Volume, accelerated the same way */
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Velocity */
@@ -160,20 +163,20 @@ int main(void) {
     cc(1u << 6, 0, 1, 50, 127); cc(1u << 6, 0, 1, 50, 0);   /* Length */
     assert(!s.bound_known);                                  /* a field change clears it */
     sm_bound_seed(&s, 5, 2);                                 /* 0.5 step of room up, 0.2 down */
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 1) == SM_PASS);            /* 1 of 5 */
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1); /* 1 of 5 */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_REWRITE && out[2] == 4); /* x16 trimmed to 4 */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);          /* at the cap: nothing to Move */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);
     /* ...so ONE detent back moves at once -- nothing banked */
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     assert(s.rem_down == 6 && s.rem_up == 1);
     /* the floor is bounded the same way */
     sm_bound_seed(&s, 10, 1);
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_SWALLOW);
     /* unknown bounds pass everything, as before */
     s.bound_known = 0;
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 10; step_off(0, 6);
     /* Move's cap: the next note of the SAME pitch, else the clip end */
     {

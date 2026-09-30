@@ -206,8 +206,12 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
             out[0] = status; out[1] = SM_CC_VOLUME; out[2] = v;
             return SM_REWRITE;
         }
-        /* Length: Move's own gesture -- accelerated, or untouched. */
-        if (v == d2) return SM_PASS;
+        /* Length: Move's own gesture -- accelerated, or the same detent.
+         * ALWAYS a rewrite, never a pass, even when nothing changed: over the
+         * shadow UI the display-mode filter has already taken the jog out of
+         * Move's copy, so "leave it alone" delivered nothing and Length did
+         * not move there (measured on hardware; Velocity, which was always a
+         * rewrite, did). Over Move's screen the rewrite is the same bytes. */
         out[0] = status; out[1] = SM_CC_JOG; out[2] = v;
         return SM_REWRITE;
     }
