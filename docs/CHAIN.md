@@ -1473,7 +1473,13 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
 - **The gesture is the SHIM's, over MOVE's screen AND the shadow UI**
   (`step_menu.h` pure, `step_menu.c` glue). 1.6 took it over Move's screen
   only; from the shadow UI Menu fell through and Move flipped to Session,
-  reported as the menu not opening. Menu is swallowed on BOTH edges, latched -- measured on
+  reported as the menu not opening. **Only in Move's NOTE view**: in Session
+  view and Set Overview there is no step editor, and Menu stays Move's own view
+  toggle. The view is Move's own announcement (`move_ui_mode`, shadow_dbus.c),
+  which never handled "Note Mode" before this -- the label stuck on Session
+  until a Track press. Measured with Schwung's screen reader OFF: 10/10
+  Note/Session toggles and 6/6 Set Overview exits announced, each twice. Only a
+  POSITIVE Session / Set Overview label refuses; unknown opens. Menu is swallowed on BOTH edges, latched -- measured on
   2.1.x, Menu with a step held still flips Note/Session and the pads start
   launching clips. Further Menu presses cycle Chance -> Length -> Velocity.
   The jog is SWALLOWED on Chance (Move would edit the note length under it),

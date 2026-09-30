@@ -462,6 +462,12 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
         (*host.shadow_control_ptr)->scene_edit = SCENE_NONE;
         (*host.shadow_control_ptr)->scene_unlock = 0;
         (*host.shadow_control_ptr)->ui_flags |= SHADOW_UI_FLAG_SET_CHANGED;
+        /* A set loaded from Set Overview has LEFT it, and what Move announces
+         * on the load is the set's name, not a view -- so a label of Set
+         * Overview is now stale. Unknown is the honest answer until the next
+         * view announcement or Track press (move_ui_mode_label.h). */
+        if ((*host.shadow_control_ptr)->move_ui_mode == 3)
+            (*host.shadow_control_ptr)->move_ui_mode = 0;
     }
 }
 

@@ -337,6 +337,14 @@ static void shadow_dbus_handle_text(const char *text)
     } else if (strcasecmp(text, "Session Mode") == 0) {
         in_set_overview = 0;
         if (ctrl) ctrl->move_ui_mode = 1; /* SESSION */
+    } else if (strcasecmp(text, "Note Mode") == 0) {
+        /* The one view announcement that was never handled, so leaving
+         * Session with Menu, or Set Overview with Shift+Step 1, left the label
+         * on the view just left until a Track press relabelled it. Measured
+         * 2026-09-30 with Schwung's screen reader OFF: 10/10 Note/Session
+         * toggles and 6/6 Set Overview exits announced, each twice. */
+        in_set_overview = 0;
+        if (ctrl) ctrl->move_ui_mode = 2; /* NOTE */
     } else if (text[0] && strcasecmp(text, "Set Overview") != 0 &&
                strcasecmp(text, "Sets") != 0 &&
                strncmp(text, "Page ", 5) != 0) {

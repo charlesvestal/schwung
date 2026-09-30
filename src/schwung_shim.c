@@ -8312,7 +8312,8 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
     if (held_ms < STEP_TAP_MS) { step_tap_replay[i] = 1; shim_step_tap_queued++; }
 }
 
-/* WHERE THE STEP MENU MAY OPEN: over Move's screen AND the shadow UI.
+/* WHERE THE STEP MENU MAY OPEN: over Move's screen AND the shadow UI, in
+ * Move's NOTE view.
  *
  * 1.6 took it over Move's screen only, and from the shadow UI Menu fell
  * through to the UI's own handling while Move flipped to Session -- which
@@ -8321,7 +8322,16 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
  * (STEP HAND-OFF, below), so the whole menu works there too. */
 static int step_menu_eligibility(void)
 {
-    return shadow_ui_enabled ? 1 : 0;
+    if (!shadow_ui_enabled) return 0;
+    /* ONLY WHERE THE STEPS ARE A SEQUENCER. In Session view and Set Overview
+     * there is no step editor under the finger, so the card has nothing to
+     * edit -- and Menu there is Move's own view toggle, which it should stay.
+     * Refused only on a POSITIVE Session / Set Overview label (Move's own view
+     * announcements, shadow_dbus.c); unknown still opens, so a label that has
+     * not caught up can never lock the menu out. */
+    const uint8_t m = shadow_control ? shadow_control->move_ui_mode : 0;
+    if (m == MOVE_UI_MODE_SESSION || m == MOVE_UI_MODE_SET_OVERVIEW) return 0;
+    return 1;
 }
 
 /* Controls the host owns and a module may NEVER claim: how you leave the

@@ -11,8 +11,15 @@ fail() { echo "FAIL: $1"; exit 1; }
 
 # eligible over the shadow UI too: the 1.6 gate was "!shadow_display_mode"
 grep -q 'step_menu_eligibility()' "$f" || fail "call sites do not ask step_menu_eligibility()"
-awk '/static int step_menu_eligibility\(void\)/,/^}/' "$f" | grep -q 'shadow_display_mode' \
+elig=$(awk '/static int step_menu_eligibility\(void\)/,/^}/' "$f")
+echo "$elig" | grep -q 'shadow_display_mode' \
   && fail "step_menu_eligibility() is gated on the display again (Move-screen only)"
+# ...but NOT in Session view or Set Overview: no step editor there, and Menu
+# is Move's own view toggle
+echo "$elig" | grep -q 'MOVE_UI_MODE_SESSION' || fail "step menu opens in Session view"
+echo "$elig" | grep -q 'MOVE_UI_MODE_SET_OVERVIEW' || fail "step menu opens in Set Overview"
+grep -q 'strcasecmp(text, "Note Mode")' src/host/shadow_dbus.c \
+  || fail "the Note Mode announcement is not heard (the label would stick on Session)"
 
 # the hand-off: opening on a withheld step queues the press and marks it used
 grep -q 'step_hand_press\[ms\] = 1;' "$f" || fail "menu open does not hand the withheld press to Move"
