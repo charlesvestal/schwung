@@ -588,3 +588,32 @@ compares `pitch_offset` too.
 - **Persistence across reloads.** Object ids are per load; a lane saved to disk
   still needs a position + fingerprint key, and the model is what makes that
   fingerprint cheap to take at any moment rather than ~10 s later.
+
+## For modules: `move_info.h` (2026-09-30)
+
+The reader also reads the set-wide settings modules asked for, and publishes
+them as a versioned snapshot (`src/host/move_info.{h,c}`; docs/MODULES.md for
+the module side). All of these members are **OPTIONAL**: a firmware without
+one leaves its field unknown and never fails the walk (`O_FIRST_OPTIONAL`,
+`class_optional`), because losing tempo-for-modules must never cost mute
+follow and lanes. Measured on 2.1.0:
+
+| Field | Member | Encoding |
+|---|---|---|
+| groove | `Transport.mGrooveAmount` (a Parameter) | manual value, 0 at rest |
+| MIDI clock sync | `Transport.mIsMidiClockSyncEnabled` | Bool |
+| input monitoring | `Song.mIsAudioInputMonitoringEnabled` | Bool |
+| root | `Song.mRootNote` | Int, 0 = C |
+| scale | `Song.mScale` | Blob, Move's name ("Major") |
+| launch quantization | `Song.mGlobalQuantization` | `LaunchQuantization` enum; names read from the firmware's EnumClass (0 none, 1 eightBars, 2 fourBars, 3 twoBars, 4 bar, 5 half, 6 halfTriplet, 7 quarter, 8 quarterTriplet, 9 eighth, 10 eighthTriplet, 11 sixteenth, 12 sixteenthTriplet, 13 thirtySecondth) |
+| track type | `Track.mTrackType` | `TrackType`: 0 master, 1 player, 2 return |
+| track name / colour | `Track.mLabel` → `Label.mName` (Blob), `Label.mColorId` (Int) | "" when unnamed; palette index |
+
+Blobs are guarded word by word (`f_blob`), so a rename re-walks at once even
+when the bytes are rewritten in place. Published from the reader's tick hook
+only when something changed (or the clock moved), and marked `valid` 0 by the
+shim worker when the model stops being read.
+
+Found with `tools/move-model/flipcls.py live.Song live.Transport live.Track
+live.Label` and the EnumClass by its name string -- the same way anything else
+here should be added.

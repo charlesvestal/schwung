@@ -30,6 +30,7 @@ void shadow_poll_current_set(void) { n_poll++; }
 static move_model_tick_fn g_tick;
 void move_model_set_tick_hook(move_model_tick_fn fn) { g_tick = fn; }
 int move_model_get(move_model_t *out) { memset(out, 0, sizeof *out); return 0; }
+const char *move_model_quant_name(int v) { (void)v; return NULL; }
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
 { (void)previous; if (notes) *notes = NULL; if (ref) memset(ref, 0, sizeof *ref); return -1; }
 void shadow_log(const char *m) { (void)m; }
