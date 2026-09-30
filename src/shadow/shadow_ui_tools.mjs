@@ -24,6 +24,7 @@ import {
     announce
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { declaresStandalone } from '/data/UserData/schwung/shared/tool_launch.mjs';
+import { compareNames } from '/data/UserData/schwung/shared/name_sort.mjs';
 
 /* ---- Helpers ------------------------------------------------------------ */
 
@@ -95,7 +96,7 @@ export function scanForToolModules() {
         debugLog("scanForToolModules error: " + e);
     }
 
-    result.sort((a, b) => a.name.localeCompare(b.name));
+    result.sort((a, b) => compareNames(a.name, b.name));
     debugLog("scanForToolModules: found " + result.length + " tools");
     return result;
 }
