@@ -267,8 +267,13 @@ static void seed_bounds(const sm_page_t *pg, const int *idx, int k)
         int32_t u, d;
         if (g_sm.field == SM_FIELD_LENGTH) {
             const double unit = 0.1 * pg->step_beats;
-            u = (int32_t)floor((nt->cap - nt->dur) / unit + 1e-6);
-            d = (int32_t)floor((nt->dur - unit) / unit + 1e-6);
+            /* ROUNDED, never floored: Move builds a length by adding 0.025 q
+             * again and again, so "15.5 steps" is 3.8750001 and a floor of
+             * 4.99999 stopped the jog one detent short of the cap (15.9, on
+             * hardware). Move moves in exact units and clamps at the cap, so
+             * the nearest whole count is the true one. */
+            u = (int32_t)lround((nt->cap - nt->dur) / unit);
+            d = (int32_t)lround((nt->dur - unit) / unit);
         } else {
             u = 127 - (int32_t)(nt->vel + 0.5f);
             d = (int32_t)(nt->vel + 0.5f) - 1;
