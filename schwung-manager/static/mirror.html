@@ -30,7 +30,11 @@
   body { display: flex; flex-direction: column; align-items: center; min-height: 100dvh;
          padding: 12px 16px 24px; gap: 12px; -webkit-user-select: none; user-select: none; }
   #bar { width: 100%; max-width: 920px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  #status { flex: 1 1 auto; min-width: 12em; color: var(--dim); }
+  /* The status text changes length every tick (fps digits, audio delay). Its width must
+     not follow it: basis 0 + fixed min-width means the bar wraps (or not) the same way
+     whatever it says, and a long line is clipped rather than pushing the buttons down. */
+  #status { flex: 1 1 0; min-width: 24em; color: var(--dim); white-space: pre;
+            overflow: hidden; text-overflow: ellipsis; }
   #status::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
                     background: var(--bad); margin-right: 6px; vertical-align: 0; }
   #status.live::before { background: var(--ok); }
@@ -241,8 +245,8 @@ setInterval(() => {
   if (quiet > WATCHDOG_MS) { reconnectLater(); return; }
   if (es.readyState === EventSource.OPEN) {
     if (quiet > 2500) setStatus('no data for ' + Math.round(quiet / 1000) + ' s', 'stale');
-    else setStatus('live' + (sourceLabel ? ' — ' + sourceLabel : '') + ' — ' + (fps ? fps + ' fps' : 'screen idle') +
-                   (audioOn ? ' — audio ' + (audioPrimed ? Math.round(audioDelay * 1000) + ' ms behind' : 'buffering…') : ''), 'live');
+    else setStatus('live' + (sourceLabel ? ' — ' + sourceLabel : '') + ' — ' + (fps ? String(fps).padStart(2) + ' fps' : 'idle  ') +
+                   (audioOn ? ' — audio ' + (audioPrimed ? String(Math.round(audioDelay * 1000)).padStart(4) + ' ms behind' : 'buffering…    ') : ''), 'live');
   }
 }, 500);
 document.addEventListener('visibilitychange', () => {
