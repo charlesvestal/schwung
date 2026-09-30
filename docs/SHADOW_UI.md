@@ -1726,6 +1726,30 @@ Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
 
+### Duplicating a set copies EVERYTHING but an exclude list
+
+A set's Schwung state lives in `set_state/<uuid>/`, and a duplicated set gets a
+new uuid. The copy into it was a list of what to copy -- `slot_N`,
+`master_fx_N`, `controls.json`, `shadow_chain_config.json` -- and every per-set
+file added after that list was written was left behind in silence: step chance
+(`chance_N.txt`), automation (`lanes_N.json`), `scenes.json`, the send FX
+chains (`send_fx_*.json`) and `send_levels.json`. A duplicate kept its synths
+and lost the rest, with nothing logged. Its comment even said *"a file not
+named here is silently left behind"* -- the warning was correct, and it was not
+enough.
+
+The rule is inverted (`src/shadow/set_state_copy.mjs`): copy every top-level
+entry EXCEPT `snapshot/` (re-seeded per set -- see Snapshot / recall) and
+`copy_source.txt` (it names where THIS dir came from). A new per-set file is
+carried from the day it is first written. A failed copy falls back to seeding
+the set as new, so it never boots half-populated.
+
+Carrying the position-keyed state is safe: a duplicate holds the same clips at
+the same grid positions. Move RENUMBERS notes on load, which lanes absorb (a
+fingerprint mismatch re-stamps) and chance absorbs (a restore unbinds ids; the
+page follow adopts by pitch + position). `tests/host/test_set_state_copy.sh`
+RUNS the command against a real directory.
+
 ### Scenes: 32 snapshots, 16 scenes, one crossfader -- morphed in the DSP
 
 Octatrack-style, in two layers. Original design:
