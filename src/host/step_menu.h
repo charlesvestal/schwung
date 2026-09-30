@@ -15,8 +15,11 @@
  * still a button event to Move. The release is owed even if the step was
  * let go first.
  *
- * Only over MOVE's screen (the caller passes `eligible`): with the shadow UI
- * up, a held step is the p-lock gesture and Menu is the UI's own.
+ * Over MOVE's screen and the shadow UI alike (the caller passes `eligible`).
+ * On a screen that WITHHOLDS steps from Move for the p-lock gesture, the shim
+ * hands the held press to Move when the menu opens (sm_owe_release carries
+ * its release back) -- Length and Velocity are Move's own hold-step edits,
+ * and they need Move to be holding the step.
  *
  * Pure, so tests/host drives it; RT-safe.
  */
@@ -203,8 +206,12 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
             out[0] = status; out[1] = SM_CC_VOLUME; out[2] = v;
             return SM_REWRITE;
         }
-        /* Length: Move's own gesture -- accelerated, or untouched. */
-        if (v == d2) return SM_PASS;
+        /* Length: Move's own gesture -- accelerated, or the same detent.
+         * ALWAYS a rewrite, never a pass, even when nothing changed: over the
+         * shadow UI the display-mode filter has already taken the jog out of
+         * Move's copy, so "leave it alone" delivered nothing and Length did
+         * not move there (measured on hardware; Velocity, which was always a
+         * rewrite, did). Over Move's screen the rewrite is the same bytes. */
         out[0] = status; out[1] = SM_CC_JOG; out[2] = v;
         return SM_REWRITE;
     }
@@ -232,6 +239,17 @@ static inline uint32_t sm_due_releases(sm_state_t *s, uint64_t now_ms)
         }
     }
     return m;
+}
+
+/* A step release the CALLER took from Move and owes it, due no earlier than
+ * `due_ms`: the shim's hand-off of a withheld step (see the header). Same
+ * queue as the tap guard's, so the same post-compaction injection delivers
+ * it -- and a press of that step before it is due is one long hold to Move,
+ * exactly as for the tap guard's own. */
+static inline void sm_owe_release(sm_state_t *s, int step, uint64_t due_ms)
+{
+    if (step < 0 || step >= 16) return;
+    s->owe_ms[step] = due_ms ? due_ms : 1;
 }
 
 /* The next condition index for a jog detent, clamped to the list. */

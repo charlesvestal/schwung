@@ -11425,6 +11425,15 @@ function drawSnapshotPendingMark() {
     print(x + 2, y + 1, "Q", 0);
 }
 
+/* The step menu card when the shadow UI is the screen: the card blanks its own
+ * rect, so it is painted over whatever the view drew. The shim takes Menu and
+ * the jog while it is open, so the view underneath does not move. */
+function drawStepMenuOnTop() {
+    if (shadowDisplayHidden()) return;
+    const stepMenu = (typeof shadow_get_step_menu === "function") ? shadow_get_step_menu() : null;
+    if (stepMenu) drawStepMenuCard(null, stepMenu);
+}
+
 function drawSnapshotToastOnTop() {
     if (!snapshotToastActive() || shadowDisplayHidden()) return;
     snapshotToastFrames--;
@@ -29484,9 +29493,11 @@ globalThis.tick = function() {
         return;
     }
 
-    /* The step menu, over MOVE's screen only -- it is a gesture on Move's step
-     * sequencer and the shim never opens it with the shadow UI up. Ahead of
-     * the toasts: it is what the user is holding a step to look at. */
+    /* The step menu over MOVE's screen: a clear and a rect blit onto Move's
+     * picture. Ahead of the toasts: it is what the user is holding a step to
+     * look at. Over the shadow UI it is painted on top after the view switch
+     * instead (drawStepMenuOnTop) -- the snapshot toast's two branches, for
+     * the reason given there. */
     if (stepMenu && shadowDisplayHidden()) {
         clear_screen();
         const g = drawStepMenuCard(null, stepMenu);
@@ -29992,6 +30003,9 @@ globalThis.tick = function() {
          * 600 ms and belongs on top of both, since it reports something that
          * happened just now. */
         drawPlockMark();
+        /* The step menu last: the finger is on a step and the card is what it
+         * is looking at. */
+        drawStepMenuOnTop();
     }
 
     } catch (e) {

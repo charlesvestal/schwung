@@ -38,7 +38,7 @@ int main(void) {
     /* Shift+Menu is the screen reader / Master FX: never ours */
     assert(cc(S5, 1, 1, 50, 127) == SM_PASS && !s.open);
     cc(S5, 1, 1, 50, 0);
-    /* shadow UI up: not eligible */
+    /* not eligible (the shadow UI disabled): Move's */
     assert(cc(S5, 0, 0, 50, 127) == SM_PASS && !s.open);
     cc(S5, 0, 0, 50, 0);
 
@@ -56,7 +56,10 @@ int main(void) {
     /* Menu again: Length. The jog is Move's own length edit. */
     assert(cc(S5, 0, 1, 50, 127) == SM_SWALLOW && s.field == SM_FIELD_LENGTH);
     assert(cc(S5, 0, 1, 50, 0) == SM_SWALLOW);
-    assert(cc(S5, 0, 1, 14, 1) == SM_PASS && cd == 0);
+    /* ...ALWAYS as a rewrite, even unchanged: over the shadow UI the jog has
+     * already been filtered out of Move's copy, and a PASS delivers nothing. */
+    assert(cc(S5, 0, 1, 14, 1) == SM_REWRITE && cd == 0);
+    assert(out[0] == 0xB0 && out[1] == 14 && out[2] == 1);
 
     /* Menu again: Velocity. The jog becomes a Volume detent, same value. */
     cc(S5, 0, 1, 50, 127); cc(S5, 0, 1, 50, 0);
@@ -134,15 +137,15 @@ int main(void) {
     now = 60000; step_on(0, 4); now += 100;
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Chance */
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Length */
-    /* a slow turn is Move's own: passed through untouched */
-    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
-    now += 200; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
+    /* a slow turn is Move's own detent, delivered as the SAME bytes */
+    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1);
+    now += 200; assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1);
     /* a fast spin is rewritten into bigger detents, IN PLACE (still CC 14) */
     now += 60;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[1] == 14 && out[2] == 3);
     now += 30;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 8);
     now += 10;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 16);
     /* a reversal starts over at x1, even fast */
-    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_PASS);
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_REWRITE && out[2] == 112);
     /* Velocity: rewritten to Volume, accelerated the same way */
     cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Velocity */
@@ -160,20 +163,20 @@ int main(void) {
     cc(1u << 6, 0, 1, 50, 127); cc(1u << 6, 0, 1, 50, 0);   /* Length */
     assert(!s.bound_known);                                  /* a field change clears it */
     sm_bound_seed(&s, 5, 2);                                 /* 0.5 step of room up, 0.2 down */
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 1) == SM_PASS);            /* 1 of 5 */
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 1) == SM_REWRITE && out[2] == 1); /* 1 of 5 */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_REWRITE && out[2] == 4); /* x16 trimmed to 4 */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);          /* at the cap: nothing to Move */
     now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);
     /* ...so ONE detent back moves at once -- nothing banked */
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     assert(s.rem_down == 6 && s.rem_up == 1);
     /* the floor is bounded the same way */
     sm_bound_seed(&s, 10, 1);
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_SWALLOW);
     /* unknown bounds pass everything, as before */
     s.bound_known = 0;
-    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_REWRITE && out[2] == 127);
     now += 10; step_off(0, 6);
     /* Move's cap: the next note of the SAME pitch, else the clip end */
     {
@@ -237,6 +240,22 @@ int main(void) {
     assert(sm_drum_cell_pitch(68) == 36 && sm_drum_cell_pitch(69) == 37);
     assert(sm_drum_cell_pitch(76) == 40 && sm_drum_cell_pitch(95) == 51);
     assert(sm_drum_cell_pitch(72) == -1 && sm_drum_cell_pitch(67) == -1);
+
+    /* ---- the shim's HAND-OFF release rides the same owed queue ---------- *
+     * A step withheld from Move and handed to it when the menu opened: the
+     * shim takes the release and owes it here, due SM_HOLD_SAFE_MS after the
+     * hand-off. Never before -- sooner is a tap to Move, a toggled note. */
+    memset(&s, 0, sizeof s);
+    sm_owe_release(&s, 3, 90000);
+    assert(sm_due_releases(&s, 89999) == 0);
+    assert(sm_due_releases(&s, 90000) == (1u << 3));
+    assert(sm_due_releases(&s, 99999) == 0);          /* handed over ONCE */
+    /* a due time of 0 still owes (the next frame), never "nothing owed" */
+    sm_owe_release(&s, 4, 0);
+    assert(sm_due_releases(&s, 1) == (1u << 4));
+    /* out of range is ignored, not a write past the arrays */
+    sm_owe_release(&s, 16, 5); sm_owe_release(&s, -1, 5);
+    assert(sm_due_releases(&s, 1u << 30) == 0);
 
     printf("test_step_menu: PASS\n");
     return 0;

@@ -384,6 +384,16 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
     ctl->step_menu_seq++;
 }
 
+int step_menu_open_step(void)
+{
+    return g_sm.open ? (int)g_sm.step : -1;
+}
+
+void step_menu_owe_release(int step, uint64_t due_ms)
+{
+    sm_owe_release(&g_sm, step, due_ms);
+}
+
 /* SPI CALLBACK, after compaction: the step releases withheld from Move by
  * the tap guard (step_menu.h) that are now old enough to be a HOLD. */
 uint32_t step_menu_take_due_releases(uint64_t now_ms)

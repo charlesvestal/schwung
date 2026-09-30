@@ -15,6 +15,10 @@ int step_menu_on_input(uint8_t status, uint8_t d1, uint8_t d2, uint8_t out[3],
                        uint32_t held_mask, int shift_held, int eligible, uint64_t now_ms);
 /* SPI CALLBACK, after compaction: steps whose withheld release is now due. */
 uint32_t step_menu_take_due_releases(uint64_t now_ms);
+/* The step the open menu is about, or -1 when it is closed. */
+int step_menu_open_step(void);
+/* A release the shim took from Move (the hand-off) and owes it at due_ms. */
+void step_menu_owe_release(int step, uint64_t due_ms);
 /* SPI CALLBACK, once per frame after the scan. */
 void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible);
 
