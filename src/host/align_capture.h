@@ -39,7 +39,7 @@ extern "C" {
 #endif
 
 /* Streams captured in parallel. Each gets its own buffer and its own file. */
-#define ALIGN_CAPTURE_MAX_STREAMS 4
+#define ALIGN_CAPTURE_MAX_STREAMS 6
 
 /* Longest capture we will allocate, per stream, in stereo int16 SAMPLES.
  * 30 s @ 44.1 kHz stereo = 2,646,000 samples = 5.3 MB per stream. Four of

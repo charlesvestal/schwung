@@ -78,6 +78,9 @@
 /* Defined further down with the other shim globals; used from the mixer,
  * which sits above that block. */
 extern align_capture_t g_align_capture;
+/* Which slot streams 0-2 follow. Written by the worker BEFORE it arms (the
+ * arm's release-store publishes it), read on the callback. */
+volatile int g_align_capture_slot = 0;
 #include "host/shadow_process.h"
 #include "host/shadow_resample.h"
 #include "host/audio_in_restore.h"
@@ -3135,7 +3138,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * starve appeared as a waveform discontinuity indistinguishable
                  * from a real one — which cost real time on 2026-08-27 before
                  * the equal file lengths gave it away. */
-                if (s == 0) {
+                if (s == g_align_capture_slot) {
                     static const int16_t align_silence[FRAMES_PER_BLOCK * 2] = {0};
                     align_capture_record(&g_align_capture, 0,
                                          have_move_track ? move_track
@@ -3198,7 +3201,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                      * cannot distinguish "Move sent us bad audio" from "we
                      * damaged good audio", and on 2026-08-27 a whole session
                      * measured only inputs. */
-                    if (s == 0) {
+                    if (s == g_align_capture_slot) {
                         align_capture_record(&g_align_capture, 2, fx_buf,
                                              FRAMES_PER_BLOCK * 2);
                     }
@@ -3562,10 +3565,19 @@ skip_la_rebuild:
      * than below it.
      *
      * An inactive send costs one pointer scan: no memcpy, no process_block. */
+    /* Streams 4 and 5: Send A's input and its chain's output. Silence on a
+     * frame the bus is skipped, so the files stay sample-aligned with 0-3. */
+    if (!shadow_send_bus_active(0)) {
+        static const int16_t align_send_silence[FRAMES_PER_BLOCK * 2] = {0};
+        align_capture_record(&g_align_capture, 4, align_send_silence, FRAMES_PER_BLOCK * 2);
+        align_capture_record(&g_align_capture, 5, align_send_silence, FRAMES_PER_BLOCK * 2);
+    }
     for (int sb = 0; sb < SEND_BUSES; sb++) {
         if (!shadow_send_bus_active(sb)) continue;
 
         memcpy(send_out[sb], send_accum[sb], sizeof(send_out[sb]));
+        if (sb == 0)
+            align_capture_record(&g_align_capture, 4, send_out[0], FRAMES_PER_BLOCK * 2);
 
         /* A -> B, applied AFTER A's chain and BEFORE B's. That ordering is what
          * makes it feedback-safe BY CONSTRUCTION: there is no point at which
@@ -3604,6 +3616,9 @@ skip_la_rebuild:
                 memcpy(send_out[sb], sfx_dry, sizeof(sfx_dry));
             }
         }
+
+        if (sb == 0)
+            align_capture_record(&g_align_capture, 5, send_out[0], FRAMES_PER_BLOCK * 2);
 
         /* THE SEND STEM, tapped here and nowhere else.
          *

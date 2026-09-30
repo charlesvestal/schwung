@@ -651,28 +651,37 @@ static void align_capture_tick(void) {
 
     if (access(ALIGN_CAPTURE_TRIGGER_PATH, F_OK) != 0) return;
 
-    int seconds = 0;
+    int seconds = 0, slot = 0;
     FILE *f = fopen(ALIGN_CAPTURE_TRIGGER_PATH, "r");
     if (f) {
-        if (fscanf(f, "%d", &seconds) != 1) seconds = 0;
+        int n = fscanf(f, "%d %d", &seconds, &slot);
+        if (n < 1) seconds = 0;
+        if (n < 2) slot = 0;
         fclose(f);
     }
     unlink(ALIGN_CAPTURE_TRIGGER_PATH);
     if (seconds <= 0) seconds = ALIGN_CAPTURE_DEFAULT_SECONDS;
+    if (slot < 0 || slot >= 4) slot = 0;   /* SHADOW_CHAIN_INSTANCES */
 
-    /* Four streams: the two summands, the slot's post-FX output, and the
-     * finished mailbox. Inputs alone cannot tell "Move sent bad audio" from
-     * "we damaged good audio" — capture the chain, not its ends. */
-    static const char *const paths[4] = {
-        "/data/UserData/schwung/slot0_move_track.pcm",
-        "/data/UserData/schwung/slot0_synth_src.pcm",
-        "/data/UserData/schwung/slot0_post_fx.pcm",
-        "/data/UserData/schwung/mailbox_out.pcm",
-    };
+    /* Six streams: the chosen slot's two summands and its post-FX output,
+     * the finished mailbox, and Send A's input and output. Inputs alone
+     * cannot tell "Move sent bad audio" from "we damaged good audio" --
+     * capture the chain, not its ends. The trigger's optional second number
+     * picks the slot (0-3); the file names carry it. */
+    static char pbuf[6][96];
+    snprintf(pbuf[0], sizeof(pbuf[0]), "/data/UserData/schwung/slot%d_move_track.pcm", slot);
+    snprintf(pbuf[1], sizeof(pbuf[1]), "/data/UserData/schwung/slot%d_synth_src.pcm", slot);
+    snprintf(pbuf[2], sizeof(pbuf[2]), "/data/UserData/schwung/slot%d_post_fx.pcm", slot);
+    snprintf(pbuf[3], sizeof(pbuf[3]), "/data/UserData/schwung/mailbox_out.pcm");
+    snprintf(pbuf[4], sizeof(pbuf[4]), "/data/UserData/schwung/send_a_in.pcm");
+    snprintf(pbuf[5], sizeof(pbuf[5]), "/data/UserData/schwung/send_a_out.pcm");
+    const char *const paths[6] = { pbuf[0], pbuf[1], pbuf[2], pbuf[3], pbuf[4], pbuf[5] };
+    extern volatile int g_align_capture_slot;
+    g_align_capture_slot = slot;
     uint32_t samples = (uint32_t)seconds * 44100u * 2u;
-    if (align_capture_arm(&g_align_capture, paths, 4, samples) == 0) {
+    if (align_capture_arm(&g_align_capture, paths, 6, samples) == 0) {
         unified_log("shim", LOG_LEVEL_INFO,
-                    "align capture armed: %d s per stream", seconds);
+                    "align capture armed: %d s per stream, slot %d", seconds, slot);
     } else {
         /* Almost always "a capture is already running" — say so rather than
          * leaving the user to wonder why the trigger did nothing. */
