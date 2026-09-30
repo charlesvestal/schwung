@@ -40,6 +40,8 @@ typedef struct {
     double   scroll, step_beats, clip_len;
     int      triplet;
     int      n;
+    int      truncated;       /* more notes in the window than SM_PAGE_MAX */
+    double   lo, hi;          /* the window the notes were taken from */
     sm_note_t notes[SM_PAGE_MAX];
 } sm_page_t;
 
@@ -69,8 +71,10 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
             w.clip_len = c->loop_on ? c->loop_end : c->region_end;
             const double lo = w.scroll - w.step_beats;
             const double hi = w.scroll + 17.0 * w.step_beats;
-            for (int i = 0; i < n && w.n < SM_PAGE_MAX; i++) {
+            w.lo = lo; w.hi = hi;
+            for (int i = 0; i < n; i++) {
                 if (notes[i].start < lo || notes[i].start >= hi) continue;
+                if (w.n >= SM_PAGE_MAX) { w.truncated = 1; break; }
                 sm_note_t *o = &w.notes[w.n++];
                 o->id = notes[i].id;
                 o->start = notes[i].start;
@@ -80,6 +84,14 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
             }
         }
     }
+    /* Only a CHANGE is published: the seq is what the callback follows Move's
+     * edits on, and a seq bumped every tick would re-run that every 8th frame
+     * forever. Compared as bytes -- `w` is memset, so padding is zero too. */
+    static sm_page_t last;
+    static int have_last;
+    if (have_last && memcmp(&last, &w, sizeof w) == 0) return;
+    memcpy(&last, &w, sizeof w);
+    have_last = 1;
     unsigned s = atomic_load_explicit(&g_page_seq, memory_order_relaxed);
     atomic_store_explicit(&g_page_seq, s + 1, memory_order_relaxed);
     atomic_thread_fence(memory_order_release);
@@ -184,11 +196,50 @@ int step_menu_on_input(uint8_t status, uint8_t d1, uint8_t d2, uint8_t out[3],
     return a;
 }
 
+/* FOLLOW MOVE'S EDITS on the page it shows. A condition is keyed by note id
+ * but matched at playback by pitch + position, so a note Move NUDGED or
+ * re-pitched must carry its new position into the store, and a note Move
+ * DELETED must leave it -- or the next note placed on that step at that pitch
+ * inherits a condition nobody gave it. Only the window we can see, and never
+ * from a page that was truncated or could not be decoded: absence from a list
+ * we did not finish reading says nothing. */
+static void follow_page_edits(const sm_page_t *pg)
+{
+    if (!pg->valid || pg->truncated) return;
+    void *inst = slot_instance(pg->track);
+    if (!inst || !shadow_plugin_v2->set_param) return;
+    char val[64 + SM_PAGE_MAX * 21];
+    int w = snprintf(val, sizeof val, "%d %.17g %.17g", pg->row, pg->lo, pg->hi);
+    for (int i = 0; i < pg->n; i++) {
+        const sm_note_t *nt = &pg->notes[i];
+        w += snprintf(val + w, sizeof val - (size_t)w, " %lld", (long long)nt->id);
+        if (note_cond(inst, pg->row, nt->id) != SC_ALWAYS) {
+            char mv[96];
+            snprintf(mv, sizeof mv, "%d %lld %d %.17g", pg->row, (long long)nt->id,
+                     nt->pitch, nt->start);
+            shadow_plugin_v2->set_param(inst, "chance:move", mv);
+        }
+    }
+    shadow_plugin_v2->set_param(inst, "chance:prune", val);
+}
+
 /* SPI CALLBACK, once per frame after the scan: close a menu whose step went
- * away, and republish the card when anything it draws changed. */
+ * away, follow Move's edits, and republish the card when anything it draws
+ * changed. */
 void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
 {
     if (!ctl) return;
+    /* Move's edits, whether or not the menu is open -- a nudge with the step
+     * held and the menu closed is the ordinary case. At most every 8th frame. */
+    {
+        static unsigned followed_seq;
+        static int follow_frames;
+        const unsigned ps = atomic_load_explicit(&g_page_seq, memory_order_relaxed);
+        if (ps != followed_seq && (++follow_frames & 7) == 0 && page_read(&g_pg)) {
+            followed_seq = ps;
+            follow_page_edits(&g_pg);
+        }
+    }
     const uint8_t was_open = g_sm.open;
     sm_validate(&g_sm, held_mask, eligible);
     if (g_sm.open != was_open) g_dirty = 1;

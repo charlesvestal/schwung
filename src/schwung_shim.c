@@ -2268,7 +2268,7 @@ static void shadow_inprocess_render_to_buffer(void) {
                 /* Step chance's A:B clock, from the same model snapshot. */
                 if (shadow_chain_set_clip_pass)
                     shadow_chain_set_clip_pass(shadow_chain_slots[s].instance,
-                                               (lane_ok && s < CLIP_TRACKS)
+                                               (lane_ok && s < MM_TRACKS)
                                                    ? shadow_slot_clip_pass_last[s] : -1);
 
                 /* THE KILL SWITCH, pushed on change like everything else

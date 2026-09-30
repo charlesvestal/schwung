@@ -72,6 +72,18 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
         int row, pitch; long long id; double start;
         if (sscanf(val, "%d %lld %d %lf", &row, &id, &pitch, &start) == 4)
             sc_store_relocate(&inst->chance, row, (int64_t)id, pitch, start);
+    } else if (strcmp(sub, "prune") == 0) {
+        /* "row lo hi [id ...]": entries on `row` starting in [lo, hi) whose
+         * note Move no longer has. The shim sends the notes it can SEE. */
+        int row, used = 0; double lo, hi;
+        if (sscanf(val, "%d %lf %lf%n", &row, &lo, &hi, &used) != 3) return;
+        int64_t live[128]; int n = 0; const char *p = val + used;
+        for (;;) {
+            long long id; int k = 0;
+            if (n >= 128 || sscanf(p, " %lld%n", &id, &k) != 1) break;
+            live[n++] = (int64_t)id; p += k;
+        }
+        if (n < 128) sc_store_prune_window(&inst->chance, row, lo, hi, live, n);
     } else if (strcmp(sub, "state") == 0) {
         /* A refused document leaves the store as it was (sc_store_parse). */
         sc_store_parse(&inst->chance, val);

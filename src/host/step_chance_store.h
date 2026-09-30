@@ -94,6 +94,28 @@ static inline void sc_store_relocate(sc_store_t *st, int row, int64_t id, int pi
     st->rev++;
 }
 
+/* Move deleted notes: drop every entry on `row` whose start lies in
+ * [lo, hi) and whose id is NOT among `live` -- the notes Move shows there
+ * now. Only inside the window: outside it we have not looked, and absence
+ * from a page we did not read says nothing. Returns how many went.
+ *
+ * Without this, a note deleted and another placed on the same step at the
+ * same pitch inherits the old one's condition -- the match is by position. */
+static inline int sc_store_prune_window(sc_store_t *st, int row, double lo, double hi,
+                                        const int64_t *live, int n_live)
+{
+    int gone = 0;
+    for (int i = 0; i < SC_STORE_MAX; i++) {
+        sc_entry_t *e = &st->e[i];
+        if (!e->used || e->row != row || e->start < lo || e->start >= hi) continue;
+        int found = 0;
+        for (int k = 0; k < n_live && !found; k++) found = (live[k] == e->id);
+        if (!found) { e->used = 0; gone++; }
+    }
+    if (gone) st->rev++;
+    return gone;
+}
+
 /* The condition for a note-on of `pitch` at clip phase `phase` on `row`.
  * A note on the window's first beat can be seen a hair under its END (the
  * frame fell before the wrap), so with a known window the distance wraps. */
