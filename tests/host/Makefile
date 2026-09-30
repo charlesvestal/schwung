@@ -82,6 +82,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_ui_flags_layout \
 	$(BUILD_DIR)/test_recall_quantize \
 	$(BUILD_DIR)/test_step_chance \
+	$(BUILD_DIR)/test_step_chance_store \
 	$(BUILD_DIR)/test_forward_channel \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
@@ -239,6 +240,9 @@ $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/m
 
 # -lm: sc_pass_index floors.
 $(BUILD_DIR)/test_step_chance: test_step_chance.c ../../src/host/step_chance.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_step_chance_store: test_step_chance_store.c ../../src/host/step_chance_store.h ../../src/host/step_chance.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_mute_follow: test_mute_follow.c ../../src/host/mute_follow.h | $(BUILD_DIR)
