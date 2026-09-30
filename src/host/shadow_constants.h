@@ -843,6 +843,10 @@ typedef struct shadow_control_t {
     volatile uint8_t step_menu_page[16];
     volatile uint8_t step_menu_flags;           /* SM_FLAG_* */
     volatile uint8_t step_menu_track;           /* 0..3, the track the page is on */
+    /* A step holding SEVERAL notes (a chord) is a RANGE, as Move shows it:
+     * step_menu_len_c / step_menu_vel are the minimum, these the maximum. */
+    volatile uint8_t step_menu_vel_max;
+    volatile uint16_t step_menu_len_max_c;
 } shadow_control_t;
 
 #define SM_CELL_EMPTY 255

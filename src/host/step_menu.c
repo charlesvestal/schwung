@@ -293,11 +293,25 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
         const int c = note_cond(inst, g_pg.row, g_pg.notes[idx[0]].id);
         ctl->step_menu_page[b] = (uint8_t)c;
         if (b == g_sm.step) {
-            const sm_note_t *nt = &g_pg.notes[idx[0]];
+            /* Every note Move's own hold-step edit touches: a chord is a
+             * RANGE ("2.0-16.0"), because Move clamps each note on its own. */
+            double dmin = 1e9, dmax = 0; float vmin = 1e9f, vmax = 0;
+            for (int q = 0; q < k; q++) {
+                const sm_note_t *nt = &g_pg.notes[idx[q]];
+                if (nt->dur < dmin) dmin = nt->dur;
+                if (nt->dur > dmax) dmax = nt->dur;
+                if (nt->vel < vmin) vmin = nt->vel;
+                if (nt->vel > vmax) vmax = nt->vel;
+            }
+            #define SM_C(x) ((uint16_t)((x) < 0 ? 0 : (x) > 65535 ? 65535 : (x)))
+            #define SM_V(x) ((uint8_t)((x) < 0 ? 0 : (x) > 127 ? 127 : (x)))
             ctl->step_menu_cond = (uint8_t)c;
-            ctl->step_menu_vel = (uint8_t)(nt->vel < 0 ? 0 : nt->vel > 127 ? 127 : nt->vel);
-            const double lc = nt->dur / g_pg.step_beats * 100.0 + 0.5;
-            ctl->step_menu_len_c = (uint16_t)(lc < 0 ? 0 : lc > 65535 ? 65535 : lc);
+            ctl->step_menu_vel = SM_V(vmin);
+            ctl->step_menu_vel_max = SM_V(vmax);
+            ctl->step_menu_len_c = SM_C(dmin / g_pg.step_beats * 100.0 + 0.5);
+            ctl->step_menu_len_max_c = SM_C(dmax / g_pg.step_beats * 100.0 + 0.5);
+            #undef SM_C
+            #undef SM_V
         }
     }
     ctl->step_menu_open = 1;

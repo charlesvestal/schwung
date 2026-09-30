@@ -68,6 +68,11 @@ if (solid) fail('a Move-only card still draws bars');
 const { fieldValue } = await import('$PWD/src/shared/step_menu_card.mjs');
 if (fieldValue({ field: 0, flags: 1, cond: 11 }) !== 'Move only') fail('Move-only chance value');
 if (fieldValue({ field: 1, flags: 1, cond: 11, lenC: 120 }) !== '1.2') fail('Length must still work on a Move-only track');
+/* a chord is a range, as Move prints it */
+if (fieldValue({ field: 1, cond: 0, lenC: 200, lenMaxC: 1600 }) !== '2.0-16.0') fail('length range: ' + fieldValue({ field: 1, cond: 0, lenC: 200, lenMaxC: 1600 }));
+if (fieldValue({ field: 1, cond: 0, lenC: 120, lenMaxC: 120 }) !== '1.2') fail('single length');
+if (fieldValue({ field: 2, cond: 0, vel: 90, velMax: 127 }) !== '90-127') fail('velocity range');
+if (fieldValue({ field: 2, cond: 0, vel: 100 }) !== '100') fail('single velocity (no max field: an older shim)');
 console.log('PASS: card draws the page');
 " || exit 1
 

@@ -891,6 +891,8 @@ static JSValue js_shadow_get_step_menu(JSContext *ctx, JSValueConst this_val, in
     JS_SetPropertyStr(ctx, o, "vel", JS_NewInt32(ctx, shadow_control->step_menu_vel));
     JS_SetPropertyStr(ctx, o, "lenC", JS_NewInt32(ctx, shadow_control->step_menu_len_c));
     JS_SetPropertyStr(ctx, o, "flags", JS_NewInt32(ctx, shadow_control->step_menu_flags));
+    JS_SetPropertyStr(ctx, o, "velMax", JS_NewInt32(ctx, shadow_control->step_menu_vel_max));
+    JS_SetPropertyStr(ctx, o, "lenMaxC", JS_NewInt32(ctx, shadow_control->step_menu_len_max_c));
     JS_SetPropertyStr(ctx, o, "track", JS_NewInt32(ctx, shadow_control->step_menu_track));
     JSValue pg = JS_NewArray(ctx);
     for (int i = 0; i < 16; i++)

@@ -71,8 +71,17 @@ export function condName(idx) {
 export function fieldValue(state) {
     if (chanceUnavailable(state)) return "Move only";
     if (state.cond === SM_CELL_EMPTY) return "No note";
-    if (state.field === 1) return (state.lenC / 100).toFixed(2).replace(/0$/, "");
-    if (state.field === 2) return String(state.vel);
+    /* A chord is a RANGE, as Move prints it ("2.0-16.0"): Move's hold-step
+     * edit moves every note on the step and clamps each on its own. */
+    const len = (c) => (c / 100).toFixed(2).replace(/0$/, "");
+    if (state.field === 1) {
+        const hi = state.lenMaxC || state.lenC;
+        return hi !== state.lenC ? len(state.lenC) + "-" + len(hi) : len(state.lenC);
+    }
+    if (state.field === 2) {
+        const hi = state.velMax || state.vel;
+        return hi !== state.vel ? state.vel + "-" + hi : String(state.vel);
+    }
     return condName(state.cond);
 }
 
