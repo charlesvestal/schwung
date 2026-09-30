@@ -202,8 +202,12 @@ static void apply_chance(int dir)
     const int cur = note_cond(inst, g_pg.row, g_pg.notes[idx[0]].id);
     const int nxt = sm_step_cond(cur, dir, sc_count());
     if (nxt == cur) return;
-    char val[16 * 48 + 32];
-    int w = snprintf(val, sizeof val, "%d %d", g_pg.row, nxt);
+    char val[16 * 48 + 64];
+    /* The step's own position is the trig's group: its notes roll together. */
+    double ph = 0.0;
+    step_plock_phase_from_scroll(g_pg.scroll, g_sm.step, g_pg.step_beats, g_pg.triplet,
+                                 g_pg.clip_len, &ph);
+    int w = snprintf(val, sizeof val, "%d %d g=%.17g", g_pg.row, nxt, ph);
     for (int i = 0; i < k && w < (int)sizeof val - 48; i++) {
         const sm_note_t *nt = &g_pg.notes[idx[i]];
         w += snprintf(val + w, sizeof val - (size_t)w, " %lld %d %.17g",

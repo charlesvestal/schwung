@@ -103,19 +103,27 @@ void chance_on_lane_verb(chain_instance_t *inst, const char *sub, const char *va
     }
 }
 
-/* "row cond id pitch start [id pitch start ...]" -- one condition for every
- * note on a step (a chord shares its trig). Returns how many were stored. */
+/* "row cond [g=<step>] id pitch start [id pitch start ...]" -- one condition
+ * for every note on a step, which is ONE trig: `g=` is the step's position,
+ * and the notes roll together (a chord played in live starts a few ms apart
+ * per note). Without it each note is its own group. Returns how many stored. */
 static int chance_set_notes(chain_instance_t *inst, const char *val)
 {
     int row, cond, used = 0;
     if (sscanf(val, "%d %d%n", &row, &cond, &used) != 2) return -1;
     if (!sc_valid(cond)) return -1;
     const char *p = val + used;
+    double grp = NAN;
+    {
+        int k = 0;
+        if (sscanf(p, " g=%lf%n", &grp, &k) == 1) p += k; else grp = NAN;
+    }
     int n = 0;
     for (;;) {
         long long id; int pitch; double start; int k = 0;
         if (sscanf(p, " %lld %d %lf%n", &id, &pitch, &start, &k) != 3) break;
-        if (sc_store_set(&inst->chance, row, (int64_t)id, pitch, start, cond)) n++;
+        if (sc_store_set_grp(&inst->chance, row, (int64_t)id, pitch, start, cond,
+                             isnan(grp) ? start : grp)) n++;
         p += k;
     }
     return n;

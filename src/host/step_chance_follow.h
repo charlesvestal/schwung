@@ -101,6 +101,7 @@ static inline int sc_store_paste(sc_store_t *st, int row, double src, double dst
     for (int k = 0; k < ncopy; k++) {
         sc_entry_t e = copy[k];
         e.start = e.start - src + dst;
+        e.grp = e.grp - src + dst;
         e.id = sc__synth_id(st);
         if (!sc__add(st, e)) break;
         added++;

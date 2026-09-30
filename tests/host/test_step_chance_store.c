@@ -128,6 +128,20 @@ int main(void) {
     assert(sc_store_get(&back, 3, -9223372036854775807LL) == 40);
     /* start survives BIT-EXACT: a triplet position must match after reload */
     assert(sc_store_match(&back, 3, 42, 1.3333333333333333, 0.0, 4.0) == 40);
+    /* the trig group survives a save/reload, and a document from before
+     * groups existed (five fields) still loads, each note its own group */
+    {
+        static sc_store_t gs, gb;
+        memset(&gs, 0, sizeof gs); memset(&gb, 0, sizeof gb);
+        sc_store_set_grp(&gs, 0, 5, 64, 17.428, 11, 17.25);
+        char gd[256];
+        assert(sc_store_serialize(&gs, gd, sizeof gd) > 0);
+        assert(sc_store_parse(&gb, gd) == 1);
+        for (int i = 0; i < SC_STORE_MAX; i++) if (gb.e[i].used) assert(gb.e[i].grp == 17.25);
+        assert(sc_store_parse(&gb, "SC 1\n0 5 64 17.428 11\n") == 1);
+        for (int i = 0; i < SC_STORE_MAX; i++) if (gb.e[i].used) assert(gb.e[i].grp == 17.428);
+        assert(sc_store_parse(&gb, "SC 1\n0 5 64 17.428 11 junk\n") == -1);
+    }
     /* too small a buffer is -1, never a truncated document */
     assert(sc_store_serialize(&st, doc, 10) == -1);
     /* garbage is refused whole and leaves the store alone */
