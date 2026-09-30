@@ -600,6 +600,8 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
     src/modules/chain/dsp/chain_scene.c src/host/scene_morph.h \
     src/modules/chain/dsp/chain_lanes.c \
+    src/modules/chain/dsp/chain_chance.c src/host/step_chance.h \
+    src/host/step_chance_store.h src/host/step_chance_gate.h \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
@@ -633,6 +635,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_bus.c \
         src/modules/chain/dsp/chain_scene.c \
         src/modules/chain/dsp/chain_lanes.c \
+        src/modules/chain/dsp/chain_chance.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
         build/modules/chain/lane_serial.o \
