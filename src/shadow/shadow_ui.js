@@ -45,6 +45,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { compareNames } from '/data/UserData/schwung/shared/name_sort.mjs';
 import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
@@ -8577,7 +8578,7 @@ function scanForAudioFxModules() {
     /* Sort modules alphabetically by name, keeping "None" at the top */
     const noneItem = result[0];
     const modules = result.slice(1);
-    modules.sort((a, b) => a.name.localeCompare(b.name));
+    modules.sort((a, b) => compareNames(a.name, b.name));
     /* Add option to get more modules from store at the end */
     return [noneItem, ...modules, { id: "__get_more__", name: "[Get more...]" }];
 }
@@ -8660,7 +8661,7 @@ function scanForOvertakeModules() {
         /* Failed to read modules directory */
     }
 
-    result.sort((a, b) => a.name.localeCompare(b.name));
+    result.sort((a, b) => compareNames(a.name, b.name));
     debugLog("returning " + result.length + " modules");
     return result;
 }
@@ -13351,7 +13352,7 @@ function handleMasterFxSettingsAction(key) {
                 }
 
                 if (moduleHelpChildren.length > 0) {
-                    moduleHelpChildren.sort((a, b) => a.title.localeCompare(b.title));
+                    moduleHelpChildren.sort((a, b) => compareNames(a.title, b.title));
                     const modulesSection = { title: "Modules", children: moduleHelpChildren };
                     const meIdx = helpContent.sections.findIndex(s => s.title.startsWith("Schwung"));
                     helpContent.sections.splice(meIdx >= 0 ? meIdx + 1 : 1, 0, modulesSection);
@@ -13693,7 +13694,7 @@ function scanSetsForPicker() {
     } catch (e) {
         debugLog("scanSetsForPicker error: " + e);
     }
-    result.sort((a, b) => a.name.localeCompare(b.name));
+    result.sort((a, b) => compareNames(a.name, b.name));
     return result;
 }
 
@@ -15740,7 +15741,7 @@ function scanModulesForType(componentType) {
     /* Sort modules alphabetically by name, keeping "None" at the top */
     const noneItem = result[0];
     const modules = result.slice(1);
-    modules.sort((a, b) => a.name.localeCompare(b.name));
+    modules.sort((a, b) => compareNames(a.name, b.name));
 
     /* Add option to get more modules from store at the end */
     return [noneItem, ...modules, { id: "__get_more__", name: "[Get more...]" }];

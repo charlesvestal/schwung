@@ -4,6 +4,7 @@
  * This file is designed to be copied into schwung/shared and imported
  * from shadow_ui.js with minimal glue code.
  */
+import { compareNames } from './name_sort.mjs';
 
 const DEFAULT_ROOT = '/data/UserData';
 
@@ -210,8 +211,8 @@ export function refreshFilepathBrowser(state, fsLike) {
         state.error = 'Unable to read folder';
     }
 
-    dirs.sort((a, b) => a.label.localeCompare(b.label));
-    files.sort((a, b) => a.label.localeCompare(b.label));
+    dirs.sort((a, b) => compareNames(a.label, b.label));
+    files.sort((a, b) => compareNames(a.label, b.label));
     state.items.push(...dirs, ...files);
 
     if (state.selectedPath) {
