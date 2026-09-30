@@ -31,11 +31,9 @@ void chain_set_clip_pass(void *instance, long pass)
 int chance_filter(chain_instance_t *inst, const uint8_t *msg, int len, int source)
 {
     /* Move's notes arrive as EXTERNAL (the cable-2 MIDI_OUT echo). Host clock,
-     * FX broadcast and touch are not notes to roll. Pre mode: the MIDI FX
-     * inject into Move and its echo filter counts what went out -- dropping
-     * an echo there would unbalance that count, so chance stands down. */
+     * FX broadcast and touch are not notes to roll. In Pre mode (Schw+Move)
+     * v2_on_midi calls this AFTER the echo filter -- see chain_midi.c. */
     if (!inst || source != MOVE_MIDI_SOURCE_EXTERNAL || len < 3) return 1;
-    if (inst->midi_fx_pre_mode) return 1;
     const uint8_t type = msg[0] & 0xF0;
     if (type != 0x90 && type != 0x80) return 1;
     return sc_gate(&inst->chance_gate, &inst->chance, msg, len,
