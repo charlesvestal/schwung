@@ -414,6 +414,45 @@ Schroeder-Moorer topology described by Jezar's public-domain Freeverb.
 
 ---
 
+## Move MIDI emulator (Cycling '74 rnbo.move.templates)
+
+**Used in:** The `/mirror` page's drawing of the Move control surface
+**Location:** `schwung-manager/static/mirror.html`
+**Upstream:** https://github.com/Cycling74/rnbo.move.templates (`code/move_midi_emulator.html`)
+
+**License:** MIT
+
+The page's 128-entry LED colour table (RGB plus the white-LED balance column)
+is copied from the emulator, and its arrangement of the controls and its
+reading of the RGB LED SysEx (the byte after `3B` selects a note- or
+CC-addressed LED) follow it. The drawing code itself is Schwung's own.
+
+```
+The MIT License
+
+Copyright 2026, Cycling '74. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Ableton ablspi (protocol documentation)
 
 **Used in:** SPI buffer layout and ioctl protocol for `/dev/ablspi0.0`
@@ -475,7 +514,7 @@ obligations can be met.
 - **Daniel Stenberg** — curl HTTP library
 - **Erik de Castro Lopo** — libsamplerate
 - **Paul Davis, Grame and the JACK project** — jack2
-- **Cycling '74** — JackMoveDriver, the basis for Schwung's JACK shadow driver
+- **Cycling '74** — JackMoveDriver, the basis for Schwung's JACK shadow driver, and the Move MIDI emulator the `/mirror` device view follows
 - **Jezar at Dreampoint** — Freeverb
 - **Bill Cox** — sonic
 - **Ableton** — the Move hardware platform, and Link

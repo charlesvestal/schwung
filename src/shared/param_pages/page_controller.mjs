@@ -48,6 +48,7 @@ import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 import { drawEnumList } from "./enum_list.mjs";
 import { drawParamCard } from "./param_card.mjs";
+import { createFooterPanel, beginFooterPanel, PANEL_H as FOOTER_PANEL_H } from "../footer_panel.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -310,6 +311,15 @@ export const ANNOUNCE_THROTTLE_MS = 120;
  * dropped — see `pendingWrite` below — it is caught by the next tick or by
  * release, so the final settled value always reaches the device exactly. */
 export const SETPARAM_THROTTLE_MS = 20;
+/*
+ * How long a `commit: "release"` key waits for a hand that never lets go.
+ *
+ * Such a key is written when the knob is RELEASED, not per detent — see
+ * onKnobTurn. The release is the real boundary; this is only the backstop for
+ * a turn the cap sensor never saw, which would otherwise leave the choice on
+ * screen and never on the device.
+ */
+export const RELEASE_COMMIT_IDLE_MS = 1000;
 
 /**
  * How many modulated params get a live re-read per tick.
@@ -657,6 +667,22 @@ export function createController(io = {}) {
                 ? globalThis.shadow_get_delete_held() === 1 : false;
         } catch (e) { return false; }
     });
+    /*
+     * A SCENE SNAPSHOT IS ARMED FOR EDITING. Delete + knob then means "take
+     * this knob OUT OF THE SNAPSHOT" (the shim turns the armed write into an
+     * unlock, SCENE_EDIT_UNLOCK) -- and the lane clear below fires on the
+     * TOUCH that precedes that turn, so without this the one gesture did
+     * both: the knob left the scene AND its clip automation was erased. The
+     * armed edit is the more specific context, so it owns Delete; disarm to
+     * clear automation. Same SHM-default shape as the two above.
+     */
+    const sceneArmedOf = io.sceneArmed || (() => {
+        try {
+            if (typeof globalThis.shadow_get_scene_state !== "function") return false;
+            const st = globalThis.shadow_get_scene_state();
+            return !!st && Number.isInteger(st.edit) && st.edit >= 0;
+        } catch (e) { return false; }
+    });
     const heldStepIsHoldOf = io.heldStepIsHold || (() => {
         try {
             return (typeof globalThis.shadow_get_held_step_is_hold === "function")
@@ -797,13 +823,15 @@ export function createController(io = {}) {
         /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
         lockMap: null,
         lockMapFor: -1,
-        lockMapAnim: null,
+        lockMapPanel: createFooterPanel(),
         /* Delete held while a step is: armed, and whether a knob was picked. */
         stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
+        /* key -> ms of the last detent, for `commit: "release"` keys only. */
+        releaseTurnMs: Object.create(null),
         tickCount: 0,
         /* Tick at which the neighbour-prefetch lane may resume; armed on every
          * page change so the arrived page gets one whole pass to itself. See
@@ -1764,6 +1792,11 @@ export function createController(io = {}) {
         const t = now();
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
+            if (s.releaseTurnMs[key] !== undefined) {
+                if (keyUnderFinger(key)) continue;
+                if (t - s.releaseTurnMs[key] < RELEASE_COMMIT_IDLE_MS) continue;
+                delete s.releaseTurnMs[key];
+            }
             sendPending(key);
                 replanIfCondition(key);
             s.lastWriteMs[key] = t;
@@ -2827,8 +2860,11 @@ export function createController(io = {}) {
         const key = p.keys[at];
         if (!key) return null;
 
-        /* Do not clobber a value the user is actively turning. */
+        /* Do not clobber a value the user is actively turning — nor one
+         * still waiting for its release (`commit: "release"`), which the
+         * device has not been told yet and would read back as the old one. */
         if ((s.settleUntil[key] || 0) > s.tickCount) return null;
+        if (s.pendingWrite[key] !== undefined) return null;
 
         /* Refresh this key's modulation flag on the SAME rotation as its value.
          *
@@ -3983,8 +4019,18 @@ export function createController(io = {}) {
         }
 
         /* A filepath or canvas cannot be turned — it opens. Swallow the motion
-         * rather than writing nonsense into it. */
-        if (!isTurnable(meta)) return null;
+         * rather than writing nonsense into it -- unless the HOST says a turn
+         * on this door means something (io.turnDoor). The LFO target is the
+         * case: a turn opens its picker and scrolls it. `held` because the
+         * host's own touch tracking is not running while the grid owns input,
+         * and it has to know whether a release is coming. */
+        if (!isTurnable(meta)) {
+            if (typeof io.turnDoor === "function") {
+                io.turnDoor(fullKey(key), direction, slot, s.touchOrder.indexOf(slot) >= 0,
+                            { key, meta });
+            }
+            return null;
+        }
 
         const t = nowMs === undefined ? now() : nowMs;
 
@@ -4117,10 +4163,22 @@ export function createController(io = {}) {
          * established that this is a knobs page with a key under the cursor,
          * and the question here is only what the layout can SHOW.
          */
+        /*
+         * ...AND A PARAM THAT SAYS SO DOES NOT PEEK.
+         *
+         * `peek: false` is the contract's own answer, for an enum whose square
+         * already says everything: two short words ("UNI"/"BI", "FRE"/"SYN")
+         * that flip on the next detent. The panel for those covers the page
+         * to show the one other word, on the control most likely to be
+         * flipped back and forth. allowEnumPeek is the host's version of the
+         * same question; this one travels with the declaration, so every
+         * host drawing the contract agrees.
+         */
         if (s.layout !== LAYOUT_LIST
             && meta.divable && meta.kind === KIND_ENUM
             && !drawnWide(key) && !drawnAsSwitch(key) && !drawnBig(meta)
             && Array.isArray(meta.options) && meta.options.length >= 2
+            && meta.peek !== false
             && !(allowEnumPeek && allowEnumPeek(fullKey(key), meta) === false)) {
             const pi = Math.round(Number(value));
             s.peek = {
@@ -4135,11 +4193,25 @@ export function createController(io = {}) {
         }
 
         cacheWritten(key, wire);
+        /*
+         * `commit: "release"` — the cell, the header and the peek follow the
+         * knob, but the DEVICE hears only where it stops.
+         *
+         * For a key whose every value is a consequence, not a position. An LFO
+         * target is the case: writing each option a turn passes over re-routes
+         * the modulation to every parameter on the way, so scrolling from
+         * Cutoff to Resonance would briefly wobble the forty in between.
+         * Held in pendingWrite, which release already flushes — see
+         * onKnobTouch — and flushDueWrites backstops a turn the cap sensor
+         * never saw.
+         */
+        const releaseCommit = meta.commit === "release";
+        if (releaseCommit) s.releaseTurnMs[key] = t;
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
          * left in pendingWrite for tick() to flush once the window passes,
          * and onKnobTouch(false) flushes immediately on release. */
         const lastWrite = s.lastWriteMs[key] || 0;
-        if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
+        if (!releaseCommit && t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
             delete s.pendingStep[key];
@@ -4191,6 +4263,23 @@ export function createController(io = {}) {
         const n = Array.isArray(meta.options) ? meta.options.length : 0;
         if (n > 0) i = Math.max(0, Math.min(n - 1, i));
         const wire = enumWireValue(meta, i);
+        cacheWritten(key, wire);
+        s.lastWriteMs[key] = now();
+        delete s.pendingWrite[key];
+        delete s.knobStates[key];
+        setParam(fullKey(key), wire);
+        replanIfCondition(key);
+        return wire;
+    }
+
+    /**
+     * Write a plain value chosen OUTSIDE a turn -- a host list that picked a
+     * file, say -- through the same tail commitEnum uses, so the cell shows
+     * it at once and the knob state does not snap back to the old one.
+     */
+    function commitValue(key, value) {
+        if (!key) return null;
+        const wire = String(value);
         cacheWritten(key, wire);
         s.lastWriteMs[key] = now();
         delete s.pendingWrite[key];
@@ -4382,7 +4471,7 @@ export function createController(io = {}) {
          *
          * The step branch below runs after, so the two can never both fire: a
          * held step always means "on this step". */
-        if (down && deleteHeldOf() &&
+        if (down && deleteHeldOf() && !sceneArmedOf() &&
             !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
             if (clearParamLane(slot)) return;
         }
@@ -4440,6 +4529,7 @@ export function createController(io = {}) {
              * strand the feature.
              */
             if (key) delete s.triggerKnobLastMs[key];
+            if (key) delete s.releaseTurnMs[key];
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
                 replanIfCondition(key);
@@ -6012,64 +6102,30 @@ export function createController(io = {}) {
      * also answers "which one am I on".
      */
     /*
-     * It RISES OVER THE FOOTER, and that is where the room is. The header is
-     * the held-knob readout -- the one line telling you which parameter you are
-     * changing -- and the grid is eight cells; covering either would take away
-     * what you are holding the step to see. The footer names gestures you
-     * already have your hands on, so for the length of the hold it is the
-     * cheapest nine rows on the screen.
-     *
-     * And it SLIDES, because appearing and disappearing in place over an
-     * existing band reads as a glitch: the motion is what says "this replaced
-     * the footer and the footer is coming back".
+     * It RISES OVER THE FOOTER and SLIDES, as every such band does: the motion
+     * and the geometry are footer_panel.mjs, shared with the scene fader. The
+     * header is the held-knob readout and the grid is eight cells; covering
+     * either would take away what you are holding the step to see.
      */
-    const LOCK_MAP_BOTTOM = FOOTER_Y + FOOTER_H;   /* 64 — the last row the footer owns */
-    const LOCK_MAP_H = LOCK_MAP_BOTTOM - RULE_Y;   /* 9 — the rule and the footer */
-    const LOCK_MAP_ANIM_MS = 110;
     const LOCK_MAP_BLINK_MS = 620;
 
     function lockMapFrame() {
-        const want = lockMap();
         const t = now();
-        const a = s.lockMapAnim;
-        if (want) {
-            if (!a || !a.open) s.lockMapAnim = { open: true, since: t, map: want };
-            else a.map = want;
-        } else if (a && a.open) {
-            /* Keep the last map for the way out: the read is gone the instant
-             * the step is released, and a panel that vanishes mid-slide is the
-             * glitch the slide exists to avoid. */
-            s.lockMapAnim = { open: false, since: t, map: a.map };
-        }
-        const cur = s.lockMapAnim;
-        if (!cur) return null;
-        let p = (t - cur.since) / LOCK_MAP_ANIM_MS;
-        if (!(p >= 0)) p = 0;
-        if (p > 1) p = 1;
-        if (!cur.open && p >= 1) { s.lockMapAnim = null; return null; }
-        /* Ease out: fast off the edge, settling onto the rule. */
-        const e = cur.open ? 1 - (1 - p) * (1 - p) : p * p;
-        const off = Math.round((cur.open ? 1 - e : e) * LOCK_MAP_H);
+        const f = s.lockMapPanel.update(t, lockMap());
+        if (!f) return null;
         /* The blink is computed HERE rather than in the draw so the draw stays
          * a pure function of the frame it is handed -- the same reason the
          * slide's offset is. Duty is deliberately long-on: the outline is a
          * position marker first and an animation second, so it is present
          * more often than not. */
         const phase = (t % LOCK_MAP_BLINK_MS) / LOCK_MAP_BLINK_MS;
-        return { map: cur.map, y: RULE_Y + off, outline: phase < 0.65 };
+        return { map: f.payload, y: f.y, outline: phase < 0.65 };
     }
 
     function drawLockMap(ctx, frame) {
         const { map } = frame;
-        const y = frame.y, h = LOCK_MAP_H, cell = 8;
-        /* Blank exactly the rows the panel covers, never the whole band: the
-         * footer is already in the framebuffer from render(), so clearing only
-         * under the panel lets it be covered on the way in and UNCOVERED row by
-         * row on the way out. Clearing the band instead leaves the footer
-         * missing for the length of the slide and snapping back at the end,
-         * which is the thing that reads as a glitch. */
-        ctx.fillRect(0, y, SCREEN_WIDTH, LOCK_MAP_BOTTOM - y, 0);
-        ctx.fillRect(0, y, SCREEN_WIDTH, 1, 1);
+        const y = frame.y, h = FOOTER_PANEL_H, cell = 8;
+        beginFooterPanel(ctx, y, SCREEN_WIDTH);
         for (let i = 0; i < 16; i++) {
             const x = i * cell;
             const onPage = (map.page >> i) & 1;
@@ -6267,6 +6323,12 @@ export function createController(io = {}) {
      * already being the list. A switch is one cell wide and would pass the
      * width test.
      */
+    /* Is a finger on the knob that addresses `key` on this page? */
+    function keyUnderFinger(key) {
+        for (const slot of s.touchOrder) if (keyAt(slot) === key) return true;
+        return false;
+    }
+
     function drawnAsSwitch(key) {
         for (const g of vizGroups()) {
             if (g.kind === VIZ_SWITCH && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
@@ -6478,7 +6540,7 @@ export function createController(io = {}) {
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
-        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum, commitValue,
         enumPeek,
         dismissPeek,
         /* The resolved graphics for the current page. Exposed so the host can

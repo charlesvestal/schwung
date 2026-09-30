@@ -40,8 +40,11 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/display_pull.h"
 #include "host/e16_claim.h"
 #include "host/cc_claim.h"
+#include "host/surface_live_shm.h"
+#include "host/audio_live_shm.h"
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
@@ -63,7 +66,9 @@
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
+#include "host/shadow_scene_bus.h"
 #include "host/shadow_link_audio.h"
+#include "host/link_audio_conceal.h"
 #include "host/align_capture.h"
 
 /* Defined further down with the other shim globals; used from the mixer,
@@ -74,7 +79,6 @@ extern align_capture_t g_align_capture;
 #include "host/audio_in_restore.h"
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
-#include "host/step_strip.h"
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
@@ -155,6 +159,12 @@ int (*real_ioctl)(int, unsigned long, ...) = NULL;  /* Libc ioctl for non-hook c
 
 /* Shadow structs from shadow_constants.h: shadow_control_t, shadow_ui_state_t, shadow_param_t */
 static shadow_control_t *shadow_control = NULL;
+/* The audio for the mirror (audio_live_shm.h), written only while Mirror
+ * Display is on. */
+static audio_live_shm_t *audio_live_shm = NULL;
+static inline int audio_live_wanted(void) {
+    return audio_live_shm && shadow_control && shadow_control->display_mirror;
+}
 static uint8_t shadow_display_mode = 0;
 
 static shadow_ui_state_t *shadow_ui_state = NULL;
@@ -439,6 +449,9 @@ static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 /* Read-only consumer of Move audio written by link-subscriber sidecar.
  * Sidecar may not have started yet — retry from non-RT context if missing. */
 static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
+
+/* Per-frame rebuild-vs-native decision across all tracks (SPI thread only). */
+static la_rebuild_gate_t shim_la_gate = { -1, 0 };
 static int try_attach_in_audio_shm(void);
 static void *link_in_attach_retry_thread(void *arg);
 
@@ -944,6 +957,15 @@ static struct timespec step2_press_time;
 static uint8_t step2_longpress_pending;
 static uint8_t step2_longpress_fired;
 
+static struct timespec step3_press_time;
+static uint8_t step3_longpress_pending;
+static uint8_t step3_longpress_fired;
+/* Shift+Vol+Step 3 swallowed the PRESS, so the release is owed a swallow
+ * too: a lone step-up reaching Move for a press it never saw. Latched on the
+ * press, cleared by the release -- never gated on Shift or Vol still being
+ * held, since both are usually let go first. */
+static uint8_t step3_release_owed;
+
 static struct timespec step13_press_time;
 static uint8_t step13_longpress_pending;
 static uint8_t step13_longpress_fired;
@@ -1041,11 +1063,6 @@ void shim_gesture_state(int *shift, int *vol, unsigned *pending,
     if (vol_during) *vol_during = v | ((shadow_steps_held_mask & 0xFFFFu) << 16);
 }
 
-/* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
- * the per-slot lane push in the next pre-transfer. A flag rather than a direct
- * call because the gesture is decoded in the post-ioctl scan, where a slot's
- * plugin instance is not the thing in hand. */
-static volatile int lane_double_pending = 0;
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -2083,6 +2100,49 @@ static uint64_t spi_overtake_gen_sum, spi_overtake_gen_max;
 static uint64_t spi_overtake_fx_sum,  spi_overtake_fx_max;
 static uint32_t spi_slot_probe_burst_max;
 
+/* === SCENES: the crossfader ===
+ *
+ * shadow_control holds what the UI (or any param client) asked for; the shim
+ * is the only reader. The fader is SLEWED here -- a one-pole of ~15 ms -- so
+ * a 1/64 jog detent and a 7-bit CC both sweep a filter without zipper, and
+ * the slewed value is what every slot and bus receives. Each slot reports its
+ * scene revision and a one-shot refusal back; the sum of the revisions is
+ * published as scene_rev, which only needs to CHANGE when a bank does.
+ */
+#define SCENE_SLEW_ALPHA 0.176f   /* 1 - exp(-2.9 ms / 15 ms) per block */
+static float shadow_scene_x_slewed = 0.0f;
+static uint16_t shadow_scene_slot_rev[SHADOW_CHAIN_INSTANCES];
+static uint8_t shadow_scene_a_now = SCENE_NONE, shadow_scene_b_now = SCENE_NONE,
+               shadow_scene_edit_now = SCENE_NONE, shadow_scene_flags_now = 0;
+
+static void shadow_scene_frame_begin(void) {
+    if (!shadow_control) return;
+    shadow_scene_a_now = shadow_control->scene_a;
+    shadow_scene_b_now = shadow_control->scene_b;
+    shadow_scene_edit_now = shadow_control->scene_edit;
+    const float target = scene_xfade_from_q(shadow_control->scene_xfade_q);
+    const float d = target - shadow_scene_x_slewed;
+    shadow_scene_x_slewed = (fabsf(d) < 1e-4f) ? target : shadow_scene_x_slewed + d * SCENE_SLEW_ALPHA;
+    shadow_scene_flags_now = shadow_control->scene_unlock ? SCENE_EDIT_UNLOCK : 0;
+    shadow_scene_bus_tick(shadow_scene_a_now, shadow_scene_b_now,
+                          shadow_scene_x_slewed, shadow_scene_edit_now, shadow_scene_flags_now);
+    uint16_t rev = shadow_scene_bus_rev();
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) rev = (uint16_t)(rev + shadow_scene_slot_rev[s]);
+    if (shadow_control->scene_rev != rev) shadow_control->scene_rev = rev;
+    uint8_t flash = shadow_scene_bus_take_flash();
+    if (flash) shadow_control->scene_flash = flash;
+}
+
+static void shadow_scene_push_slot(int s, void *instance) {
+    if (!shadow_chain_set_scene_morph || !shadow_control) return;
+    uint32_t st = shadow_chain_set_scene_morph(instance, shadow_scene_a_now, shadow_scene_b_now,
+                                               shadow_scene_x_slewed, shadow_scene_edit_now,
+                                               shadow_scene_flags_now);
+    shadow_scene_slot_rev[s] = (uint16_t)(st & 0xFFFFu);
+    uint8_t flash = (uint8_t)((st >> 16) & 0xFFu);
+    if (flash) shadow_control->scene_flash = flash;
+}
+
 /* === DEFERRED DSP RENDERING ===
  * Render DSP into buffer (slow, ~300µs) - called POST-ioctl
  * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
@@ -2125,18 +2185,6 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
-        /* TAKEN ONCE, FOR ALL FOUR SLOTS, and cleared here rather than in
-         * post_transfer. The gesture is detected in midi_monitor(), which runs
-         * in PRE-transfer -- so a clear in post_transfer wiped the flag in the
-         * same frame it was set and no slot ever saw it. Measured: Move
-         * doubled the clip and the lane reported nothing, three placements
-         * running. Reading it into a local first also means every slot sees
-         * the same answer, which a mid-loop clear would not give. */
-        /* With the live model, Double Loop is mirrored as a CONFIRMED paste
-         * (move_model_sync.c) -- journaled, so Move's Undo follows it too. */
-        const int lane_double_now = lane_double_pending && !move_model_sync_active();
-        lane_double_pending = 0;
-
         /* LANE COMMANDS FROM THE LIVE MODEL (move_model_sync.h): a paste Move
          * made, its undo/redo, a deleted clip's stash, its restore, a copy.
          * Decided off this thread; applied here because only the callback may
@@ -2159,8 +2207,13 @@ static void shadow_inprocess_render_to_buffer(void) {
             if (armed_now != arm_told) { move_model_sync_on_arm(armed_now); arm_told = armed_now; }
         }
 
+        shadow_scene_frame_begin();
+
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+            /* Scenes: the crossfader, BEFORE the idle gate so a parked slot
+             * still morphs (the work runs in lfo_tick, which mod:tick runs). */
+            shadow_scene_push_slot(s, shadow_chain_slots[s].instance);
 
             /* Schwung's own automation edits, as the chain journals them: the
              * unified Undo anchors each to Move's undo stack (undo_timeline.h).
@@ -2209,78 +2262,18 @@ static void shadow_inprocess_render_to_buffer(void) {
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
 
-                /* AND WHETHER A WRITE MAY USE THAT ROW.
-                 *
-                 * The row above is the PLAYING clip; a p-lock wants the clip
-                 * on screen. When a clip plays while the user edits a new
-                 * one, those differ and the lock landed on the playing clip.
-                 * Carried as a param rather than a new argument, because this
-                 * hand-off crosses the dlsym'd seam and appending to it is
-                 * what boot-looped a device once already.
-                 *
-                 * ON CHANGE ONLY: a per-block write would serve a param
-                 * request on every frame, which is the cost this file avoids
-                 * everywhere else.
-                 *
-                 * TWO VALUES, and the length is not optional: a write keyed to
-                 * the placeholder needs the length of the clip it is being
-                 * made ON, and `loop_len` above is the PLAYING clip's. Pushed
-                 * first, so the chain never sees "unconfirmed" without the
-                 * geometry that makes it usable. */
-                if (shadow_plugin_v2->set_param && s < SHADOW_CHAIN_INSTANCES) {
-                    static int16_t last_unconf[SHADOW_CHAIN_INSTANCES];
-                    static int32_t last_elen[SHADOW_CHAIN_INSTANCES];
-                    static int8_t unconf_seen[SHADOW_CHAIN_INSTANCES];
-                    const int unconf = g_write_unconfirmed[s] ? 1 : 0;
-                    const int elen = g_write_edit_len_x100[s];
-                    if (!unconf_seen[s] || last_elen[s] != elen) {
-                        last_elen[s] = elen;
-                        char buf[24];
-                        snprintf(buf, sizeof(buf), "%d.%02d", elen / 100, elen % 100);
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:edit_len", buf);
-                    }
-                    if (!unconf_seen[s] || last_unconf[s] != unconf) {
-                        last_unconf[s] = (int16_t)unconf;
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:edit_unconfirmed",
-                                                    unconf ? "1" : "0");
-                    }
-                    unconf_seen[s] = 1;
-                }
                 /* THE KILL SWITCH, pushed on change like everything else
-                 * here. Off by default: see SHIM_FLAG_LANES_ON. */
+                 * here. ON unless lanes_off exists: see SHIM_FLAG_LANES_OFF. */
                 if (shadow_plugin_v2->set_param) {
                     static int8_t last_en[SHADOW_CHAIN_INSTANCES];
                     static int8_t en_seen[SHADOW_CHAIN_INSTANCES];
-                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_ON) ? 1 : 0;
+                    const int en = (shim_debug_flags & SHIM_FLAG_LANES_OFF) ? 0 : 1;
                     if (s < SHADOW_CHAIN_INSTANCES &&
                         (!en_seen[s] || last_en[s] != en)) {
                         last_en[s] = (int8_t)en;
                         en_seen[s] = 1;
                         shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                                     "lanes:enabled", en ? "1" : "0");
-                    }
-                }
-
-                /* THE ROW A BLIND TAKE SHOULD ADOPT ONTO. Published by the
-                 * worker as the row that newly appeared in Song.abl, which is
-                 * the clip the user just made — as against the PLAYING row,
-                 * which is what adoption used and which belongs to a
-                 * different clip whenever something else is playing. */
-                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
-                    static uint32_t last_new_gen[SHADOW_CHAIN_INSTANCES];
-                    const uint32_t g = shadow_clip_new_generation();
-                    if (s < SHADOW_CHAIN_INSTANCES && last_new_gen[s] != g) {
-                        last_new_gen[s] = g;
-                        /* -1 IS FORWARDED TOO. The clear is the half that
-                         * matters: a row left standing from an old parse is
-                         * confidently wrong, and adoption would take it over
-                         * the clip the user just made. */
-                        char v[8];
-                        snprintf(v, sizeof(v), "%d", shadow_clip_new_slot(s));
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:new_row", v);
                     }
                 }
             }
@@ -2305,91 +2298,6 @@ static void shadow_inprocess_render_to_buffer(void) {
                                                 armed ? "1" : "0");
                     lane_armed_inst[s] = linst;
                     lane_armed_seen[s] = armed;
-                }
-            }
-
-            /* MOVE DOUBLED THE LOOP (Shift+Step 15). Its manual calls that
-             * doubling "notes and automation", so every lane on the playing
-             * clip copies its points one loop-length later.
-             *
-             * Pushed the frame the gesture is SEEN rather than when the
-             * clip's new length appears: Move writes that ~10 s later, and a
-             * lane that waited would be silent over the new bars until then --
-             * indistinguishable from one that simply failed. The flag is
-             * consumed here, once per slot, because the gesture is a moment
-             * and this loop is where a slot's instance is in hand. */
-            /* ...AND ONLY ON THE TRACK MOVE ACTUALLY DOUBLED.
-             *
-             * This pushed to every slot in the loop, so one Shift+Step 15
-             * doubled the lanes of all FOUR tracks. The three that were not
-             * doubled got duplicate points one loop-length past their own
-             * window — dormant, and therefore invisible, until that clip is
-             * lengthened for its own reasons, at which point automation
-             * nobody recorded plays in the new bars.
-             *
-             * Move's gesture acts on the SELECTED track, which the shim
-             * already decodes for the strip observer (clip_selected_track).
-             * A track it cannot name doubles nothing, which is the right
-             * direction to fail in: a missed double is a gesture to repeat,
-             * a spurious one is automation that appears weeks later. */
-            if (shadow_plugin_v2->set_param && lane_double_now &&
-                clip_selected_track() == (int)s)
-                shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                            "lanes:double", "1");
-
-            /* A DELETED clip orphans its lanes, and the crossing is
-             * worker-publishes / callback-pushes.
-             *
-             * The worker is the only thing that can tell a deletion from a
-             * clip Move has not saved yet (it holds the before/after parse),
-             * and it must not push this itself: chain_set_clip_deleted is a
-             * module entry point, i.e. THIS thread, and the instance is only
-             * safe because RT is its single writer.
-             *
-             * Once per GENERATION, not per block: a counter cannot be
-             * resurrected by a preempted worker the way a flag can, and the
-             * seen-value lives here, in the consumer, so the producer never
-             * has to unwrite anything. Bounded at 32 marks on the frame a
-             * deletion lands and zero on every other frame.
-             *
-             * Every set bit goes to every slot. chain_set_clip_deleted matches
-             * on (track, slot), so a slot holding no lane for that position
-             * does nothing -- and that is what keeps this correct if a lane is
-             * ever bound to a track other than its own slot index. */
-            if (shadow_chain_set_clip_deleted) {
-                static uint32_t lane_deleted_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t gen = shadow_clip_deleted_generation();
-                if (gen != lane_deleted_gen_seen[s]) {
-                    uint32_t mask = shadow_clip_deleted_mask();
-                    lane_deleted_gen_seen[s] = gen;
-                    for (int b = 0; b < CLIP_TRACKS * CLIP_SLOTS; b++) {
-                        if (!(mask & (1u << b))) continue;
-                        shadow_chain_set_clip_deleted(
-                            shadow_chain_slots[s].instance,
-                            b / CLIP_SLOTS, b % CLIP_SLOTS);
-                    }
-                }
-            }
-
-            /* A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT, published by
-             * the worker the same way a deletion is and consumed here for the
-             * same reason: this is where a slot's instance is in hand.
-             *
-             * Only the track whose slot index matches is told, because a lane
-             * lives on the chain instance that owns that Move track -- the
-             * same rule the deletion consumer above states. */
-            if (shadow_plugin_v2->set_param) {
-                static uint32_t lane_copy_gen_seen[SHADOW_CHAIN_INSTANCES];
-                uint32_t cgen = shadow_clip_copy_generation();
-                if (cgen != lane_copy_gen_seen[s]) {
-                    lane_copy_gen_seen[s] = cgen;
-                    if (cgen != 0 && shadow_clip_copy_track() == (int)s) {
-                        char arg[32];
-                        snprintf(arg, sizeof(arg), "%d %d",
-                                 shadow_clip_copy_src(), shadow_clip_copy_dst());
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:copy_clip", arg);
-                    }
                 }
             }
 
@@ -2507,16 +2415,15 @@ static void shadow_inprocess_render_to_buffer(void) {
                         ps->active = 1;
                     }
                 }
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)(render_buffer[i] * vol);
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             }
 
@@ -2952,6 +2859,16 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture && !any_filter) {
         int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
         memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
+        /* The mirror's audio. No unity_view is built on this path, so Move's
+         * mix is un-scaled by the same smoothed 1/mv the full path uses for
+         * it -- otherwise the stream would jump in level as a slot loads. */
+        if (audio_live_wanted()) {
+            static float mv_live_smoothed = 1.0f;
+            mv_live_smoothed += (shadow_master_volume - mv_live_smoothed) * 0.1f;
+            float inv = (mv_live_smoothed > 0.001f) ? 1.0f / mv_live_smoothed : 1.0f;
+            if (inv > 50.0f) inv = 50.0f;
+            audio_live_push(audio_live_shm, mailbox_audio, FRAMES_PER_BLOCK, inv);
+        }
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
         native_bridge_capture_mv = shadow_master_volume;
         native_bridge_split_valid = 1;
@@ -2962,6 +2879,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
+    /* MASTER VOLUME GLIDES, per frame. mv is read off Move's on-screen volume
+     * bar, so it arrives in coarse jumps; applied as one constant per block it
+     * stepped audibly on every knob detent -- and under Move->Schwung it scales
+     * Move's whole rebuilt mix, not only ours. One ramp per block, shared by
+     * every loop below that applies mv to audio. */
+    static float mv_glide = -1.0f;
+    float mv_ramp[FRAMES_PER_BLOCK];
+    if (mv_glide < 0.0f) mv_glide = mv;
+    for (int f = 0; f < FRAMES_PER_BLOCK; f++) {
+        mv_glide += (mv - mv_glide) * SHADOW_MIX_SMOOTH;
+        mv_ramp[f] = mv_glide;
+    }
     (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
     /* Always build the mix at unity level so sampler/skipback capture audio
      * at full gain (independent of master volume).  Apply mv at the end. */
@@ -3025,6 +2954,15 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * the first rebuild frame can leave a stale backlog that lands under
          * the 70 ms catch-up threshold and leaves one slot permanently
          * offset — audible as pitch/sample-rate drift on that track. */
+        if (entering_rebuild) {
+            /* The snap below makes the first read a starve; concealing it
+             * from a block last heard before the rebuild disengaged would
+             * replay stale audio at full amplitude. Start the tracks and the
+             * frame gate from nothing: the gate stays on Move's native mix
+             * until real audio lands, then crossfades into the rebuild. */
+            link_audio_conceal_reset();
+            la_rebuild_gate_reset(&shim_la_gate);
+        }
         if (entering_rebuild && shadow_in_audio_shm) {
             /* Acquire/release pair against sidecar write_pos updates
              * so ring writes are visible before we publish read_pos. */
@@ -3072,7 +3010,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
         const int16_t *jack_audio = schwung_jack_bridge_read_audio(g_jack_shm);
         if (jack_audio) {
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                int32_t scaled_jack = (int32_t)lroundf((float)jack_audio[i] * mv);
+                int32_t scaled_jack = (int32_t)lroundf((float)jack_audio[i] * mv_ramp[i >> 1]);
                 int32_t mixed = (int32_t)mailbox_audio[i] + scaled_jack;
                 if (mixed > 32767) mixed = 32767;
                 if (mixed < -32768) mixed = -32768;
@@ -3085,6 +3023,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int16_t la_cache[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
     int la_cache_valid[SHADOW_CHAIN_INSTANCES];
     memset(la_cache_valid, 0, sizeof(la_cache_valid));
+    /* Move's native mailbox, kept for the first rebuilt frame after a
+     * starve fallback: it is faded out under the tracks' fade-in. */
+    int16_t la_native_xfade[FRAMES_PER_BLOCK * 2];
+    int la_native_xfade_valid = 0;
 
     if (rebuild_from_la) {
         /* Read all Link Audio channels FIRST so we can decide whether to
@@ -3094,19 +3036,36 @@ static void shadow_inprocess_mix_from_buffer(void) {
          * to the legacy non-rebuild path so Move's native audio (already in
          * the mailbox from Move's own write) survives. */
         int la_channel_count = shim_move_channel_count();
-        int any_la_valid = 0;
+        int la_real = 0, la_concealed = 0;
+        /* Line the tracks up at the shallowest one's depth before reading
+         * any of them -- a decision across slots, so not per read. */
+        link_audio_align_tick(shadow_in_audio_shm, la_channel_count);
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
-            la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
-            if (la_cache_valid[s]) any_la_valid = 1;
+            int r = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+            la_cache_valid[s] = (r != 0);
+            if (r == LA_READ_REAL) la_real++;
+            else if (r == LA_READ_CONCEALED) la_concealed++;
         }
-        if (!any_la_valid) {
-            /* SHM is empty across all slots — sidecar isn't producing fast
-             * enough this frame. Skip the rebuild; treat this frame like
-             * the non-rebuild path so we don't drop into silence. */
+        /* Every track starving at once (a Move publisher stall, a set
+         * change) is NOT the same as one track starving: Move's own mix is
+         * sitting in the mailbox, so after the first concealed block (a
+         * faded mirror, which carries the join) play THAT instead of
+         * concealed silence -- ramped in, since the tracks just faded out.
+         * See la_rebuild_gate in link_audio_conceal.h. */
+        int la_gate = la_rebuild_gate(&shim_la_gate, la_real, la_concealed);
+        if (!la_gate_is_rebuild(la_gate)) {
             extern volatile uint32_t shim_la_starve_fallback_count;
+            extern volatile uint32_t shim_la_conceal_fallback_count;
             shim_la_starve_fallback_count++;
+            if (la_concealed) shim_la_conceal_fallback_count++;
+            if (la_gate == LA_GATE_FALLBACK_RAMP_IN)
+                la_ramp_in(mailbox_audio, FRAMES_PER_BLOCK);
             rebuild_from_la = 0;
             goto skip_la_rebuild;
+        }
+        if (la_gate == LA_GATE_REBUILD_XFADE) {
+            memcpy(la_native_xfade, mailbox_audio, sizeof(la_native_xfade));
+            la_native_xfade_valid = 1;
         }
 
         /* Zero the mailbox — all audio reconstructed from Link Audio */
@@ -3292,11 +3251,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
 
                 /* Add FX output to mailbox */
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     float gain = vol;
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)lroundf((float)fx_buf[i] * gain);
                     if (mixed > 32767) mixed = 32767;
@@ -3304,7 +3262,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     mailbox_audio[i] = (int16_t)mixed;
                     me_full[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
@@ -3325,8 +3283,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * with none).
                  */
                 const float pass_vol = shadow_effective_volume(s);
-                float pass_l, pass_r;
-                shadow_pan_gains(s, &pass_l, &pass_r);
                 shadow_stem_store_slot(s, move_track, pass_vol);
                 /* ITS SENDS, when above 0: send level x fader, post-fader,
                  * pre-pan. A slot with no MODULE can still have a chain
@@ -3354,13 +3310,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
                                      (amt * vol127) / BUS_MIX_SEND_LEVEL_MAX);
                     }
                 }
+                /* Glided like an occupied slot's (shadow_mix_advance): a scene
+                 * morphing this track's volume was a hard step every block. */
+                shadow_mix_targets(s);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    const float g = pass_vol * ((i & 1) ? pass_r : pass_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    const float g = ms->mix_vol * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t mixed = (int32_t)mailbox_audio[i] +
                         (g == 1.0f ? (int32_t)move_track[i] : (int32_t)lroundf((float)move_track[i] * g));
                     if (mixed > 32767) mixed = 32767;
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
+                    if (i & 1) shadow_mix_advance(s);
                 }
                 /* Publish Move track audio to ME channel even without a synth loaded */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
@@ -3413,15 +3374,14 @@ skip_la_rebuild:
                     ps->write_pos = wp;
                 }
 
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             } else if (shadow_slot_deferred_valid[s]) {
                 /* Fallback: FX not deferred — run inline (legacy path) */
@@ -3468,15 +3428,14 @@ skip_la_rebuild:
                     shadow_slot_fx_idle[s] = 0;
                 }
 
-                float pan_l, pan_r;
-                shadow_pan_gains(s, &pan_l, &pan_r);
+                shadow_mix_targets(s);      /* the loop below glides toward these */
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain *
-                                ((i & 1) ? pan_r : pan_l);
+                    const shadow_chain_slot_t *ms = &shadow_chain_slots[s];
+                    float vol = ms->mix_vol * ms->fade.gain * ((i & 1) ? ms->mix_pan_r : ms->mix_pan_l);
                     int32_t contrib = (int32_t)lroundf((float)fx_buf[i] * vol);
                     me_full[i] += contrib;
                     me_unity[i] += contrib;
-                    if (i & 1) shadow_fade_advance(s);
+                    if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
             }
         }
@@ -3611,8 +3570,8 @@ skip_la_rebuild:
          * says out loud that send_out[0] is only THIS frame's audio when the
          * sb == 0 iteration actually ran — a skipped bus leaves the buffer
          * holding whatever the last active frame put there. */
-        if (sb == 1 && shadow_send_a_to_b > 0 && shadow_send_bus_active(0)) {
-            int lvl = (shadow_send_a_to_b * shadow_send_return_level[0]) /
+        if (sb == 1 && shadow_send_a_to_b_eff() > 0 && shadow_send_bus_active(0)) {
+            int lvl = (shadow_send_a_to_b_eff() * shadow_send_return_eff(0)) /
                       BUS_MIX_SEND_LEVEL_MAX;
             bus_mix_send(send_out[1], send_out[0], FRAMES_PER_BLOCK * 2, lvl);
         }
@@ -3653,7 +3612,7 @@ skip_la_rebuild:
          * them and scale the stem block differently from the block that
          * reached the master -- which is precisely the exactness the comment
          * above promises. */
-        int send_lvl = shadow_send_return_level[sb];
+        int send_lvl = shadow_send_return_eff(sb);
         if (send_lvl < 0) send_lvl = 0;
         if (send_lvl > BUS_MIX_SEND_LEVEL_MAX) send_lvl = BUS_MIX_SEND_LEVEL_MAX;
 
@@ -3720,7 +3679,7 @@ skip_la_rebuild:
      * Skipped under rebuild_from_la — that path has already composited into mailbox. */
     if (!rebuild_from_la) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            int32_t scaled_me = (int32_t)lroundf((float)me_unity_i16[i] * mv);
+            int32_t scaled_me = (int32_t)lroundf((float)me_unity_i16[i] * mv_ramp[i >> 1]);
             int32_t summed = (int32_t)mailbox_audio[i] + scaled_me;
             if (summed > 32767) summed = 32767;
             if (summed < -32768) summed = -32768;
@@ -3811,6 +3770,11 @@ skip_la_rebuild:
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(unity_view);
 
+    /* The mirror's audio: what Skipback records, finished here (no writer of
+     * unity_view below this point). */
+    if (audio_live_wanted())
+        audio_live_push(audio_live_shm, unity_view, FRAMES_PER_BLOCK, 1.0f);
+
     /*
      * Schwung's metronome. Move mixes its own at MASTER, which rebuild_from_la
      * discards along with everything outside the four per-track channels, so
@@ -3841,9 +3805,9 @@ skip_la_rebuild:
     /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
      * no master vol). Apply master volume now so DAC output respects the knob.
      * Non-rebuild path already applied mv in the final ME-sum above. */
-    if (rebuild_from_la && mv < 0.9999f) {
+    if (rebuild_from_la && (mv < 0.9999f || mv_ramp[0] < 0.9999f)) {
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-            float scaled = (float)mailbox_audio[i] * mv;
+            float scaled = (float)mailbox_audio[i] * mv_ramp[i >> 1];
             if (scaled > 32767.0f) scaled = 32767.0f;
             if (scaled < -32768.0f) scaled = -32768.0f;
             mailbox_audio[i] = (int16_t)lroundf(scaled);
@@ -3884,6 +3848,14 @@ skip_la_rebuild:
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
+    }
+
+    /* First rebuilt frame after a starve fallback: the tracks faded in from
+     * zero (la_conceal_real), so fade Move's native mix -- already at master
+     * volume and through Move's own enhancer, hence added here, after both --
+     * out across the same block. A crossfade instead of a step down. */
+    if (la_native_xfade_valid) {
+        la_mix_ramp_out(mailbox_audio, la_native_xfade, FRAMES_PER_BLOCK);
     }
 
     /* Stream 3: the finished mailbox — master volume and speaker EQ applied,
@@ -4005,6 +3977,12 @@ static uint8_t *shadow_midi_shm = NULL;
 static uint8_t *shadow_ui_midi_shm = NULL;
 static uint8_t *shadow_display_shm = NULL;
 static uint8_t *display_live_shm = NULL;
+/* The control surface for the web mirror's device view: every LED as the
+ * hardware was last told to light it, every control as it is held. Always
+ * tracked (a few byte compares a frame) so the picture is right the moment a
+ * viewer arrives -- an LED is written once and then left alone. */
+static surface_live_shm_t *surface_live_shm = NULL;
+static surface_live_writer_t surface_live_writer;
 static shadow_midi_out_t *shadow_midi_out_shm = NULL;  /* MIDI output from shadow UI */
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
@@ -4444,6 +4422,13 @@ static void init_shadow_shm(void)
     display_live_shm = (uint8_t *)shadow_shm_map(SHM_DISPLAY_LIVE,
                                                  DISPLAY_BUFFER_SIZE, 1, 1);
 
+    surface_live_shm = (surface_live_shm_t *)shadow_shm_map(SURFACE_LIVE_SHM_NAME,
+                                                           sizeof(surface_live_shm_t), 1, 1);
+    if (surface_live_shm) surface_live_init(surface_live_shm, &surface_live_writer);
+    audio_live_shm = (audio_live_shm_t *)shadow_shm_map(AUDIO_LIVE_SHM_NAME,
+                                                       sizeof(audio_live_shm_t), 1, 1);
+    if (audio_live_shm) audio_live_init(audio_live_shm);
+
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
     shadow_control = (shadow_control_t *)shadow_shm_map(SHM_SHADOW_CONTROL,
                                                         CONTROL_BUFFER_SIZE, 1, 0);
@@ -4520,6 +4505,25 @@ static void init_shadow_shm(void)
         shadow_control->overlay_rect_y = 0;
         shadow_control->overlay_rect_w = 0;
         shadow_control->overlay_rect_h = 0;
+        /* Scenes: nothing is A, B or armed until shadow_ui restores the set
+         * -- a zeroed (or stale) segment would say scene 1. The fader starts
+         * at A, as the Octatrack's does. */
+        shadow_control->scene_a = SCENE_NONE;
+        shadow_control->scene_b = SCENE_NONE;
+        shadow_control->scene_edit = SCENE_NONE;
+        shadow_control->scene_flash = SCENE_FLASH_NONE;
+        shadow_control->scene_xfade_q = 0;
+        shadow_control->scene_surface = 0;
+        shadow_control->scene_unlock = 0;
+        shadow_control->scene_shift_vol = 1;   /* shadow_ui restates the setting */
+        shadow_control->scene_pc_channel = 16; /* ... and this one */
+        shadow_control->scene_active = SCENE_NONE;
+        shadow_control->scene_pc_seq = 0;
+        shadow_control->scene_turn_seq = 0;
+        for (int k = 0; k < 16; k++) {         /* scene k = Ak + Bk until the UI says */
+            shadow_control->scene_pairs[k * 2] = (uint8_t)k;
+            shadow_control->scene_pairs[k * 2 + 1] = (uint8_t)k;
+        }
     }
 
     /* Create/open UI shared memory (slot labels/state) */
@@ -4770,6 +4774,16 @@ static uint16_t snapshot_recall_gesture(void)
     return SHADOW_UI_FLAG_SNAPSHOT_QUEUED;
 }
 
+/* A RECALL asked for by Program Change (PC 127 on the scene channel). As the
+ * gesture, Recall Quantize included -- but never a toggle: a sequencer
+ * repeating PC 127 while a recall waits for its boundary must not CANCEL it,
+ * which is what a second Shift+Delete means. 0 = nothing to raise. */
+static uint16_t snapshot_recall_pc(void)
+{
+    if (recall_pending_target >= 0) return 0;
+    return snapshot_recall_gesture();
+}
+
 /*
  * Fire an armed recall, slightly EARLY.
  *
@@ -4967,7 +4981,7 @@ static void shadow_check_screenreader_announcements(void) {
 static void shadow_swap_display(void)
 {
     static uint32_t ui_check_counter = 0;
-    static int display_phase = 0;  /* 0-6: phases of display push */
+    static display_pull_t display_pull;  /* latched panel frame; see display_pull.h */
     static int display_hidden_for_volume = 0;
 
     if (!shadow_display_shm || !global_mmap_addr) {
@@ -4987,14 +5001,14 @@ static void shadow_swap_display(void)
     }
 
     if (!shadow_display_mode) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         display_hidden_for_volume = 0;
         shadow_block_plain_volume_hide_until_release = 0;
         return;  /* Not in shadow mode */
     }
     /* Let Move's PIN screen show through during challenge so PIN scanner can read it */
     if (shadow_control->pin_challenge_active == 1) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         return;
     }
     /* Display-owner split (see shadow_display_owner_t in shadow_constants.h):
@@ -5004,7 +5018,7 @@ static void shadow_swap_display(void)
      * the OLED belongs to Move firmware — yield without tearing down the
      * session. */
     if (shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE) {
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         return;
     }
     if (!shadow_volume_knob_touched) {
@@ -5015,18 +5029,18 @@ static void shadow_swap_display(void)
         if (shadow_block_plain_volume_hide_until_release) {
             /* Keep shadow UI visible until shortcut's volume touch is fully released. */
             if (display_hidden_for_volume) {
-                display_phase = 0;
+                display_pull_reset(&display_pull);
                 display_hidden_for_volume = 0;
             }
         } else {
             /* Let native Move volume overlay show while volume touch is held. */
-            display_phase = 0;
+            display_pull_reset(&display_pull);
             display_hidden_for_volume = 1;
             return;
         }
     } else if (display_hidden_for_volume) {
         /* Restart shadow slicing cleanly after releasing volume touch. */
-        display_phase = 0;
+        display_pull_reset(&display_pull);
         display_hidden_for_volume = 0;
     }
     /* Composite overlays onto shadow display if active */
@@ -5060,40 +5074,12 @@ static void shadow_swap_display(void)
     /* Write full display to DISPLAY_OFFSET (768) */
     memcpy(global_mmap_addr + DISPLAY_OFFSET, display_src, DISPLAY_BUFFER_SIZE);
 
-    /* Write display using slice protocol - one slice per ioctl */
-    /* No rate limiting because we must overwrite Move every ioctl */
-
-    /*
-     * One panel frame is SIX slices across six consecutive ioctls, so the
-     * source must be held still for all of them.
-     *
-     * Read live, each slice sampled whatever the shadow UI had drawn at that
-     * instant — so any frame containing motion was stitched together from two
-     * or more different renders. Not dropped frames: tearing. It is invisible
-     * on static text, which is why it survived, and it is exactly what a
-     * moving modulation dot or a swept filter curve exposes as "jagged".
-     *
-     * Latched at phase 0 instead. 1 KB memcpy once per seven frames, on a path
-     * that already memcpys the same buffer every frame.
-     */
-    static uint8_t display_frame[DISPLAY_BUFFER_SIZE];
-
-    if (display_phase == 0) {
-        /* Phase 0: Zero out slice area - signals start of new frame. Latch the
-         * frame that phases 1-6 will send. */
-        memcpy(display_frame, display_src, DISPLAY_BUFFER_SIZE);
-        global_mmap_addr[80] = 0;
-        memset(global_mmap_addr + 84, 0, 172);
-    } else {
-        /* Phases 1-6: Write slices 0-5 from the latched frame */
-        int slice = display_phase - 1;
-        int slice_offset = slice * 172;
-        int slice_bytes = (slice == 5) ? 164 : 172;
-        global_mmap_addr[80] = slice + 1;
-        memcpy(global_mmap_addr + 84, display_frame + slice_offset, slice_bytes);
-    }
-
-    display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
+    /* Answer the XMOS's slice request, as Move does. This used to free-run its
+     * own 0..6 counter and send whatever slice the counter named; a slice sent
+     * against a different request is drawn in the wrong band of the panel --
+     * the wrapped screen. The frame is latched on slice 1 so all six slices of
+     * one panel frame come from one render (the #213 tearing fix). */
+    display_pull_serve(&display_pull, global_mmap_addr, display_src);
 }
 
 /* Callback for chain_mgmt: BPM query via sampler_get_bpm(NULL). */
@@ -6239,29 +6225,6 @@ void midi_monitor()
             continue;
         }
 
-        /* SHIFT + STEP 15 = Move's DOUBLE LOOP, which its own manual describes
-         * as doubling "notes and automation" -- so every lane on that clip
-         * copies its points one loop-length later (lanes:double).
-         *
-         * HERE, in the hotkey scan, because this is the only cable-0 walk that
-         * runs WHATEVER IS ON SCREEN. Three earlier placements each failed for
-         * the same kind of reason and each was measured rather than reasoned:
-         * inside the shadow-display branch (never runs with Move in front),
-         * inside the `type == 0xB0` branch (a note cannot match), and inside a
-         * second scan that turned out to be display-gated too. Every time, the
-         * clip doubled and the lane reported nothing.
-         *
-         * Never swallowed: Move must still perform its half. Step 15 is note
-         * 30 (steps are notes 16-31), and `shiftHeld` is this scan's own
-         * state, updated a few lines below -- so the gesture is read from the
-         * same place that defines what "Shift" means. */
-        if (cable == 0x00 && (midi_0 & 0xF0) == 0x90 && midi_1 == 30 &&
-            midi_2 > 0) {
-            if (shiftHeld) lane_double_pending = 1;
-            shadow_log(shiftHeld ? "lanes: Double Loop gesture seen"
-                                 : "lanes: step 15 with no Shift");
-        }
-
         int controlMessage = 0xb0;
         if (midi_0 == controlMessage)
         {
@@ -6402,6 +6365,9 @@ align_capture_t g_align_capture;
 
 volatile uint32_t shim_la_rebuild_flip_count = 0;
 volatile uint32_t shim_la_starve_fallback_count = 0;
+/* Of those, the frames where every track was CONCEALED rather than empty --
+ * i.e. a shared stall the frame gate handed to Move's native mix. */
+volatile uint32_t shim_la_conceal_fallback_count = 0;
 
 /* Granular pre-ioctl timing */
 static struct timespec spi_section_start, spi_section_end;
@@ -6930,6 +6896,22 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
          * slot mix flags have one writer (see move_model_sync.h). Every frame --
          * it is an empty ring check when nothing changed. */
         move_model_sync_apply_pending();
+        /* Master volume and the selected track, from the model when it is
+         * live -- exact, and current even when Move shows no overlay and a
+         * Track press never reached us. */
+        {
+            float mvm;
+            if (move_model_sync_master_volume(&mvm)) shadow_master_volume = mvm;
+            const int sel = move_model_sync_take_selected();
+            if (sel >= 0 && sel < SHADOW_CHAIN_INSTANCES && sel != shadow_selected_slot) {
+                shadow_selected_slot = sel;
+                shadow_selection_known = 1;
+                if (shadow_control) {
+                    shadow_control->selected_slot = (uint8_t)sel;
+                    shadow_control->ui_slot = (uint8_t)sel;
+                }
+            }
+        }
     }
 
 
@@ -7256,27 +7238,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      *
      * That cost a measurement: with the knob grid up, no complete frame ever
      * accumulated, which read as "Move stopped rendering" when in fact we
-     * stopped looking. Move's step editor carries the clip's bar count and a
-     * loop-relative playhead -- the two facts Song.abl is ~35 s late with for
-     * a clip the user just made -- so this is the one path that can supply
-     * them during the workflow that needs them. */
+     * stopped looking. (It fed the step-strip decoder, now retired -- the live
+     * model answers the clip's length and page; the PIN scanner and the
+     * display dump still read the accumulated frame.) */
     if (global_mmap_addr) {
         uint8_t *mem_any = (uint8_t *)global_mmap_addr;
         uint8_t slice_any = mem_any[80];
         if (slice_any >= 1 && slice_any <= 6) {
             int idx = slice_any - 1;
-            if (pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172)) {
-                /* A WHOLE frame: decode Move's step-editor bar strip from it.
-                 *
-                 * Here rather than in the worker because the frame is only
-                 * whole at this instant -- the next slice overwrites it -- and
-                 * because the selected track must be read NOW: the editor
-                 * shows one track, and pairing the reading with whatever is
-                 * selected 200 ms later attributes a bar count to the wrong
-                 * clip. The decode is a scan of 128 columns in two pages, no
-                 * allocation and no I/O. See step_strip.h. */
-                step_strip_observe(pin_display_frame(), clip_selected_track());
-            }
+            (void)pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172);
         }
     }
 
@@ -7389,7 +7359,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                         amplitude = powf(10.0f, db / 20.0f);
                     }
 
-                    if (amplitude == 0.0f || fabsf(amplitude - shadow_master_volume) > 0.003f) {
+                    /* The model reads the knob exactly (move_model_sync); the bar
+                     * scan is the fallback for a firmware it cannot resolve. */
+                    float mv_model;
+                    if (move_model_sync_master_volume(&mv_model)) {
+                        /* stand down */
+                    } else if (amplitude == 0.0f || fabsf(amplitude - shadow_master_volume) > 0.003f) {
                         shadow_master_volume = amplitude;
                         float db_val = (amplitude > 0.0f) ? (20.0f * log10f(amplitude)) : -99.0f;
                         char msg[112];
@@ -7746,6 +7721,7 @@ pre_done:
      * held — regardless of whether the volume knob is also touched. */
     {
         static int step2_lit = 0;
+        static int step3_lit = 0;
         static int step13_lit = 0;
 
         int want_shiftvol = SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched;
@@ -7759,6 +7735,15 @@ pre_done:
         } else if (!want_step2 && step2_lit) {
             shadow_queue_led(0x0B, 0xB0, 17, 0);
             step2_lit = 0;
+        }
+
+        /* Step 3 icon = Scenes, reachable the same two ways as Settings. */
+        if (want_step2 && !step3_lit) {
+            shadow_queue_led(0x0B, 0xB0, 18, 118);
+            step3_lit = 1;
+        } else if (!want_step2 && step3_lit) {
+            shadow_queue_led(0x0B, 0xB0, 18, 0);
+            step3_lit = 0;
         }
 
         if (want_step13 && !step13_lit) {
@@ -7882,6 +7867,20 @@ pre_done:
             launch_shadow_ui();
             shadow_log("Shift+Step2 long-press: opening global settings");
         }
+        /* Shift + Step 3: the Scenes screen */
+        if (step3_longpress_pending && !step3_longpress_fired &&
+            shadow_shift_held && !shadow_volume_knob_touched &&
+            long_press_elapsed(&step3_press_time)) {
+            step3_longpress_fired = 1;
+            step3_longpress_pending = 0;
+            shadow_control->ui_flags_ext |=
+                (uint16_t)(SHADOW_UI_FLAG_JUMP_TO_SCENES >> SHADOW_UI_FLAG_EXT_SHIFT);
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            launch_shadow_ui_reset_backoff();
+            launch_shadow_ui();
+            shadow_log("Shift+Step3 long-press: opening scenes");
+        }
         /* Shift + Step 13 long-press: resume most-recently-suspended tool */
         if (step13_longpress_pending && !step13_longpress_fired &&
             shadow_shift_held && !shadow_volume_knob_touched &&
@@ -7939,6 +7938,11 @@ pre_done:
      * and POSThw changed during the ioctl.
      *
      * Add a MIDI_OUT writer after this call and the log will exonerate it. */
+    /* The device view reads LEDs here for the same reason: this is what the
+     * XMOS receives, Move's writes and Schwung's merged. */
+    if (surface_live_shm)
+        surface_live_scan_out(surface_live_shm, &surface_live_writer,
+                              shadow + MIDI_OUT_OFFSET, HW_MIDI_OUT_SIZE);
     xmos_log_slots("PREEND", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
 }
 
@@ -8175,6 +8179,11 @@ static uint8_t step_tap_replay[16];
  * press that did nothing else, which is the case it is good at. */
 static uint8_t step_used[16];
 static uint8_t claim_press_blocked[128];
+/* The Scenes screen has the steps (scene_surface & SCENE_SURF_STEPS): every
+ * withheld press is USED, so none is replayed. A plain byte refreshed at the
+ * top of each post-transfer, so step_note_withhold stays liftable into
+ * tests/host/test_step_tap_vs_hold.sh. */
+static uint8_t step_claim_all;
 
 /* A withheld step press or release, and what it decides.
  *
@@ -8228,7 +8237,9 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
-        step_used[i] = 0;
+        /* The Scenes screen takes the steps outright: a press is USED the
+         * moment it lands, so no tap is replayed to Move. */
+        step_used[i] = step_claim_all;
         shim_step_press_seen++;
         return;
     }
@@ -8270,9 +8281,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 {
     (void)ctx;
     (void)size;
+    step_claim_all = (shadow_control && (shadow_control->scene_surface & SCENE_SURF_STEPS)) ? 1 : 0;
 
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
+
+    /* The device view's presses, from the RAW mailbox: before any blocking
+     * site swallows an event, so a press Schwung withholds from Move shows. */
+    if (surface_live_shm && hw)
+        surface_live_scan_in(surface_live_shm, &surface_live_writer,
+                             hw + MIDI_IN_OFFSET, SHADOW_MIDI_IN_BYTES);
 
     /* SPI frame telemetry from the kernel's own counters. One aligned 8-byte
      * load of the transfer time ablspi already stamped at the end of the page
@@ -8858,9 +8876,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * recall, handled and swallowed in the post-ioctl
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
+                                /* Shift+- / Shift++ (Down / Up): SCENE EDIT A / B
+                                 * (tap = latch, hold + turn = momentary; the
+                                 * UI decides). Move gives Shift+Up/Down no
+                                 * meaning of its own -- measured: it is the
+                                 * same octave shift as the bare arrows -- so
+                                 * claiming it costs nothing. Only while our
+                                 * screen is up (this block), never in
+                                 * overtake; the latch carries the release. */
+                                const int scene_edit_cc =
+                                    (d1 == CC_UP || d1 == CC_DOWN) && shadow_shift_held &&
+                                    shadow_control && shadow_control->overtake_mode == 0;
                                 claim_press_blocked[d1] =
-                                    ((claim_cc_set(d1) || step_owns_edit_cc) &&
-                                     !claim_denied_cc(d1) && !shadow_shift_held)
+                                    (((claim_cc_set(d1) || step_owns_edit_cc) &&
+                                      !claim_denied_cc(d1) && !shadow_shift_held) || scene_edit_cc)
                                         ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
                             if (claim_press_blocked[d1]) filter = 1;
@@ -9096,6 +9125,40 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                              cc_claim_shm->bits, st, cc_d1);
             if (route & CC_ROUTE_PUBLISH) shadow_ui_midi_publish(hw_midi[j], st, cc_d1, hw_midi[j + 3]);
             if (route & CC_ROUTE_SWALLOW) {
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
+        /*
+         * PROGRAM CHANGE SELECTS A SCENE -- third in the ownership order. On
+         * the frame it arrives: the ends go to the fader now, and the UI
+         * adopts the scene from scene_pc_seq. Taken out of BOTH buffers: the
+         * channel is the scenes', and a slot receiving All would otherwise
+         * change its preset on the same message.
+         */
+        if (!overtake_mode && cable == 0x02 && cin == 0x0C && shadow_control) {
+            uint8_t k, ha, hb;
+            if (scene_pc_select(shadow_control->scene_pc_channel, hw_midi[j + 1], hw_midi[j + 2],
+                                shadow_control->scene_pairs, &k, &ha, &hb)) {
+                shadow_control->scene_a = ha;
+                shadow_control->scene_b = hb;
+                shadow_control->scene_active = k;
+                shadow_control->scene_pc_seq++;
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+            /* PC 126 / 127 on the same channel: take / recall the global
+             * snapshot, exactly as Shift+Copy / Shift+Delete do. */
+            const int snap = scene_pc_snapshot(shadow_control->scene_pc_channel,
+                                               hw_midi[j + 1], hw_midi[j + 2]);
+            if (snap) {
+                if (shadow_ui_enabled) {
+                    const uint16_t raise = snap == SCENE_PC_SNAPSHOT_TAKE
+                        ? SHADOW_UI_FLAG_SNAPSHOT_TAKE : snapshot_recall_pc();
+                    if (raise)
+                        shadow_control->ui_flags_ext |= (uint16_t)(raise >> SHADOW_UI_FLAG_EXT_SHIFT);
+                }
                 midi_in_swallow(sh_midi, hw_midi, j);
                 continue;
             }
@@ -9748,6 +9811,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /* SHIFT + VOLUME KNOB = THE SCENE FADER (setting, default on).
+                 * Here, in the always-on scan, so it works whichever screen is
+                 * up. The turn is withheld from Move (both buffers), so the
+                 * master volume does not move with it. ~1/128 of the fader per
+                 * detent; the shim's slew smooths the steps. Not in overtake:
+                 * a tool owns the surface. */
+                if (d1 == CC_MASTER_KNOB && type == 0xB0 && shadow_shift_held &&
+                    shadow_control && shadow_control->scene_shift_vol &&
+                    shadow_control->overtake_mode == 0) {
+                    int delta = (d2 >= 1 && d2 <= 63) ? d2 : (d2 >= 65 && d2 <= 127) ? (int)d2 - 128 : 0;
+                    int q = (int)shadow_control->scene_xfade_q + delta * 512;
+                    if (q < 0) q = 0;
+                    if (q > 65535) q = 65535;
+                    shadow_control->scene_xfade_q = (uint16_t)q;
+                    /* Every detent, clamped or not: the slider must answer
+                     * a turn at either end too (scene_turn_seq). */
+                    if (delta != 0) shadow_control->scene_turn_seq++;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    continue;
+                }
+
                 /* Shift+Vol+Left/Right: set page navigation (when enabled) */
                 if (SHIFT_VOL_ACTIVE() && shadow_control && shadow_control->set_pages_enabled &&
                     shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {
@@ -9885,6 +9969,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                 /* Volume knob touch (note 8) */
                 if (d1 == 8) {
+                    /* SHIFT + VOLUME IS THE SCENE FADER, so Move must not see
+                     * the TOUCH either: the turns are withheld above, and a
+                     * touch alone still raises Move's volume overlay over the
+                     * scene slider. Both edges, latched -- Shift is usually let
+                     * go before the knob, and a lone release for a touch Move
+                     * never saw is an orphan. Tracked below regardless: the
+                     * Shift+Vol combos read shadow_volume_knob_touched. */
+                    static int scene_vol_touch_swallow = 0;
+                    if (touched && shadow_shift_held && shadow_control &&
+                        shadow_control->scene_shift_vol && shadow_control->overtake_mode == 0)
+                        scene_vol_touch_swallow = 1;
+                    if (scene_vol_touch_swallow) {
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        if (!touched) scene_vol_touch_swallow = 0;
+                    }
                     if (touched != shadow_volume_knob_touched) {
                         shadow_volume_knob_touched = touched;
                         volumeTouched = touched;
@@ -9929,6 +10028,37 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /* Step 3 (note 18): Shift+hold -> Scenes, as Step 2 is for Settings. */
+                if (d1 == 18 && type == 0x90 && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
+                    if (d2 > 0 && shadow_shift_held && !shadow_volume_knob_touched) {
+                        clock_gettime(CLOCK_MONOTONIC, &step3_press_time);
+                        step3_longpress_pending = 1;
+                        step3_longpress_fired = 0;
+                    }
+                }
+                if (d1 == 18 && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    step3_longpress_pending = 0;
+                }
+
+                /* Shift + Volume + Step 3 (note 18) = the Scenes screen */
+                if (d1 == 18 && type == 0x90 && d2 > 0) {
+                    if (SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
+                        shadow_block_plain_volume_hide_until_release = 1;
+                        shadow_control->ui_flags_ext |=
+                            (uint16_t)(SHADOW_UI_FLAG_JUMP_TO_SCENES >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        shadow_display_mode = 1;
+                        shadow_control->display_mode = 1;
+                        launch_shadow_ui_reset_backoff();
+                        launch_shadow_ui();
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        step3_release_owed = 1;
+                    }
+                }
+                if (d1 == 18 && step3_release_owed && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    step3_release_owed = 0;
+                }
+
                 /* Shift + Volume + Step 13 (note 28) = jump to Tools menu */
                 if (d1 == 28 && type == 0x90 && d2 > 0) {
                     if (SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
@@ -9971,7 +10101,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     type == 0x90 && d2 > 0 &&
                     d1 >= CC_STEP_UI_FIRST && d1 <= CC_STEP_UI_LAST &&
                     shadow_control && shadow_control->overtake_mode == 0) {
-                    int skip_dismiss = LONG_PRESS_ACTIVE() && (d1 == 17 || d1 == 28);
+                    int skip_dismiss = LONG_PRESS_ACTIVE() && (d1 == 17 || d1 == 18 || d1 == 28);
                     if (!skip_dismiss) {
                         shadow_display_mode = 0;
                         shadow_control->display_mode = 0;
@@ -11319,14 +11449,19 @@ static void *spi_timing_logger_thread(void *arg)
         if (shadow_in_audio_shm) {
             uint32_t flips = shim_la_rebuild_flip_count;
             uint32_t fallback = shim_la_starve_fallback_count;
+            uint32_t conceal_fb = shim_la_conceal_fallback_count;
             shim_la_rebuild_flip_count = 0;
             shim_la_starve_fallback_count = 0;
+            shim_la_conceal_fallback_count = 0;
 
             int any_nonzero = (flips || fallback);
             {
                 extern volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
                 for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++)
-                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED)) any_nonzero = 1;
+                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_conceal_count[s], __ATOMIC_RELAXED) ||
+                        __atomic_load_n(&la_align_count[s], __ATOMIC_RELAXED))
+                        any_nonzero = 1;
             }
             uint32_t slot_starve[LINK_AUDIO_IN_SLOT_COUNT];
             uint32_t slot_catchup[LINK_AUDIO_IN_SLOT_COUNT];
@@ -11379,12 +11514,24 @@ static void *spi_timing_logger_thread(void *arg)
                         tc += __atomic_exchange_n(&la_trim_count[s], 0, __ATOMIC_RELAXED);
                         td += __atomic_exchange_n(&la_trim_dropped[s], 0, __ATOMIC_RELAXED);
                     }
+                    uint32_t cc = 0, ac = 0, ad = 0;
+                    for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                        cc += __atomic_exchange_n(&la_conceal_count[s], 0, __ATOMIC_RELAXED);
+                        ac += __atomic_exchange_n(&la_align_count[s], 0, __ATOMIC_RELAXED);
+                        ad += __atomic_exchange_n(&la_align_dropped[s], 0, __ATOMIC_RELAXED);
+                    }
                     /* backlog_trims counts sustained backlogs removed;
-                     * trim_dropped_ms is the latency reclaimed. */
+                     * trim_dropped_ms is the latency reclaimed. concealed is
+                     * starved blocks played as a faded mirror instead of
+                     * silence; aligns / align_dropped_ms is latency removed
+                     * lining a deeper track up with the shallowest. */
                     unified_log("link_audio", LOG_LEVEL_DEBUG,
                         "path: rebuild_flips=%u la_starve_fallback=%u "
-                        "backlog_trims=%u trim_dropped_ms=%u",
-                        flips, fallback, tc, (unsigned)(td / 2 / 44));
+                        "conceal_fallback=%u "
+                        "backlog_trims=%u trim_dropped_ms=%u "
+                        "concealed=%u aligns=%u align_dropped_ms=%u",
+                        flips, fallback, conceal_fb, tc, (unsigned)(td / 2 / 44),
+                        cc, ac, (unsigned)(ad / 2 / 44));
                 }
             }
         }

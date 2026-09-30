@@ -123,7 +123,7 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
          * the same clip, its fingerprint matches, and the lane re-attaches
          * (measured) -- but Move's undo history does not survive a reload, so
          * once written down an orphan could only ever mislead. */
-        if (ln->orphaned) continue;
+        if (ln->orphaned || ln->module_gone) continue;
         emitted++;
         /* stale / orphaned / driving / punch_* are deliberately absent: they
          * are recomputed from the live clip every block, and only a

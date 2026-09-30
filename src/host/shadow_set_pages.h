@@ -105,8 +105,15 @@ int shadow_set_pages_consume_read(const char *name, const char *uuid, uint32_t g
                                   int settled, uint64_t age_ms);
 /* The generation of the SET_CHANGED last raised (served as `active_set` line 3). */
 uint32_t shadow_set_pages_published_gen(void);
-/* CLOCK_MONOTONIC ms of the worker's last successful set read (0 = never). */
-uint64_t shadow_set_pages_last_publish_ms(void);
+/* CLOCK_MONOTONIC ms at which the published read last CHANGED -- a different
+ * name, uuid or generation (0 = never). A republish of the same read does NOT
+ * advance it: the worker republishes every tick while misaligned, so "when
+ * was something last published" is always "just now" and starved the
+ * give-up that keys on it (move_model_sync_housekeep). */
+uint64_t shadow_set_pages_last_read_ms(void);
+/* Publish one read for the SPI-side consume (the worker's poll calls this;
+ * exposed so tests/host can drive it without Move's filesystem). */
+void shadow_set_pages_publish(const char *name, const char *uuid);
 
 
 /* Read current page from disk (returns 0 if not found) */

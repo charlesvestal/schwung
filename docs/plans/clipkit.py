@@ -34,14 +34,14 @@ def ensure_testd():
 def arm_lanes(on=True):
     """Arm or disarm the lanes kill switch.
 
-    Lanes are OFF by default now, so every harness run must arm them or every
+    Lanes are ON by default now (lanes_off disarms); a harness run removes a stale lanes_off or every
     scenario legitimately measures a disabled feature."""
-    f = os.path.join(D, "lanes_on")
+    f = os.path.join(D, "lanes_off")
     if on:
-        open(f, "w").close()
-    else:
         try: os.remove(f)
         except FileNotFoundError: pass
+    else:
+        open(f, "w").close()
     time.sleep(1.5)     # the worker polls ~1 Hz, then the shim pushes on change
 
 

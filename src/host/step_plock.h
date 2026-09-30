@@ -18,12 +18,10 @@
  * design doc called the page oracle "the least certain part of Project 1";
  * this is what settles it.
  *
- * WHERE THE BAR COMES FROM: the step editor's own bar strip
- * (`step_strip.h`'s `bold_segment` -- the thickened segment IS the displayed
- * bar), read off the screen. NOT Move's "Bar N" announcement, which needs the
- * screen reader running: measured 2026-09-13 with it off, `shadow_editor_bar`
- * stayed 0 through repeated arrow presses, so an oracle built on it is absent
- * exactly when nobody has turned that on.
+ * WHERE THE BAR CAME FROM: the step editor's bar strip, read off the screen,
+ * and before that Move's "Bar N" announcement. Both are retired -- the host
+ * now reads the page origin from Move's live model (docs/MOVE_MODEL.md), so
+ * only the scroll form below is used; the bar form is kept as pure arithmetic.
  *
  * WHERE THE PAGE COMES FROM: `stepEditorScrollPosition`, and it makes the
  * arithmetic above unnecessary rather than merely feasible.
@@ -54,13 +52,6 @@
  * made the page look unreadable: the strip counts BARS, and the page moves
  * within one.
  *
- * ITS ONE WEAKNESS IS AGE. It comes from Song.abl, which Move writes lazily,
- * so paging and immediately p-locking can read the previous page. The bar
- * strip is live and is the cross-check: where it names a bar, the scroll must
- * fall inside it, and where they disagree the LIVE reading wins. The
- * bar-and-page form below is kept for that path and for a clip the file has
- * never seen.
- *
  * The other refusals are the same kind: an unusable bar or index, a grid we
  * could not parse (step_resolution <= 0), and a clip whose length is unknown.
  *
@@ -71,7 +62,9 @@
 #define STEP_PLOCK_H
 
 #include <math.h>
-#include "step_strip.h"   /* STEP_STRIP_STEPS_PER_PAGE */
+
+/* Move has 16 step buttons; a step-editor page is 16 of them. */
+#define STEP_PLOCK_STEPS_PER_PAGE  16
 
 /* Why an answer was refused, so a gesture that does nothing can say which
  * fact was missing rather than just failing. */
@@ -125,7 +118,7 @@ static inline int step_plock_phase(int bar_1based, int step_index,
 {
     if (out_phase) *out_phase = NAN;
     if (bar_1based < 1) return STEP_PLOCK_NO_BAR;
-    if (step_index < 0 || step_index >= STEP_STRIP_STEPS_PER_PAGE)
+    if (step_index < 0 || step_index >= STEP_PLOCK_STEPS_PER_PAGE)
         return STEP_PLOCK_BAD_INDEX;
     if (!isfinite(step_resolution) || step_resolution <= 0.0)
         return STEP_PLOCK_NO_GRID;
@@ -138,7 +131,7 @@ static inline int step_plock_phase(int bar_1based, int step_index,
     const int steps_per_bar = (int)(steps_per_bar_f + 0.5);
     /* A bar that does not fit the step buttons is displayed across pages, and
      * which page is on screen is a fact we do not have. */
-    if (steps_per_bar > STEP_STRIP_STEPS_PER_PAGE) return STEP_PLOCK_MULTI_PAGE;
+    if (steps_per_bar > STEP_PLOCK_STEPS_PER_PAGE) return STEP_PLOCK_MULTI_PAGE;
     /* A step index past the bar's own length is not on the buttons for this
      * bar at all -- at 1/8 in 4/4 a bar is 8 steps, so buttons 9..16 belong to
      * no step of it. */
@@ -214,7 +207,7 @@ static inline double step_plock_clip_len(double file_len,
  * straight 1/24 be. */
 static inline int step_plock_button_to_step(int button, int triplet)
 {
-    if (button < 0 || button >= STEP_STRIP_STEPS_PER_PAGE) return -1;
+    if (button < 0 || button >= STEP_PLOCK_STEPS_PER_PAGE) return -1;
     if (!triplet) return button;
     if ((button % 4) == 3) return -1;      /* the deactivated one */
     return button - (button / 4);

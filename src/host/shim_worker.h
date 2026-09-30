@@ -35,28 +35,28 @@
  * reusing the bit would make a stale build read one trigger as another. */
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 /*
- * AUTOMATION LANES ARE OFF UNLESS ARMED — /data/UserData/schwung/lanes_on.
+ * AUTOMATION LANES ARE ON UNLESS DISARMED — /data/UserData/schwung/lanes_off.
  *
- * Not a diagnostic like the flags above: it is a KILL SWITCH, and it exists
- * because the feature can attach automation to the wrong clip and that is
- * SILENT. The case that forced it: Schwung believed the active set was one the
- * user had deleted, so p-locks were written into the outgoing set's lane file
- * at a row that set happened to have — the locks simply never played, and
- * nothing said why.
+ * A KILL SWITCH, not a diagnostic. It was an opt-in (`lanes_on`) while the
+ * feature could attach automation to the wrong clip SILENTLY: Schwung once
+ * believed the active set was one the user had deleted, so p-locks went into
+ * the outgoing set's lane file at a row that set happened to have, and never
+ * played. The live model (#552) closed that -- set identity is read from
+ * Move's own document and autosave waits until Schwung has switched to it --
+ * so lanes are on by default and the file only turns them OFF.
  *
- * Off by default, so a build carrying this feature cannot mis-key anybody's
- * automation until they ask for it. Armed, everything behaves as it does on
- * the development branch.
+ * An opt-in hidden in a file also failed the other way: a reinstall that did
+ * not carry `lanes_on` turned the feature off with nothing on screen but
+ * "NOT LOCKED: DISABLED".
  *
  * When DISARMED the chain releases whatever it is driving and then does
  * nothing: no writes, no playback. It must not merely stop ticking, or a lane
  * that was driving would leave its override asserted and the parameter stuck
  * where the clip left it, with no gesture that hands it back.
  */
-#define SHIM_FLAG_LANES_ON       (1u << 11) /* lanes_on -- the kill switch */
+#define SHIM_FLAG_LANES_OFF      (1u << 11) /* lanes_off -- the kill switch */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
-#include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
 
 extern volatile uint32_t shim_debug_flags;
 
@@ -112,17 +112,6 @@ extern volatile int shim_step_tap_emitted;   /* packets actually written */
 extern volatile int shim_step_tap_noroom;    /* MIDI_IN full, deferred */
 extern volatile int shim_step_hold_ms_last;  /* the last release's held time */
 extern char shim_step_plock_key[64];         /* the key that last spent a press */
-
-/* The blind-window anchor's decision — see shadow_slot_clip_phase. */
-extern volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
-extern volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
-/* Why a clip row came back unknown -- see shadow_chain_mgmt.c. Diagnostic
- * only; drained by row_unknown_tick(). */
-extern volatile int g_row_unknown_clips, g_row_unknown_strip, g_row_unknown_seen;
-/* Whether a WRITE may use the row shadow_slot_clip_phase answered, per slot,
- * and the edited clip'''s length when it may not. See shadow_chain_mgmt.c. */
-extern volatile int g_write_unconfirmed[];
-extern volatile int g_write_edit_len_x100[];
 
 /* Has the press on `step` been down long enough to be a HOLD rather than a
  * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so
@@ -225,15 +214,5 @@ void perf_shm_attach_tick(void);
 
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
-
-/* The live clip geometry parsed from Song.abl, or NULL before the first parse.
- * Exposed rather than re-parsed: a second copy of a >1 MB parse on a different
- * schedule is two answers to one question, and a reader needs the very table
- * the worker seeded clip_state from. Check ->valid.
- *
- * Worker writes, SPI callback reads. The worker overwrites the struct in
- * place, so a torn read is possible; nothing here gates audio, and a lane that
- * reads a half-written loop length loses one block of phase. */
-const clip_regions_t *shadow_clip_regions(void);
 
 #endif /* SHIM_WORKER_H */

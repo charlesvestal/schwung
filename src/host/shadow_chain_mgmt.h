@@ -215,6 +215,12 @@ extern int (*shadow_chain_synth_requires_continuous)(void *instance);
 extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
 /* One of Schwung's own automation edits was journaled (unified Undo). */
 extern int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind);
+/* Optional: the scene crossfader, pushed once per frame per slot before the
+ * idle gate (chain_scene.c). Returns the slot's scene revision (low 16) and a
+ * one-shot refusal code (bits 16-23). NULL on a chain DSP built before scenes;
+ * the caller null-checks and scenes simply do nothing on slots. */
+extern uint32_t (*shadow_chain_set_scene_morph)(void *instance, uint8_t a, uint8_t b,
+                                                float x, uint8_t edit, uint8_t edit_flags);
 /* Optional: pushed once per block per slot, BEFORE the idle gate, so a silent
  * slot's lane keeps playing. NULL on any chain DSP built before automation
  * lanes -- the caller must null-check, and a NULL degrades to "phase unknown"
@@ -225,47 +231,6 @@ extern void (*shadow_chain_set_clip_phase)(void *instance, int valid,
                                            double phase_beats, double loop_len,
                                            int track, int clip_slot,
                                            int fp_valid, const double *fp);
-
-/* Optional, same seam: a clip at (track, slot) has been DELETED, so its lanes
- * are orphaned -- silent and RETAINED, never destroyed. Pushed by the SPI
- * callback's per-slot loop, once per deleted-mask generation; the worker that
- * discovers the deletion must never call into a chain instance itself.
- * NULL degrades to "lanes go stale by fingerprint instead", which is also
- * silent and retained. */
-extern void (*shadow_chain_set_clip_deleted)(void *instance, int track,
-                                             int slot);
-
-/* Published by the worker (shim_worker.c) when a re-parse of Song.abl finds a
- * clip gone: bit `track * CLIP_SLOTS + slot`, with a monotonic generation so
- * the callback can tell news from a repeat. A generation is only bumped when
- * the mask is non-zero, so a new generation always MEANS a deletion. */
-uint32_t shadow_clip_deleted_generation(void);
-uint32_t shadow_clip_deleted_mask(void);
-
-/* A clip was DUPLICATED: its automation should travel with it. Published by
- * the worker exactly like the deletion mask -- fields first, generation LAST,
- * so a reader that sees a new generation is looking at settled ones -- and
- * consumed by the SPI callback's per-slot loop, the only place a chain
- * instance is in hand.
- *
- * A duplicate is recognised by WHAT IT IS: a clip in a slot that was empty at
- * the previous parse, whose notes and loop length match one already on that
- * track. Not by the Copy button, because a clip can be duplicated more than
- * one way (Move 2.1.0 added copy/paste between slots) and a button press is a
- * moment that can be missed, while the file states the result. */
-uint32_t shadow_clip_copy_generation(void);
-
-/* The row that NEWLY APPEARED on `track` at the last re-parse, or -1.
- *
- * A take recorded before Move wrote the clip carries the PENDING placeholder
- * and must be re-keyed. Handing it the PLAYING row adopted it onto the wrong
- * clip whenever something else was playing; the row that just appeared is the
- * clip the user made. */
-int      shadow_clip_new_slot(int track);
-uint32_t shadow_clip_new_generation(void);
-int shadow_clip_copy_track(void);
-int shadow_clip_copy_src(void);
-int shadow_clip_copy_dst(void);
 
 /* Where slot `slot`'s Move track is in its playing clip. Returns 1 for a known
  * phase, 0 for UNKNOWN -- never phase 0. *clip_slot and *fp_valid answer
@@ -315,6 +280,18 @@ extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 extern master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
 extern volatile int shadow_send_return_level[SEND_BUSES];  /* 0..127 */
 extern volatile int shadow_send_a_to_b;                    /* 0..127 */
+/* A SCENE's override of those two, -1 = none. Never written into the levels
+ * above: those are what the user set, and what every save reads. */
+extern volatile int shadow_scene_return_ov[SEND_BUSES];
+extern volatile int shadow_scene_a_to_b_ov;
+static inline int shadow_send_return_eff(int sb) {
+    const int o = shadow_scene_return_ov[sb];
+    return o >= 0 ? o : shadow_send_return_level[sb];
+}
+static inline int shadow_send_a_to_b_eff(void) {
+    const int o = shadow_scene_a_to_b_ov;
+    return o >= 0 ? o : shadow_send_a_to_b;
+}
 
 /* Drain each slot's per-bus send contributions into the shim's accumulators.
  * NULL until a chain DSP that exports chain_drain_sends is loaded, so every
@@ -421,7 +398,7 @@ void shadow_fx_load_worker_tick(void);
  * and no return level costs one pointer scan per frame and nothing else. */
 static inline int shadow_send_bus_active(int sb) {
     if (sb < 0 || sb >= SEND_BUSES) return 0;
-    if (shadow_send_return_level[sb] > 0) return 1;
+    if (shadow_send_return_eff(sb) > 0) return 1;
     for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
         const master_fx_slot_t *s = &shadow_send_fx_slots[sb][fx];
         if (s->instance && s->api && s->api->process_block) return 1;
@@ -461,14 +438,21 @@ extern FILE *shadow_midi_out_log;
  * Inline functions - used by both shim and chain_mgmt
  * ============================================================================ */
 
+/* The level a SCENE drives, else the user's. The user's is what every save,
+ * the UI and the dB readouts see; a scene only ever supplies an override. */
+static inline float shadow_slot_volume_eff(int slot) {
+    return shadow_chain_slots[slot].scene_volume_on ? shadow_chain_slots[slot].scene_volume
+                                                    : shadow_chain_slots[slot].volume;
+}
+
 /* Effective volume: combines volume, mute, and solo.
  * Solo wins over mute (matching Ableton/Move behavior). */
 static inline float shadow_effective_volume(int slot) {
     if (shadow_solo_count > 0) {
-        return shadow_chain_slots[slot].soloed ? shadow_chain_slots[slot].volume : 0.0f;
+        return shadow_chain_slots[slot].soloed ? shadow_slot_volume_eff(slot) : 0.0f;
     }
     if (shadow_chain_slots[slot].muted) return 0.0f;
-    return shadow_chain_slots[slot].volume;
+    return shadow_slot_volume_eff(slot);
 }
 
 /*
@@ -479,9 +463,38 @@ static inline float shadow_effective_volume(int slot) {
  * stem (so stems still sum to the master); sends stay pre-pan.
  */
 static inline void shadow_pan_gains(int slot, float *gl, float *gr) {
-    const float p = shadow_chain_slots[slot].pan;
+    const float p = shadow_chain_slots[slot].scene_pan_on ? shadow_chain_slots[slot].scene_pan
+                                                          : shadow_chain_slots[slot].pan;
     *gl = (p > 0.0f) ? cosf(p * 1.57079632679f) : 1.0f;
     *gr = (p < 0.0f) ? cosf(-p * 1.57079632679f) : 1.0f;
+}
+
+/* ~5 ms one-pole at 44.1 kHz: 1 - exp(-1 / (0.005 * 44100)). Fast enough that
+ * a fader sweep tracks the hand, slow enough that a 1/127 CC step or a block
+ * boundary is not heard as a click. */
+#define SHADOW_MIX_SMOOTH 0.00452f
+
+/* Once per block, before a slot's mix loop: the level and balance to glide
+ * toward. The first block after a slot appears snaps, so nothing fades in
+ * from silence that should not. */
+static inline void shadow_mix_targets(int slot) {
+    shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+    s->mix_vol_t = shadow_effective_volume(slot);
+    shadow_pan_gains(slot, &s->mix_pan_l_t, &s->mix_pan_r_t);
+    if (!s->mix_init) {
+        s->mix_vol = s->mix_vol_t;
+        s->mix_pan_l = s->mix_pan_l_t;
+        s->mix_pan_r = s->mix_pan_r_t;
+        s->mix_init = 1;
+    }
+}
+
+/* Once per stereo frame, beside shadow_fade_advance. */
+static inline void shadow_mix_advance(int slot) {
+    shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+    s->mix_vol += (s->mix_vol_t - s->mix_vol) * SHADOW_MIX_SMOOTH;
+    s->mix_pan_l += (s->mix_pan_l_t - s->mix_pan_l) * SHADOW_MIX_SMOOTH;
+    s->mix_pan_r += (s->mix_pan_r_t - s->mix_pan_r) * SHADOW_MIX_SMOOTH;
 }
 
 /* Advance the fade envelope by one sample. Call once per stereo frame in mix loop. */
@@ -573,9 +586,13 @@ void shadow_ui_state_refresh(void);
 
 /* --- Mute/solo --- */
 void shadow_apply_mute(int slot, int is_muted);
+void shadow_apply_volume(int slot, float linear);
 void shadow_toggle_solo(int slot);
 void shadow_apply_solo(int slot, int is_soloed);
 void shadow_apply_mix_state(const int muted[4], const int soloed[4]);
+/* Worker thread: log the slot mute/solo state if it changed since the last
+ * call. The mutators above run on the SPI callback and may not log. */
+void shadow_mix_log_service(void);
 int shadow_sync_mix_from_song(const char *uuid, const char *set_name);
 
 /* --- Master FX --- */

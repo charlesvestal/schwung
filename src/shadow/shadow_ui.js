@@ -109,6 +109,17 @@ import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_
 import { createControlHost } from '/data/UserData/schwung/shared/control_host.mjs';
 import { createLayoutEditor, createCCEditor } from '/data/UserData/schwung/shared/control_editor.mjs';
 import { createCCMap } from '/data/UserData/schwung/shared/cc_map.mjs';
+/* SCENES: the screen, and the bank as a saved document. */
+import { createScenesScreen, drawArmBadge, armBadgeText, editLabel as sceneEditLabel }
+    from '/data/UserData/schwung/shared/scenes_screen.mjs';
+import { createSceneFaderOverlay, drawSceneFaderOverlay }
+    from '/data/UserData/schwung/shared/scene_fader_overlay.mjs';
+import { SCOPES as SCENE_SCOPES, scopeKey as sceneScopeKey, buildDoc as buildSceneDoc,
+         parseDoc as parseSceneDoc, docToLoads as sceneDocToLoads,
+         expectedPairCount as sceneExpectedPairCount, sumLockCounts as sumSceneLockCounts,
+         endsFor as sceneEndsFor, defaultPairs as sceneDefaultPairs,
+         halfA as sceneHalfA, halfB as sceneHalfB }
+    from '/data/UserData/schwung/shared/scene_doc.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* Absolute, matching every other shared/param_pages import in this file. QuickJS
  * would resolve a relative specifier fine (eval_file gives this module its real
@@ -118,6 +129,8 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
 import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+import { buildFlatTargetRows, moveFlatCursor, planFlatTargetOpen, flatTargetCommitRow } from '/data/UserData/schwung/shared/lfo_target_flat.mjs';
+import { planFileFlatOpen, fileFlatPick, createRefusalLatch } from '/data/UserData/schwung/shared/file_flat.mjs';
 /* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
  * context a widget and a card get, so a module author writes one thing. */
 import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
@@ -307,7 +320,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     paramPagesEntering,
-    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
+    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage, commitParamPagesValue,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
     paramPagesCachedValue, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
@@ -389,6 +402,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
 const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
 const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
+const SHADOW_UI_FLAG_JUMP_TO_SCENES = 0x2000;   /* Shift+Vol+Step3 */
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -523,6 +537,8 @@ const VIEWS = {
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
+    LFO_TARGET_FLAT: "lfotargetflat",         // LFO targets as one list with dividers (knob)
+    FILE_FLAT: "fileflat",                    // Files in the current folder (knob on a file cell)
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
     COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
     MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
@@ -534,7 +550,8 @@ const VIEWS = {
     BUS_LIST: "buslist",                     // This slot's buses, Main and New Bus
     BUS_ACTIONS: "busactions",               // One bus: voices, inserts, sends, rename, delete
     BUS_VOICES: "busvoices",                 // Multi-select over the synth's split_voices
-    BUS_CHAIN: "buschain"                    // One bus's 8-position insert chain
+    BUS_CHAIN: "buschain",                   // One bus's 8-position insert chain
+    SCENES: "scenes"                         // Scene crossfader: A, B, fader, arm
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -849,6 +866,12 @@ let laneRestoreConfirmed = [false, false, false, false];
  * free -- without it the autosave pass gained a second eMMC write every five
  * seconds forever, which is the defect the slot cache above was added for. */
 let lastWrittenLaneJson = [null, null, null, null];
+/* The chain's `lanes:rev` (a hash of the store's content) at the moment
+ * lastWrittenLaneJson was last VERIFIED against the slot. While the two agree
+ * the autosave skips `lanes:state` entirely -- serialising a full store is
+ * milliseconds on the SPI callback, every slot, every pass. Only
+ * persistSlotLanes sets it; every other path that touches the cache nulls it. */
+let lastWrittenLaneRev = [null, null, null, null];
 
 /* Have we already said that this slot is holding a take it cannot save?
  *
@@ -860,6 +883,7 @@ let laneStallAnnounced = [false, false, false, false];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
     lastWrittenLaneJson = [null, null, null, null];
+    lastWrittenLaneRev = [null, null, null, null];
     /* A stall belongs to the set that was loaded. Carrying the latch across a
      * set change would swallow the announcement for the incoming set's first
      * stuck take, which is the one worth hearing. */
@@ -4365,6 +4389,14 @@ function busSendsGridIo() {
                     ? BusModel.busSendGridHierarchy(busConfig)
                     : BusModel.busSendGridParams(busConfig));
             }
+            /* A modulation VIEW keeps its suffix through the key map (see
+             * createSlotGridIo.getParam) -- the Main row's send is what a scene
+             * or a slot LFO drives. */
+            const view = /:(modulated|effective|base)$/.exec(k);
+            if (view) {
+                const realBase = BusModel.busSendGridRealKey(k.slice(0, view.index));
+                return realBase ? getSlotParam(slot, realBase + view[0]) : "";
+            }
             const real = BusModel.busSendGridRealKey(k);
             /* The RAW answer, null included: it is the wire value, and only the
              * caller that saw the wire can tell a stalled channel from a zero. */
@@ -4382,17 +4414,16 @@ function busSendsGridIo() {
             return ok;
         },
         /*
-         * FALSE, and now only MOSTLY true. A per-BUS send level is still not a
-         * modulation target -- the chain host serves no bus LFO -- but the Main
-         * row this mixer gained can be driven by a slot LFO (target "buses",
-         * param "main_send<N>"). It is answered false anyway because the chain
-         * host publishes no `:modulated` for these keys, so the honest answer
-         * would cost up to three IPC round trips per tick to fetch, and the
-         * only cost of saying no is a missing dot rather than a wrong value:
-         * the cell still shows the BASE, which is what the user set and what is
-         * saved. If those keys ever publish `:modulated`, this is the line.
+         * The Main row -- the slot's own sends -- is driven by a scene or a
+         * slot LFO, and the chain serves `buses:main_send<N>:modulated` for it
+         * now. A per-BUS level is still never driven (no bus LFO, no scene
+         * lock), so only the Main row asks.
          */
-        isModulated: () => false,
+        isModulated: (fullKey) => {
+            const real = BusModel.busSendGridRealKey(bare(fullKey));
+            if (!real || !/^buses:main_send\d$/.test(real)) return false;
+            return getSlotParam(slot, real + ":modulated") === "1";
+        },
     };
 }
 
@@ -4837,6 +4868,8 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "surface_layout", label: "Surface Layout", type: "action" },
     /* Any controller's CCs bound to parameters, per set (cc_map.mjs). */
     { key: "cc_map", label: "CC Map", type: "action" },
+    /* The Scenes screen (Shift+Vol+Step3 is the shortcut). */
+    { key: "scenes", label: "Scenes", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
     { key: "save_as", label: "[Save As]", type: "action" },
     { key: "delete", label: "[Delete]", type: "action" }
@@ -7924,6 +7957,13 @@ function getModuleAbbrev(moduleId) {
 
 /* Param API helper functions */
 function getSlotParam(slot, key) {
+    /* The scene fader is a byte in shared memory, not a module parameter: the
+     * CC Map and any surface address it as the master setting "scenes:xfade"
+     * and it is served here with no IPC at all. */
+    if (key === "scenes:xfade") {        /* literal: this runs before SCENE_XFADE_KEY is initialised */
+        const st = sceneState();
+        return st ? String(st.xfade) : null;
+    }
     if (typeof shadow_get_param !== "function") return null;
     try {
         return shadow_get_param(slot, key);
@@ -7951,6 +7991,7 @@ function shadowSetParamBlocking(slot, key, value) {
 }
 
 function setSlotParam(slot, key, value) {
+    if (key === "scenes:xfade") return sceneSetXfade(Number(value));   /* SCENE_XFADE_KEY; literal for the TDZ */
     if (typeof shadow_set_param !== "function") return false;
     try {
         const ok = shadow_set_param(slot, key, String(value));
@@ -9691,13 +9732,22 @@ function saveChainConfigToDir(dir) {
     const path = dir + "/shadow_chain_config.json";
     try {
         const cfgSlots = [];
+        /* `:base` -- the KNOB. While a snapshot is armed the plain read
+         * answers its LOCK (so the knob on screen shows what a turn changes),
+         * and a save sharing that key wrote the lock into the set as the
+         * user's level. The plain read stays as the fallback for a shim that
+         * does not serve :base. */
+        const knob = (i, key) => {
+            const b = getSlotParam(i, key + ":base");
+            return (b !== null && b !== undefined && b !== "") ? b : getSlotParam(i, key);
+        };
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-            const vol = parseFloat(getSlotParam(i, "slot:volume") || "1");
+            const vol = parseFloat(knob(i, "slot:volume") || "1");
             const ch = parseInt(getSlotParam(i, "slot:receive_channel") || "0");
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            const pan = parseFloat(getSlotParam(i, "slot:pan") || "0") || 0;
+            const pan = parseFloat(knob(i, "slot:pan") || "0") || 0;
             /* The sends the shim keeps for a slot with no module (a slot with
              * one saves its sends in its own state). */
             const emptySends = [parseInt(getSlotParam(i, "slot:empty_send1") || "0", 10) || 0,
@@ -9909,6 +9959,42 @@ function moveModelOwnsMix() {
 function setAlignmentPending() {
     const st = moveModelState();
     return !!(st && st[0] && st[1] !== st[2]);
+}
+
+/* THE `set_aligned` ACK IS RETRIED UNTIL THE SHIM REPORTS IT.
+ *
+ * It was sent once with its result ignored, right behind the set change's
+ * dozens of slot writes -- where the one-slot param channel is busiest. One
+ * lost write left set_doc_gen behind for the whole session: the shim's
+ * same-set path refuses an unacked set, the cleared flag is never raised
+ * again, and setAlignmentPending() kept periodic autosave off until the next
+ * set load. So the handler ARMS this, and it resends -- one short write per
+ * ALIGN_ACK_INTERVAL_MS, never a loop inside a tick -- until the shim says
+ * set_doc_gen is the handled generation, or the two generations agree some
+ * other way (a same-set reload aligning in C, the shim's 15 s give-up).
+ * Bounded; the give-up is the backstop past it. */
+const ALIGN_ACK_INTERVAL_MS = 500;
+const ALIGN_ACK_TRIES = 20;
+let alignAck = null;          /* { gen, tries, nextAt } while unconfirmed */
+function armAlignAck(gen, now) {
+    alignAck = { gen: gen, tries: 0, nextAt: now + ALIGN_ACK_INTERVAL_MS };
+}
+function alignAckTick(now) {
+    if (!alignAck) return;
+    const st = moveModelState();
+    if (!st || st[2] === alignAck.gen || st[1] === st[2]) { alignAck = null; return; }
+    if (now < alignAck.nextAt) return;
+    if (alignAck.tries >= ALIGN_ACK_TRIES) {
+        debugLog("set_aligned " + alignAck.gen + " never confirmed after " +
+                 ALIGN_ACK_TRIES + " resends; leaving it to the shim's give-up");
+        alignAck = null;
+        return;
+    }
+    alignAck.tries++;
+    alignAck.nextAt = now + ALIGN_ACK_INTERVAL_MS;
+    debugLog("set_aligned " + alignAck.gen + " not confirmed (shim has " + st[2] +
+             "); resend " + alignAck.tries + "/" + ALIGN_ACK_TRIES);
+    setSlotParamWithTimeout(0, "set_aligned", String(alignAck.gen), 100);
 }
 
 function loadChainConfigFromDir(dir) {
@@ -10391,7 +10477,16 @@ function persistSlotLanes(i) {
      * nothing about the slot -- writing on it would truncate a good file with
      * whatever a timeout produced. `""` is served-and-empty: this slot has no
      * automation, so the file must GO rather than be left behind to reload
-     * lanes the user cleared. Only a non-empty document is written. */
+     * lanes the user cleared. Only a non-empty document is written.
+     *
+     * UNCHANGED SINCE THE LAST VERIFIED WRITE: skip the document. `lanes:rev`
+     * is a small read; `lanes:state` makes the chain serialise the whole
+     * store on the SPI callback (~1 ms on a Mac, several on the device, for
+     * a full one). Only a NON-EMPTY cached document is trusted this way -- the
+     * empty branch below also reports stalled takes, which it must keep
+     * seeing -- and a rev that did not answer (null) never skips. */
+    const rev = getSlotParam(i, "lanes:rev");
+    if (rev && rev === lastWrittenLaneRev[i] && lastWrittenLaneJson[i]) return;
     const doc = getSlotStateWithRetry(i, "lanes:state");
     const path = lanePathForSlot(i);
     if (doc === null) return;
@@ -10469,26 +10564,39 @@ function persistSlotLanes(i) {
             debugLog("autosave: slot " + i + " has no lanes — cleared " + path);
         }
         lastWrittenLaneJson[i] = "";
+        lastWrittenLaneRev[i] = null;
         return;
     }
-    if (lastWrittenLaneJson[i] === doc) return;
+    /* `rev` was read BEFORE `doc`, so a change landing between the two makes
+     * the stored rev older than the document: the next pass re-reads, never
+     * skips a change. */
+    if (lastWrittenLaneJson[i] === doc) { lastWrittenLaneRev[i] = rev; return; }
     if (host_write_file(path, doc)) {
         lastWrittenLaneJson[i] = doc;
+        lastWrittenLaneRev[i] = rev;
     } else {
         lastWrittenLaneJson[i] = null;   /* force a retry next pass */
+        lastWrittenLaneRev[i] = null;
         debugLog("autosave: failed to write lanes_" + i + ".json — " +
                  "will retry next autosave");
     }
 }
 
 /* Empty a slot's lanes with no announcement and no file write -- the restore
- * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:reset`
  * releases every override the store held, which is why this is not just a
  * matter of forgetting the document: leaving them asserted would strand the
- * parameters they were driving with no gesture that hands them back. */
+ * parameters they were driving with no gesture that hands them back.
+ *
+ * NOT `lanes:clear`, which is the USER's verb: it saves the outgoing store as
+ * undo and journals a clear, so after a set change "Undo automation" swapped
+ * the PREVIOUS set's lanes into this one (and the autosave then wrote them into
+ * this set's file). `lanes:reset` is a restore: it drops the undo buffer and
+ * journals nothing. */
 function clearSlotLanesQuietly(i) {
-    setSlotParam(i, "lanes:clear", "1");
+    setSlotParam(i, "lanes:reset", "1");
     lastWrittenLaneJson[i] = null;
+    lastWrittenLaneRev[i] = null;
 }
 
 /* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
@@ -10513,6 +10621,7 @@ function clearSlotLanesQuietly(i) {
 function restoreSlotLanes(i) {
     const path = lanePathForSlot(i);
     laneRestoreConfirmed[i] = false;
+    lastWrittenLaneRev[i] = null;
     if (!host_file_exists(path)) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
     const raw = host_read_file(path);
     if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
@@ -11057,13 +11166,18 @@ function snapshotRecall() {
      * rather than an accumulation: if the snapshot was taken before any
      * automation existed, recalling it must take the automation away again.
      * `lanes:clear` also releases the overrides, so no parameter is left
-     * stranded where a lane stopped driving it. */
+     * stranded where a lane stopped driving it.
+     *
+     * "{}" IS ABSENT. snapshotCopyFrom writes that marker for a slot with no
+     * lanes file, and pushing it as `lanes:state` was refused by the parser,
+     * so the automation recorded since the snapshot survived the recall. */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         let laneDoc = null;
         try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
-        if (laneDoc && laneDoc.length > 0) {
+        if (laneDoc && laneDoc.trim().length > 0 && laneDoc.trim() !== "{}") {
             setSlotParam(i, "lanes:state", laneDoc);
             lastWrittenLaneJson[i] = laneDoc;
+            lastWrittenLaneRev[i] = null;
         } else {
             clearSlotLanesQuietly(i);
         }
@@ -11273,6 +11387,46 @@ function setRecallQuantize(v) {
     if (typeof shadow_recall_quantize_set === "function") {
         shadow_recall_quantize_set(recallQuantizeValue);
     }
+}
+
+/*
+ * Shift + volume knob = the scene fader (Global Settings -> Shortcuts ->
+ * Scene Fader, default on). The shim does the work -- it has to, since it
+ * works over Move's own screen too -- this only holds the setting.
+ */
+let sceneShiftVol = true;
+function setSceneShiftVol(on) {
+    sceneShiftVol = !!on;
+    if (typeof shadow_scene_shift_vol_set === "function") shadow_scene_shift_vol_set(sceneShiftVol ? 1 : 0);
+}
+/*
+ * Program Change on this channel (0 = off, 1..16; default 16) selects scene
+ * 1..16 -- applied by the shim on the frame it arrives, adopted here from
+ * scene_pc_seq (scenesAdoptPc).
+ */
+let scenePcChannel = 16;
+function setScenePcChannel(ch) {
+    ch = Number.isInteger(ch) && ch >= 0 && ch <= 16 ? ch : 16;
+    scenePcChannel = ch;
+    if (typeof shadow_scene_pc_channel_set === "function") shadow_scene_pc_channel_set(ch);
+}
+function loadScenePcChannel() {
+    let ch = 16;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_pc_channel"\s*:\s*(\d+)/.exec(raw) : null;
+        if (m) ch = parseInt(m[1], 10);
+    } catch (e) { debugLog("scene_pc_channel read failed: " + e); }
+    setScenePcChannel(ch);
+}
+function loadSceneShiftVol() {
+    let on = true;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        const m = raw ? /"scene_shift_vol"\s*:\s*(true|false)/.exec(raw) : null;
+        if (m) on = m[1] === "true";
+    } catch (e) { debugLog("scene_shift_vol read failed: " + e); }
+    setSceneShiftVol(on);
 }
 
 /* Restore from features.json and push the register down. Called once at
@@ -11769,6 +11923,433 @@ const ccMap = createCCMap({
  * controller CC), so the TICK notices a change and asks for a frame -- the
  * draw path does not run without one.
  */
+/* ============================================================================
+ * SCENES -- Octatrack-style scene morphing.
+ *
+ * Sixteen scenes of parameter locks across the four slots, Master FX and both
+ * send buses; A and B at the ends of one crossfader. The DSP does the morph
+ * (chain_scene.c, shadow_scene_bus.c) and holds the live bank; this is the
+ * screen, the fader, the arm badge and the per-set file.
+ * Design: docs/superpowers/specs/2026-09-27-scene-morphing-design.md.
+ * ============================================================================ */
+const SCENE_XFADE_KEY = "scenes:xfade";
+const SCENE_SAVE_DEBOUNCE_MS = 1000;
+const SCENE_LOAD_RETRY_MS = 2000;
+const SCENE_FLASH_MS = 900;
+
+function sceneState() {
+    if (typeof shadow_get_scene_state !== "function") return null;
+    try { return shadow_get_scene_state(); } catch (e) { return null; }
+}
+function sceneSetXfade(x) {
+    if (typeof shadow_set_scene_xfade !== "function" || !Number.isFinite(x)) return false;
+    shadow_set_scene_xfade(Math.max(0, Math.min(1, x)));
+    needsRedraw = true;
+    return true;
+}
+function sceneScopeRead(scope, verb) {
+    const k = sceneScopeKey(scope, verb);
+    return getSlotParam(k.slot, k.key);
+}
+function sceneScopeWrite(scope, verb, value) {
+    const k = sceneScopeKey(scope, verb);
+    return !!shadowSetParamBlocking(k.slot, k.key, value);
+}
+/* Every scope's dump, or null if ANY read failed -- a snapshot missing a scope
+ * would restore as that scope's scenes deleted. */
+function sceneSnapshotAll() {
+    const out = {};
+    for (const sc of SCENE_SCOPES) {
+        const t = sceneScopeRead(sc, "dump");
+        if (t === null || t === undefined) return null;
+        out[sc.id] = t;
+    }
+    return out;
+}
+function sceneLoadAll(loads) {
+    let ok = true;
+    for (const sc of SCENE_SCOPES) {
+        const text = loads[sc.id] || "";
+        if (!sceneScopeWrite(sc, "load", text)) { ok = false; continue; }
+        /* READ BACK what was pushed -- a restore that is assumed to have
+         * landed is how lane files were deleted (restoreSlotLanes). */
+        const n = sceneScopeRead(sc, "count");
+        if (n === null || n === undefined || Number(n) !== sceneExpectedPairCount(text)) ok = false;
+    }
+    return ok;
+}
+function sceneApplyAll(verb, value) {
+    let ok = true;
+    for (const sc of SCENE_SCOPES) if (!sceneScopeWrite(sc, verb, value)) ok = false;
+    return ok;
+}
+
+/*
+ * THE LOGICAL SCENES: which of the 16 is active, and each one's PAIRING --
+ * which A snapshot and which B snapshot (or none). JS owns this (it is saved
+ * in scenes.json); the fader's two ENDS are derived from it and pushed to the
+ * shim, which is all the DSP ever sees.
+ */
+let sceneActive = -1;
+let scenePairs = sceneDefaultPairs();
+function scenePushEnds() {
+    /* A Program Change the shim applied since our last tick is ADOPTED FIRST.
+     * It wrote the ends and scene_active on the frame it arrived; pushing
+     * from a stale sceneActive (a pairing edit, an undo) in the same tick
+     * overwrote them, and scenesAdoptPc then adopted our own stale scene --
+     * the PC silently reverted. */
+    scenesAdoptPc(sceneState());
+    const e = sceneEndsFor(sceneActive, scenePairs);
+    if (typeof shadow_set_scene_ab === "function") shadow_set_scene_ab(e.a, e.b);
+    /* ...and the whole pairing table, so the shim can apply a Program Change
+     * on the frame it arrives without asking us (scene_pc_select). */
+    if (typeof shadow_set_scene_pairs === "function") {
+        const flat = [];
+        for (const p of scenePairs) flat.push(p[0], p[1]);
+        shadow_set_scene_pairs(flat, sceneActive);
+    }
+    needsRedraw = true;
+}
+
+/* A Program Change the shim applied: adopt its scene. The ends are already
+ * pushed; this is the UI catching up -- the active step, the saved file, and
+ * the fader slider saying which scene it now is. */
+let scenePcSeqSeen = null;
+function scenesAdoptPc(st) {
+    if (!st || !Number.isInteger(st.pcSeq)) return;
+    if (scenePcSeqSeen === null) { scenePcSeqSeen = st.pcSeq; return; }
+    if (st.pcSeq === scenePcSeqSeen) return;
+    scenePcSeqSeen = st.pcSeq;
+    if (Number.isInteger(st.active) && st.active >= 0 && st.active < scenePairs.length) {
+        sceneActive = st.active;
+        sceneFaderOverlay.raise();
+        needsRedraw = true;
+    }
+}
+
+const scenesScreen = createScenesScreen({
+    state: () => sceneState(),
+    scene: () => ({ active: sceneActive, pairs: scenePairs }),
+    /* The tap comes after any PC already applied: consume that first, so the
+     * push below cannot adopt it over the scene the user just chose. */
+    setActive: (k) => { scenesAdoptPc(sceneState()); sceneActive = k; scenePushEnds(); },
+    setPair: (k, p) => {
+        if (k < 0 || k >= scenePairs.length || !Array.isArray(p)) return;
+        scenePairs[k] = [p[0], p[1]];
+        scenePushEnds();
+    },
+    setXfade: (x) => sceneSetXfade(x),
+    setEdit: (n) => sceneSetEdit(n),
+    applyAll: (verb, value) => sceneApplyAll(verb, value),
+    /* Undo keeps the DSP bank AND the pairings. */
+    snapshot: () => {
+        const dumps = sceneSnapshotAll();
+        return dumps ? { dumps, pairs: scenePairs.map((p) => p.slice()) } : null;
+    },
+    restore: (snap) => {
+        if (!snap || !sceneLoadAll(snap.dumps)) return false;
+        scenePairs = snap.pairs.map((p) => p.slice());
+        scenePushEnds();
+        return true;
+    },
+    lockCounts: () => sumSceneLockCounts(SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "locks"))),
+    setLed: (note, color) => (typeof move_midi_internal_send === "function")
+        ? move_midi_internal_send([0x09, 0x90, note, color]) : false,
+    /* The jog is a parameter write as far as LEARN is concerned, so CC Learn
+     * captures the fader the same way it captures a knob. */
+    noteFaderMoved: (x) => { try { controlHost.observeWrite(0, SCENE_XFADE_KEY, x); } catch (e) {} },
+    learnFader: () => {
+        try {
+            if (!ccMap.learning) ccMap.beginLearn();
+            controlHost.observeWrite(0, SCENE_XFADE_KEY, (sceneState() || {}).xfade || 0);
+        } catch (e) { debugLog("scenes: fader learn failed: " + e); }
+    },
+    announce: (text) => announce(text),
+});
+
+function sceneSetEdit(n) {
+    if (typeof shadow_set_scene_edit !== "function") return;
+    shadow_set_scene_edit(n);
+    /* A read answers what a write would change, so every knob on screen is
+     * now showing the wrong one: forget what was read. */
+    try { invalidateKnobContextCache(); } catch (e) {}
+    if (n < 0 && typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(0);
+    needsRedraw = true;
+}
+
+let scenesReturnView = null;
+function enterScenes(returnView) {
+    scenesReturnView = (returnView && returnView !== VIEWS.SCENES) ? returnView : VIEWS.SLOTS;
+    setView(VIEWS.SCENES);
+    scenesScreen.enter();
+    needsRedraw = true;
+}
+function exitScenes() {
+    const back = scenesReturnView || VIEWS.SLOTS;
+    scenesReturnView = null;
+    if (back === VIEWS.GLOBAL_SETTINGS) { enterGlobalSettings(); return; }
+    if (back === VIEWS.MASTER_FX) { enterFxBus(0); return; }
+    setView(back);
+    needsRedraw = true;
+}
+
+/*
+ * Input that belongs to scenes, before any view sees it. Returns true when
+ * consumed. Two cases:
+ *   - the Scenes screen is up: it takes everything but Shift and Menu;
+ *   - a scene is ARMED: Delete (claimed, so Move never sees it -- a lone
+ *     Delete deletes the selected clip) is the unlock modifier, decided
+ *     below the UI through shadow_set_scene_unlock.
+ */
+function scenesHandleMidi(status, d1, d2) {
+    const type = status & 0xF0;
+    if (view === VIEWS.SCENES) {
+        if (type === 0xB0 && (d1 === 49 || d1 === 50)) return false;
+        if (type === 0xB0 && d1 === MoveBack) {
+            if (d2 > 0) exitScenes();
+            return true;
+        }
+        scenesScreen.onMidi(status, d1, d2, isShiftHeld());
+        return true;
+    }
+    return false;
+}
+
+/*
+ * SHIFT+- / SHIFT++ (Down / Up): edit the active scene's A / B, from any Schwung
+ * screen (the shim claims both edges while our screen is up; Move gives the
+ * combo no meaning beyond the bare arrows' octave shift).
+ *
+ *   TAP                  latch editing on (tap again: off)
+ *   HOLD + turn a knob   momentary: editing ends on release
+ *
+ * The release decides which it was: a lock made while held (the scene
+ * revision moved) or a hold past SCENE_EDIT_HOLD_MS is momentary. A press on
+ * the side already latched only ever stops it.
+ */
+const SCENE_EDIT_HOLD_MS = 500;
+const sceneEditKey = {};   /* cc -> { at, rev, wasOn } */
+function scenesHandleEditKey(status, d1, d2) {
+    if ((status & 0xF0) !== 0xB0 || (d1 !== 55 && d1 !== 54)) return false;
+    const side = d1 === 54 ? "a" : "b";   /* Shift+- = A, Shift++ = B */
+    if (d2 > 0) {
+        if (!isShiftHeld()) return false;          /* a bare arrow is not ours */
+        const st = sceneState() || { edit: -1, rev: 0 };
+        const k = sceneActive >= 0 ? sceneActive : 0;
+        const snap = scenePairs[k][side === "a" ? 0 : 1];
+        const half = snap < 0 ? -2 : (side === "a" ? sceneHalfA(snap) : sceneHalfB(snap));
+        const wasOn = st.edit === half;
+        if (!wasOn) scenesScreen.toggleEdit(side);
+        sceneEditKey[d1] = { at: Date.now(), rev: (sceneState() || st).rev, wasOn };
+        showOverlay("Scene " + (sceneActive + 1),
+                    (wasOn ? "Tap to stop " : "Editing ") + sceneEditLabel((sceneState() || st).edit), 40);
+        return true;
+    }
+    const p = sceneEditKey[d1];
+    if (!p) return false;                          /* a release we did not see go down */
+    delete sceneEditKey[d1];
+    const st = sceneState() || { edit: -1, rev: p.rev };
+    const locked = st.rev !== p.rev;
+    const momentary = locked || Date.now() - p.at >= SCENE_EDIT_HOLD_MS;
+    if (p.wasOn ? !locked : momentary) {
+        if (st.edit >= 0) scenesScreen.toggleEdit(side);
+        showOverlay("Scene " + (sceneActive + 1), "Done editing", 30);
+    }
+    return true;
+}
+
+/* Delete with a scene armed, anywhere but the Scenes screen. FIRST in the
+ * input path: the knob grid's own early-out would otherwise take Delete for
+ * its copy/clear gesture. */
+function scenesHandleArmedDelete(status, d1, d2) {
+    if (view === VIEWS.SCENES || (status & 0xF0) !== 0xB0 || d1 !== 119) return false;
+    const st = sceneState();
+    if (!st || st.edit < 0) {
+        /* A release owed from a press made while armed still clears the flag. */
+        if (d2 === 0 && typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(0);
+        return false;
+    }
+    if (typeof shadow_set_scene_unlock === "function") shadow_set_scene_unlock(d2 > 0 ? 1 : 0);
+    if (d2 > 0) announce("Turn a knob to remove it from scene " + (st.edit + 1));
+    return true;
+}
+
+/* The buttons scenes need withheld from Move, as a claim list. */
+function sceneClaimedCcs() {
+    const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    if (!onScreen) return [];
+    if (view === VIEWS.SCENES) return scenesScreen.claimedCcs();
+    const st = sceneState();
+    return (st && st.edit >= 0) ? [119] : [];
+}
+
+/* ---- the fader overlay: the A-B slider that rises over the footer when the
+ * fader moves anywhere but the Scenes screen (scene_fader_overlay.mjs). ---- */
+const sceneFaderOverlay = createSceneFaderOverlay({ now: () => Date.now() });
+function sceneFaderLabel() {
+    const p = (sceneActive >= 0 && scenePairs[sceneActive]) || [-1, -1];
+    return { a: p[0] >= 0 ? "A" + (p[0] + 1) : "A-", b: p[1] >= 0 ? "B" + (p[1] + 1) : "B-" };
+}
+/* Once per tick, before the redraw gate: a move must be seen on Move's own
+ * screen too, where nothing else asks for a redraw. */
+let sceneTurnSeqSeen = null;
+function sceneFaderObserve() {
+    const st = sceneState();
+    if (!st) return;
+    /* A Shift+Vol detent the shim counted, even one clamped at an end. */
+    const turned = Number.isInteger(st.turnSeq) && sceneTurnSeqSeen !== null &&
+                   st.turnSeq !== sceneTurnSeqSeen;
+    if (Number.isInteger(st.turnSeq)) sceneTurnSeqSeen = st.turnSeq;
+    sceneFaderOverlay.observe(st.xfade, sceneFaderLabel(),
+                              view === VIEWS.SCENES && !shadowDisplayHidden(), turned);
+}
+const sceneFaderCtx = () => ({ fillRect: fill_rect, print, textWidth: text_width });
+/* The shadow UI is the screen: paint over the view just drawn. */
+function drawSceneFaderOnTop() {
+    if (shadowDisplayHidden()) return;
+    drawSceneFaderOverlay(sceneFaderCtx(), sceneFaderOverlay.frame());
+}
+
+/* ---- the badge ---- */
+let sceneFlashText = "", sceneFlashUntil = 0;
+function drawSceneBadge() {
+    if (shadowDisplayHidden()) return;
+    const st = sceneState();
+    if (!st) return;
+    const now = Date.now();
+    if (st.flash) {
+        sceneFlashText = armBadgeText(-1, st.flash);
+        sceneFlashUntil = now + SCENE_FLASH_MS;
+        if (typeof shadow_clear_scene_flash === "function") shadow_clear_scene_flash();
+        announce(st.flash === 1 ? "Scene full" : "Can't lock that");
+    }
+    const text = now < sceneFlashUntil ? sceneFlashText : armBadgeText(st.edit, 0);
+    if (!text || view === VIEWS.SCENES && now >= sceneFlashUntil) return;
+    drawArmBadge({ fillRect: fill_rect, print, textWidth: text_width }, text);
+}
+
+/* ---- persistence: <set dir>/scenes.json ----
+ *
+ * THE DSP HOLDS THE BANK; this file is its copy. Three rules, each the lesson
+ * of a lost automation file:
+ *   - nothing is written for a set until its bank is CONFIRMED loaded (read
+ *     back scope by scope), so a save can never race the restore;
+ *   - a save needs EVERY scope's answer, or it does not happen;
+ *   - a file this build cannot read (a later version) is left alone, and so
+ *     is the set: no save will overwrite it this session.
+ */
+let sceneLoadConfirmed = false;
+let sceneLoadRefused = false;
+let sceneLoadDir = null;
+let sceneLoadNextTry = 0;
+let sceneSavedKey = null;
+let sceneDirtyAt = 0;
+
+function sceneFilePath(dir) { return dir + "/scenes.json"; }
+
+function scenesSaveTo(dir) {
+    if (!dir || !sceneLoadConfirmed || sceneLoadRefused || dir !== sceneLoadDir) return false;
+    const st = sceneState();
+    if (!st) return false;
+    const dumps = sceneSnapshotAll();
+    if (!dumps) return false;
+    const doc = buildSceneDoc({ active: sceneActive, pairs: scenePairs, dumps });
+    if (!doc) return false;
+    host_write_file(sceneFilePath(dir), JSON.stringify(doc) + "\n");
+    sceneSavedKey = sceneSaveKey(st);
+    return true;
+}
+/* What a save must follow: the bank (rev), the active scene, the on/offs. */
+function sceneSaveKey(st) {
+    return st.rev + "|" + sceneActive + "|" + JSON.stringify(scenePairs);
+}
+
+/*
+ * Bring a set's bank into the DSP. `adoptLive` is for a shadow_ui RESTART
+ * (overtake exit, a crash): the shim kept running and still holds the bank,
+ * possibly with edits newer than the file, so a non-empty live bank is kept
+ * and the file is brought up to date from it rather than the other way round.
+ */
+function scenesLoadFrom(dir, adoptLive) {
+    sceneLoadDir = dir;
+    sceneLoadConfirmed = false;
+    sceneLoadRefused = false;
+    sceneSetEdit(-1);
+    const path = sceneFilePath(dir);
+    const raw = host_file_exists(path) ? host_read_file(path) : "";
+    let doc = { v: 3, active: -1, pairs: sceneDefaultPairs(), halves: [] };
+    if (raw) {
+        doc = parseSceneDoc(raw);
+        if (!doc) {
+            sceneLoadRefused = true;
+            debugLog("scenes: " + path + " is not a bank this build reads -- left alone");
+            return false;
+        }
+    }
+    /* The active scene and the on/offs are JS state: from the file either way.
+     * A set load wins over a PC still pending from the outgoing set. */
+    scenePcSeqSeen = null;
+    sceneActive = doc.active;
+    scenePairs = doc.pairs;
+    if (adoptLive) {
+        const counts = SCENE_SCOPES.map((sc) => sceneScopeRead(sc, "count"));
+        if (counts.every((c) => c !== null && c !== undefined) && counts.some((c) => Number(c) > 0)) {
+            sceneLoadConfirmed = true;
+            sceneSavedKey = null;          /* save it soon */
+            scenePushEnds();
+            debugLog("scenes: adopted the live bank (" + counts.join(",") + ")");
+            return true;
+        }
+    }
+    if (typeof shadow_set_scene_xfade === "function") shadow_set_scene_xfade(0);
+    if (!sceneLoadAll(sceneDocToLoads(doc))) {
+        sceneLoadNextTry = Date.now() + SCENE_LOAD_RETRY_MS;
+        debugLog("scenes: load into the DSP not confirmed -- will retry");
+        return false;
+    }
+    scenePushEnds();
+    const st = sceneState();
+    sceneSavedKey = st ? sceneSaveKey(st) : null;
+    if (doc.legacy) sceneSavedKey = null;   /* rewrite a v1 file in the new shape */
+    sceneLoadConfirmed = true;
+    debugLog("scenes: loaded " + doc.halves.length + " scene side(s) from " + path);
+    return true;
+}
+
+function scenesTick() {
+    /* An overtake module owns the surface: an armed scene would turn its knob
+     * writes into locks nobody can see. Disarmed by INVARIANT, not from the
+     * four places that enter overtake -- an exit list is how a flag strands. */
+    if (view === VIEWS.OVERTAKE_MODULE) {
+        const st = sceneState();
+        if (st && st.edit >= 0) sceneSetEdit(-1);
+    }
+    if (view === VIEWS.SCENES && scenesScreen.tick()) needsRedraw = true;
+    if (view === VIEWS.SCENES && scenesScreen.learnPending && !ccMap.learning) {
+        scenesScreen.clearLearnPending();
+        needsRedraw = true;
+    }
+    scenesAdoptPc(sceneState());
+    const now = Date.now();
+    if (!sceneLoadConfirmed) {
+        if (!sceneLoadRefused && sceneLoadDir && now >= sceneLoadNextTry) scenesLoadFrom(sceneLoadDir, false);
+        return;
+    }
+    const st = sceneState();
+    if (!st) return;
+    const key = sceneSaveKey(st);
+    if (key === sceneSavedKey) { sceneDirtyAt = 0; return; }
+    if (!sceneDirtyAt) sceneDirtyAt = now;
+    if (now - sceneDirtyAt >= SCENE_SAVE_DEBOUNCE_MS) {
+        /* Gated like the slot autosave: while Move's loaded set is not yet
+         * the one activeSlotStateDir names, a save lands in the OUTGOING
+         * set's folder. Stays dirty, and saves once aligned. */
+        if (setAlignmentPending()) return;
+        if (scenesSaveTo(activeSlotStateDir)) sceneDirtyAt = 0;
+        else sceneDirtyAt = now;     /* a failed read: try again, never write a partial bank */
+    }
+}
+
 let ccLearnFooterShown = null;
 function drawCcLearnFooter() {
     const text = ccLearnFooterShown;
@@ -12644,6 +13225,11 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "scenes") {
+        if (paramPagesActive()) exitParamPages();
+        enterScenes(VIEWS.MASTER_FX);
+        return;
+    }
     if (key === "surface_layout" || key === "cc_map") {
         /* From the grid this runs from the menu INTENT, after the controller
          * has finished with its input, so leaving the grid here is safe. */
@@ -14386,7 +14972,12 @@ function saveMasterFxChainConfigOnMaster() {
                         const chainParams = getMasterFxChainParams(slotIdx);
                         if (chainParams && chainParams.length > 0) {
                             for (const p of chainParams) {
-                                const val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                /* `:base`: a scene-driven param's KNOB (armed,
+                                 * the plain read answers the lock). */
+                                let val = shadow_get_param(0, `master_fx:${key}:${p.key}:base`);
+                                if (val === null || val === undefined || val === "") {
+                                    val = shadow_get_param(0, `master_fx:${key}:${p.key}`);
+                                }
                                 if (val !== null && val !== undefined && val !== "") {
                                     paramsObj[p.key] = val;
                                 }
@@ -14621,7 +15212,12 @@ function saveSendLevels() {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
             let v = null;
-            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            /* `:base`, the knob: armed, the plain key answers the snapshot's
+             * LOCK, and this file is what the set reloads as the level. */
+            try { v = shadow_get_param(0, bus.prefix + k + ":base"); } catch (e) {}
+            if (v === null || v === undefined || v === "") {
+                try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            }
             if (v === null || v === undefined || v === "") continue;
             const n = parseInt(v, 10);
             if (!Number.isFinite(n)) continue;
@@ -16091,9 +16687,14 @@ function sendSettingsGridIo() {
             if (ok) sendLevelsDirty = true;
             return ok;
         },
-        /* No send level is a modulation target: a send bus has no LFOs, so the
-         * generic oracle would spend IPC round trips per tick to answer no. */
-        isModulated: () => false,
+        /* A send's RETURN and Send A->B are driven by a scene (the host
+         * scope); nothing else here is ever driven. Asked by `:modulated`,
+         * which the shim serves for exactly those, so no guessing fallback. */
+        isModulated: (fullKey) => {
+            const k = bare(fullKey);
+            if (!/^send[12]:(return|to_send2)$/.test(k)) return false;
+            return getSlotParam(0, k + ":modulated") === "1";
+        },
     };
 }
 
@@ -16195,6 +16796,10 @@ function globalGridIoFor() {
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "recall_quantize":
                 return String(recallQuantizeValue);
+            case "scene_shift_vol":
+                return bit(sceneShiftVol);
+            case "scene_pc_channel":
+                return String(scenePcChannel);
             case "metronome_mode":
                 return String(metronomeMode);
             case "metronome_level":
@@ -16333,6 +16938,12 @@ function globalGridIoFor() {
             case "recall_quantize":
                 setRecallQuantize(parseInt(value, 10) || 0);
                 break;
+            case "scene_shift_vol":
+                setSceneShiftVol(on);
+                return;
+            case "scene_pc_channel":
+                setScenePcChannel(parseInt(value, 10));
+                return;
             case "metronome_mode":
                 setMetronome(parseInt(value, 10) || 0, metronomeLevel);
                 return;
@@ -21176,7 +21787,10 @@ function reconcileStepObserve() {
      * looking at. */
     const onScreen = typeof shadow_get_display_mode !== "function" ||
                      shadow_get_display_mode() === 1;
-    const want = (hostGrid || !!moduleGrid) && onScreen;
+    /* The Scenes screen picks scenes with the steps (the shim consumes them
+     * outright while scene_surface says so -- no tap replays to Move). */
+    const scenesUp = view === VIEWS.SCENES;
+    const want = (hostGrid || !!moduleGrid || scenesUp) && onScreen;
     host_step_observe(want ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;
@@ -21186,11 +21800,29 @@ function reconcileStepObserve() {
 
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
+    /* The Scenes screen takes the pads while it is ON SCREEN -- presses and
+     * LEDs both -- and gives them back the moment it is not. Restated every
+     * tick for the same reason as the rest of this function: the shim drops
+     * the flags on its own when the display closes. */
+    const onScreen = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    const scenesOwnPads = view === VIEWS.SCENES && onScreen;
+    /* 1 = pads, 2 = steps (SCENE_SURF_*): the Scenes screen takes both. */
+    if (typeof host_scene_surface === "function") host_scene_surface(scenesOwnPads ? 3 : 0);
+    if (scenesOwnPads !== scenesPadsOwned) {
+        scenesPadsOwned = scenesOwnPads;
+        /* Regained: Move's colours were put back while we did not own them. */
+        if (scenesOwnPads) scenesScreen.paintLeds(true);
+    }
+    if (scenesOwnPads) {
+        if (typeof host_pad_block === "function") host_pad_block(1);
+        return;
+    }
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
                            loadedModuleUi && loadedModuleUi.tick &&
                            !coRunUiActive();
     if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
 }
+let scenesPadsOwned = false;
 
 /* The shim's copy of "is a surface attached" is RESTATED, never memoised.
  *
@@ -21281,9 +21913,13 @@ function reconcileCcClaim() {
      */
     const displayOn = (typeof shadow_get_display_mode === "function")
         ? shadow_get_display_mode() : 1;
+    /* Scenes claim buttons of their own (the Scenes screen's Copy / Delete /
+     * Undo, Delete while a scene is armed), so their state is in the key too. */
+    const sceneCcs = sceneClaimedCcs();
+    const sceneTag = "|scn:" + sceneCcs.join(",");
     const key = onScreen
-        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn)
-        : "";
+        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn + sceneTag)
+        : sceneTag;
     if (key === ccClaimKey) return;
     /* THE READ COMES FIRST, AND null IS NOT AN ANSWER.
      *
@@ -21310,7 +21946,10 @@ function reconcileCcClaim() {
         moduleId = raw;
     }
     ccClaimKey = key;
-    const claim = onScreen ? moduleClaimedCcs(moduleId) : "";
+    const moduleClaim = onScreen ? moduleClaimedCcs(moduleId) : "";
+    const merged = new Set(moduleClaim ? moduleClaim.split(",").map(Number) : []);
+    for (const cc of sceneCcs) merged.add(cc);
+    const claim = [...merged].sort((x, y) => x - y).join(",");
     if (claim === ccClaimed) return;
     ccClaimed = claim;
     host_claim_ccs(claim ? claim.split(",").map(Number) : []);
@@ -23181,6 +23820,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(lfoTargetGroups[selectedLfoTargetGroup].label);
             }
             break;
+        case VIEWS.LFO_TARGET_FLAT:
+            lfoTargetFlatMove(delta > 0 ? 1 : -1);
+            break;
+        case VIEWS.FILE_FLAT:
+            fileFlatMove(delta > 0 ? 1 : -1);
+            break;
         case VIEWS.LFO_TARGET_PARAM:
             selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam + delta));
             if (lfoTargetParams.length > 0) {
@@ -24182,7 +24827,8 @@ function handleSelect() {
             const items = getLfoItems();
             const item = items[selectedLfoItem];
             if (item.key === "target") {
-                /* Open target picker */
+                /* Open target picker -- from the LIST, never the grid. */
+                lfoTargetFromGrid = false;
                 enterLfoTargetPicker();
             } else if (item.type === "action") {
                 /* Other actions - ignore */
@@ -24203,8 +24849,13 @@ function handleSelect() {
             if (lfoTargetComponents.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 if (comp.key === "__clear__") {
-                    lfoCtx.setParamBlocking("target", "");
-                    lfoCtx.setParamBlocking("target_param", "");
+                    /* From the grid, clearing is switching off — it has no
+                     * Enabled cell. The list keeps its own row. */
+                    if (lfoTargetFromGrid) commitLfoTargetFromGrid(lfoCtx, null);
+                    else {
+                        lfoCtx.setParamBlocking("target", "");
+                        lfoCtx.setParamBlocking("target_param", "");
+                    }
                     if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
@@ -24219,12 +24870,22 @@ function handleSelect() {
             needsRedraw = true;
             break;
         }
+        case VIEWS.LFO_TARGET_FLAT:
+            lfoTargetFlatCommit();
+            break;
+        case VIEWS.FILE_FLAT:
+            fileFlatCommit();
+            break;
         case VIEWS.LFO_TARGET_PARAM: {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 const param = lfoTargetParams[selectedLfoTargetParam];
-                lfoCtx.setParamBlocking("target", comp.key);
-                lfoCtx.setParamBlocking("target_param", param.key);
+                if (lfoTargetFromGrid) {
+                    commitLfoTargetFromGrid(lfoCtx, { target: comp.key, param: param.key });
+                } else {
+                    lfoCtx.setParamBlocking("target", comp.key);
+                    lfoCtx.setParamBlocking("target_param", param.key);
+                }
                 if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
@@ -24274,6 +24935,16 @@ function handleSelect() {
 }
 
 function handleBack() {
+    /* Back while a knob is scrolling the target picker CANCELS: nothing has
+     * been written, so leaving is the whole of it. */
+    if (view === VIEWS.LFO_TARGET_FLAT) {
+        lfoTargetFlatCancel();
+        return;
+    }
+    if (view === VIEWS.FILE_FLAT) {
+        fileFlatCancel();
+        return;
+    }
     /* Pre-emption: in component-edit, let a module with a custom chain_ui
      * handle Back for its own internal navigation. Truthy = consumed;
      * falsy/absent falls through to the host unload logic below. */
@@ -24454,6 +25125,9 @@ function handleBack() {
             break;
         case VIEWS.EC4_SETUP:
             exitEc4Setup();
+            break;
+        case VIEWS.SCENES:
+            exitScenes();
             break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
@@ -25757,6 +26431,9 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.turnParamDoor = (slot, fullKey, dir, knob, held, info) =>
+        lfoTargetKnobEnter(slot, fullKey, dir, knob, held) ||
+        fileFlatEnter(slot, fullKey, knob, held, info);
     /* Slot-settings actions (Save / Delete / LFO / Knob Mapping). Exposed so
      * every branch can be EXECUTED by the tests: this code was previously
      * reachable only by pressing a specific row on a specific screen, and a
@@ -26346,6 +27023,32 @@ function resetLfoTargetLabels() {
     for (const k in _lfoTargetLabelCache) delete _lfoTargetLabelCache[k];
 }
 
+/*
+ * A routing chosen on the knob grid, `enabled` included.
+ *
+ * The grid has no Enabled cell: a target IS the LFO switched on and None is
+ * it switched off. The list editor keeps its own Enabled row and its picker is
+ * untouched — this is the grid's commit only.
+ *
+ * `enabled` goes FIRST on the way on. The DSP gives a fresh LFO full depth
+ * when it is enabled with no routing yet (chain_host.c's `lfo->depth == 0 &&
+ * !lfo->target[0]` guard); enabling after the target would leave it at 0%,
+ * an LFO that is routed and does nothing. Blocking throughout, for the reason
+ * the picker is: consecutive non-blocking writes to one slot clobber.
+ */
+function commitLfoTargetFromGrid(ctx, route) {
+    if (!ctx) return;
+    if (!route || !route.target) {
+        ctx.setParamBlocking("target", "");
+        ctx.setParamBlocking("target_param", "");
+        ctx.setParamBlocking("enabled", "0");
+        return;
+    }
+    ctx.setParamBlocking("enabled", "1");
+    ctx.setParamBlocking("target", route.target);
+    ctx.setParamBlocking("target_param", route.param);
+}
+
 /** The LFO the editor is currently pointed at. */
 function describeCurrentLfoTarget() {
     return lfoCtx ? describeLfoTargetFor(lfoCtx) : null;
@@ -26531,6 +27234,359 @@ function enterLfoTargetGroupParams(groupIndex) {
     } else {
         announce("No parameters available");
     }
+}
+
+/*
+ * THE TARGET PICKER, FLAT, FOR A KNOB.
+ *
+ * The picker is a hierarchy (component > section > param) and the JOG walks
+ * it as one -- hold the grid's Target knob and click, then click in and Back
+ * out. TURNING the Target knob shows the same targets as ONE list instead:
+ * "None", then every param in the picker's own order, a divider row naming
+ * each section ("Mini-JV / Filter", "Freeverb", "LFO 2", "Sends"). The cursor
+ * skips the dividers, so a turn runs straight through from one category into
+ * the next. Same targets, same commit; only the navigation differs.
+ *
+ * Letting go of the knob commits and returns to the grid; a jog click commits
+ * too. Back cancels -- nothing is written until then.
+ */
+let lfoTargetGroupingCache = Object.create(null);
+let lfoTargetGroupingOwner = null;
+let lfoTargetKnob = listKnobInit();
+let lfoTargetFlatRows = [];
+let lfoTargetFlatIndex = 0;
+let lfoTargetFlatStored = 0;
+/* Knob whose RELEASE commits the flat list, -1 otherwise. */
+let lfoTargetKnobCommit = -1;
+let lfoTargetKnobHeld = false;
+let lfoTargetKnobLastMs = 0;
+/* No release ever comes for a turn the touch sensor did not register. */
+const LFO_TARGET_KNOB_IDLE_COMMIT_MS = 1000;
+
+function isLfoTargetView(v) {
+    return v === VIEWS.LFO_TARGET_COMPONENT || v === VIEWS.LFO_TARGET_GROUP ||
+           v === VIEWS.LFO_TARGET_PARAM || v === VIEWS.LFO_TARGET_FLAT;
+}
+
+/* A component's sections (non-empty), or its flat list as one section with
+ * no label. Read once per picker visit -- two IPC reads a component. */
+function lfoTargetSectionsOf(compIdx) {
+    const comp = lfoTargetComponents[compIdx];
+    if (!comp || !lfoCtx) return [];
+    /* Scoped to this picker VISIT: enterLfoTargetPicker assigns a fresh
+     * component list every time, so a new list is a new cache. */
+    if (lfoTargetGroupingOwner !== lfoTargetComponents) {
+        lfoTargetGroupingOwner = lfoTargetComponents;
+        lfoTargetGroupingCache = Object.create(null);
+    }
+    if (lfoTargetGroupingCache[comp.key]) return lfoTargetGroupingCache[comp.key];
+    const g = lfoCtx.getTargetGroups
+        ? lfoCtx.getTargetGroups(comp.key)
+        : { grouped: false, flat: lfoCtx.getTargetParams(comp.key), groups: [] };
+    const sections = (g && g.grouped)
+        ? (g.groups || []).filter((x) => x && x.params && x.params.length)
+        : [{ label: null, params: (g && g.flat) || [] }].filter((x) => x.params.length);
+    /* Not cached when empty: a loaded module offering nothing is a read that
+     * did not complete, and the next visit should ask again. */
+    if (sections.length) lfoTargetGroupingCache[comp.key] = sections;
+    return sections;
+}
+
+function lfoTargetFlatAnnounce() {
+    const r = lfoTargetFlatRows[lfoTargetFlatIndex];
+    if (!r) return;
+    let section = "";
+    for (let i = lfoTargetFlatIndex; i >= 0; i--) {
+        if (lfoTargetFlatRows[i].type === "divider") { section = lfoTargetFlatRows[i].label; break; }
+    }
+    announceMenuItem(section ? r.label + ", " + section : r.label);
+}
+
+/* Move the flat cursor. `n` is already in rows (jog 1:1, knob accumulated). */
+function lfoTargetFlatMove(n) {
+    if (!n) return;
+    const before = lfoTargetFlatIndex;
+    lfoTargetFlatIndex = moveFlatCursor(lfoTargetFlatRows, lfoTargetFlatIndex, n);
+    if (lfoTargetFlatIndex !== before) lfoTargetFlatAnnounce();
+    needsRedraw = true;
+}
+
+/* A knob turn in any target view. Flat: scroll the list. Hierarchy: scroll
+ * the list on screen, exactly as the jog does. */
+function lfoTargetKnobTurn(delta) {
+    lfoTargetKnobLastMs = Date.now();
+    if (view === VIEWS.LFO_TARGET_FLAT) {
+        lfoTargetFlatMove(listKnobStep(lfoTargetKnob, delta, lfoTargetKnobLastMs,
+                                       lfoTargetFlatRows.length));
+        return;
+    }
+    const len = view === VIEWS.LFO_TARGET_COMPONENT ? lfoTargetComponents.length
+              : view === VIEWS.LFO_TARGET_GROUP ? lfoTargetGroups.length
+              : lfoTargetParams.length;
+    const n = listKnobStep(lfoTargetKnob, delta, lfoTargetKnobLastMs, len);
+    if (n) { handleJog(n); needsRedraw = true; }
+}
+
+/* The grid's Target cell was TURNED: open the flat list on the stored routing
+ * (that first detent only lands) and let this knob's release commit. */
+function lfoTargetKnobEnter(slotIndex, fullKey, dir, knob, held) {
+    const componentKey = paramPagesComponent();
+    const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+    if (componentKey !== "slot" && !isMaster) return false;
+    const m = isMaster
+        ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
+        : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+    if (!m) return false;
+    /* The rest of a spin whose first detent was refused: say nothing, read
+     * nothing -- the refusal already spoke. */
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const ctx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                         : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+    /* Read the routing BEFORE opening anything. A null is a read that did
+     * not complete, not "no target": opening on None would let the release
+     * switch a working LFO off (planFlatTargetOpen). */
+    const storedTarget = ctx.getParam("target");
+    const storedParam = storedTarget === null ? null : ctx.getParam("target_param");
+    if (storedTarget === null || storedParam === null) {
+        flatRefusal.refuse(fullKey, now);
+        announce("Target unavailable");
+        return true;
+    }
+    lfoCtx = ctx;
+    lfoTargetFromGrid = true;
+    clearParamPagesTouch();
+    enterLfoTargetPicker();
+    lfoTargetKnob = listKnobInit();
+    /* The caption's room: from the label column to the scrollbar gutter,
+     * less the rule stubs either side. */
+    const fit = { measure: (t) => text_width(t), maxW: SCREEN_WIDTH - LIST_LABEL_X - 12 };
+    const plan = planFlatTargetOpen(
+        buildFlatTargetRows(lfoTargetComponents, lfoTargetSectionsOf, fit),
+        storedTarget, storedParam, fit);
+    lfoTargetFlatRows = plan.rows;
+    lfoTargetFlatStored = plan.stored;
+    lfoTargetFlatIndex = lfoTargetFlatStored;
+    setView(VIEWS.LFO_TARGET_FLAT);
+    lfoTargetKnobCommit = knob;
+    lfoTargetKnobHeld = !!held;
+    lfoTargetKnobLastMs = Date.now();
+    lfoTargetFlatAnnounce();
+    needsRedraw = true;
+    return true;
+}
+
+/* Commit the flat list's row: the same writes the picker makes. */
+function lfoTargetFlatCommit() {
+    lfoTargetKnobCommit = -1;
+    lfoTargetKnobHeld = false;
+    /* Only a row the user MOVED to is written; the stored row is not a
+     * choice (flatTargetCommitRow). */
+    const r = flatTargetCommitRow(lfoTargetFlatRows, lfoTargetFlatIndex, lfoTargetFlatStored);
+    if (r && lfoCtx) {
+        commitLfoTargetFromGrid(lfoCtx, r.route.target ? r.route : null);
+        announce(r.route.target ? "Target set: " + r.label : "Target cleared");
+    } else {
+        announce("Target unchanged");
+    }
+    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+    needsRedraw = true;
+}
+
+function lfoTargetFlatCancel() {
+    lfoTargetKnobCommit = -1;
+    lfoTargetKnobHeld = false;
+    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+    announce("Target unchanged");
+    needsRedraw = true;
+}
+
+function lfoTargetKnobTick() {
+    /* The grid hand-off flag outlives every exit that is not a commit or
+     * Back (a Track tap, a Menu dismiss). Left set, the LIST editor's next
+     * pick would take the grid's commit path and write `enabled`. */
+    if (lfoTargetFromGrid && !isLfoTargetView(view)) lfoTargetFromGrid = false;
+    if (lfoTargetKnobCommit < 0) return;
+    if (view !== VIEWS.LFO_TARGET_FLAT) { lfoTargetKnobCommit = -1; return; }
+    if (!lfoTargetKnobHeld &&
+        Date.now() - lfoTargetKnobLastMs >= LFO_TARGET_KNOB_IDLE_COMMIT_MS) {
+        lfoTargetFlatCommit();
+    }
+}
+
+function drawLfoTargetFlat() {
+    clear_screen();
+    /* The header names the MODULE the cursor is in: its divider scrolls off
+     * above a long section, and the position is what a flat list must never
+     * stop saying. */
+    let module = "";
+    for (let i = lfoTargetFlatIndex; i >= 0; i--) {
+        const r = lfoTargetFlatRows[i];
+        if (r && r.type === "divider" && !(r.level > 0)) { module = r.label; break; }
+    }
+    const title = lfoCtx ? lfoCtx.title : "LFO";
+    drawHeader(truncateText(module ? title + " > " + module : title + " Target", 22));
+    drawMenuList({
+        items: lfoTargetFlatRows,
+        selectedIndex: lfoTargetFlatIndex,
+        getLabel: (item) => item.label,
+        /* The routing it has now, so scrolling away still reads as leaving it. */
+        getValue: (item, i) => (i === lfoTargetFlatStored ? "*" : ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        announce: false,
+    });
+    drawFooter(["Release: set", "Back: cancel"]);
+}
+
+/*
+ * A FILE CELL, TURNED: the files in the current file's folder.
+ *
+ * The file browser is a hierarchy and the jog walks it -- hold the cell and
+ * click, then click into folders and Back out. TURNING the cell changes the
+ * file WITHIN ITS FOLDER instead: the folder's files (no subfolders, no ".."),
+ * the current one marked, and the knob scrolls them. Letting go loads the
+ * one it is on; Back cancels. Nothing is written while scrolling -- a module
+ * may load a sample inside set_param, so a write per detent would be a load
+ * per detent.
+ */
+let fileFlatRows = [];
+let fileFlatIndex = 0;
+let fileFlatStored = -1;
+let fileFlatKey = "";
+let fileFlatFolder = "";
+let fileFlatKnobState = listKnobInit();
+let fileFlatKnob = -1;
+let fileFlatHeld = false;
+let fileFlatLastMs = 0;
+/* Set only by a cursor move: a release that never moved loads nothing. */
+let fileFlatMoved = false;
+let fileFlatSlot = -1;
+let fileFlatFullKey = "";
+let fileFlatMeta = null;
+/* One refusal per spin, shared by the file cell and the LFO Target cell. */
+const flatRefusal = createRefusalLatch(LFO_TARGET_KNOB_IDLE_COMMIT_MS);
+
+function fileFlatEnter(slotIndex, fullKey, knob, held, info) {
+    const meta = info && info.meta;
+    if (!meta || meta.type !== "filepath" || !info.key) return false;
+    const now = Date.now();
+    if (flatRefusal.latched(fullKey, now)) return true;
+    const current = getSlotParam(slotIndex, fullKey);
+    let files = [];
+    let st = null;
+    if (current !== null) {
+        st = buildFilepathBrowserState(meta, current);
+        refreshFilepathBrowser(st, FILEPATH_BROWSER_FS);
+        files = (st.items || []).filter((it) => it && it.kind === "file");
+    }
+    const plan = planFileFlatOpen(current, files);
+    if (plan.refuse) {
+        flatRefusal.refuse(fullKey, now);
+        announce(plan.refuse === "empty" ? "No files in this folder" : "File unavailable");
+        return true;
+    }
+    fileFlatRows = files;
+    fileFlatStored = plan.stored;
+    fileFlatIndex = plan.index;
+    fileFlatMoved = false;
+    fileFlatKey = info.key;
+    fileFlatSlot = slotIndex;
+    fileFlatFullKey = String(fullKey || "");
+    fileFlatMeta = meta;
+    const dir = String(st.currentDir || "").replace(/\/+$/, "");
+    fileFlatFolder = dir.slice(dir.lastIndexOf("/") + 1) || (meta.name || info.key);
+    fileFlatKnobState = listKnobInit();
+    fileFlatKnob = knob;
+    fileFlatHeld = !!held;
+    fileFlatLastMs = Date.now();
+    clearParamPagesTouch();
+    setView(VIEWS.FILE_FLAT);
+    announceMenuItem(fileFlatRows[fileFlatIndex].label + ", " + fileFlatFolder);
+    needsRedraw = true;
+    return true;
+}
+
+function fileFlatMove(n) {
+    if (!n || !fileFlatRows.length) return;
+    const before = fileFlatIndex;
+    fileFlatIndex = Math.max(0, Math.min(fileFlatRows.length - 1, fileFlatIndex + n));
+    if (fileFlatIndex !== before) {
+        fileFlatMoved = true;
+        announceMenuItem(fileFlatRows[fileFlatIndex].label);
+    }
+    needsRedraw = true;
+}
+
+function fileFlatKnobTurn(delta) {
+    fileFlatLastMs = Date.now();
+    fileFlatMove(listKnobStep(fileFlatKnobState, delta, fileFlatLastMs, fileFlatRows.length));
+}
+
+function fileFlatClose() {
+    fileFlatKnob = -1;
+    fileFlatHeld = false;
+    if (paramPagesActive()) setView(VIEWS.PARAM_PAGES);
+    needsRedraw = true;
+}
+
+function fileFlatCommit() {
+    const f = fileFlatPick(fileFlatRows, fileFlatIndex, fileFlatStored, fileFlatMoved);
+    if (f) {
+        commitParamPagesValue(fileFlatKey, f.path);
+        fileFlatAfterCommit(f.path);
+        announce("Loaded " + f.label);
+    }
+    fileFlatClose();
+}
+
+/*
+ * What the file BROWSER does after writing a pick, so the knob list is not
+ * a lesser commit: the module's browser_hooks.on_commit actions, then the
+ * linked wav_position end-marker default. Hooks marked `restore` are undone
+ * by the browser at close, so they are skipped here rather than set and
+ * immediately put back. The wav default reads the hierarchy editor's state,
+ * so it runs only when that state describes THIS cell.
+ */
+function fileFlatAfterCommit(path) {
+    const fullKey = fileFlatFullKey;
+    const key = fileFlatKey;
+    const prefix = fullKey.endsWith(":" + key) ? fullKey.slice(0, -(key.length + 1)) : "";
+    const hooks = buildFilepathBrowserHooks(fileFlatMeta, prefix);
+    for (const action of hooks.onCommit) {
+        if (!action || !action.key || action.restore) continue;
+        setSlotParam(fileFlatSlot, action.key, resolveFilepathHookValue(action.value, { path }));
+    }
+    if (hierEditorSlot === fileFlatSlot && hierEditorSlot >= 0 &&
+        buildHierarchyParamKey(key) === fullKey) {
+        applyLinkedWavEndDefaultsForFilepath(key);
+    }
+}
+
+function fileFlatCancel() {
+    announce("File unchanged");
+    fileFlatClose();
+}
+
+function fileFlatTick() {
+    if (fileFlatKnob < 0) return;
+    if (view !== VIEWS.FILE_FLAT) { fileFlatKnob = -1; return; }
+    if (!fileFlatHeld && Date.now() - fileFlatLastMs >= LFO_TARGET_KNOB_IDLE_COMMIT_MS) fileFlatCommit();
+}
+
+function drawFileFlat() {
+    clear_screen();
+    drawHeader(truncateText(fileFlatFolder, 22));
+    drawMenuList({
+        items: fileFlatRows,
+        selectedIndex: fileFlatIndex,
+        getLabel: (item) => item.label,
+        getValue: (item, i) => (i === fileFlatStored ? "*" : ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        announce: false,
+    });
+    drawFooter(["Release: load", "Back: cancel"]);
 }
 
 function drawLfoTargetGroup() {
@@ -26883,7 +27939,12 @@ globalThis.init = function() {
      * empty directory and do nothing — silently, which is the failure mode
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
+    /* Scenes: adopt a bank the shim already holds (this is a shadow_ui
+     * restart), else load the set's file. */
+    try { scenesLoadFrom(activeSlotStateDir, true); } catch (e) { debugLog("scenes load failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadSceneShiftVol(); } catch (e) { debugLog("scene_shift_vol load failed: " + e); }
+    try { loadScenePcChannel(); } catch (e) { debugLog("scene_pc_channel load failed: " + e); }
     try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
     try { loadSpeakerEq(); } catch (e) { debugLog("speaker_eq load failed: " + e); }
@@ -27049,6 +28110,8 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
         case VIEWS.LFO_TARGET_GROUP:     drawLfoTargetGroup(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
+        case VIEWS.LFO_TARGET_FLAT:      drawLfoTargetFlat(); break;
+        case VIEWS.FILE_FLAT:            drawFileFlat(); break;
         case VIEWS.NOTICE:               drawNotice(); break;
         case VIEWS.CONNECT:              drawConnect(); break;
         case VIEWS.EC4_SETUP:            drawEc4Setup(); break;
@@ -27062,6 +28125,8 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    lfoTargetKnobTick();
+    fileFlatTick();
     /* FIRST: MIDI was read just before this tick, so every E16 reply that has
      * arrived is delivered. Anything slow below must not age its ACK timers. */
     try { for (const sf of externalSurfaces()) if (sf.markInputRead) sf.markInputRead(); } catch (e) {}
@@ -27075,6 +28140,7 @@ globalThis.tick = function() {
     e16BlastTick();
     e16NoiseTick();
     reconcileStepObserve();
+    try { scenesTick(); } catch (e) { debugLog("scenes tick: " + e); }
     /* WHERE THE UI IS, once a second, when the debug log is armed.
      *
      * Every other instrument in this session could see Move (its screen, its
@@ -27393,6 +28459,12 @@ globalThis.tick = function() {
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_TOOLS | SHADOW_UI_FLAG_JUMP_TO_SLOT);
                 }
+            } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SCENES) {
+                debugLog("SCENES flag detected, entering Scenes");
+                enterScenes(view === VIEWS.SCENES ? scenesReturnView : view);
+                if (typeof shadow_clear_ui_flags === "function") {
+                    shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_SCENES | SHADOW_UI_FLAG_JUMP_TO_SLOT);
+                }
             } else if (flags & SHADOW_UI_FLAG_JUMP_TO_SETTINGS) {
                 debugLog("SETTINGS flag detected, entering Global Settings");
                 enterGlobalSettings();
@@ -27473,6 +28545,7 @@ globalThis.tick = function() {
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) {}
             saveMasterFxChainConfig();
             saveChainConfigToDir(activeSlotStateDir);
             if (typeof shadow_clear_ui_flags === "function") {
@@ -27486,6 +28559,13 @@ globalThis.tick = function() {
         if (flags & SHADOW_UI_FLAG_SET_CHANGED) setChange: {
             debugLog("SET_CHANGED flag detected — switching slot state directory");
 
+            /* 0. Disarm any armed scene snapshot BEFORE anything is restored.
+             *    Armed, every restore write below (volumes, pans, Master FX
+             *    params and LFOs, send levels) is taken as a lock in the
+             *    OUTGOING bank, which 8c's bank load then discards. The shim
+             *    already disarms at detection; this is the UI's own half. */
+            sceneSetEdit(-1);
+
             /* 1. Save current state to outgoing directory */
             autosaveAllSlots();
             saveMasterFxChainConfig();
@@ -27493,6 +28573,11 @@ globalThis.tick = function() {
             saveChainConfigToDir(activeSlotStateDir);
             /* Save current RNBO graph (if RNBO is running) */
             saveRnboGraphToDir(activeSlotStateDir);
+            /* The outgoing set's scenes, while the DSP still holds them -- HERE,
+             * with the other outgoing saves: step 3b may move this folder
+             * (a pending set's first save) and a later save would write into
+             * the deleted path, then 8c load the stale copy over the bank. */
+            try { scenesSaveTo(activeSlotStateDir); } catch (e) { debugLog("scenes save failed: " + e); }
 
             /* 2. Get UUID and set name from shim (in-memory, no file I/O on audio thread) */
             const activeSetRaw = getSlotParam(0, "active_set");
@@ -27836,6 +28921,10 @@ globalThis.tick = function() {
              * touched. */
             snapshotSeed(true);
 
+            /* 8c. This set's scenes. Never ADOPTED here: the live bank is the
+             * previous set's. */
+            try { scenesLoadFrom(activeSlotStateDir, false); } catch (e) { debugLog("scenes load failed: " + e); }
+
             /* 9. Show overlay notification (~2 seconds) */
             if (setName) {
                 showOverlay("Set Loaded", setName, 60);
@@ -27904,6 +28993,7 @@ globalThis.tick = function() {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
             }
             setSlotParamWithTimeout(0, "set_aligned", String(handledGen), 500);
+            armAlignAck(handledGen, Date.now());   /* verified, and resent if lost */
             if (uuid.indexOf("__pending-") === 0) {
                 const st = moveModelState();
                 pendingSetDocGen = (st && st[0]) ? handledGen : -1;
@@ -28067,6 +29157,8 @@ globalThis.tick = function() {
     if (!isOvertakeActive && refreshCounter % 120 === 0) {
         refreshSlots();
     }
+
+    if (!isOvertakeActive) alignAckTick(Date.now());
 
     /* Periodic autosave (suppressed briefly after set change, and for as long
      * as a set load the model saw is not yet aligned) */
@@ -28290,7 +29382,8 @@ globalThis.tick = function() {
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
-    if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+    sceneFaderObserve();
+    if (!needsRedraw && !overlayActive && !snapshotToastActive() && !sceneFaderOverlay.busy() &&
         !snapshotQueuedPending &&
         (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
@@ -28367,6 +29460,21 @@ globalThis.tick = function() {
             shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
+    }
+
+    /* The scene fader over MOVE's screen: drawn on the scratch surface and
+     * blitted in as a rect, like the toasts above. The rect follows the slide,
+     * so Move's picture is uncovered row by row on the way out. */
+    if (shadowDisplayHidden() && sceneFaderOverlay.busy()) {
+        const fr = sceneFaderOverlay.frame();
+        if (fr) {
+            clear_screen();
+            const r = drawSceneFaderOverlay(sceneFaderCtx(), fr);
+            if (r && typeof shadow_set_display_overlay === "function") {
+                shadow_set_display_overlay(1, r.x, r.y, r.w, r.h);
+            }
+            if (r) return;
+        }
     }
 
     /* No overlay active - clear overlay display mode */
@@ -28560,6 +29668,11 @@ globalThis.tick = function() {
         case VIEWS.EC4_SETUP:
             drawEc4Setup();
             break;
+        case VIEWS.SCENES:
+            clear_screen();
+            scenesScreen.draw({ fillRect: fill_rect, print, textWidth: text_width,
+                                drawHeader, drawFooter });
+            break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();
             break;
@@ -28602,6 +29715,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.LFO_TARGET_PARAM:
             drawLfoTargetParam();
+            break;
+        case VIEWS.LFO_TARGET_FLAT:
+            drawLfoTargetFlat();
+            break;
+        case VIEWS.FILE_FLAT:
+            drawFileFlat();
             break;
         case VIEWS.ENUM_PICKER:
             drawEnumPicker();
@@ -28768,6 +29887,9 @@ globalThis.tick = function() {
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
         drawCcLearnFooter();
+        drawSceneBadge();
+        /* Over the footer, under nothing: it is what the hand is doing now. */
+        drawSceneFaderOnTop();
         /* ...and the p-lock mark, which outlives neither: it is its own
          * 600 ms and belongs on top of both, since it reports something that
          * happened just now. */
@@ -28819,6 +29941,8 @@ globalThis.onMidiMessageInternal = function(data) {
      * keyboard without calling setView, so `view` is still PARAM_PAGES — the
      * jog paged the grid drawn UNDERNEATH the keyboard while pad typing kept
      * working, because decodeInput claims CC 14 but returns null for pads. */
+    if (scenesHandleArmedDelete(status, d1, d2)) { needsRedraw = true; return; }
+    if (scenesHandleEditKey(status, d1, d2)) { needsRedraw = true; return; }
     if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
         if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
@@ -28893,6 +30017,9 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
     }
+
+    /* SCENES: the Scenes screen, and Delete while a scene is armed. */
+    if (scenesHandleMidi(status, d1, d2)) { needsRedraw = true; return; }
 
     /* In co-run the outer view is OVERTAKE_MODULE; the canvas is the active
      * co-run overlay when coRunView === CANVAS. Steal jog-click/Back to close it
@@ -29373,6 +30500,14 @@ globalThis.onMidiMessageInternal = function(data) {
              * is for turning an enum blind on the grid; inside a list you are
              * looking straight at it.
              */
+            if (isLfoTargetView(view)) {
+                lfoTargetKnobTurn(delta);
+                return;
+            }
+            if (view === VIEWS.FILE_FLAT) {
+                fileFlatKnobTurn(delta);
+                return;
+            }
             if (view === VIEWS.ENUM_PICKER) {
                 /* Through the list accumulator, NOT enumPickerJog directly:
                  * 1:1 is right for the jog and much too fast for a knob
@@ -29467,6 +30602,14 @@ globalThis.onMidiMessageInternal = function(data) {
              * closes; only the drawing is suppressed.
              */
             if (view === VIEWS.ENUM_PICKER || view === VIEWS.FILEPATH_BROWSER) return;
+            if (isLfoTargetView(view)) {
+                if (knobIndex === lfoTargetKnobCommit) lfoTargetKnobHeld = true;
+                return;
+            }
+            if (view === VIEWS.FILE_FLAT) {
+                if (knobIndex === fileFlatKnob) fileFlatHeld = true;
+                return;
+            }
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
@@ -29533,6 +30676,16 @@ globalThis.onMidiMessageInternal = function(data) {
              */
             triggerKnobLastMs[knobIndex] = 0;
             triggerKnobLastKey[knobIndex] = null;
+            /* Letting go of the knob that opened a flat list by turning (LFO
+             * target, file) is the commit. */
+            if (lfoTargetKnobCommit === knobIndex && view === VIEWS.LFO_TARGET_FLAT) {
+                lfoTargetFlatCommit();
+                return;
+            }
+            if (fileFlatKnob === knobIndex && view === VIEWS.FILE_FLAT) {
+                fileFlatCommit();
+                return;
+            }
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();

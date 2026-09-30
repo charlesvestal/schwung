@@ -32,7 +32,6 @@
 
 #include "shadow_dbus.h"
 #include "metronome_announce.h"
-#include "editor_bar_announce.h"
 #include "mute_follow.h"
 #include "move_model_sync.h"
 
@@ -67,21 +66,6 @@ volatile int in_set_overview = 0;
  * volatile int, the same as in_set_overview above.
  */
 volatile int shadow_metronome_on = 0;
-
-/*
- * Move's step-editor page, 1-based, 0 = not yet announced.
- *
- * The ONLY external statement of which page the editor is on. The playhead
- * cannot supply it -- it is visible exactly when the displayed page contains
- * it, so deriving the page from the playhead assumes the phase you wanted to
- * check. Not persisted: it is Move's live UI state and stale is worse than
- * absent.
- *
- * Written on the D-Bus monitor thread, read by the worker. A plain volatile
- * int, like shadow_metronome_on above.
- */
-volatile int shadow_editor_bar = 0;
-volatile unsigned shadow_editor_bar_seq = 0;
 
 /* Which slot Move's next "<name> muted"/"unmuted" belongs to. Fed by the
  * shim's Mute / Track scan on the SPI callback, read here. See mute_follow.h. */
@@ -231,14 +215,6 @@ static void shadow_dbus_handle_text(const char *text)
         host.log(msg);
     }
 
-    {
-        int bar = editor_bar_parse(text);
-        if (bar > 0) {
-            shadow_editor_bar = bar;
-            shadow_editor_bar_seq++;
-        }
-    }
-
     /* If Move is asking user to confirm shutdown, dismiss shadow UI so jog wheel
      * press reaches Move's native firmware instead of being captured by us.
      * Also signal the JS UI to save all state before power-off. */
@@ -303,7 +279,8 @@ static void shadow_dbus_handle_text(const char *text)
      */
     {
         metronome_announce_t m = metronome_announce_classify(text);
-        if (m != METRONOME_ANNOUNCE_NONE) {
+        /* The live model reads Transport.mIsMetronomeOn itself. */
+        if (m != METRONOME_ANNOUNCE_NONE && !move_model_sync_active()) {
             int now_on = (m == METRONOME_ANNOUNCE_ON);
             if (now_on != shadow_metronome_on) {
                 shadow_metronome_on = now_on;
@@ -417,7 +394,9 @@ static void shadow_dbus_handle_text(const char *text)
     /* Set detection handled by Settings.json polling (shadow_poll_current_set) */
 
     /* Check if it's a track volume message */
-    if (strncmp(text, "Track Volume ", 13) == 0) {
+    /* The live model reads each track's mixer volume itself (every change,
+     * not only while a Track button is held). */
+    if (strncmp(text, "Track Volume ", 13) == 0 && !move_model_sync_active()) {
         float volume = shadow_parse_volume_db(text);
         int held = *host.held_track;
         if (volume >= 0.0f && held >= 0 && held < SHADOW_CHAIN_INSTANCES) {

@@ -53,7 +53,7 @@ fi
 # ...and the reverse: the collectors must not claim a field that is gone.
 for f in $(command grep -oE 'PERM_(FIELD|OWNED)\(inst->[a-z_0-9]+' "$src" \
            | sed -E 's/.*inst->//' | sort -u); do
-  if ! printf '%s\n' "$struct_body" | command grep -q "[ *(]$f\[MAX_"; then
+  if ! command grep -q "[ *(]$f\[MAX_" <<<"$struct_body"; then
     echo "FAIL: chain_reorder.c permutes '$f', which is not a per-position field" >&2
     exit 1
   fi
@@ -97,7 +97,7 @@ done
 # its bytes as an address.
 for f in $(command grep -oE 'PERM_OWNED\(inst->[a-z_0-9]+' "$src" \
            | sed -E 's/.*inst->//' | sort -u); do
-  if ! printf '%s\n' "$owned" | command grep -qx "$f"; then
+  if ! command grep -qx "$f" <<<"$owned"; then
     echo "FAIL: chain_reorder.c registers '$f' as an owned buffer, but" >&2
     echo "      chain_alloc_position_storage never allocates one for it" >&2
     exit 1

@@ -318,6 +318,11 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
          */
         controller = createController(Object.assign({
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
+            /* A turn on a door the host gives meaning to -- see
+             * page_controller's io.turnDoor. */
+            turnDoor: (fullKey, direction, knob, held, info) =>
+                (typeof ctx.turnParamDoor === 'function')
+                    ? ctx.turnParamDoor(currentSlot, fullKey, direction, knob, held, info) : false,
             /* A write while Record is lit and the clip phase is UNKNOWN records
              * no lane, and the user has to be told -- Record lit plus a moving
              * knob plus no lane is indistinguishable from a broken feature.
@@ -1522,4 +1527,12 @@ export function enumPickerFooterHints() {
 /** True while the section picker is over the grid. */
 export function paramPagesPickerOpen() {
     return !!(controller && controller.pickerOpen);
+}
+
+/* Write a value the host picked outside a turn (a file from the knob's file
+ * list) through the grid controller, so its cell updates at once. */
+export function commitParamPagesValue(key, value) {
+    if (!controller || typeof controller.commitValue !== 'function') return false;
+    controller.commitValue(key, value);
+    return true;
 }

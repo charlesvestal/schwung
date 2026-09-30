@@ -3,6 +3,7 @@
  * handshake that gates autosave. The mutators are recording stubs. */
 #define _GNU_SOURCE   /* CLOCK_MONOTONIC under -std=c11 on Linux */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "move_model.h"
 #include "move_model_sync.h"
@@ -22,14 +23,20 @@ void shadow_apply_mix_state(const int muted[4], const int soloed[4])
 }
 void shadow_apply_mute(int slot, int v) { n_mute++; last_slot = slot; last_val = v; }
 void shadow_apply_solo(int slot, int v) { n_solo++; last_slot = slot; last_val = v; }
+static int n_vol, vol_slot; static float vol_val;
+void shadow_apply_volume(int slot, float v) { n_vol++; vol_slot = slot; vol_val = v; }
+volatile int shadow_metronome_on = 0;
 void shadow_poll_current_set(void) { n_poll++; }
 static move_model_tick_fn g_tick;
 void move_model_set_tick_hook(move_model_tick_fn fn) { g_tick = fn; }
 int move_model_get(move_model_t *out) { memset(out, 0, sizeof *out); return 0; }
+const char *move_model_quant_name(int v) { (void)v; return NULL; }
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref)
 { (void)previous; if (notes) *notes = NULL; if (ref) memset(ref, 0, sizeof *ref); return -1; }
 void shadow_log(const char *m) { (void)m; }
-uint64_t shadow_set_pages_last_publish_ms(void) { return 0; }
+/* When the published set read last CHANGED (0 = never read). */
+static uint64_t fake_read_ms = 0;
+uint64_t shadow_set_pages_last_read_ms(void) { return fake_read_ms; }
 /* The reader's liveness: "just published" unless a test says otherwise. */
 #include <time.h>
 static long long fake_pub_age_ms = 0;   /* -1: never published */
@@ -244,6 +251,30 @@ int main(void)
         g_tick(&blind);
         CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);
         CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);
+
+        /* A STALLED READER CLAIMS NOTHING. The claim it last published is
+         * about a Move history it has stopped reading: Move edits made
+         * meanwhile are invisible to it, so swallowing Undo would undo the
+         * wrong thing and leave Move's own Undo undone. */
+        g_tick(&v2);
+        move_model_sync_on_lane_edit(3, 0x80000002u, 1);
+        g_tick(&v2);
+        fake_pub_age_ms = 5000;                                      /* reader stopped */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 0);          /* Move gets it */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 0);            /* and its release */
+        fake_pub_age_ms = 0;
+
+        /* A CLAIM MOVE OUTRAN: swallowed, then refused by the timeline
+         * because Move pushed an edit between the claim and the take. It is
+         * counted (and logged) rather than vanishing. */
+        const unsigned refused0 = move_model_sync_undo_refused();
+        const int jrn0 = n_jrn;
+        CHECK(move_model_sync_on_midi(0xB0, 56, 127) == 1);          /* live again: ours */
+        CHECK(move_model_sync_on_midi(0xB0, 56, 0) == 1);
+        move_model_t v3 = v2; v3.hist_undo_node = 0x30; v3.hist_undo_nbr = 3;
+        g_tick(&v3); drain_cmds();
+        CHECK(n_jrn == jrn0);
+        CHECK(move_model_sync_undo_refused() == refused0 + 1);
     }
 
     /* ---- the reader posts, the SPI thread applies ----------------------- */
@@ -272,6 +303,100 @@ int main(void)
     fake_pub_age_ms = -1;
     CHECK(!move_model_sync_active());                     /* never published */
     fake_pub_age_ms = 0;
+
+    /* ---- THE MISALIGNMENT GIVE-UP CANNOT BE STARVED ----------------------
+     * The give-up keys on "no NEW read since the load", never on "nothing
+     * published": the worker republishes the same read every tick while
+     * misaligned, so a publish clock never goes quiet. The case that needs
+     * it: the UI's one `set_aligned` ack was lost. Every consume re-reads the
+     * set it already switched to, the same-set path refuses (no ack), the
+     * flag is clear -- and before this, autosave stayed off for the session. */
+    {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        const uint64_t e0 = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+        move_model_t la = doc(50);
+        FIRE(&la, &h);                                     /* the load edge, at ~e0 */
+        ctl.set_doc_gen = 49;                              /* the ack never landed */
+        ctl.ui_flags = 0;                                  /* the UI cleared the flag */
+
+        /* No read at all: the original give-up, 15 s after the edge. */
+        fake_read_ms = 0;
+        move_model_sync_housekeep_at(e0 + 14000);
+        CHECK(ctl.set_doc_gen == 49);
+        move_model_sync_housekeep_at(e0 + 15500);
+        CHECK(ctl.set_doc_gen == 50);
+
+        /* The lost ack: the new set's read landed 300 ms after the edge and
+         * has been republished unchanged ever since. */
+        ctl.set_doc_gen = 49;
+        fake_read_ms = e0 + 300;
+        move_model_sync_housekeep_at(e0 + 10000);
+        CHECK(ctl.set_doc_gen == 49);                      /* still inside the window */
+        move_model_sync_housekeep_at(e0 + 16000);
+        CHECK(ctl.set_doc_gen == 50);                      /* it gives up */
+
+        /* A read that CHANGED recently is pending, and is never forced over. */
+        ctl.set_doc_gen = 49;
+        fake_read_ms = e0 + 15500;
+        move_model_sync_housekeep_at(e0 + 16000);
+        CHECK(ctl.set_doc_gen == 49);
+        move_model_sync_housekeep_at(e0 + 15500 + 15001);
+        CHECK(ctl.set_doc_gen == 50);
+
+        /* SET_CHANGED up means the UI has work to do: never. */
+        ctl.set_doc_gen = 49;
+        ctl.ui_flags = SHADOW_UI_FLAG_SET_CHANGED;
+        move_model_sync_housekeep_at(e0 + 60000);
+        CHECK(ctl.set_doc_gen == 49);
+        ctl.ui_flags = 0;
+        fake_read_ms = 0;
+    }
+
+    /* ---- MIXER AND TRANSPORT FACTS from the model ------------------------ */
+    {
+        move_model_t a2 = doc(40), b2;
+        a2.master_valid = 1; a2.master_db = -70.0; a2.metronome_on = 1; a2.selected_track = 2;
+        FIRE(&a2, &h);                                     /* a new document: levels */
+        float mvl = -1;
+        CHECK(move_model_sync_master_volume(&mvl) && mvl == 0.0f);          /* the knob's bottom is SILENCE */
+        CHECK(shadow_metronome_on == 1);
+        CHECK(move_model_sync_take_selected() == 2);
+        CHECK(move_model_sync_take_selected() == -1);                     /* once */
+
+        b2 = a2; b2.master_db = -6.0;
+        FIRE(&b2, &a2);
+        CHECK(move_model_sync_master_volume(&mvl) && fabsf(mvl - 0.501187f) < 1e-4f);
+        b2.master_db = 0.0; a2 = b2; FIRE(&b2, &a2);
+        CHECK(move_model_sync_master_volume(&mvl) && fabsf(mvl - 1.0f) < 1e-6f);
+
+        /* Track volume follows EDGES (Schwung's own slot level holds between). */
+        a2 = b2; n_vol = 0;
+        b2.track[1].volume = -12.0;
+        FIRE(&b2, &a2);
+        CHECK(n_vol == 1 && vol_slot == 1 && fabsf(vol_val - 0.251189f) < 1e-4f);
+        a2 = b2; n_vol = 0;
+        FIRE(&b2, &a2);                                     /* nothing moved */
+        CHECK(n_vol == 0);
+        /* ...and a set load does not overwrite the set's saved slot levels. */
+        move_model_t c2 = doc(41); c2.track[1].volume = -30.0; n_vol = 0;
+        FIRE(&c2, &b2);
+        CHECK(n_vol == 0);
+
+        /* Metronome off, selection moved. */
+        move_model_t d2 = c2; d2.metronome_on = 0; d2.selected_track = 3;
+        FIRE(&d2, &c2);
+        CHECK(shadow_metronome_on == 0 && move_model_sync_take_selected() == 3);
+
+        /* No output mixer read: no claim, the fallback keeps it. */
+        move_model_t e2 = d2; e2.master_valid = 0;
+        FIRE(&e2, &d2);
+        CHECK(!move_model_sync_master_volume(&mvl));
+        /* A dead model claims nothing either. */
+        move_model_t f2 = d2; FIRE(&f2, &e2);
+        fake_pub_age_ms = 5000;
+        CHECK(!move_model_sync_master_volume(&mvl));
+        fake_pub_age_ms = 0;
+    }
 
     if (fails) { printf("test_move_model_sync: %d FAILED\n", fails); return 1; }
     printf("test_move_model_sync: PASS\n");

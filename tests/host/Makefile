@@ -51,13 +51,14 @@ retest:
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
+	$(BUILD_DIR)/test_surface_live \
+	$(BUILD_DIR)/test_audio_live \
 	$(BUILD_DIR)/test_move_model \
 	$(BUILD_DIR)/test_lane_edit \
 	$(BUILD_DIR)/test_undo_timeline \
 	$(BUILD_DIR)/test_edit_follow \
 	$(BUILD_DIR)/test_move_model_sync \
-	$(BUILD_DIR)/test_editor_bar_announce \
-	$(BUILD_DIR)/test_clip_regions \
+	$(BUILD_DIR)/test_move_info \
 	$(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
@@ -75,6 +76,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_json_compact \
 	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
+	$(BUILD_DIR)/test_display_pull \
 	$(BUILD_DIR)/test_align_capture \
 	$(BUILD_DIR)/test_host_api_reserved_tail \
 	$(BUILD_DIR)/test_ui_flags_layout \
@@ -91,6 +93,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
+	$(BUILD_DIR)/test_link_audio_conceal \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
@@ -189,9 +192,19 @@ $(BUILD_DIR)/test_rt_thread_audit: test_rt_thread_audit.c ../../src/host/rt_thre
 $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
+# Header-only unit: display_pull_serve lives in display_pull.h.
+$(BUILD_DIR)/test_display_pull: test_display_pull.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
 # Header-only unit: link_audio_in_trim_pos lives in link_audio.h, so the
 # DEPFLAGS header tracking above is what keeps this honest when it changes.
 $(BUILD_DIR)/test_link_audio_backlog_trim: test_link_audio_backlog_trim.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit: starve concealment, depth alignment and the frame gate
+# live in link_audio_conceal.h. It was written in #571 and never listed here,
+# so CI had not run it once.
+$(BUILD_DIR)/test_link_audio_conceal: test_link_audio_conceal.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Header-only unit: heal_tool_id_is_safe lives in heal_tool_id.h. schwung-heal
@@ -304,8 +317,8 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 $(BUILD_DIR)/test_move_model: test_move_model.c ../../src/host/move_model.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model.c ../../src/host/move_model.c -lm
 
-$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c -lm
+$(BUILD_DIR)/test_move_model_sync: test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c ../../src/host/move_info.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DMOVE_INFO_SHM_PATH='"$(BUILD_DIR)/move_info_sync_test.shm"' -o $@ test_move_model_sync.c ../../src/host/move_model_sync.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c ../../src/host/undo_timeline.c ../../src/host/move_info.c -lm -lpthread
 
 $(BUILD_DIR)/test_undo_timeline: test_undo_timeline.c ../../src/host/undo_timeline.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_undo_timeline.c ../../src/host/undo_timeline.c
@@ -315,9 +328,6 @@ $(BUILD_DIR)/test_lane_edit: test_lane_edit.c ../../src/host/lane_edit.c ../../s
 
 $(BUILD_DIR)/test_edit_follow: test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_edit_follow.c ../../src/host/edit_follow.c ../../src/host/edit_gesture.c -lm
-
-$(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
 
 # shadow_slot_clip_phase — slot -> track -> clip phase (Task 2 of automation
 # lanes). Includes shadow_chain_mgmt.c rather than linking it, the way
@@ -329,8 +339,8 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # lane_trace.c is LINKED, not stubbed: it owns the ring
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
-$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c | $(BUILD_DIR)
-	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c ../../src/host/lane_trace.c -lm
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
@@ -358,6 +368,6 @@ $(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/ho
 $(BUILD_DIR)/test_rec_arm: test_rec_arm.c ../../src/host/rec_arm.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rec_arm.c
 
-# Header-only; the .c is the whole test.
-$(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_editor_bar_announce.c
+
+$(BUILD_DIR)/test_move_info: test_move_info.c ../../src/host/move_info.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DMOVE_INFO_SHM_PATH='"$(BUILD_DIR)/move_info_test.shm"' -o $@ test_move_info.c ../../src/host/move_info.c -lm -lpthread -ldl

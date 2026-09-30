@@ -158,6 +158,8 @@ export const GLOBAL_ENUM_VALUES = {
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
+ *   scene_shift_vol        | (js) sceneShiftVol      | setSceneShiftVol         | -       | -                      | -
+ *   scene_pc_channel       | (js) scenePcChannel     | setScenePcChannel        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   speaker_eq             | (js) speakerEqMode      | setSpeakerEq             | -       | -                      | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
@@ -231,6 +233,11 @@ export const GLOBAL_ROUTING = {
      * the same way shadow_ui_trigger_set does, because the register it also
      * writes lives in SHM and does not survive a reboot. */
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
+    /* persist: null -- shadow_scene_shift_vol_set writes features.json, for the
+     * same reason as recall_quantize: its register lives in SHM. */
+    scene_shift_vol:        { read: "scene_shift_vol.get",    write: "scene_shift_vol.set",    persist: null,   cache: null,                     modal: null },
+    /* persist: null -- shadow_scene_pc_channel_set writes features.json. */
+    scene_pc_channel:       { read: "scene_pc_channel.get",   write: "scene_pc_channel.set",   persist: null,   cache: null,                     modal: null },
 
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
     /* persist: "own" -- the surface is a JS-side feature, so the toggle is
@@ -573,6 +580,21 @@ export const SHORTCUTS_PARAMS = [
     { key: "recall_quantize", name: "Recall Q", type: "enum",
       options: ["Off", "Beat", "Bar", "2 Bars"],
       short_options: ["OFF", "BET", "BAR", "2BR"], default: 0 },
+    /*
+     * Shift + the volume knob is the SCENE CROSSFADER, from any screen --
+     * Move's included. On by default; Off gives Shift+Volume back to Move.
+     */
+    bool("scene_shift_vol", "Scene Fader", 1),
+    /*
+     * Program Change 0-15 on this channel selects scene 1-16, so a sequencer
+     * can drive scenes (and a mapped CC the fader). A channel of its own,
+     * default 16: synths already take PC on theirs as a preset change, and
+     * the scene channel's PCs are withheld from the slots and Move.
+     */
+    { key: "scene_pc_channel", name: "Scene PC Ch", type: "enum",
+      options: ["Off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"],
+      short_options: ["OFF", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"],
+      default: 16 },
     /*
      * Both Skipback rows moved here from Audio to make room for the metronome.
      *

@@ -79,7 +79,7 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
      * deleted, so the first one found is as good a victim as the best one. */
     for (int i = 0; i < LANE_MAX; i++) {
         ln = &st->lanes[i];
-        if (!ln->used || !ln->orphaned || ln->driving) continue;
+        if (!ln->used || !(ln->orphaned || ln->module_gone) || ln->driving) continue;
         memset(ln, 0, sizeof(*ln));
         ln->used = 1;
         snprintf(ln->target, sizeof(ln->target), "%s", target);
@@ -187,7 +187,7 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
               double loop_len, int stepped,
               float *out) {
     if (!ln || !ln->used || !out || ln->n <= 0) return 0;
-    if (ln->stale || ln->orphaned) return 0;
+    if (ln->stale || ln->orphaned || ln->module_gone) return 0;
     if (loop_len <= 0.0 || !isfinite(phase) || !isfinite(loop_start)) return 0;
     const double win_hi = loop_start + loop_len;
 

@@ -1368,6 +1368,46 @@ Full contract and the host side: `src/host/plugin_api_v1.h`,
 `src/host/bus_mix.h`, `src/host/voice_send_source.h`, and `docs/CHAIN.md`
 ("Buses", "The module owns a voice's send level").
 
+### Reading Move's set: tempo, scale, track names (`move_info.h`)
+
+Schwung reads Move's song document live and publishes the set-wide settings a
+module might want, so no module does memory introspection of its own. Copy
+`src/host/move_info.h` into your module (it needs nothing else from Schwung):
+
+```c
+#define _GNU_SOURCE
+#include "move_info.h"
+
+move_info_t mi;
+if (move_info_read(&mi) && mi.valid) {
+    /* mi.tempo, mi.ts_upper/ts_lower, mi.root_note (0 = C), mi.scale ("Major"),
+     * mi.global_quant_name ("bar"), mi.groove, mi.metronome_on,
+     * mi.midi_clock_sync, mi.input_monitoring, mi.playing, mi.song_beats,
+     * mi.selected_track, mi.master_db, and per track: name, color_id, type,
+     * muted, soloed, selected, volume_db */
+}
+```
+
+- **Inside MoveOriginal** (chain synths/FX, Master FX, overtake DSP) the read is
+  a seqlock copy out of a page the shim already mapped — no syscalls, safe in
+  `render_block`. Make the FIRST call in `create_instance`: that one resolves
+  the shim's `schwung_move_info` export with `dlsym`, which takes the loader's
+  lock once.
+- **Outside it** (a fork-parallel module's children, a tool binary) the same
+  call maps `/schwung-move-info` on first use — a file open, so keep that
+  first call off the audio path.
+- **Every field has an explicit UNKNOWN**: -1 for ints, 255 for flags, a
+  negative float, `""` for text. `valid` 0 means Move's document is not being
+  read right now (an unrecognised firmware, or a set load in progress). Values
+  are Move's own; the firmware's names are passed through as Move spells them.
+- **Compatibility is by size.** The struct starts with `size` and `version`
+  and only ever grows at the end; a reader copies what it knows and the rest
+  is zero. An old module on a new Schwung and a new module on an old Schwung
+  both work — `move_info_read()` returns 0 on a Schwung that does not publish
+  it, and never crashes.
+
+JS modules call `host_get_move_info()` (docs/API.md) for the same fields.
+
 ### Plugin API v2 (Recommended)
 
 V2 supports multiple instances and is **required for Signal Chain integration**:
@@ -1456,6 +1496,31 @@ Guidelines:
 - `enabled=0` or `mod_clear_source(...)`: clears that source's contribution.
 - Missing/stale targets should fail silently (do not crash or spam logs).
 - Multiple sources can target the same parameter; the host sums contributions and clamps to target range.
+- A `state` read (autosave, snapshot, User Preset) is taken with every modulated parameter put back at its base, whatever the source (LFO, automation lane, scene), so `get_param("state")` must serialise what you currently hold rather than a cached copy.
+
+### Scenes: what a module must do to be morphed (nothing new)
+
+Scenes (the Scenes screen, Shift+Vol+Step3) lock and morph any parameter your
+module declares in `chain_params`, through the same overlay LFOs use. Nothing
+has to be added, but four things already true of a well-behaved module matter
+more here:
+
+- **Accept numbers for every declared key**, including enums: the host writes
+  an enum as its option INDEX (`"2"`), a float with six decimals.
+- **`set_param` must be cheap.** A fader sweep writes every locked parameter
+  once per audio block while it moves -- on the SPI callback, like every entry
+  point.
+- **`state` must describe what you currently hold.** Around a `state` read the
+  host briefly puts the knob's value back -- under ANY modulation source: a
+  scene, an automation lane or an LFO -- so a save, snapshot or User Preset
+  records the knob and not where the modulation happened to be; a module that
+  caches its state blob elsewhere defeats that.
+- **Keys that are not knobs should not be in `chain_params`.** Anything
+  declared there can be locked by an armed scene.
+- **Your knob stays live under a scene.** A write to a parameter a scene is
+  driving is heard at once (the host anchors it at the fader), and a read of it
+  answers the knob's own value -- so a module UI that reads a key back to draw
+  it shows the knob, not the morph, exactly as under an LFO.
 
 ### Plugin API v1 (Deprecated)
 

@@ -718,6 +718,61 @@ channel value separates them. Parsed by the shim at init
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
 
+### A TURN on a door lists; a JOG CLICK navigates -- LFO Target and file cells
+
+Two cells on the knob grid open a HIERARCHY: an LFO's Target (the picker,
+component > section > param) and a file (the browser, folder > file). The
+jog walks both as hierarchies -- hold the knob, click, click in, Back out --
+and that is unchanged. TURNING the cell now does the other half: it opens a
+FLAT list and the knob scrolls it. Same targets, same files, same commit;
+only the navigation differs.
+
+- **The controller offers a turn on a door to the host** (`io.turnDoor(fullKey,
+  direction, knob, held, {key, meta})`, from `onKnobTurn`'s `!isTurnable`
+  branch). `held` matters: the host's own touch tracking is OFF while the grid
+  owns input (`handleParamPagesMidi` claims the touch notes), so it cannot
+  otherwise know a release is coming. A host that declines does nothing, as
+  before.
+- **LFO Target -> `VIEWS.LFO_TARGET_FLAT`** (`shared/lfo_target_flat.mjs`, pure).
+  "None", then every param in the picker's own order, with TWO levels of
+  divider: the MODULE with its position ("SYN Mini-JV", "FX1 Freeverb", "MF1
+  Arp", "LFO 2", "Sends") and its SECTIONS indented under it ("Filter" --
+  `drawMenuList`'s `level: 1`). The cursor skips dividers, so a turn runs
+  straight across categories; the header names the module the cursor is in,
+  because its divider scrolls off above a long section. One line for position
+  + module + section did not fit: the device font holds ~16 characters and a
+  long section cut every module to "Min.". A flat list screen-HOPPING through
+  the picker's own screens was tried first and was confusing.
+- **File -> `VIEWS.FILE_FLAT`**: the files in the CURRENT file's folder only --
+  no subfolders, no "..". Moving between folders is the browser's job.
+- **Release commits** (a jog click too); **Back cancels**; nothing is written
+  while scrolling. For a file that is load-bearing, not tidiness: a module may
+  load its sample inside `set_param` (granny), so a write per detent would be a
+  load per detent. With no release coming (a turn the touch sensor missed) the
+  pick lands after 1 s still. A file is written through the grid controller's
+  `commitValue`, so the cell shows it at once; the LFO through
+  `commitLfoTargetFromGrid`, as the picker does.
+- **Not yet on the file path**: `applyLinkedWavEndDefaultsForFilepath` (it reads
+  list-editor state) and live preview.
+- A knob inside the HIERARCHICAL picker scrolls the list on screen, like the jog.
+
+**On the grid an LFO has no Enabled cell: a target IS the LFO switched on**,
+None is off. `commitLfoTargetFromGrid` writes `enabled` WITH the routing -- and
+FIRST on the way on, because the chain gives a fresh LFO full depth only when it
+is enabled with no routing yet; enabling after the target left a routed LFO at
+0%. The LIST editor keeps its Enabled row. The page (`lfo_page.mjs`) is Target,
+Mode, Sync, Retrigger / Shape, Depth, Phase, Rate -- seven on Master FX, which
+has no Retrigger key; Rate is its own cell, outside the wave (`span: false`), so
+a synced division reads `1/4` and the wave draws it at the rate it plays
+(`lfoRateFrac`, nominal 120 BPM). Mode and Sync declare `peek: false`.
+
+**Target as a flat ENUM was the first version (#556, from schwung-movy) and was
+not taken here**: one knob over every param of every loaded module is the
+418-row list the picker grouping replaced. The library half stays --
+`lfoTargetOptions` / `lfoTargetParam` build that enum for a host that hands in
+`targets` (movy), and `createSlotGridIo`'s bridge is inert without
+`io.targetOptions`, which Schwung no longer passes.
+
 ### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
 
 An LFO's target was chosen from ONE flat list — every modulatable key the
@@ -1402,7 +1457,8 @@ the same reason; the eight-character label floor still protects the bus name.
 post-fader send buses hosted as `master_fx_slot_t`, a `send_accum[]` in the
 shim, return levels, the feedback-safe A→B ordering, shared presets, and one
 generic FX-bus picker over all three buses — is that PR's design,
-device-verified there and documented in its own `docs/SEND_FX.md`. It is
+device-verified there and documented in that branch's own `docs/SEND_FX.md`
+(never merged here; `legsmechanical/fx-buses-pr`). It is
 unmergeable (merge-base 2026-03-04; `main` is 1696 commits ahead and the branch
 carries 864 of its own), so this is a re-implementation of its design on current
 `main`. The one part not re-implemented is the shared preset store — a send
@@ -1669,6 +1725,177 @@ and why the shim branch logs nothing: `shadow_log` calls `unified_log`.
 Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
+
+### Scenes: 32 snapshots, 16 scenes, one crossfader -- morphed in the DSP
+
+Octatrack-style, in two layers. Original design:
+`docs/superpowers/specs/2026-09-27-scene-morphing-design.md` (its model was
+revised twice since; this section is the current one).
+
+- **SNAPSHOTS** -- 32 sets of parameter LOCKS, A1-A16 and B1-B16. The DSP
+  stores them as HALVES (A i = half i, B i = half 16+i); `scene_morph.h`
+  knows nothing else.
+- **SCENES** -- 16 PAIRINGS, one per step: which A snapshot and which B
+  snapshot the fader runs between. Either end may be NONE, which makes that
+  end the knobs as they are. Scene k starts as Ak + Bk. Scenes SHARE
+  snapshots, so editing A1 changes every scene that uses A1. The pairing table
+  and the active scene are JS state (`scene_doc.mjs`), mirrored into
+  `shadow_control_t.scene_pairs` / `scene_active` for the Program Change path.
+
+```
+va = A locks it ? A.value : base        float  lerp(va, vb, x)
+vb = B locks it ? B.value : base        int    round(lerp)
+                                         enum   x < 0.5 ? va : vb
+```
+
+A parameter locked in NEITHER end gets no contribution at all -- nothing is
+pinned -- and `base` is the knob, read LIVE, so turning a knob mid-morph moves
+the unlocked end. The formula lives once, in `src/host/scene_morph.h`.
+
+**What a scene can lock, and where each is applied.** Eight scopes, each with
+its own table and verbs (`<prefix>scenes:<verb>`):
+
+| Scope | Holds | Applied by |
+|---|---|---|
+| `slot0..slot3` | module params; Send A/B (`buses:main_send<N>`); LFO 1/2 fields | chain host (`chain_scene.c`) |
+| `master_fx`, `send1`, `send2` | the bus FX modules' params | shim (`shadow_scene_bus.c`, the plugin's own `set_param`) |
+| `host` | slot volume / pan, send returns, Send A->B, Master FX LFO 1/2 fields | shim (`shadow_scene_bus.c` host scope, via `scene_host_io_t`) |
+
+Module params morph through a MORPH contribution in `chain_mod`; slot sends
+and host volume/pan/returns are an OVERRIDE the mix reads beside the user's
+value (`scene_send_mod`, `shadow_slot_volume_eff`, `shadow_send_return_eff`);
+LFO fields are written with the knob's value kept as their BASE. **In every
+case the user's value is never overwritten**, so every read and every save --
+`<comp>:state`, `lfo_config`, `master_fx:lfoN:config`, `slot:volume` -- sees the
+knob, not the morph. **Every modulation source is swapped out around a `<comp>:state` read** --
+a lane, a scene or an LFO, bank loaded or not (`chain_mod_state_swap_in`). It
+was scenes only, and only while a bank existed, so the slot autosave recorded
+a lane's current value as the knob.
+**A bulk write re-captures the base** (`scene_write_is_bulk`: `state`,
+`preset`, `load` -- a User Preset or a set restore): the chain rebases every
+modulated param of that component from the module
+(`chain_mod_after_set_param`, the exported `set_param` wrapper), and a bus
+drops that position's drives without writing so they re-engage from the
+plugin. Before, the base stayed on the PRE-load knob, so the next save and the
+next release both wrote the old value back over the one just loaded -- on a
+set switch, the previous set's knob for every param the outgoing bank locked.
+The one read that shows the morph is
+`<scope>:scenes:driven`, a DIAGNOSTIC that asks the plugin itself (or the
+host's applied override): it is how the Master FX and host paths were verified
+on hardware.
+
+**The DSP holds the bank and does the morph; the UI moves one number.** The
+fader, A, B and the edited snapshot are bytes in `shadow_control_t`; the shim
+slews the fader (~15 ms) and pushes them to every slot each frame through the
+dlsym'd `chain_set_scene_morph`. A JS morph would cost ~2.8 ms per locked
+param per detent.
+
+**Locks are made by an EDIT ARM, decided below the UI.** While a snapshot is
+armed (`scene_edit`), a write to a lockable key becomes a lock in it instead of
+a change -- in the chain host for slots, in the shim for the buses and host
+settings. Below the UI because a module that draws its own screen (9W9) never
+passes the host's write wrapper. Identity, state, bypass, presets and every
+suffixed view are never locked (`scene_edit_subkey_eligible`). Armed, the
+snapshot auditions at 100% and **a read answers the lock** -- which is why
+every SAVE reads `<key>:base` instead (slot volume/pan, the send returns, a
+stateless Master FX module's params): sharing the plain key, a save made while
+armed wrote the lock into the set as the user's value. **Delete held
+while armed** turns the write into an UNLOCK (`SCENE_EDIT_UNLOCK`); Delete is
+claimed while armed, because a lone Delete reaching Move deletes a clip.
+**Armed, the scene OWNS Delete + knob.** Unarmed, the same gesture clears the
+knob's clip automation (`lanes:clear_param`, on the TOUCH) -- and since the
+touch precedes the turn, an armed Delete + knob used to do both: the knob left
+the snapshot AND its automation was erased. The grid's lane clear now stands
+down while `scene_edit` is set (`sceneArmedOf`, SHM-defaulted so a module-drawn
+grid gets it too); disarm to clear automation. A
+write the arm cannot take goes to the knob and the badge flashes `FULL`
+(64 pairs per scope) or `N/A`. The badge (`EDIT A3`) is drawn over every
+screen while armed, module-drawn frames included.
+
+**The Shift+Vol slider answers EVERY detent**, not only a change: a turn
+clockwise at 100% B is clamped and moves nothing, and showed nothing. The shim
+bumps `scene_turn_seq` per detent and the overlay rises on any change of it.
+
+**The LIVE TAKEOVER: a knob turned on a parameter a scene is driving is
+heard.** At 100% B with B locking noise, a turn used to change only the knob's
+own value, which nobody hears there. Now the turn ANCHORS the parameter at the
+fader position (`scene_takeover_t`, `scene_morph.h`): three points, (0, A)
+(x0, turn) (1, B), so the fader then morphs from the turn toward whichever end
+it heads for. The turn is applied as a CHANGE to what is heard
+(`scene_takeover_k`), because the UI's knob works from the knob's own value --
+at B locking 0.8 with the knob at 0.2, one detent is 0.81, never 0.21. Each
+parameter keeps its own anchor; at either END the value is that end's and the
+anchor is released; a scene change or an edit releases them all. Nothing saved
+changes. One rule for module params (`chain_mod_scene_takeover`), LFO fields,
+slot sends, bus FX and host settings.
+
+**The Scenes screen** (Shift+Vol+Step 3, Shift+hold Step 3, or Master FX
+Settings > Scenes; `shared/scenes_screen.mjs`):
+
+- **Steps 1-16 are the scenes.** The active step is yellow; a step is lit when
+  one of its snapshots holds locks (being paired says nothing -- every scene
+  starts paired). The steps are taken only while the screen is up
+  (`scene_surface`); Shift+steps always reach Move, so its Shift+step pages
+  stay reachable.
+- **The pads are the 32 snapshots** -- A1-A16 on the top two rows, B1-B16 on
+  the bottom two -- and the OLED draws the same 4x8 grid. Tap a pad to pair it
+  into the active scene (the lit one again: none); HOLD a pad to edit that
+  snapshot (latched; tap to stop).
+- Jog / knob 8 is the fader. Copy / Delete + steps act on pairings, + pads on
+  snapshots; Undo swaps back. Shift+Click starts CC learn with the fader chosen.
+- A hint beside the map (`GLOBAL / SHIFT +/-: / EDIT A/B`, the footer's 4x5
+  face) names the shortcut below.
+
+**Shift+- / Shift++ on any Schwung screen edit the active scene's A / B** (tap
+= latch, hold + turn = momentary; a scene with no A pairs Ak first). Move
+gives Shift+Up/Down no meaning beyond the bare arrows' octave shift, so the
+shim claims both edges while our screen is up.
+
+**Shift + volume knob is the fader, from anywhere, Move's screen included**
+(Global Settings -> Shortcuts -> Scene Fader, default on). Handled in the
+shim's always-on control scan; the turns AND the knob's touch are withheld
+from Move (a touch alone raises Move's volume overlay). A touch made before
+Shift is pressed still reaches Move.
+
+**The fader slider.** Moving the fader anywhere but the Scenes screen raises an
+A-B slider over the footer (`scene_fader_overlay.mjs`) -- over the shadow UI,
+or blitted onto Move's screen as a rect. Its band and slide are
+`footer_panel.mjs`, shared with the automation lock map, so the two move the
+same way. A Program Change raises it too.
+
+**Program Change** (Global Settings -> Shortcuts -> Scene PC Ch: Off / 1-16,
+default 16). On that channel, from external MIDI (cable 2): PC 0-15 selects
+scene 1-16, PC 126 takes the global snapshot, PC 127 recalls it. Scene select
+is applied BY THE SHIM on the frame it arrives (`scene_pc_select`, from the
+mirrored pairing table), so a PC on the downbeat is heard on the downbeat; the
+UI adopts the scene from `scene_pc_seq`. PC 127 honours Recall Q but is never
+a toggle -- a repeated PC 127 does not cancel a recall waiting for its
+boundary, which is what a second Shift+Delete means. The channel's PCs are
+taken out of both buffers, or a slot receiving All would change preset on the
+same message. Scene changes JUMP, whatever the fader position.
+
+**Persistence: `<set>/scenes.json` (document v3: active, pairs, halves).**
+Nothing is written for a set until its bank is CONFIRMED loaded (every scope's
+`scenes:count` read back); a save needs EVERY scope's dump or it does not
+happen; a file this build cannot read is left alone and the set never saved
+over (v1/v2 were earlier shapes that never shipped and read as empty). A
+shadow_ui RESTART adopts a non-empty live bank instead of reloading the file.
+**A set change DISARMS an armed snapshot** -- in the shim at detection
+(`shadow_handle_set_loaded`) and first thing in the UI's SET_CHANGED handler --
+because armed, the incoming set's restore writes (volumes, pans, Master FX
+params and LFOs, send levels) were taken as locks in the outgoing bank and
+discarded with it, and the new set played at the old set's levels.
+Verified on hardware: a set switch loads that set's bank, a lock made in one
+set is saved to its file only, and returning restores the first set exactly.
+The fader is live-only and starts at A.
+
+**The fader is also a CC Map target** (`scenes:xfade`, served without IPC),
+bound per set like every CC Map binding.
+
+Limits: 64 locked pairs per scope, counted across all 32 snapshots; a swapped
+module's locks go DORMANT (kept, not applied); a send-bus reorder does not
+re-aim bus locks (their module check keeps them off the wrong module); an LFO
+and a scene on the same Master FX param fight.
 
 ### `Clear Lanes`, and the one read a refusal is allowed to cost
 

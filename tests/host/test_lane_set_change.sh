@@ -43,6 +43,7 @@ import { src } from "./lane_set_change.mjs";
 let calls = [];
 let files = {};
 const lastWrittenLaneJson = [null, null, null, null];
+const lastWrittenLaneRev = [null, null, null, null];
 const laneRestoreConfirmed = [false, false, false, false];
 /* What the SLOT says when asked back. `null` is a read that did not complete,
  * "" is served-and-empty; the restore has to tell those apart from a document,
@@ -56,6 +57,7 @@ const g = {
   lanePathForSlot: (i) => "/state/lanes_" + i + ".json",
   debugLog: () => {},
   lastWrittenLaneJson,
+  lastWrittenLaneRev,
   laneRestoreConfirmed,
 };
 const fn = new Function(...Object.keys(g), src + "; return { restoreSlotLanes, clearSlotLanesQuietly };");
@@ -64,17 +66,20 @@ const api = fn(...Object.values(g));
 let fails = 0;
 const check = (c, m) => { if (!c) { console.log("FAIL: " + m); fails++; } };
 
-/* 1. NO FILE: the slot must be CLEARED, not left alone. */
+/* 1. NO FILE: the slot must be CLEARED, not left alone -- and through
+ *    `lanes:reset`, never the user's `lanes:clear`, which saves the OUTGOING
+ *    set's lanes as undo: "Undo automation" in the new set then swapped the
+ *    previous set's lanes in (tests/host/test_lane_review_fixes.c, case 4). */
 calls = []; files = {};
 api.restoreSlotLanes(1);
-check(calls.length === 1 && calls[0][1] === "lanes:clear" && calls[0][2] === "1",
+check(calls.length === 1 && calls[0][1] === "lanes:reset" && calls[0][2] === "1",
       "an absent lane file must clear the slot, got " + JSON.stringify(calls));
 check(lastWrittenLaneJson[1] === null, "the autosave cache was not invalidated");
 
 /* 2. EMPTY FILE: same -- a zero-length document is an absent one. */
 calls = []; files = { "/state/lanes_2.json": "" };
 api.restoreSlotLanes(2);
-check(calls.length === 1 && calls[0][1] === "lanes:clear",
+check(calls.length === 1 && calls[0][1] === "lanes:reset",
       "an empty lane file must clear the slot, got " + JSON.stringify(calls));
 
 /* 3. A REAL DOCUMENT is handed to the slot verbatim, and the cache remembers

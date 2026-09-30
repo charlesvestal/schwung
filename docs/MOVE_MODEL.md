@@ -145,6 +145,23 @@ optimistic toggle (Mute+Track, which also wrote the state file on the SPI
 callback) is gone under the model, and the per-set chain config no longer
 overrides the mixer when a set loads.
 
+**Master volume, track volume, the metronome and the selection too** (#567).
+Each was inferred -- master volume from Move's on-screen volume bar (coarse,
+only while the overlay shows), track volume from the spoken "Track Volume X
+dB" while a Track button was held, the metronome from "Metronome On/Off", the
+selected track from whichever Track presses Schwung saw. The document holds
+each exactly:
+
+| What | Field | Applied |
+|---|---|---|
+| master volume | `Song.mOutputMixerDevice` → `OutputMixerParameters.mVolume` (dB; -70 = the knob's bottom = silence) | SPI thread, every frame; the bar scan stands down |
+| track volume | the mixer `mVolume` already walked for mute | EDGES only, through the same ring as mute -- a set load keeps the set's saved slot levels. An edge goes through the scene hooks like any `slot:volume` write: a lock while a snapshot is armed, a takeover otherwise |
+| metronome | `Transport.mIsMetronomeOn` | assigned from the reader (`levels_from_model`); the announcement classifier stands down |
+| selected track | `Track.mIsSelected` | SPI thread (`move_model_sync_take_selected`) |
+
+Every old path stays as the fallback on a firmware the model cannot resolve,
+and whenever the model is not live.
+
 **Set changes land in ~10 ms, not ~3 s.** A set load replaces the document:
 the new tracks are inserted before the old are removed, over ~180 ms, and
 Move rewrites `Settings.json`'s `currentSongIndex` within ~12 ms of the swap
@@ -178,7 +195,14 @@ one silently loaded an old one's leftovers.
 
 `shadow_slot_clip_phase()` and `shadow_lanes_step_phase()`
 (`shadow_chain_mgmt.c`) answer from the model; the ~365-line LED / step-strip /
-Song.abl resolver they replaced is gone. The chain seam
+Song.abl resolver they replaced is gone. So are the inference paths that went
+on running beside it -- the worker's background Song.abl re-parse
+(`clip_regions`) and its deleted/copied/new-row channels, the "Bar N"
+screen-reader capture, the OLED step-strip decoder (it ran on the SPI
+callback), the `lanes:new_row` / `edit_unconfirmed` / `edit_len` / `double`
+pushes and the phase-check scoring that measured them: retired, the model
+answers this. The chain still parses `lanes:new_row` and holds pending rows
+(saved lane files can contain them); nothing sends it one. The chain seam
 (`chain_set_clip_phase`) is unchanged.
 
 - **Clip** = the track's `PlayingState` clip; **loop** from its region;
@@ -192,7 +216,7 @@ Song.abl resolver they replaced is gone. The chain seam
 - **A held step** is `scroll + step × step_beats` (triplets skip the dead
   fourth button); refused past the clip's end, pending with no current clip.
 - **Deletions and copies** come from diffing the model (`move_model_sync.c` →
-  the worker's clip-event channels): a deleted clip ORPHANS its lanes at once
+  `edit_follow.c`'s lane commands, applied on the callback): a deleted clip ORPHANS its lanes at once
   (it waited for Move's save before — long enough for a clip made in the same
   slot to inherit them); a clip that arrives with the same notes and geometry
   as one on its track is a COPY, and its lanes are copied.
@@ -386,6 +410,19 @@ Not hardware-verified yet -- the History candidates are logged to
   that slot's entries -- undoing one would splice pre-restore content in.
 - **An empty commit never touches the ring** (counted first), so it cannot
   destroy the oldest still-claimable entry.
+- **A stalled reader claims nothing.** `undo_claim` asks
+  `move_model_sync_active()` (a publish in the last 2 s), not the
+  never-cleared `g_active`: while the Song is being re-found, the last
+  published claim describes a Move history nobody is reading, so the press is
+  Move's. `tests/host/test_move_model_sync.c`.
+- **A claim Move outran is counted, not replayed.** The claim is republished
+  every model tick; if Move pushes a history step between that publish and the
+  take, the press has already been swallowed (both edges) and `ut_take_undo`
+  refuses -- neither history moves. It is logged from the model thread and
+  counted (`move_model_sync_undo_refused()`). Replaying the press to Move was
+  declined: it would add a producer on Move's MIDI_IN from the shim, and the
+  injected Undo would re-enter this claim path. Realistic trigger: a device
+  knob turn immediately followed by Undo.
 
 ### Known limits
 
@@ -423,6 +460,24 @@ Not hardware-verified yet -- the History candidates are logged to
   backs off to a minute.
 - **A misalignment nothing can resolve expires after 15 s** (no SET_CHANGED
   pending): an unreadable Settings.json otherwise gated autosave all session.
+  The 15 s run from the later of the load edge and the last NEW read
+  (`shadow_set_pages_last_read_ms` -- a different name, uuid or generation),
+  never from the last PUBLISH: the worker republishes the same read every tick
+  while misaligned, so a publish clock never goes quiet, and keying on it
+  meant the give-up could not fire in the state it exists for.
+- **The `set_aligned` ack is verified and resent** (`armAlignAck` /
+  `alignAckTick`, one short write per 500 ms, at most 20) until
+  `host_move_model_state()[2]` reports it or the generations agree. One lost
+  ack -- sent once, result ignored, behind the set change's slot writes --
+  otherwise left the set unacked: the same-set path refuses it, the cleared
+  flag is never raised again, and autosave stayed off for the session.
+  `tests/host/test_set_alignment_ui.sh`, and the lost-ack case in
+  `test_set_alignment.sh` / `test_move_model_sync.c`.
+- **The scene bank follows the same two rules as slot state.** Its periodic
+  save is skipped (kept dirty) while `setAlignmentPending()`, and the outgoing
+  set's scenes are saved with the other outgoing saves at step 1 -- before the
+  pending-set migration moves that folder. Saved after it, the write went into
+  the deleted path and step 8c loaded the stale copy over the live bank.
 - **Mute/solo are applied on the SPI thread**, posted by the reader through a
   ring (`move_model_sync_apply_pending`), so the slot mix flags have one writer
   with `slot:muted` / `slot:soloed`. The mutators now only REQUEST a state save
@@ -533,3 +588,32 @@ compares `pitch_offset` too.
 - **Persistence across reloads.** Object ids are per load; a lane saved to disk
   still needs a position + fingerprint key, and the model is what makes that
   fingerprint cheap to take at any moment rather than ~10 s later.
+
+## For modules: `move_info.h` (2026-09-30)
+
+The reader also reads the set-wide settings modules asked for, and publishes
+them as a versioned snapshot (`src/host/move_info.{h,c}`; docs/MODULES.md for
+the module side). All of these members are **OPTIONAL**: a firmware without
+one leaves its field unknown and never fails the walk (`O_FIRST_OPTIONAL`,
+`class_optional`), because losing tempo-for-modules must never cost mute
+follow and lanes. Measured on 2.1.0:
+
+| Field | Member | Encoding |
+|---|---|---|
+| groove | `Transport.mGrooveAmount` (a Parameter) | manual value, 0 at rest |
+| MIDI clock sync | `Transport.mIsMidiClockSyncEnabled` | Bool |
+| input monitoring | `Song.mIsAudioInputMonitoringEnabled` | Bool |
+| root | `Song.mRootNote` | Int, 0 = C |
+| scale | `Song.mScale` | Blob, Move's name ("Major") |
+| launch quantization | `Song.mGlobalQuantization` | `LaunchQuantization` enum; names read from the firmware's EnumClass (0 none, 1 eightBars, 2 fourBars, 3 twoBars, 4 bar, 5 half, 6 halfTriplet, 7 quarter, 8 quarterTriplet, 9 eighth, 10 eighthTriplet, 11 sixteenth, 12 sixteenthTriplet, 13 thirtySecondth) |
+| track type | `Track.mTrackType` | `TrackType`: 0 master, 1 player, 2 return |
+| track name / colour | `Track.mLabel` → `Label.mName` (Blob), `Label.mColorId` (Int) | "" when unnamed; palette index |
+
+Blobs are guarded word by word (`f_blob`), so a rename re-walks at once even
+when the bytes are rewritten in place. Published from the reader's tick hook
+only when something changed (or the clock moved), and marked `valid` 0 by the
+shim worker when the model stops being read.
+
+Found with `tools/move-model/flipcls.py live.Song live.Transport live.Track
+live.Label` and the EnumClass by its name string -- the same way anything else
+here should be added.

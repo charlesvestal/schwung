@@ -70,12 +70,17 @@ typedef struct {
     uint8_t   selected;
     uint8_t   mixer_valid;
     uint8_t   muted, soloed;  /* derived: speakerOn off / solo-cue on */
-    double    volume, pan;    /* the mixer Parameters' manual values, as stored (volume 0..1) */
+    double    volume, pan;    /* the mixer Parameters' manual values, as stored (volume in dB, 0 = unity) */
     double    speaker_value, solo_value;
     int       mode;
     int       playing_slot;  /* 0..7, or -1 */
     double    start_beats;   /* transport beat the current clip started on */
     mm_clip_t slot[MM_SLOTS];
+    /* Track.mLabel and mTrackType. OPTIONAL members: a firmware without them
+     * leaves these at their unknown values (color_id/type -1, name ""). */
+    int       color_id;      /* Label.mColorId: Move's palette index for the track */
+    int       type;          /* TrackType: 0 master, 1 player, 2 return */
+    char      name[32];      /* Label.mName; "" when the user never named it */
 } mm_track_t;
 
 typedef struct {
@@ -91,6 +96,21 @@ typedef struct {
     double   step_beats;      /* one step button, in beats (1/16 = 0.25); 0 = unknown */
     uint8_t  step_triplet;    /* triplet grid: 12 steps per page, every 4th button dead */
     int      selected_track; /* 0..3, or -1 */
+    /* MASTER VOLUME -- the volume knob: Song.mOutputMixerDevice's
+     * OutputMixerParameters.mVolume, in dB, -70 (the knob's bottom) .. 0.
+     * Measured 2026-09-29 by sampling while the knob was swept. Replaces
+     * reading Move's on-screen volume bar. */
+    int      master_valid;
+    double   master_db;
+    uint8_t  metronome_on;   /* Transport.mIsMetronomeOn */
+    /* SET-WIDE SETTINGS, for modules (move_info.h). All OPTIONAL: a member
+     * this firmware lacks leaves its unknown value, never fails the walk. */
+    double   groove;         /* Transport.mGrooveAmount manual value; -1 unknown */
+    uint8_t  clock_sync;     /* Transport.mIsMidiClockSyncEnabled; 255 unknown */
+    uint8_t  input_monitor;  /* Song.mIsAudioInputMonitoringEnabled; 255 unknown */
+    int      root_note;      /* Song.mRootNote, 0 = C .. 11; -1 unknown */
+    char     scale[24];      /* Song.mScale, Move's own name ("Major"); "" unknown */
+    int      global_quant;   /* Song.mGlobalQuantization, LaunchQuantization raw; -1 unknown */
     mm_track_t track[MM_TRACKS];
     /* MOVE'S UNDO STACK -- flip's History<HistoryStoreMemory>, read in place.
      * A step is its list node (nodes never move) plus its transaction number
@@ -160,6 +180,17 @@ typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash
 int move_model_edited_notes(int previous, const mm_note_t **notes, mm_clip_ref_t *ref);
 
 /* ---- pure pieces, exported for tests/host ---------------------------- */
+
+/* Did two back-to-back reads see the same document SHAPE? The reader's tear
+ * check. Ignores the transport clock and continuously-valued scalars (tempo,
+ * master level, track volume/pan values), which cannot tear and may never
+ * hold still -- a tempo moving under Link made every pair disagree and the
+ * model never published again. 1 = consistent. */
+int mm_pair_consistent(const move_model_t *a, const move_model_t *b);
+
+/* LaunchQuantization's name for a raw value, from the firmware's own enum
+ * table ("bar", "sixteenth", ...); NULL when unknown. Runtime half only. */
+const char *move_model_quant_name(int v);
 
 /* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
  *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag

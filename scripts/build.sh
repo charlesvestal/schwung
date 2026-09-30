@@ -244,15 +244,15 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_sampler.c src/host/shadow_transport.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_metronome.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
+    src/host/shadow_scene_bus.c src/host/shadow_scene_bus.h src/host/scene_morph.h \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
-    src/host/step_strip.c src/host/step_strip.h \
-    src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
-    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
+    src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c \
+    src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/move_info.c src/host/move_info.h src/host/move_info_pub.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
     src/host/shadow_overtake_midi.c src/host/shadow_overtake_midi.h \
-    src/host/ext_midi_ring.h \
+    src/host/ext_midi_ring.h src/host/surface_live_shm.h src/host/audio_live_shm.h \
     src/host/unified_log.c src/host/shim_worker.c \
     src/host/rt_thread_audit.c src/host/rt_thread_audit.h \
     src/host/spi_tally.c src/host/spi_tally.h \
@@ -289,17 +289,17 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_dbus.c \
         src/host/shadow_metronome.c \
         src/host/shadow_chain_mgmt.c \
+        src/host/shadow_scene_bus.c \
         src/host/shadow_link_audio.c \
         src/host/shadow_process.c \
         src/host/shadow_resample.c \
         src/host/shadow_overlay.c \
         src/host/shadow_pin_scanner.c \
-        src/host/step_strip.c \
         src/host/shadow_led_queue.c \
         src/host/clip_state.c \
-        src/host/clip_regions.c \
         src/host/move_model.c \
         src/host/move_model_sync.c \
+        src/host/move_info.c \
         src/host/edit_follow.c \
         src/host/edit_gesture.c \
         src/host/undo_timeline.c \
@@ -598,6 +598,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
+    src/modules/chain/dsp/chain_scene.c src/host/scene_morph.h \
     src/modules/chain/dsp/chain_lanes.c \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
@@ -630,6 +631,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_patch.c \
         src/modules/chain/dsp/chain_reorder.c \
         src/modules/chain/dsp/chain_bus.c \
+        src/modules/chain/dsp/chain_scene.c \
         src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
@@ -848,7 +850,8 @@ fi
 
 # Build display server (live display SSE streaming to browser)
 if needs_rebuild build/display-server \
-    src/host/display_server.c src/host/unified_log.c src/host/unified_log.h; then
+    src/host/display_server.c src/host/unified_log.c src/host/unified_log.h \
+    src/host/surface_live_shm.h src/host/audio_live_shm.h src/host/e16_mirror_shm.h src/host/norns_display_shm.h; then
     echo "Building display server..."
     "${CROSS_PREFIX}gcc" -g -O3 \
         src/host/display_server.c \
