@@ -18,8 +18,10 @@
  * the card shows for them is read back from the model, so it is Move's truth.
  */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <time.h>
 
 #include "step_menu.h"
 #include "step_menu_glue.h"
@@ -81,6 +83,15 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
                 o->dur = notes[i].dur;
                 o->vel = notes[i].vel;
                 o->pitch = (uint8_t)(notes[i].pitch & 0x7F);
+                /* Move's length cap, from the WHOLE clip: the next note of the
+                 * same pitch may be pages away. */
+                double lim = w.clip_len;
+                for (int q = 0; q < n; q++) {
+                    if (q == i || notes[q].pitch != notes[i].pitch) continue;
+                    if (notes[q].start > notes[i].start + 1e-9 && notes[q].start < lim)
+                        lim = notes[q].start;
+                }
+                o->cap = lim - notes[i].start;
             }
         }
     }
@@ -235,6 +246,39 @@ static void follow_page_edits(const sm_page_t *pg)
     shadow_plugin_v2->set_param(inst, "chance:prune", val);
 }
 
+static uint64_t sm_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+/* How many detents Move's value can still move, up and down, for every note
+ * the held step edits -- the wind-up guard's seed (step_menu.h). Length moves
+ * 0.1 step a detent between 0.1 step and the note's cap; Velocity 1 a detent
+ * between 1 and 127. A chord moves until its LAST note stops, as Move clamps
+ * each on its own. */
+static void seed_bounds(const sm_page_t *pg, const int *idx, int k)
+{
+    if (k <= 0 || !(pg->step_beats > 0.0)) { g_sm.bound_known = 0; return; }
+    int32_t up = 0, down = 0;
+    for (int q = 0; q < k; q++) {
+        const sm_note_t *nt = &pg->notes[idx[q]];
+        int32_t u, d;
+        if (g_sm.field == SM_FIELD_LENGTH) {
+            const double unit = 0.1 * pg->step_beats;
+            u = (int32_t)floor((nt->cap - nt->dur) / unit + 1e-6);
+            d = (int32_t)floor((nt->dur - unit) / unit + 1e-6);
+        } else {
+            u = 127 - (int32_t)(nt->vel + 0.5f);
+            d = (int32_t)(nt->vel + 0.5f) - 1;
+        }
+        if (u > up) up = u;
+        if (d > down) down = d;
+    }
+    sm_bound_seed(&g_sm, up, down);
+}
+
 /* SPI CALLBACK, once per frame after the scan: close a menu whose step went
  * away, follow Move's edits, and republish the card when anything it draws
  * changed. */
@@ -292,6 +336,12 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
         if (k <= 0) { ctl->step_menu_page[b] = SM_CELL_EMPTY; continue; }
         const int c = note_cond(inst, g_pg.row, g_pg.notes[idx[0]].id);
         ctl->step_menu_page[b] = (uint8_t)c;
+        if (b == g_sm.step && g_sm.field != SM_FIELD_CHANCE &&
+            (!g_sm.bound_known || sm_now_ms() - g_sm.jog_ms > 150)) {
+            /* Re-seed only while the jog RESTS: mid-spin the model lags the
+             * detents already sent, and the local count is the truth. */
+            seed_bounds(&g_pg, idx, k);
+        }
         if (b == g_sm.step) {
             /* Every note Move's own hold-step edit touches: a chord is a
              * RANGE ("2.0-16.0"), because Move clamps each note on its own. */

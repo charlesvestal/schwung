@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "step_menu.h"
 
 static sm_state_t s;
@@ -152,6 +153,37 @@ int main(void) {
     now += 10;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_SWALLOW && cd == 1);
     now += 10; step_off(0, 4);
 
+    /* ---- NO WIND-UP: detents past the cap are trimmed, then swallowed ----- */
+    memset(&s, 0, sizeof s);
+    now = 70000; step_on(0, 6); now += 100;
+    cc(1u << 6, 0, 1, 50, 127); cc(1u << 6, 0, 1, 50, 0);
+    cc(1u << 6, 0, 1, 50, 127); cc(1u << 6, 0, 1, 50, 0);   /* Length */
+    assert(!s.bound_known);                                  /* a field change clears it */
+    sm_bound_seed(&s, 5, 2);                                 /* 0.5 step of room up, 0.2 down */
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 1) == SM_PASS);            /* 1 of 5 */
+    now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_REWRITE && out[2] == 4); /* x16 trimmed to 4 */
+    now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);          /* at the cap: nothing to Move */
+    now += 10;  assert(cc(1u << 6, 0, 1, 14, 1) == SM_SWALLOW);
+    /* ...so ONE detent back moves at once -- nothing banked */
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    assert(s.rem_down == 6 && s.rem_up == 1);
+    /* the floor is bounded the same way */
+    sm_bound_seed(&s, 10, 1);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_SWALLOW);
+    /* unknown bounds pass everything, as before */
+    s.bound_known = 0;
+    now += 500; assert(cc(1u << 6, 0, 1, 14, 127) == SM_PASS);
+    now += 10; step_off(0, 6);
+    /* Move's cap: the next note of the SAME pitch, else the clip end */
+    {
+        sm_note_t nt[] = { { 1, 0.0, 0.1, 100, 36, 0 }, { 2, 0.55, 0.1, 100, 36, 0 },
+                           { 3, 0.25, 0.1, 100, 38, 0 }, { 4, 1.0, 0.1, 100, 60, 0 } };
+        assert(fabs(sm_note_cap(nt, 4, 0, 4.0) - 0.55) < 1e-9);   /* the 2.2-step kick */
+        assert(fabs(sm_note_cap(nt, 4, 2, 4.0) - 3.75) < 1e-9);   /* no later 38: clip end */
+        assert(fabs(sm_note_cap(nt, 4, 3, 4.0) - 3.0) < 1e-9);
+    }
+
     /* ---- condition stepping clamps -------------------------------------- */
     assert(sm_step_cond(0, -1, 57) == 0);
     assert(sm_step_cond(56, 1, 57) == 56);
@@ -161,12 +193,12 @@ int main(void) {
     {
         /* 1/16 grid, page at scroll 4.0: button 0 = 4.0, button 1 = 4.25 */
         sm_note_t nt[] = {
-            { 1, 4.0,  0.25, 100, 36 },   /* step 0 */
-            { 2, 4.0,  0.25, 100, 42 },   /* step 0, another voice */
-            { 3, 4.23, 0.25, 100, 38 },   /* step 1, nudged 8% early */
-            { 4, 4.36, 0.25, 100, 38 },   /* 44% late: still step 1 */
-            { 5, 3.99, 0.25, 100, 50 },   /* step 0, nudged early -- off the page start */
-            { 6, 0.0,  0.25, 100, 36 },   /* another page */
+            { 1, 4.0, 0.25, 100, 36, 0 },   /* step 0 */
+            { 2, 4.0, 0.25, 100, 42, 0 },   /* step 0, another voice */
+            { 3, 4.23, 0.25, 100, 38, 0 },   /* step 1, nudged 8% early */
+            { 4, 4.36, 0.25, 100, 38, 0 },   /* 44% late: still step 1 */
+            { 5, 3.99, 0.25, 100, 50, 0 },   /* step 0, nudged early -- off the page start */
+            { 6, 0.0, 0.25, 100, 36, 0 },   /* another page */
         };
         int idx[8], k;
         k = sm_button_notes(nt, 6, 4.0, 0.25, 0, 16.0, 0, idx, 8);
@@ -176,7 +208,7 @@ int main(void) {
         /* past the clip: nothing */
         assert(sm_button_notes(nt, 6, 16.0, 0.25, 0, 16.0, 0, idx, 8) == 0);
         /* triplet: button 3 is dead, button 4 is step 3 = scroll + 3/6 */
-        sm_note_t tr[] = { { 7, 0.5, 0.1, 100, 60 } };
+        sm_note_t tr[] = { { 7, 0.5, 0.1, 100, 60, 0 } };
         assert(sm_button_notes(tr, 1, 0.0, 1.0 / 6.0, 1, 4.0, 3, idx, 8) == 0);
         assert(sm_button_notes(tr, 1, 0.0, 1.0 / 6.0, 1, 4.0, 4, idx, 8) == 1);
 

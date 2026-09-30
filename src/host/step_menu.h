@@ -53,7 +53,37 @@ typedef struct {
     uint64_t owe_ms[16];  /* a withheld release, due at this time (0 = none) */
     uint64_t jog_ms;      /* the last Length/Velocity detent, for acceleration */
     int8_t   jog_dir;
+    /* HOW FAR Move's value can still move, in detents (see sm_bound_mag). */
+    uint8_t  bound_known;
+    int32_t  rem_up, rem_down;
 } sm_state_t;
+
+/* MOVE WINDS UP PAST ITS CAP. Within one hold, a detent past a note's limit
+ * (the next note of the same pitch, or the clip end -- both measured) moves
+ * nothing but is still COUNTED: 200 detents forward then 5 back left the note
+ * at 16.0, where a fresh hold's 5 back gave 15.5. Acceleration multiplied
+ * that into a jog that "kept going" and took ages to come back. So a detent
+ * is trimmed to what can still move, and one that cannot move anything is
+ * swallowed. `rem_up`/`rem_down` are counted locally as detents go out --
+ * the model lags a fast spin -- and re-seeded from the model when the jog
+ * rests (sm_bound_seed). Unknown bounds pass everything, as before. */
+static inline int sm_bound_mag(sm_state_t *s, int dir, int mag)
+{
+    if (!s->bound_known || !dir) return mag;
+    int32_t *r = dir > 0 ? &s->rem_up : &s->rem_down;
+    if (*r <= 0) return 0;
+    if (mag > *r) mag = (int)*r;
+    *r -= mag;
+    if (dir > 0) s->rem_down += mag; else s->rem_up += mag;
+    return mag;
+}
+
+static inline void sm_bound_seed(sm_state_t *s, int32_t up, int32_t down)
+{
+    s->rem_up = up < 0 ? 0 : up;
+    s->rem_down = down < 0 ? 0 : down;
+    s->bound_known = 1;
+}
 
 /* JOG ACCELERATION on Move's own Length and Velocity. Move's hold-step + jog
  * moves a note 0.1 step per detent, so a 16-step note is 150 detents; and it
@@ -140,9 +170,11 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
             s->used[step] = 1;
             if (!s->open || s->step != step) {
                 s->open = 1; s->field = SM_FIELD_CHANCE; s->step = (uint8_t)step;
+                s->bound_known = 0;
             } else {
                 s->field = (uint8_t)((s->field + 1) % SM_FIELDS);
             }
+            s->bound_known = 0;       /* a different value: bounds re-seed */
             return SM_SWALLOW;
         }
         if (s->menu_latch) { s->menu_latch = 0; return SM_SWALLOW; }
@@ -161,7 +193,12 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
                          ? sm_jog_accel(now_ms - s->jog_ms) : 1;
         s->jog_ms = now_ms ? now_ms : 1;
         s->jog_dir = (int8_t)dir;
-        const uint8_t v = sm_scale_rel(d2, mult);
+        uint8_t v = sm_scale_rel(d2, mult);
+        if (dir) {
+            const int mag = sm_bound_mag(s, dir, dir > 0 ? v : 128 - v);
+            if (mag == 0) return SM_SWALLOW;       /* nothing left to move */
+            v = (uint8_t)(dir > 0 ? mag : 128 - mag);
+        }
         if (s->field == SM_FIELD_VELOCITY) {
             out[0] = status; out[1] = SM_CC_VOLUME; out[2] = v;
             return SM_REWRITE;
@@ -214,7 +251,21 @@ typedef struct {
     double  dur;      /* quarters */
     float   vel;      /* 0..127 as Move stores it */
     uint8_t pitch;
+    double  cap;      /* the longest Move will make it, quarters: up to the
+                       * next note of the same pitch, or the clip end */
 } sm_note_t;
+
+/* A note's length cap as Move applies it (measured: a kick stopped at the
+ * next kick, 2.2 steps; a lone note at the clip end, 16.0). */
+static inline double sm_note_cap(const sm_note_t *all, int n, int self, double clip_len)
+{
+    double lim = clip_len;
+    for (int i = 0; i < n; i++) {
+        if (i == self || all[i].pitch != all[self].pitch) continue;
+        if (all[i].start > all[self].start + 1e-9 && all[i].start < lim) lim = all[i].start;
+    }
+    return lim - all[self].start;
+}
 
 /* Notes on `button` of the page at `scroll`: every note whose start is
  * NEAREST that button's step -- a note Move nudged early still belongs to its

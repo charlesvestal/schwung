@@ -1490,6 +1490,13 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   is rewritten in place into a bigger detent: x3 / x8 / x16 under 90 / 50 /
   25 ms between detents, x1 on a slow turn or a reversal -- Move's own 0.1
   step stays the fine control. Chance is not accelerated (57 values).
+- **NO WIND-UP past Move's cap.** Within one hold Move COUNTS detents past a
+  note's limit without moving it (200 forward then 5 back left 16.0; a fresh
+  hold's 5 back gave 15.5), and acceleration multiplied that into a jog that
+  "kept going" and took ages to come back. The model thread computes each
+  note's cap from the WHOLE clip -- the next note of the same pitch, else the
+  clip end (both measured: 2.2 and 16.0) -- and the step menu trims or
+  swallows any detent that would only bank. Floors too (0.1 step, velocity 1).
 - **The TAP GUARD.** Move decides tap-vs-hold on the step's RELEASE at
   ~500 ms (500 toggled, 520 did not). The Menu press is swallowed, so a quick
   step + Menu + release is a tap to Move and toggles the note -- deleting the
