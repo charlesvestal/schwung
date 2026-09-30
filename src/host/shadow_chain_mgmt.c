@@ -13,6 +13,7 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
+#include "step_chance.h"
 #include "lane_trace.h"
 #include "lane_store.h"   /* LANE_SLOT_PENDING */
 #include "playhead_anchor.h"
@@ -97,6 +98,9 @@ void (*shadow_chain_set_clip_phase)(void *instance, int valid,
                                     double phase_beats, double loop_len,
                                     int track, int clip_slot, int fp_valid,
                                     const double *fp) = NULL;
+/* Step chance's A:B clock (chain_chance.c). NULL on an older chain: the pass
+ * then stays unknown there, and an unknown pass plays every note. */
+void (*shadow_chain_set_clip_pass)(void *instance, long pass) = NULL;
 host_api_v1_t shadow_host_api;
 
 /* Global send buses. Zero-initialised BSS: every position empty, both returns
@@ -150,6 +154,11 @@ static int shadow_chain_slot_recv_channel(void *instance) {
  * edit too, and always valid -- there is no "provisional" take any more.
  *
  * RT: SPI callback. move_model_get() is a seqlock copy, no syscalls. */
+/* The loop pass the last shadow_slot_clip_phase() computed for each slot, or
+ * -1. Set by the same call, from the same model snapshot, so the phase and the
+ * pass cannot describe different instants (step chance's A:B). */
+long shadow_slot_clip_pass_last[CLIP_TRACKS] = { -1, -1, -1, -1 };
+
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp /* [4] */) {
     if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
@@ -161,6 +170,7 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * value no usable number rather than a plausible one. */
     *phase_beats = NAN;
     *loop_len = NAN;
+    shadow_slot_clip_pass_last[slot] = -1;
 
     static move_model_t m;          /* 2.5 KB: static, off the callback's stack */
     /* A torn read leaves `m` as the last good snapshot (move_model_get): use
@@ -193,6 +203,8 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     if (now < 0.0 || (m.clock_valid && !m.playing)) return 0;   /* stopped: no phase */
     const double pos = mm_clip_position(c, T->start_beats, now);
     if (!(pos >= 0.0)) return 0;                                /* a one-shot that ended */
+    shadow_slot_clip_pass_last[slot] = sc_clip_pass(c->region_start, c->loop_start, c->loop_end,
+                                                    c->loop_on, T->start_beats, now);
     *phase_beats = pos;
     *loop_len = le - ls;
     return 1;
@@ -2898,6 +2910,8 @@ int shadow_inprocess_load_chain(void) {
     shadow_chain_set_clip_phase =
         (void (*)(void *, int, double, double, int, int, int, const double *))
         dlsym(shadow_dsp_handle, "chain_set_clip_phase");
+    shadow_chain_set_clip_pass = (void (*)(void *, long))
+        dlsym(shadow_dsp_handle, "chain_set_clip_pass");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p midi_wake=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -2911,8 +2925,8 @@ int shadow_inprocess_load_chain(void) {
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: scene_morph=%p",
             (void*)shadow_chain_set_scene_morph);
     unified_log("shim", LOG_LEVEL_INFO,
-            "chain dlsym: clip_phase=%p",
-            (void*)shadow_chain_set_clip_phase);
+            "chain dlsym: clip_phase=%p clip_pass=%p",
+            (void*)shadow_chain_set_clip_phase, (void*)shadow_chain_set_clip_pass);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);

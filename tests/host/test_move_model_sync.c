@@ -12,6 +12,10 @@ static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
 
 /* ---- stubs for what move_model_sync.c calls ---------------------------- */
+/* The step menu's page publisher (step_menu.c pulls in the chain slots and
+ * the LED cache); its own logic is tests/host/test_step_menu.c. */
+void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n,
+                            const mm_clip_ref_t *ref) { (void)m; (void)notes; (void)n; (void)ref; }
 static move_model_listener_fn g_fn;
 void move_model_set_listener(move_model_listener_fn fn) { g_fn = fn; }
 static int n_mix, mix_mu[4], mix_so[4], n_mute, n_solo, n_poll, last_slot, last_val;

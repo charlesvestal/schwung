@@ -856,6 +856,14 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   suffix must parse (`1/8t`) — are kept in `docs/CHAIN.md`. **Never build a
   parallel model of Move's sequencer UI: read its answer.**
 
+- **STEP CHANCE: hold ONE step, press Menu** (`docs/CHAIN.md`). Chance
+  (Elektron % ladder + A:B) is ours; Length and Velocity are MOVE's -- the jog
+  passes through, or is rewritten in place to a Volume detent. Menu is
+  swallowed on BOTH edges (with a step held Move still flips Note/Session).
+  **Chance only reaches Schwung's instruments**: the gate is in `v2_on_midi`,
+  after Move has already played the note. Matched by pitch + phase, so the
+  shim relocates/prunes entries as Move's notes are edited on the shown page.
+
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
 ~1000 lines on the page planner, every widget and the rule that selects it, the

@@ -87,7 +87,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -I"$work/shim" -Isrc -Isrc/modules/chain/dsp -Isrc/host \
   -DFIXTURE_DIR="\"$work\"" \
   tests/host/test_chain_midi_fx_slot.c src/modules/chain/dsp/chain_midi.c \
-  src/modules/chain/dsp/chain_reorder.c \
+  src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_chance.c \
   -o "$bin" $dl_flag
 
 "$bin"

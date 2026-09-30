@@ -247,6 +247,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_scene_bus.c src/host/shadow_scene_bus.h src/host/scene_morph.h \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c \
+    src/host/step_menu.c src/host/step_menu.h src/host/step_menu_glue.h src/host/step_chance.h \
     src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/move_info.c src/host/move_info.h src/host/move_info_pub.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
@@ -299,6 +300,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/clip_state.c \
         src/host/move_model.c \
         src/host/move_model_sync.c \
+        src/host/step_menu.c \
         src/host/move_info.c \
         src/host/edit_follow.c \
         src/host/edit_gesture.c \
@@ -600,6 +602,8 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
     src/modules/chain/dsp/chain_scene.c src/host/scene_morph.h \
     src/modules/chain/dsp/chain_lanes.c \
+    src/modules/chain/dsp/chain_chance.c src/host/step_chance.h \
+    src/host/step_chance_store.h src/host/step_chance_gate.h \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
@@ -633,6 +637,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_bus.c \
         src/modules/chain/dsp/chain_scene.c \
         src/modules/chain/dsp/chain_lanes.c \
+        src/modules/chain/dsp/chain_chance.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
         build/modules/chain/lane_serial.o \

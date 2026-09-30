@@ -79,6 +79,9 @@ done
 #    Undo (host/undo_timeline.h); one-shot, like chain_take_midi_tick_wake.
 #    chain_set_scene_morph is the scene crossfader: the shim pushes A, B, the
 #    fader and the armed scene to every slot each frame (chain_scene.c).
+#    chain_set_clip_pass is step chance's A:B clock: the playing clip's loop
+#    pass, pushed beside the phase -- a NEW export rather than a new argument
+#    to chain_set_clip_phase, whose signature is final (chain_chance.c).
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -88,7 +91,7 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     chain_take_midi_tick_wake chain_take_lane_edit chain_set_scene_morph \
-    chain_set_clip_phase chain_set_clip_deleted \
+    chain_set_clip_phase chain_set_clip_deleted chain_set_clip_pass \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then
