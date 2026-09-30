@@ -567,6 +567,29 @@ void shadow_midi_out_logf(const char *fmt, ...) {
  * Patch channel application
  * ============================================================================ */
 
+/* Re-read what the slot's synth declares as capabilities.default_forward_channel
+ * into the cache Auto forwarding reads (shadow_midi.c). UNCONDITIONAL: a module
+ * declaring nothing reads -1 and CLEARS the cache, or a slot keeps the previous
+ * module's channel. Called after EVERY path that can change the synth --
+ * including load_file, which is how a set's slots are restored at boot and on
+ * every set switch, and which used to skip this: MiniJV (default ch 1) then
+ * came up on Auto forwarding the receive channel and ignored every note. */
+static void shadow_slot_refresh_default_fwd(int slot)
+{
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param || !shadow_chain_slots[slot].instance) return;
+    char fwd_buf[16];
+    int fwd = -1;
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+        "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
+    if (len > 0) {
+        fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
+        int v = atoi(fwd_buf);
+        if (v == -2 || (v >= 0 && v <= 15)) fwd = v;
+    }
+    shadow_chain_slots[slot].default_forward_channel = fwd;
+}
+
 /* Apply the patch's saved receive/forward channels to the slot.
  * The chain plugin returns an empty string (len==0) for a field that wasn't
  * present in the patch file, so we only override when the plugin reports a
@@ -2978,18 +3001,7 @@ int shadow_inprocess_load_chain(void) {
                 shadow_chain_slots[i].fade.target = 1.0f;
                 shadow_chain_slots[i].patch_index = -1;
                 /* Query channel settings from loaded autosave */
-                if (shadow_plugin_v2->get_param) {
-                    char fwd_buf[16];
-                    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                        "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
-                    if (len > 0) {
-                        fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
-                        int default_fwd = atoi(fwd_buf);
-                        if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                            shadow_chain_slots[i].default_forward_channel = default_fwd;
-                        }
-                    }
-                }
+                shadow_slot_refresh_default_fwd(i);
                 shadow_apply_patch_channels(i);
                 shadow_slot_apply_boot_feedback_hold(i);
                 {
@@ -3017,18 +3029,7 @@ int shadow_inprocess_load_chain(void) {
             shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "load_patch", idx_str);
             shadow_chain_slots[i].active = 1;
             shadow_slot_load_capture(i, idx);
-            if (shadow_plugin_v2->get_param) {
-                char fwd_buf[16];
-                int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                    "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
-                if (len > 0) {
-                    fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
-                    int default_fwd = atoi(fwd_buf);
-                    if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                        shadow_chain_slots[i].default_forward_channel = default_fwd;
-                    }
-                }
-            }
+            shadow_slot_refresh_default_fwd(i);
             shadow_apply_patch_channels(i);
             shadow_slot_apply_boot_feedback_hold(i);
         } else {
@@ -6160,19 +6161,8 @@ void shadow_inprocess_handle_param_request(void) {
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
-                    if (shadow_plugin_v2->get_param) {
-                        char fwd_buf[16];
-                        int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
-                        if (len > 0) {
-                            fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
-                            int default_fwd = atoi(fwd_buf);
-                            if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                                shadow_chain_slots[slot].default_forward_channel = default_fwd;
-                                shadow_ui_state_update_slot(slot);
-                            }
-                        }
-                    }
+                    shadow_slot_refresh_default_fwd(slot);
+                    shadow_ui_state_update_slot(slot);
                 }
             }
             /* Any FX position, not just the first two: a slot whose only
@@ -6189,6 +6179,7 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_chain_slots[slot].fade.target = 1.0f;
             }
             if (strcmp(key_copy, "load_file") == 0) {
+                shadow_slot_refresh_default_fwd(slot);   /* the set-restore path, too */
                 /* JS uses load_file on SET_CHANGED to restore slots from
                  * per-set state. Unlike synth:module / fx*:module /
                  * load_patch, load_file does not pass through the
@@ -6227,18 +6218,7 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].patch_index = idx;
                     shadow_slot_load_capture(slot, idx);
 
-                    if (shadow_plugin_v2->get_param) {
-                        char fwd_buf[16];
-                        int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
-                        if (len > 0) {
-                            fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
-                            int default_fwd = atoi(fwd_buf);
-                            if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                                shadow_chain_slots[slot].default_forward_channel = default_fwd;
-                            }
-                        }
-                    }
+                    shadow_slot_refresh_default_fwd(slot);
                 }
                 shadow_ui_state_update_slot(slot);
             }
