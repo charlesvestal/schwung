@@ -125,6 +125,33 @@ int main(void) {
     now += 50;  assert(step_off(1u << 3, 3) == SM_SWALLOW); /* still < 700 from the FIRST press */
     assert(sm_due_releases(&s, 50000 + SM_HOLD_SAFE_MS) == (1u << 3));
 
+    /* ---- jog ACCELERATION on Length and Velocity ------------------------- */
+    assert(sm_scale_rel(1, 16) == 16 && sm_scale_rel(127, 16) == 112);
+    assert(sm_scale_rel(5, 16) == 63 && sm_scale_rel(65, 16) == 65);   /* clamped */
+    assert(sm_scale_rel(0, 8) == 0);
+    memset(&s, 0, sizeof s);
+    now = 60000; step_on(0, 4); now += 100;
+    cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Chance */
+    cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Length */
+    /* a slow turn is Move's own: passed through untouched */
+    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
+    now += 200; assert(cc(1u << 4, 0, 1, 14, 1) == SM_PASS);
+    /* a fast spin is rewritten into bigger detents, IN PLACE (still CC 14) */
+    now += 60;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[1] == 14 && out[2] == 3);
+    now += 30;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 8);
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[2] == 16);
+    /* a reversal starts over at x1, even fast */
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_PASS);
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 127) == SM_REWRITE && out[2] == 112);
+    /* Velocity: rewritten to Volume, accelerated the same way */
+    cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Velocity */
+    now += 500; assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[1] == 79 && out[2] == 1);
+    now += 20;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_REWRITE && out[1] == 79 && out[2] == 16);
+    /* Chance is never accelerated: 57 values, one per detent */
+    cc(1u << 4, 0, 1, 50, 127); cc(1u << 4, 0, 1, 50, 0);   /* Chance */
+    now += 10;  assert(cc(1u << 4, 0, 1, 14, 1) == SM_SWALLOW && cd == 1);
+    now += 10; step_off(0, 4);
+
     /* ---- condition stepping clamps -------------------------------------- */
     assert(sm_step_cond(0, -1, 57) == 0);
     assert(sm_step_cond(56, 1, 57) == 56);

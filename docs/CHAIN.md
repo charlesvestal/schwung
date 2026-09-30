@@ -1485,6 +1485,16 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   losing note-on AND its note-off. Move's own instrument on the track still
   plays: we see the note after Move played it. Pre mode stands down (its echo
   filter counts what it injected).
+- **Length and Velocity are ACCELERATED.** Move honours a relative jog
+  value's magnitude (one +5 moved a note 0.5 step, measured), so a fast turn
+  is rewritten in place into a bigger detent: x3 / x8 / x16 under 90 / 50 /
+  25 ms between detents, x1 on a slow turn or a reversal -- Move's own 0.1
+  step stays the fine control. Chance is not accelerated (57 values).
+- **The TAP GUARD.** Move decides tap-vs-hold on the step's RELEASE at
+  ~500 ms (500 toggled, 520 did not). The Menu press is swallowed, so a quick
+  step + Menu + release is a tap to Move and toggles the note -- deleting the
+  one being edited. A release within 700 ms of a press the menu used is
+  withheld and handed to Move at 700 ms, after compaction.
 - **One roll per step per pass**: every note starting on the step in that pass
   shares the first note's result, so a chord drops whole.
 - **Keyed by Move's note id, matched by pitch + clip phase.** A note-on is bare

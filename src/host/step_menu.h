@@ -51,7 +51,33 @@ typedef struct {
     uint64_t press_ms[16];/* when each step went down (0 = not seen) */
     uint8_t used[16];     /* the menu opened during this press */
     uint64_t owe_ms[16];  /* a withheld release, due at this time (0 = none) */
+    uint64_t jog_ms;      /* the last Length/Velocity detent, for acceleration */
+    int8_t   jog_dir;
 } sm_state_t;
+
+/* JOG ACCELERATION on Move's own Length and Velocity. Move's hold-step + jog
+ * moves a note 0.1 step per detent, so a 16-step note is 150 detents; and it
+ * honours a relative value's MAGNITUDE (measured: one +5 moved 1.1 -> 1.6),
+ * so a fast turn is rewritten into a bigger detent, in place. A slow turn is
+ * left exactly as Move's own, and a reversal starts over at x1. */
+static inline int sm_jog_accel(uint64_t since_ms)
+{
+    if (since_ms < 25) return 16;
+    if (since_ms < 50) return 8;
+    if (since_ms < 90) return 3;
+    return 1;
+}
+
+/* A relative encoder value scaled by `mult`, clamped to what the encoding can
+ * carry (1..63 up, 65..127 down). */
+static inline uint8_t sm_scale_rel(uint8_t v, int mult)
+{
+    const int dir = (v >= 1 && v <= 63) ? 1 : (v >= 65 ? -1 : 0);
+    if (!dir) return v;
+    int mag = (dir > 0 ? v : 128 - v) * mult;
+    if (mag > 63) mag = 63;
+    return (uint8_t)(dir > 0 ? mag : 128 - mag);
+}
 
 /* The one held step in a mask, or -1 for none / more than one. */
 static inline int sm_single_step(uint32_t held_mask)
@@ -131,11 +157,19 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
             if (chance_dir) *chance_dir = dir;
             return SM_SWALLOW;
         }
+        const int mult = (dir != 0 && dir == s->jog_dir && s->jog_ms)
+                         ? sm_jog_accel(now_ms - s->jog_ms) : 1;
+        s->jog_ms = now_ms ? now_ms : 1;
+        s->jog_dir = (int8_t)dir;
+        const uint8_t v = sm_scale_rel(d2, mult);
         if (s->field == SM_FIELD_VELOCITY) {
-            out[0] = status; out[1] = SM_CC_VOLUME; out[2] = d2;
+            out[0] = status; out[1] = SM_CC_VOLUME; out[2] = v;
             return SM_REWRITE;
         }
-        return SM_PASS;   /* Length: Move's own gesture */
+        /* Length: Move's own gesture -- accelerated, or untouched. */
+        if (v == d2) return SM_PASS;
+        out[0] = status; out[1] = SM_CC_JOG; out[2] = v;
+        return SM_REWRITE;
     }
     return SM_PASS;
 }
