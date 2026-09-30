@@ -63,6 +63,8 @@
 #include "host/shim_worker.h"
 #include "host/move_model.h"
 #include "host/move_model_sync.h"
+#include "host/step_menu.h"
+#include "host/step_menu_glue.h"
 #include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
@@ -9398,6 +9400,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * counter, and an early-out when nothing is armed. */
     snapshot_recall_check_boundary();
 
+    /* The step menu: close it if its step went away, republish the card
+     * (step_menu.c). Before the scan, so it draws last frame's edits -- one
+     * frame late, which nothing can see. */
+    if (shadow_control)
+        step_menu_frame(shadow_control, shadow_steps_held_mask,
+                        !shadow_display_mode && shadow_ui_enabled);
+
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -9427,6 +9436,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 move_model_sync_on_midi(status, d1, d2)) {
                 midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 continue;
+            }
+
+            /* THE STEP MENU: hold one step, press Menu (step_menu.c). Over
+             * Move's screen only -- with the shadow UI up a held step is the
+             * p-lock gesture and Menu is the UI's. Both edges of a taken Menu
+             * press are swallowed (Move would flip Note/Session); the jog is
+             * swallowed on Chance and rewritten IN PLACE into a Volume detent
+             * on Velocity, which is Move's own hold-step + Volume edit. */
+            if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B)) {
+                uint8_t sm_out[3];
+                const int sm = step_menu_on_input(status, d1, d2, sm_out, shadow_steps_held_mask,
+                                                  shadow_shift_held,
+                                                  !shadow_display_mode && shadow_ui_enabled);
+                if (sm == SM_SWALLOW) { midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j); continue; }
+                if (sm == SM_REWRITE) {
+                    uint8_t *sh = shadow + MIDI_IN_OFFSET + j;
+                    sh[1] = sm_out[0]; sh[2] = sm_out[1]; sh[3] = sm_out[2];
+                    continue;
+                }
             }
 
             /* Anything else pressed while Mute is down makes it some other

@@ -261,6 +261,7 @@ import {
     drawShiftKnobOverlay,
     drawSetPageToast
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
+import { drawStepMenuCard } from '/data/UserData/schwung/shared/step_menu_card.mjs';
 
 import {
     maybeConfirmForModule,
@@ -881,7 +882,15 @@ let lastWrittenLaneRev = [null, null, null, null];
  * transition into the state and resets when it leaves, so the sentence is
  * said when it becomes true and a second episode is still heard. */
 let laneStallAnnounced = [false, false, false, false];
+/* Step chance (chance_<i>.txt): the same write cache, rev skip and restore
+ * confirmation as the lanes above, for the same reasons -- see
+ * persistSlotChance. */
+let lastWrittenChanceDoc = [null, null, null, null];
+let lastWrittenChanceRev = [null, null, null, null];
+let chanceRestoreConfirmed = [false, false, false, false];
 function invalidateAutosaveWriteCache() {
+    lastWrittenChanceDoc = [null, null, null, null];
+    lastWrittenChanceRev = [null, null, null, null];
     lastWrittenSlotJson = [null, null, null, null];
     lastWrittenLaneJson = [null, null, null, null];
     lastWrittenLaneRev = [null, null, null, null];
@@ -1059,6 +1068,8 @@ function drawSplashScreen() {
 
 /* Overlay state (sampler/skipback from shim via SHM) */
 let lastOverlaySeq = 0;
+/* The step menu's last drawn seq; -1 = closed (see tick). */
+let lastStepMenuSeq = -1;
 let overlayState = null;
 
 /* FX display_name cache for change-based announcements (e.g. key detection) */
@@ -10583,6 +10594,69 @@ function persistSlotLanes(i) {
     }
 }
 
+/* STEP CHANCE, per slot per set: chance_<i>.txt beside lanes_<i>.json.
+ *
+ * The chain holds the conditions (chain_chance.c) keyed by Move's note ids;
+ * this is only their disk copy. THREE ANSWERS, as for lanes: `null` is a read
+ * that did not complete and touches nothing; `""` is served-and-empty and
+ * removes the file -- but only once a restore has been CONFIRMED, or a slot
+ * still instantiating at boot would delete the set's chance before it landed. */
+function chancePathForSlot(i) {
+    return activeSlotStateDir + "/chance_" + i + ".txt";
+}
+
+function persistSlotChance(i) {
+    const rev = getSlotParam(i, "chance:rev");
+    if (rev === null) return;      /* no chain answered: an older chain, or busy */
+    if (rev === lastWrittenChanceRev[i] && lastWrittenChanceDoc[i] !== null) return;
+    const doc = getSlotStateWithRetry(i, "chance:state");
+    if (doc === null) return;
+    const path = chancePathForSlot(i);
+    if (doc === "") {
+        if (!chanceRestoreConfirmed[i]) return;
+        if (lastWrittenChanceDoc[i] !== "" && host_file_exists(path)) host_write_file(path, "");
+        lastWrittenChanceDoc[i] = "";
+        lastWrittenChanceRev[i] = rev;
+        return;
+    }
+    if (lastWrittenChanceDoc[i] === doc) { lastWrittenChanceRev[i] = rev; return; }
+    if (host_write_file(path, doc)) {
+        lastWrittenChanceDoc[i] = doc;
+        lastWrittenChanceRev[i] = rev;
+    } else {
+        lastWrittenChanceDoc[i] = null;
+        lastWrittenChanceRev[i] = null;
+        debugLog("autosave: failed to write chance_" + i + ".txt -- will retry");
+    }
+}
+
+/* Read chance_<i>.txt back into the slot, after load_file (which
+ * reinstantiates the chain). An absent file CLEARS the slot -- the outgoing
+ * set's conditions must not ride into this one -- and the push is READ BACK
+ * before the autosave may treat an empty slot as the truth. */
+function restoreSlotChance(i) {
+    const path = chancePathForSlot(i);
+    chanceRestoreConfirmed[i] = false;
+    lastWrittenChanceRev[i] = null;
+    const raw = host_file_exists(path) ? host_read_file(path) : "";
+    setSlotParam(i, "chance:state", raw || "");
+    if (!raw) {
+        lastWrittenChanceDoc[i] = "";
+        chanceRestoreConfirmed[i] = true;
+        return;
+    }
+    const back = getSlotStateWithRetry(i, "chance:state");
+    if (back && back.length > 0) {
+        chanceRestoreConfirmed[i] = true;
+        lastWrittenChanceDoc[i] = back;
+    } else {
+        lastWrittenChanceDoc[i] = null;
+        debugLog("chance: slot " + i + " restore NOT confirmed (" +
+                 (back === null ? "read did not complete" : "slot reports empty") +
+                 ") -- its file will not be cleared");
+    }
+}
+
 /* Empty a slot's lanes with no announcement and no file write -- the restore
  * path's counterpart to the user-facing clearSlotLanes(). `lanes:reset`
  * releases every override the store held, which is why this is not just a
@@ -10855,6 +10929,7 @@ function autosaveOneSlot(i) {
      * module being swapped out, so it must not be persisted only on the paths
      * where the slot still has one. */
     persistSlotLanes(i);
+    persistSlotChance(i);
     /* Sync chainConfigs from DSP before checking - prevents clobbering
      * valid autosave files for slots we haven't navigated to yet.
      * Read ONCE and reused as `currentSig` below — it used to be read
@@ -27866,6 +27941,7 @@ globalThis.init = function() {
          * because a lane's target has to be there for lane_tick to find its
          * parameter metadata. */
         try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
+        try { restoreSlotChance(i); } catch (e) { debugLog("chance restore: " + e); }
         /* Sync slot names + per-component bypass from autosave if present.
          * The shim's load_file restores synth/FX/MIDI-FX modules + params via
          * the chain_host parser, but bypass flags are not in the C parser path;
@@ -28819,6 +28895,7 @@ globalThis.tick = function() {
              * — a slot with no state file can still own lanes. */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
+                try { restoreSlotChance(i); } catch (e) { debugLog("chance restore: " + e); }
             }
 
             /* Refresh UI state immediately so display reflects new slot contents */
@@ -29380,6 +29457,14 @@ globalThis.tick = function() {
         }
     }
 
+    /* THE STEP MENU (hold one step, press Menu): the shim owns it and fills
+     * the state; a change of its seq, or its closing, is a redraw. */
+    const stepMenu = (typeof shadow_get_step_menu === "function") ? shadow_get_step_menu() : null;
+    if (stepMenu ? stepMenu.seq !== lastStepMenuSeq : lastStepMenuSeq !== -1) {
+        lastStepMenuSeq = stepMenu ? stepMenu.seq : -1;
+        needsRedraw = true;
+    }
+
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
@@ -29395,6 +29480,18 @@ globalThis.tick = function() {
     if (overlayState && drawSamplerOverlay(overlayState)) {
         if (typeof shadow_set_display_overlay === "function") {
             shadow_set_display_overlay(2, 0, 0, 0, 0);
+        }
+        return;
+    }
+
+    /* The step menu, over MOVE's screen only -- it is a gesture on Move's step
+     * sequencer and the shim never opens it with the shadow UI up. Ahead of
+     * the toasts: it is what the user is holding a step to look at. */
+    if (stepMenu && shadowDisplayHidden()) {
+        clear_screen();
+        const g = drawStepMenuCard(null, stepMenu);
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }

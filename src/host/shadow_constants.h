@@ -823,7 +823,28 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t scene_turn_seq;
+    /*
+     * THE STEP MENU (hold one step, press Menu -- src/host/step_menu.c). The
+     * shim owns the gesture and fills these; shadow_ui draws a card over
+     * Move's screen from them and writes nothing back. `step_menu_seq` bumps
+     * on every change the card must redraw for. A page cell is SM_CELL_EMPTY
+     * (no note), SM_CELL_OFF (a triplet grid's dead button, or past the clip)
+     * or the condition index (step_chance.h) of that step's notes.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t step_menu_open;            /* 0/1 */
+    volatile uint8_t step_menu_field;           /* SM_FIELD_* */
+    volatile uint8_t step_menu_step;            /* 0..15, the held button */
+    volatile uint8_t step_menu_seq;
+    volatile uint8_t step_menu_cond;            /* held step; SM_CELL_EMPTY = no note */
+    volatile uint8_t step_menu_vel;             /* held note's velocity, 0..127 */
+    volatile uint16_t step_menu_len_c;          /* held note's length, hundredths of a step */
+    volatile uint8_t step_menu_page[16];
 } shadow_control_t;
+
+#define SM_CELL_EMPTY 255
+#define SM_CELL_OFF   254
 
 
 /* Values for shadow_control_t.speaker_eq_mode. */
