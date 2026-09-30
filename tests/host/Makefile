@@ -83,6 +83,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_recall_quantize \
 	$(BUILD_DIR)/test_step_chance \
 	$(BUILD_DIR)/test_step_chance_store \
+	$(BUILD_DIR)/test_step_chance_gate \
 	$(BUILD_DIR)/test_forward_channel \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
@@ -243,6 +244,9 @@ $(BUILD_DIR)/test_step_chance: test_step_chance.c ../../src/host/step_chance.h |
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_step_chance_store: test_step_chance_store.c ../../src/host/step_chance_store.h ../../src/host/step_chance.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_step_chance_gate: test_step_chance_gate.c ../../src/host/step_chance_gate.h ../../src/host/step_chance_store.h ../../src/host/step_chance.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_mute_follow: test_mute_follow.c ../../src/host/mute_follow.h | $(BUILD_DIR)

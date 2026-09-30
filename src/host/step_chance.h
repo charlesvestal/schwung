@@ -91,4 +91,21 @@ static inline long sc_pass_index(double beats_since_launch, double loop_len)
     return (long)floor((beats_since_launch + SC_PASS_EPS) / loop_len);
 }
 
+/* The loop pass a clip is on, from Move's launch beat and the transport --
+ * the same arithmetic as mm_clip_position, without the wrap. The FIRST pass
+ * runs from the region start to the loop end (longer than one loop when the
+ * clip starts before its loop), then every pass is one loop long. -1 when
+ * unknown or when an unlooped clip has ended. */
+static inline long sc_clip_pass(double region_start, double loop_start, double loop_end,
+                                int loop_on, double start_beats, double now)
+{
+    if (!(now >= start_beats)) return -1;
+    const double pos = region_start + (now - start_beats);
+    if (!loop_on) return 0;
+    const double len = loop_end - loop_start;
+    if (!(len > 1e-9)) return -1;
+    if (pos + SC_PASS_EPS < loop_end) return 0;
+    return 1 + sc_pass_index(pos - loop_end, len);
+}
+
 #endif /* STEP_CHANCE_H */

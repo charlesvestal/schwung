@@ -106,6 +106,23 @@ int main(void) {
      * roll must land on the pass the note belongs to, not the one ending. */
     assert(sc_pass_index(3.9999999, 4.0) == 1);
 
+    /* ---- the pass from Move's launch beat -------------------------------
+     * A 4-beat loop launched at beat 10: passes turn at 14, 18, ... */
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 10.0) == 0);
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 13.9) == 0);
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 14.0) == 1);
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 17.99999999) == 2);   /* a hair early */
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 26.5) == 4);
+    /* region 0..16 with the loop 8..12: the FIRST pass is 0..12, 12 beats */
+    assert(sc_clip_pass(0, 8, 12, 1, 0.0, 11.9) == 0);
+    assert(sc_clip_pass(0, 8, 12, 1, 0.0, 12.0) == 1);
+    assert(sc_clip_pass(0, 8, 12, 1, 0.0, 16.0) == 2);
+    /* before the launch beat (a queued launch), and a dead loop: unknown */
+    assert(sc_clip_pass(0, 0, 4, 1, 10.0, 9.0) == -1);
+    assert(sc_clip_pass(0, 4, 4, 1, 0.0, 9.0) == -1);
+    /* unlooped plays once: always the first pass */
+    assert(sc_clip_pass(0, 0, 4, 0, 0.0, 3.0) == 0);
+
     printf("test_step_chance: PASS\n");
     return 0;
 }

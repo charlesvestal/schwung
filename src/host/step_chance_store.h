@@ -97,8 +97,8 @@ static inline void sc_store_relocate(sc_store_t *st, int row, int64_t id, int pi
 /* The condition for a note-on of `pitch` at clip phase `phase` on `row`.
  * A note on the window's first beat can be seen a hair under its END (the
  * frame fell before the wrap), so with a known window the distance wraps. */
-static inline int sc_store_match(const sc_store_t *st, int row, int pitch, double phase,
-                                 double loop_start, double loop_len)
+static inline int sc_store_match_ex(const sc_store_t *st, int row, int pitch, double phase,
+                                    double loop_start, double loop_len, double *start_out)
 {
     (void)loop_start;
     for (int i = 0; i < SC_STORE_MAX; i++) {
@@ -111,9 +111,15 @@ static inline int sc_store_match(const sc_store_t *st, int row, int pitch, doubl
             w = fabs(phase + loop_len - e->start);
             if (w < d) d = w;
         }
-        if (d < SC_MATCH_TOL) return e->cond;
+        if (d < SC_MATCH_TOL) { if (start_out) *start_out = e->start; return e->cond; }
     }
     return SC_ALWAYS;
+}
+
+static inline int sc_store_match(const sc_store_t *st, int row, int pitch, double phase,
+                                 double loop_start, double loop_len)
+{
+    return sc_store_match_ex(st, row, pitch, phase, loop_start, loop_len, NULL);
 }
 
 /* "SC 1\n" then one "row id pitch start cond\n" per entry. Starts are %.17g,
