@@ -518,6 +518,8 @@ Master volume (`shadow_master_volume`) is READ from Move's live model — `Outpu
 
 Under Link Audio rebuild mode (`rebuild_from_la`), mailbox is composited from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs on the mailbox, then master volume is applied for DAC out.
 
+**The rebuild is summed in int32 and soft-clipped ONCE** (`la_acc` → `mix_soft_clip.h`, before Master FX). It used to add into the int16 mailbox and clamp after every add, at unity and before master volume — so the knob could not buy headroom, and a busy set (a 100%-wet reverb return on top of four tracks) hard-clipped several times a second: 3272 clipped samples in 30 s on hardware, every stage feeding the sum clean, heard as pops "in the reverb". The curve is the identity below −1 dBFS, so anything that fit before is bit-for-bit unchanged. `tests/host/test_mix_soft_clip.sh` pins the curve and the call site.
+
 ## Link Audio
 
 Move's firmware publishes per-track + master audio over Ableton Link Audio (UDP/IPv6, `chnnlsv` framing). Schwung consumes this so shadow FX can process Move's tracks.
@@ -541,7 +543,7 @@ Move's per-track audio round-trips with ~5–14 ms unpredictable drift. Slot syn
 
 Toggle mid-playback → ~16 ms artifact (audio hole on OFF→ON, dup on ON→OFF) as ring resets.
 
-Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs. For raw audio, `echo 30 > /data/UserData/schwung/align_dump_trigger` writes that many seconds of s16le stereo to `slot0_move_track.pcm` (Move's Link Audio) and `slot0_synth_src.pcm` (the module's own output) — the two summands of a slot's mix, captured separately at the point they are combined. Score them with `tools/link-audio/analyze_capture.py`.
+Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs. For raw audio, `echo 30 > /data/UserData/schwung/align_dump_trigger` writes that many seconds of s16le stereo to `slot0_move_track.pcm` (Move's Link Audio) and `slot0_synth_src.pcm` (the module's own output) — the two summands of a slot's mix, captured separately at the point they are combined — plus `slot0_post_fx.pcm`, `mailbox_out.pcm` (the DAC output) and `send_a_in.pcm` / `send_a_out.pcm`. An optional second number picks the slot (`echo "30 1"` → `slot1_*.pcm`). Six 5.3 MB files per 30 s: to capture repeatedly without eMMC writes, symlink those paths into `/dev/shm` first. Score them with `tools/link-audio/analyze_capture.py`.
 
 **The capture is RT-safe and the dump length is not cosmetic.** It used to `fopen`/`fwrite` on the SPI callback for the whole capture, so the instrument could perturb the timing fault it was measuring; `src/host/align_capture.{c,h}` now memcpys into a preallocated buffer and the worker writes it. And 2.9 s was too short to tell signal from variance — the same configuration measured 5.61x, 1.84x, 1.01x, 2.58x and 2.94x across five consecutive snapshots.
 
