@@ -191,31 +191,46 @@ int main(void) {
 
     /* ---- notes on a button ---------------------------------------------- */
     {
-        /* 1/16 grid, page at scroll 4.0: button 0 = 4.0, button 1 = 4.25 */
+        /* 1/16 grid, page at scroll 4.0: button 0 = [4.0, 4.25), button 1 =
+         * [4.25, 4.5). A note belongs to the step it STARTS in (Move's rule,
+         * measured on a live-played clip). */
         sm_note_t nt[] = {
-            { 1, 4.0, 0.25, 100, 36, 0 },   /* step 0 */
-            { 2, 4.0, 0.25, 100, 42, 0 },   /* step 0, another voice */
-            { 3, 4.23, 0.25, 100, 38, 0 },   /* step 1, nudged 8% early */
-            { 4, 4.36, 0.25, 100, 38, 0 },   /* 44% late: still step 1 */
-            { 5, 3.99, 0.25, 100, 50, 0 },   /* step 0, nudged early -- off the page start */
-            { 6, 0.0, 0.25, 100, 36, 0 },   /* another page */
+            { 1, 4.0,  0.25, 100, 36, 0 },   /* step 0 */
+            { 2, 4.0,  0.25, 100, 42, 0 },   /* step 0, another voice */
+            { 3, 4.23, 0.25, 100, 38, 0 },   /* 4.23: still inside step 0 */
+            { 4, 4.36, 0.25, 100, 38, 0 },   /* step 1 */
+            { 5, 3.99, 0.25, 100, 50, 0 },   /* before the page: not on it */
+            { 6, 0.0,  0.25, 100, 36, 0 },   /* another page */
+            { 7, 4.2499999999, 0.25, 100, 60, 0 },   /* float error at the edge: step 1 */
         };
         int idx[8], k;
-        k = sm_button_notes(nt, 6, 4.0, 0.25, 0, 16.0, 0, idx, 8);
+        k = sm_button_notes(nt, 7, 4.0, 0.25, 0, 16.0, 0, idx, 8);
         assert(k == 3);
-        k = sm_button_notes(nt, 6, 4.0, 0.25, 0, 16.0, 1, idx, 8);
-        assert(k == 2 && nt[idx[0]].id == 3 && nt[idx[1]].id == 4);
+        k = sm_button_notes(nt, 7, 4.0, 0.25, 0, 16.0, 1, idx, 8);
+        assert(k == 2 && nt[idx[0]].id == 4 && nt[idx[1]].id == 7);
+        /* THE LIVE-PLAYED CLIP: a chord at 17.425/17.428/17.434 is on the step
+         * spanning 17.25-17.5 (button 5 of the page at 16), and a chord that
+         * straddles the half-step (18.871/18.872/18.892) is NOT split. */
+        {
+            sm_note_t live[] = { { 1, 17.425, 0.2, 90, 73, 0 }, { 2, 17.428, 0.2, 90, 64, 0 },
+                                 { 3, 17.434, 0.2, 90, 71, 0 }, { 4, 18.871, 0.2, 90, 71, 0 },
+                                 { 5, 18.872, 0.2, 90, 74, 0 }, { 6, 18.892, 0.2, 90, 64, 0 } };
+            assert(sm_button_notes(live, 6, 16.0, 0.25, 0, 32.0, 5, idx, 8) == 3);
+            assert(sm_button_notes(live, 6, 16.0, 0.25, 0, 32.0, 6, idx, 8) == 0);
+            assert(sm_button_notes(live, 6, 16.0, 0.25, 0, 32.0, 11, idx, 8) == 3);
+            assert(sm_button_notes(live, 6, 16.0, 0.25, 0, 32.0, 12, idx, 8) == 0);
+        }
         /* past the clip: nothing */
-        assert(sm_button_notes(nt, 6, 16.0, 0.25, 0, 16.0, 0, idx, 8) == 0);
+        assert(sm_button_notes(nt, 7, 16.0, 0.25, 0, 16.0, 0, idx, 8) == 0);
         /* triplet: button 3 is dead, button 4 is step 3 = scroll + 3/6 */
         sm_note_t tr[] = { { 7, 0.5, 0.1, 100, 60, 0 } };
         assert(sm_button_notes(tr, 1, 0.0, 1.0 / 6.0, 1, 4.0, 3, idx, 8) == 0);
         assert(sm_button_notes(tr, 1, 0.0, 1.0 / 6.0, 1, 4.0, 4, idx, 8) == 1);
 
         /* ---- voice scoping ---- */
-        k = sm_button_notes(nt, 6, 4.0, 0.25, 0, 16.0, 0, idx, 8);
+        k = sm_button_notes(nt, 7, 4.0, 0.25, 0, 16.0, 0, idx, 8);
         assert(sm_scope_voice(nt, idx, k, 42) == 1 && nt[idx[0]].id == 2);
-        k = sm_button_notes(nt, 6, 4.0, 0.25, 0, 16.0, 0, idx, 8);
+        k = sm_button_notes(nt, 7, 4.0, 0.25, 0, 16.0, 0, idx, 8);
         assert(sm_scope_voice(nt, idx, k, 37) == 3);   /* voice not on the step: all */
         assert(sm_scope_voice(nt, idx, k, -1) == 3);   /* unknown: all */
     }
