@@ -138,6 +138,21 @@ int main(void) {
     chance_param_get(in, "of:0:555", buf, sizeof buf);
     CHECK(atoi(buf) == r12, "chance:revive restores it when Move's Undo brings the note back");
 
+    /* ---- across tracks: out of one chain, into another ------------------- */
+    {
+        chain_instance_t *other = calloc(1, sizeof *other);
+        char doc[4096];
+        const int n = chance_param_get(in, "row:0", doc, sizeof doc);
+        CHECK(n > 0 && strncmp(doc, "SC 1\n", 5) == 0, "chance:row:<n> serves one clip's conditions");
+        char msg[4200];
+        snprintf(msg, sizeof msg, "3\n%s", doc);
+        chance_param_set(other, "import", msg);
+        CHECK(sc_store_match(&other->chance, 3, 36, 0.0, 0.0, 4.0) == r12,
+              "chance:import lands them on the other track's row");
+        CHECK(chance_param_get(in, "row:250", doc, sizeof doc) == -1, "a parking row is never served");
+        free(other);
+    }
+
     free(in);
     printf(fails ? "FAIL: %d\n" : "PASS: chain chance\n", fails);
     return fails ? 1 : 0;

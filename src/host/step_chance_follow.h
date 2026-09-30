@@ -221,4 +221,45 @@ static inline int sc_store_revive(sc_store_t *st, sc_pruned_t *ring, int row, in
     return 0;
 }
 
+/* A CLIP COPIED TO ANOTHER TRACK: its conditions leave one chain and arrive
+ * in another, so they travel as text. `serialize_row` writes one row's
+ * conditions in the store's own document format; `import_row` takes such a
+ * document into `row` -- replacing what the row held, as Move's copy replaced
+ * the clip -- with synthetic ids, since the copy's notes are new notes.
+ * Returns bytes written / conditions imported; -1 = does not fit / refused. */
+static inline int sc_store_serialize_row(const sc_store_t *st, int row, char *buf, int len)
+{
+    int n = snprintf(buf, (size_t)len, "SC 1\n");
+    if (n < 0 || n >= len) return -1;
+    for (int i = 0; i < SC_STORE_MAX; i++) {
+        const sc_entry_t *e = &st->e[i];
+        if (!e->used || e->row != row) continue;
+        int w = snprintf(buf + n, (size_t)(len - n), "%d %lld %d %.17g %d\n",
+                         e->row, (long long)e->id, e->pitch, e->start, e->cond);
+        if (w < 0 || w >= len - n) return -1;
+        n += w;
+    }
+    return n;
+}
+
+static inline int sc_store_import_row(sc_store_t *st, int row, const char *doc)
+{
+    static sc_store_t tmp;                  /* off the callback's stack */
+    if (row < 0 || row >= SC_ROW_PARK) return -1;
+    memset(&tmp, 0, sizeof tmp);
+    if (sc_store_parse(&tmp, doc) < 0) return -1;   /* refused whole: row untouched */
+    for (int i = 0; i < SC_STORE_MAX; i++)
+        if (st->e[i].used && st->e[i].row == row) { st->e[i].used = 0; st->rev++; }
+    int n = 0;
+    for (int i = 0; i < SC_STORE_MAX; i++) {
+        if (!tmp.e[i].used) continue;
+        sc_entry_t e = tmp.e[i];
+        e.row = (uint8_t)row;
+        e.id = sc__synth_id(st);
+        if (!sc__add(st, e)) break;
+        n++;
+    }
+    return n;
+}
+
 #endif /* STEP_CHANCE_FOLLOW_H */

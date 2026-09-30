@@ -18,4 +18,7 @@ uint32_t step_menu_take_due_releases(uint64_t now_ms);
 /* SPI CALLBACK, once per frame after the scan. */
 void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible);
 
+/* SPI CALLBACK: carry a clip's conditions to another track's chain. */
+void step_menu_chance_xcopy(int dst_track, const char *val);
+
 #endif
