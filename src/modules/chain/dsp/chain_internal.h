@@ -1233,7 +1233,6 @@ typedef struct chain_instance {
     /* Following Move's edits (step_chance_follow.h), off the lanes' verbs. */
     sc_journal_t chance_journal[SC_JOURNAL];   /* pastes, by edit_follow's jid */
     uint32_t     chance_stash_sid[SC_STASHES]; /* which clip delete each stash row holds */
-    sc_pruned_t  chance_pruned;                /* just-deleted notes, for Move's Undo */
 } chain_instance_t;
 
 /*

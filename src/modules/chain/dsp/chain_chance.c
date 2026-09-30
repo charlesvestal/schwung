@@ -144,14 +144,12 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
             if (n >= 128 || sscanf(p, " %lld%n", &id, &k) != 1) break;
             live[n++] = (int64_t)id; p += k;
         }
-        if (n < 128) sc_store_prune_keep(&inst->chance, &inst->chance_pruned, row, lo, hi, live, n);
-    } else if (strcmp(sub, "adopt") == 0 || strcmp(sub, "revive") == 0) {
-        /* "row id pitch start": a copied condition becomes Move's note's
-         * (adopt), or a just-deleted one comes back with Move's Undo (revive). */
+        if (n < 128) sc_store_prune_window(&inst->chance, row, lo, hi, live, n);
+    } else if (strcmp(sub, "adopt") == 0) {
+        /* "row id pitch start": a copied condition becomes Move's note's. */
         int row, pitch; long long id; double start;
         if (sscanf(val, "%d %lld %d %lf", &row, &id, &pitch, &start) != 4) return;
-        if (sub[0] == 'a') sc_store_adopt(&inst->chance, row, (int64_t)id, pitch, start);
-        else sc_store_revive(&inst->chance, &inst->chance_pruned, row, (int64_t)id, pitch, start);
+        sc_store_adopt(&inst->chance, row, (int64_t)id, pitch, start);
     } else if (strcmp(sub, "state") == 0) {
         /* A refused document leaves the store as it was (sc_store_parse). */
         sc_store_parse(&inst->chance, val);

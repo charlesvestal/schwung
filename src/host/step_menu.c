@@ -133,12 +133,6 @@ static uint64_t sm_now_ms(void)
 
 /* ---- callback state ---------------------------------------------------- */
 
-/* When Move's Undo was last pressed: a just-deleted note's condition may come
- * back only then. Move REUSES note ids -- a re-tapped step came back as the
- * id it had before -- so "the same id reappeared" alone would hand a deleted
- * note's condition to a brand-new note. */
-static uint64_t g_undo_ms;
-#define SM_REVIVE_WINDOW_MS 3000
 
 
 static sm_state_t g_sm;
@@ -224,7 +218,6 @@ int step_menu_on_input(uint8_t status, uint8_t d1, uint8_t d2, uint8_t out[3],
                        uint32_t held_mask, int shift_held, int eligible, uint64_t now_ms)
 {
     const uint8_t was_open = g_sm.open, was_field = g_sm.field, was_step = g_sm.step;
-    if ((status & 0xF0) == 0xB0 && d1 == 56 && d2 > 0) g_undo_ms = now_ms ? now_ms : 1;   /* Undo */
     int dir = 0;
     const int a = sm_on_input(&g_sm, held_mask, shift_held, eligible, status, d1, d2, out, &dir,
                               now_ms);
@@ -247,7 +240,6 @@ static void follow_page_edits(const sm_page_t *pg)
     if (!pg->valid || pg->truncated) return;
     void *inst = slot_instance(pg->track);
     if (!inst || !shadow_plugin_v2->set_param) return;
-    const int reviving = g_undo_ms && sm_now_ms() - g_undo_ms < SM_REVIVE_WINDOW_MS;
     char val[64 + SM_PAGE_MAX * 21];
     int w = snprintf(val, sizeof val, "%d %.17g %.17g", pg->row, pg->lo, pg->hi);
     for (int i = 0; i < pg->n; i++) {
@@ -260,11 +252,9 @@ static void follow_page_edits(const sm_page_t *pg)
             shadow_plugin_v2->set_param(inst, "chance:move", mv);
         } else {
             /* A condition COPIED here (paste, Double Loop, clip copy) waits
-             * under a synthetic id: it becomes this note's. And after Undo, a
-             * just-deleted note's own condition comes back. BEFORE the prune,
+             * under a synthetic id: it becomes this note's. BEFORE the prune,
              * which would otherwise take a copy nobody had claimed yet. */
             shadow_plugin_v2->set_param(inst, "chance:adopt", mv);
-            if (reviving) shadow_plugin_v2->set_param(inst, "chance:revive", mv);
         }
     }
     shadow_plugin_v2->set_param(inst, "chance:prune", val);

@@ -130,14 +130,6 @@ int main(void) {
     chance_on_lane_verb(in, "unstash", "9 0 2");
     CHECK(sc_store_match(&in->chance, 2, 36, 0.0, 0.0, 4.0) == r12, "Move's Undo of the delete brings them back");
     CHECK(sc_store_count(&in->chance) == before, "...all of them, once");
-    /* note delete + Undo */
-    chance_param_set(in, "prune", "0 0.9 1.1");                /* the adopted step-5 note is gone */
-    chance_param_get(in, "of:0:555", buf, sizeof buf);
-    CHECK(atoi(buf) == SC_ALWAYS, "a deleted note's condition goes");
-    chance_param_set(in, "revive", "0 555 36 1");
-    chance_param_get(in, "of:0:555", buf, sizeof buf);
-    CHECK(atoi(buf) == r12, "chance:revive restores it when Move's Undo brings the note back");
-
     free(in);
     printf(fails ? "FAIL: %d\n" : "PASS: chain chance\n", fails);
     return fails ? 1 : 0;

@@ -1,6 +1,6 @@
 /*
  * Chance follows Move's edits: paste (and Double Loop), its Undo/Redo, clip
- * copy, clip delete + Undo, note delete + Undo, and the shim's adoption of a
+ * copy on the same track, clip delete + Undo, and the shim's adoption of a
  * copied condition by Move's real note id.
  */
 #include <assert.h>
@@ -10,7 +10,6 @@
 
 static sc_store_t st;
 static sc_journal_t j;
-static sc_pruned_t ring;
 
 int main(void) {
     /* ---- step paste: step 1 (0.0) onto step 5 (1.0), 1/16 = 0.25 -------- */
@@ -83,24 +82,6 @@ int main(void) {
     }
     assert(sc_store_move_row(&st, SC_ROW_STASH + 1, 0) == 1);
     assert(sc_store_get(&st, 0, 1) == 22);
-
-    /* ---- a single NOTE deleted, then Move's Undo -------------------------- */
-    memset(&st, 0, sizeof st); memset(&ring, 0, sizeof ring);
-    sc_store_set(&st, 0, 7, 36, 0.5, 11);
-    assert(sc_store_prune_keep(&st, &ring, 0, 0.0, 4.0, NULL, 0) == 1);
-    assert(sc_store_get(&st, 0, 7) == SC_ALWAYS);
-    /* a DIFFERENT note at the same place (a re-tap) does not inherit it */
-    assert(sc_store_revive(&st, &ring, 0, 8, 36, 0.5) == 0);
-    /* the same note, id and all, does */
-    assert(sc_store_revive(&st, &ring, 0, 7, 36, 0.5) == 1);
-    assert(sc_store_get(&st, 0, 7) == 11);
-    assert(sc_store_revive(&st, &ring, 0, 7, 36, 0.5) == 0);   /* once */
-    /* the ring is bounded: the oldest falls out */
-    memset(&st, 0, sizeof st); memset(&ring, 0, sizeof ring);
-    for (int k = 0; k < SC_PRUNED + 4; k++) sc_store_set(&st, 0, 100 + k, 60, k * 0.1, 3);
-    sc_store_prune_keep(&st, &ring, 0, 0.0, 100.0, NULL, 0);
-    assert(sc_store_revive(&st, &ring, 0, 100, 60, 0.0) == 0);   /* evicted */
-    assert(sc_store_revive(&st, &ring, 0, 100 + SC_PRUNED + 3, 60, (SC_PRUNED + 3) * 0.1) == 1);
 
     /* ---- journal overflow refuses Undo rather than half-undoing ----------- */
     memset(&st, 0, sizeof st); memset(&j, 0, sizeof j);

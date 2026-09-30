@@ -1528,10 +1528,12 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   is by pitch + position); the shim ADOPTS it to Move's real id the first
   time its page is shown, BEFORE the prune that would otherwise take it.
   A deleted clip parks its conditions on rows 200..203 (never matched, never
-  serialized) until Move's Undo brings the very clip back. A deleted NOTE's
-  condition waits in a 32-entry ring and REVIVES only within 3 s of an Undo
-  press -- **Move reuses note ids** (a re-tapped step came back as id 2), so
-  "the same id reappeared" alone would give a new note an old condition.
+  serialized) until Move's Undo brings the very clip back.
+  **Deliberately NOT followed**, because each would need a heuristic rather
+  than a confirmed event: a single deleted NOTE's condition is gone for good
+  (Move's Undo restores the note, not the condition -- Move reuses note ids,
+  so "the same id came back" cannot tell an Undo from a re-tap), and a clip
+  copied to ANOTHER TRACK arrives with no conditions.
 - **Drum voice**: Move's document does not name the selected drum cell (all 93
   classes checked); its pad LED does -- the left-4x4 pad lit 122. Chance scopes
   to that voice when it is on the step, else to every note on the step.

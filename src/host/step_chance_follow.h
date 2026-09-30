@@ -1,6 +1,6 @@
 /*
- * Step chance FOLLOWS Move's edits: paste, Double Loop, clip copy, clip
- * delete + Undo, a single note deleted + Undo.
+ * Step chance FOLLOWS Move's edits: paste, Double Loop, clip copy on the
+ * same track, clip delete + Undo.
  *
  * The events are the automation lanes' (host/edit_follow.h): each is issued
  * only after the live model confirms Move really made the edit, and reaches
@@ -30,7 +30,6 @@
 #define SC_STASHES   4
 #define SC_JOURNAL   8           /* == EF_JOURNAL */
 #define SC_JREC      32
-#define SC_PRUNED    32
 
 typedef struct {
     uint32_t   jid;              /* edit_follow's journal id; 0 = empty */
@@ -40,11 +39,6 @@ typedef struct {
     sc_entry_t rem[SC_JREC];     /* what the paste replaced in the destination */
     sc_entry_t add[SC_JREC];     /* what it wrote there */
 } sc_journal_t;
-
-typedef struct {
-    sc_entry_t e[SC_PRUNED];
-    int        head;
-} sc_pruned_t;
 
 static inline int sc__in(double x, double lo, double len)
 {
@@ -179,44 +173,6 @@ static inline int sc_store_adopt(sc_store_t *st, int row, int64_t id, int pitch,
             fabs(e->start - start) < SC_MATCH_TOL) {
             e->id = id; e->start = start; st->rev++; return 1;
         }
-    }
-    return 0;
-}
-
-/* PRUNE, but keep what went for a moment: Move's Undo of a note deletion
- * restores the very note, id and all. The ring is the "moment". */
-static inline int sc_store_prune_keep(sc_store_t *st, sc_pruned_t *ring, int row, double lo,
-                                      double hi, const int64_t *live, int n_live)
-{
-    int gone = 0;
-    for (int i = 0; i < SC_STORE_MAX; i++) {
-        sc_entry_t *e = &st->e[i];
-        if (!e->used || e->row != row || e->start < lo || e->start >= hi) continue;
-        int found = 0;
-        for (int k = 0; k < n_live && !found; k++) found = (live[k] == e->id);
-        if (found) continue;
-        if (ring) { ring->e[ring->head % SC_PRUNED] = *e; ring->head++; }
-        e->used = 0; gone++;
-    }
-    if (gone) st->rev++;
-    return gone;
-}
-
-/* A note came back (after Move's Undo): if its condition is in the ring --
- * same row, SAME ID, same pitch and place -- it returns. 1 if revived. */
-static inline int sc_store_revive(sc_store_t *st, sc_pruned_t *ring, int row, int64_t id,
-                                  int pitch, double start)
-{
-    if (!ring || id < 0) return 0;
-    for (int i = 0; i < SC_STORE_MAX; i++)
-        if (st->e[i].used && st->e[i].row == row && st->e[i].id == id) return 0;
-    for (int k = 0; k < SC_PRUNED; k++) {
-        sc_entry_t *e = &ring->e[k];
-        if (!e->used || e->row != row || e->id != id || e->pitch != pitch ||
-            fabs(e->start - start) >= SC_MATCH_TOL) continue;
-        sc_entry_t back = *e;
-        e->used = 0;
-        return sc__add(st, back);
     }
     return 0;
 }
