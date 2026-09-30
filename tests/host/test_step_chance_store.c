@@ -91,6 +91,29 @@ int main(void) {
     sc_store_relocate(&st, 0, 8, 50, 1.1);
     assert(st.rev == r1);
 
+    /* ---- prune: deleted notes go, but only inside the window looked at ---- */
+    memset(&st, 0, sizeof st);
+    sc_store_set(&st, 0, 1, 36, 0.0, 4);    /* kept: still live */
+    sc_store_set(&st, 0, 2, 38, 1.0, 4);    /* deleted */
+    sc_store_set(&st, 0, 3, 38, 9.0, 4);    /* outside the window: untouched */
+    sc_store_set(&st, 1, 2, 38, 1.0, 4);    /* another row: untouched */
+    {
+        const int64_t live[] = { 1, 77 };
+        uint32_t r2 = st.rev;
+        assert(sc_store_prune_window(&st, 0, 0.0, 4.0, live, 2) == 1);
+        assert(st.rev != r2);
+        assert(sc_store_get(&st, 0, 1) == 4);
+        assert(sc_store_get(&st, 0, 2) == SC_ALWAYS);
+        assert(sc_store_get(&st, 0, 3) == 4);
+        assert(sc_store_get(&st, 1, 2) == 4);
+        /* nothing to prune: rev unchanged (the autosave must not rewrite) */
+        r2 = st.rev;
+        assert(sc_store_prune_window(&st, 0, 0.0, 4.0, live, 2) == 0);
+        assert(st.rev == r2);
+        /* an empty page window prunes everything in it */
+        assert(sc_store_prune_window(&st, 0, 0.0, 4.0, live, 0) == 1);
+    }
+
     /* ---- the document round-trips, and a bad one changes NOTHING ------ */
     memset(&st, 0, sizeof st);
     sc_store_set(&st, 0, 1, 36, 0.0, 4);

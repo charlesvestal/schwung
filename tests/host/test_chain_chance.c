@@ -84,6 +84,13 @@ int main(void) {
     in->clip_phase_beats = 1.1; chain_set_clip_pass(in, 1);
     CHECK(note(in, 1, 38, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "a relocated note keeps its condition");
 
+    /* ---- prune: Move deleted the kick ---- */
+    chance_param_set(in, "prune", "2 0 4 102");
+    chance_param_get(in, "of:2:101", buf, sizeof buf);
+    CHECK(atoi(buf) == SC_ALWAYS, "chance:prune drops a note Move no longer has");
+    chance_param_get(in, "of:2:102", buf, sizeof buf);
+    CHECK(atoi(buf) == r12, "...and keeps one it still has");
+
     free(in);
     printf(fails ? "FAIL: %d\n" : "PASS: chain chance\n", fails);
     return fails ? 1 : 0;
