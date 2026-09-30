@@ -1232,10 +1232,9 @@
             "Exit overtake:",
             " Shift+Vol+Jog Click",
             "",
-            "After exiting, pad",
-            "LEDs may not refresh",
-            "- change tracks to",
-            "restore them."
+            "Move's pad and",
+            "button LEDs come",
+            "back when you exit."
           ]
         },
         {
