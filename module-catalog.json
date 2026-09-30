@@ -1372,7 +1372,7 @@
     },
     {
       "id": "breakbeat",
-      "name": "BB Gen",
+      "name": "Breakbeat",
       "description": "Breakbeat generator with algorithmic slicing, retriggering, fills, and per-sample chance blending",
       "author": "mestela",
       "component_type": "sound_generator",
