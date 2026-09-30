@@ -85,6 +85,14 @@ static void shadow_ui_install_term_handler(void) {
     sa.sa_flags = SA_RESTART;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+    /* And UNBLOCK them: a mask survives exec, and the shim forks us from a
+     * MoveOriginal thread that blocks SIGTERM -- measured on hardware, the
+     * handler above was installed and never ran, the signal left pending. */
+    sigset_t unblock;
+    sigemptyset(&unblock);
+    sigaddset(&unblock, SIGTERM);
+    sigaddset(&unblock, SIGINT);
+    sigprocmask(SIG_UNBLOCK, &unblock, NULL);
 }
 static uint8_t last_midi_ready = 0;
 static const char *shadow_ui_pid_path = "/data/UserData/schwung/shadow_ui.pid";

@@ -18,6 +18,7 @@
 #include "shadow_resample.h"
 #include "shadow_link_audio.h"
 #include "unified_log.h"
+#include "child_signals.h"
 
 /* ============================================================================
  * Static host callbacks
@@ -229,6 +230,7 @@ void launch_shadow_ui(void) {
          * etc.) run at FIFO 70, competing with the SPI driver. */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+        child_reset_signals();   /* MoveOriginal's threads block SIGTERM */
 
         setsid();
         int fdlimit = (int)sysconf(_SC_OPEN_MAX);
@@ -381,6 +383,7 @@ void launch_link_subscriber(void) {
          * reset launch_shadow_ui does — same bug, same fix. */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+        child_reset_signals();
 
         /* Pin to cores 0-2, leaving core 3 free for the SPI SCHED_FIFO 90
          * callback. Matches the RNBO pinning from the JACK-glitch fix. */
