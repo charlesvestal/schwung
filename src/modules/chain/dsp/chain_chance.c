@@ -152,12 +152,6 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
         if (sscanf(val, "%d %lld %d %lf", &row, &id, &pitch, &start) != 4) return;
         if (sub[0] == 'a') sc_store_adopt(&inst->chance, row, (int64_t)id, pitch, start);
         else sc_store_revive(&inst->chance, &inst->chance_pruned, row, (int64_t)id, pitch, start);
-    } else if (strcmp(sub, "import") == 0) {
-        /* "<row>\n<SC document>": a clip copied here from ANOTHER track (the
-         * shim carries it across chains -- step_menu.c). */
-        int row = -1, used = 0;
-        if (sscanf(val, "%d%n", &row, &used) != 1 || val[used] != '\n') return;
-        sc_store_import_row(&inst->chance, row, val + used + 1);
     } else if (strcmp(sub, "state") == 0) {
         /* A refused document leaves the store as it was (sc_store_parse). */
         sc_store_parse(&inst->chance, val);
@@ -184,12 +178,6 @@ int chance_param_get(chain_instance_t *inst, const char *sub, char *buf, int buf
         /* Served-and-empty is "" -- the autosave deletes the file on it. */
         if (sc_store_count(&inst->chance) == 0) { buf[0] = 0; return 0; }
         return sc_store_serialize(&inst->chance, buf, buf_len);
-    }
-    /* "row:<row>" -- one clip's conditions, for a copy to another track. */
-    if (strncmp(sub, "row:", 4) == 0) {
-        const int row = atoi(sub + 4);
-        if (row < 0 || row >= SC_ROW_PARK) return -1;
-        return sc_store_serialize_row(&inst->chance, row, buf, buf_len);
     }
     /* "of:<row>:<id>" -- the condition on one note, as its jog index. */
     if (strncmp(sub, "of:", 3) == 0) {

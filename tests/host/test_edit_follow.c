@@ -210,26 +210,6 @@ static void follow_tests(void)
     dup.track[1].slot[3].clip_id = 777;
     edit_follow_on_change(&dup, &with, NULL, NULL, 7200, cmd, NULL);
     CHECK(nlog == 1 && logged("lanes:copy_clip 0 3"), "copy");
-    /* A copy onto ANOTHER TRACK: chance's cross-track verb, never the lanes'
-     * (automation targets one track's modules). Addressed to the DESTINATION
-     * track, naming the source track and slot. */
-    nlog = 0;
-    move_model_t xt = with;
-    xt.track[2].slot[4] = with.track[1].slot[0];
-    xt.track[2].slot[4].clip_id = 778;
-    /* the fixture's other tracks may share content: make track 2's own
-     * clips differ, so the source can only be track 1 */
-    for (int q = 0; q < MM_SLOTS; q++)
-        if (q != 4 && xt.track[2].slot[q].exists) xt.track[2].slot[q].notes_hash ^= 0x5A5A;
-    move_model_t xt_prev = with;
-    for (int q = 0; q < MM_SLOTS; q++)
-        if (xt_prev.track[2].slot[q].exists) xt_prev.track[2].slot[q].notes_hash ^= 0x5A5A;
-    for (int tt = 0; tt < MM_TRACKS; tt++)
-        if (tt != 1 && tt != 2)
-            for (int q = 0; q < MM_SLOTS; q++) { xt.track[tt].slot[q].notes_hash ^= 0x3C3C; xt_prev.track[tt].slot[q].notes_hash ^= 0x3C3C; }
-    edit_follow_on_change(&xt, &xt_prev, NULL, NULL, 7250, cmd, NULL);
-    CHECK(logged("2 chance:xcopy 1 0 4") && !logged("lanes:copy_clip"),
-          "cross-track copy -> chance:xcopy only: %s", nlog ? log_[0] : "");
     nlog = 0;
     move_model_t remade = with;
     remade.track[1].slot[0].clip_id = 901;          /* deleted and remade: a stranger */

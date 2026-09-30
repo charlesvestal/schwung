@@ -26,7 +26,6 @@
 #include "step_menu.h"
 #include "step_menu_glue.h"
 #include "step_chance.h"
-#include "step_chance_store.h"
 #include "move_model.h"
 #include "shadow_constants.h"
 #include "shadow_chain_mgmt.h"
@@ -396,31 +395,4 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
 uint32_t step_menu_take_due_releases(uint64_t now_ms)
 {
     return sm_due_releases(&g_sm, now_ms);
-}
-
-/* SPI CALLBACK: a clip Move copied onto ANOTHER track (edit_follow's
- * "chance:xcopy <src_track> <src_slot> <dst_slot>", addressed to the
- * destination track). The conditions live in the SOURCE track's chain, so
- * they are read out as text and handed to the destination's. A source with
- * none -- or no Schwung chain -- still clears the destination row: the copy
- * replaced whatever clip was there. */
-void step_menu_chance_xcopy(int dst_track, const char *val)
-{
-    int src_track, src_slot, dst_slot;
-    if (!val || sscanf(val, "%d %d %d", &src_track, &src_slot, &dst_slot) != 3) return;
-    void *dst = slot_instance(dst_track);
-    if (!dst || !shadow_plugin_v2->set_param) return;
-    static char doc[SC_STORE_MAX * 48 + 16];
-    static char msg[sizeof doc + 16];
-    int n = -1;
-    void *src = slot_instance(src_track);
-    if (src && shadow_plugin_v2->get_param) {
-        char key[32];
-        snprintf(key, sizeof key, "chance:row:%d", src_slot);
-        n = shadow_plugin_v2->get_param(src, key, doc, sizeof doc);
-    }
-    if (n <= 0 || n >= (int)sizeof doc) snprintf(doc, sizeof doc, "SC 1\n");
-    else doc[n] = 0;
-    snprintf(msg, sizeof msg, "%d\n%s", dst_slot, doc);
-    shadow_plugin_v2->set_param(dst, "chance:import", msg);
 }

@@ -269,32 +269,13 @@ static void do_clips(const move_model_t *now, const move_model_t *prev, ef_cmd_f
                 restored = 1;
             }
             if (restored) continue;
-            int copied = 0;
             for (int src = 0; src < MM_SLOTS; src++) {
                 const mm_clip_t *p = &prev->track[t].slot[src];
                 if (src == s || !p->exists || !same_content(p, b)) continue;
                 snprintf(v, sizeof v, "%d %d", src, s);
                 cmd(ctx, t, "lanes:copy_clip", v);
                 g_stats.copied++;
-                copied = 1;
                 break;
-            }
-            if (copied) continue;
-            /* ACROSS TRACKS -- Move 2.1 copies a clip onto another track's
-             * slot (Session: Copy, source pad, destination pad; measured).
-             * Only STEP CHANCE follows it: a condition belongs to the notes,
-             * which crossed, while automation targets one track's modules and
-             * means nothing on another's. The conditions live in the source
-             * track's chain, so the shim carries them across (step_menu.c). */
-            for (int t2 = 0; t2 < MM_TRACKS && !copied; t2++) {
-                if (t2 == t) continue;
-                for (int src = 0; src < MM_SLOTS && !copied; src++) {
-                    const mm_clip_t *p = &prev->track[t2].slot[src];
-                    if (!p->exists || !same_content(p, b)) continue;
-                    snprintf(v, sizeof v, "%d %d %d", t2, src, s);
-                    cmd(ctx, t, "chance:xcopy", v);
-                    copied = 1;
-                }
             }
         }
     }

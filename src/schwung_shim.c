@@ -2197,9 +2197,6 @@ static void shadow_inprocess_render_to_buffer(void) {
             int cs;
             char ck[24], cv[MMS_CMD_VAL];
             for (int k = 0; k < 4 && move_model_sync_pop_cmd(&cs, ck, sizeof ck, cv, sizeof cv); k++) {
-                /* A clip copied ACROSS tracks: its step chance moves between two
-                 * chains, which only the shim can reach (step_menu.c). */
-                if (strcmp(ck, "chance:xcopy") == 0) { step_menu_chance_xcopy(cs, cv); continue; }
                 if (cs >= 0 && cs < SHADOW_CHAIN_INSTANCES && shadow_chain_slots[cs].active &&
                     shadow_chain_slots[cs].instance)
                     shadow_plugin_v2->set_param(shadow_chain_slots[cs].instance, ck, cv);
