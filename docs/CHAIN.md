@@ -1483,8 +1483,11 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   (`step_chance_gate.h`, `chance_filter` in `chain_chance.c`) sits in
   `v2_on_midi` AHEAD of the LFO retrigger, MIDI FX and synth, and drops a
   losing note-on AND its note-off. Move's own instrument on the track still
-  plays: we see the note after Move played it. Pre mode stands down (its echo
-  filter counts what it injected).
+  plays: we see the note after Move played it. In Pre mode (Schw+Move) the
+  gate moves AFTER the echo filter, which counts what the MIDI FX injected: a
+  dropped ECHO would leave that count up and a later real note-off would be
+  taken for an echo. Rolled after it, a dropped note never reaches the MIDI
+  FX, so neither the synth nor Move's injected copy plays it.
 - **Length and Velocity are ACCELERATED.** Move honours a relative jog
   value's magnitude (one +5 moved a note 0.5 step, measured), so a fast turn
   is rewritten in place into a bigger detent: x3 / x8 / x16 under 90 / 50 /
