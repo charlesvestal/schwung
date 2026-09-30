@@ -1515,6 +1515,23 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   beat and the transport, pushed each frame through `chain_set_clip_pass`, a
   NEW dlsym'd export (the phase seam's signature is final). The instance stores
   pass + 1 so calloc's zero reads as UNKNOWN, and an unknown pass plays.
+- **CHANCE FOLLOWS MOVE'S EDITS off the LANES' verbs** (`step_chance_follow.h`,
+  `chance_on_lane_verb`): `paste_span` (step/page paste AND Double Loop),
+  `journal undo|redo`, `stash`/`unstash` (clip delete + Undo), `copy_clip`.
+  Each is issued by `edit_follow` only once the model confirms Move made the
+  edit, and chance sees it BEFORE the lanes and regardless of `lanes_off`, so
+  the two cannot disagree. A paste REPLACES the destination's conditions,
+  scoped by the `v=` pitches Move actually pasted (a drum paste moves one
+  pad), journaled per jid for Move's Undo/Redo.
+  **A copy cannot carry Move's note id** -- copied notes are new notes -- so a
+  copied condition gets a SYNTHETIC (negative) id and plays at once (matching
+  is by pitch + position); the shim ADOPTS it to Move's real id the first
+  time its page is shown, BEFORE the prune that would otherwise take it.
+  A deleted clip parks its conditions on rows 200..203 (never matched, never
+  serialized) until Move's Undo brings the very clip back. A deleted NOTE's
+  condition waits in a 32-entry ring and REVIVES only within 3 s of an Undo
+  press -- **Move reuses note ids** (a re-tapped step came back as id 2), so
+  "the same id reappeared" alone would give a new note an old condition.
 - **Drum voice**: Move's document does not name the selected drum cell (all 93
   classes checked); its pad LED does -- the left-4x4 pad lit 122. Chance scopes
   to that voice when it is on the step, else to every note on the step.

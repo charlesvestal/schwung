@@ -44,6 +44,67 @@ int chance_filter(chain_instance_t *inst, const uint8_t *msg, int len, int sourc
                    inst->lane_clip_slot, inst->chance_pass1 - 1);
 }
 
+/* MOVE'S EDITS, as the lanes hear them (host/edit_follow.h issues each only
+ * once the live model confirms Move made it). Seen here BEFORE the lanes, and
+ * independent of them: lanes_off turns automation off, not chance. */
+void chance_on_lane_verb(chain_instance_t *inst, const char *sub, const char *val)
+{
+    if (!inst || !sub || !val) return;
+    if (strcmp(sub, "paste_span") == 0) {
+        /* "track slot src dst len jid[ v=36,38]" -- a step/page paste, or
+         * Double Loop (the loop onto its new half). v= names the pitches Move
+         * actually pasted: a drum paste moves one pad's conditions. */
+        int track, slot, used = 0; double src, dst, len; unsigned jid;
+        if (sscanf(val, "%d %d %lf %lf %lf %u%n", &track, &slot, &src, &dst, &len, &jid, &used) != 6 ||
+            slot < 0 || slot >= SC_ROW_PARK || !(len > 0.0))
+            return;
+        static uint8_t pitches[128];
+        const char *v = strstr(val + used, "v=");
+        int scoped = 0;
+        if (v) {
+            memset(pitches, 0, sizeof pitches);
+            const char *p = v + 2;
+            for (;;) {
+                int n = 0, k = 0;
+                if (sscanf(p, "%d%n", &n, &k) != 1) break;
+                if (n >= 0 && n < 128) { pitches[n] = 1; scoped = 1; }
+                p += k;
+                if (*p != ',') break;
+                p++;
+            }
+        }
+        sc_journal_t *j = &inst->chance_journal[jid % SC_JOURNAL];
+        j->jid = jid;
+        sc_store_paste(&inst->chance, slot, src, dst, len, scoped ? pitches : NULL, j);
+    } else if (strcmp(sub, "journal") == 0) {
+        /* "undo|redo jid" -- Move reverted (or re-did) that paste. The high
+         * bit is Schwung's own automation edits, never a chance event. */
+        char dir[8] = { 0 }; unsigned jid = 0;
+        if (sscanf(val, "%7s %u", dir, &jid) != 2 || !jid || (jid & 0x80000000u)) return;
+        sc_journal_t *j = &inst->chance_journal[jid % SC_JOURNAL];
+        if (j->jid == jid) sc_journal_apply(&inst->chance, j, strcmp(dir, "redo") == 0);
+    } else if (strcmp(sub, "stash") == 0) {
+        /* "track slot sid" -- the clip was deleted: park its conditions. */
+        int track, slot; unsigned sid;
+        if (sscanf(val, "%d %d %u", &track, &slot, &sid) != 3 || slot < 0 || slot >= SC_ROW_PARK) return;
+        inst->chance_stash_sid[sid % SC_STASHES] = sid;
+        sc_store_move_row(&inst->chance, slot, SC_ROW_STASH + (int)(sid % SC_STASHES));
+    } else if (strcmp(sub, "unstash") == 0) {
+        /* "sid track slot" -- Move's Undo brought the very clip back. */
+        unsigned sid; int track, slot;
+        if (sscanf(val, "%u %d %d", &sid, &track, &slot) != 3 || slot < 0 || slot >= SC_ROW_PARK) return;
+        if (inst->chance_stash_sid[sid % SC_STASHES] != sid) return;   /* overwritten */
+        inst->chance_stash_sid[sid % SC_STASHES] = 0;
+        sc_store_move_row(&inst->chance, SC_ROW_STASH + (int)(sid % SC_STASHES), slot);
+    } else if (strcmp(sub, "copy_clip") == 0) {
+        /* "src dst" -- Move copied a clip to another slot on the track. */
+        int from, to;
+        if (sscanf(val, "%d %d", &from, &to) != 2 || from < 0 || to < 0 ||
+            from >= SC_ROW_PARK || to >= SC_ROW_PARK) return;
+        sc_store_copy_row(&inst->chance, from, to);
+    }
+}
+
 /* "row cond id pitch start [id pitch start ...]" -- one condition for every
  * note on a step (a chord shares its trig). Returns how many were stored. */
 static int chance_set_notes(chain_instance_t *inst, const char *val)
@@ -83,7 +144,14 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
             if (n >= 128 || sscanf(p, " %lld%n", &id, &k) != 1) break;
             live[n++] = (int64_t)id; p += k;
         }
-        if (n < 128) sc_store_prune_window(&inst->chance, row, lo, hi, live, n);
+        if (n < 128) sc_store_prune_keep(&inst->chance, &inst->chance_pruned, row, lo, hi, live, n);
+    } else if (strcmp(sub, "adopt") == 0 || strcmp(sub, "revive") == 0) {
+        /* "row id pitch start": a copied condition becomes Move's note's
+         * (adopt), or a just-deleted one comes back with Move's Undo (revive). */
+        int row, pitch; long long id; double start;
+        if (sscanf(val, "%d %lld %d %lf", &row, &id, &pitch, &start) != 4) return;
+        if (sub[0] == 'a') sc_store_adopt(&inst->chance, row, (int64_t)id, pitch, start);
+        else sc_store_revive(&inst->chance, &inst->chance_pruned, row, (int64_t)id, pitch, start);
     } else if (strcmp(sub, "state") == 0) {
         /* A refused document leaves the store as it was (sc_store_parse). */
         sc_store_parse(&inst->chance, val);

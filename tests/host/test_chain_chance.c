@@ -94,6 +94,50 @@ int main(void) {
     chance_param_get(in, "of:2:102", buf, sizeof buf);
     CHECK(atoi(buf) == r12, "...and keeps one it still has");
 
+    /* ---- FOLLOWING MOVE'S EDITS, through the lanes' verbs ---------------- */
+    chance_param_set(in, "clear", "");
+    snprintf(buf, sizeof buf, "0 %d 11 36 0", r12);
+    chance_param_set(in, "notes", buf);                       /* 1:2 on step 1, row 0 */
+    /* a step paste 0.0 -> 1.0, journal id 5, voice-scoped to pitch 36 */
+    chance_on_lane_verb(in, "paste_span", "0 0 0 1 0.25 5 v=36");
+    in->lane_clip_slot = 0; in->clip_phase_beats = 1.0; chain_set_clip_pass(in, 1);
+    CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "a pasted step carries its condition (1:2 drops pass 1)");
+    note(in, 0, 36, MOVE_MIDI_SOURCE_EXTERNAL);
+    chance_on_lane_verb(in, "journal", "undo 5");
+    CHECK(sc_store_match(&in->chance, 0, 36, 1.0, 0.0, 4.0) == SC_ALWAYS, "Move's Undo of the paste removes the copy");
+    chance_on_lane_verb(in, "journal", "redo 5");
+    CHECK(sc_store_match(&in->chance, 0, 36, 1.0, 0.0, 4.0) == r12, "...and Redo puts it back");
+    chance_on_lane_verb(in, "journal", "undo 2147483653");   /* high bit: Schwung's own edit */
+    CHECK(sc_store_match(&in->chance, 0, 36, 1.0, 0.0, 4.0) == r12, "an own-edit journal id is ignored");
+    /* adoption by Move's real id */
+    chance_param_set(in, "adopt", "0 555 36 1");
+    chance_param_get(in, "of:0:555", buf, sizeof buf);
+    CHECK(atoi(buf) == r12, "chance:adopt keys a copied condition to Move's note id");
+    /* Double Loop */
+    chance_on_lane_verb(in, "paste_span", "0 0 0 4 4 6");
+    CHECK(sc_store_match(&in->chance, 0, 36, 4.0, 0.0, 8.0) == r12, "Double Loop copies the conditions onto the new half");
+    /* clip copy to slot 2 */
+    chance_on_lane_verb(in, "copy_clip", "0 2");
+    CHECK(sc_store_match(&in->chance, 2, 36, 0.0, 0.0, 4.0) == r12, "a copied clip carries its conditions");
+    /* clip delete + Undo */
+    const int before = sc_store_count(&in->chance);
+    chance_on_lane_verb(in, "stash", "0 2 9");
+    CHECK(sc_store_match(&in->chance, 2, 36, 0.0, 0.0, 4.0) == SC_ALWAYS, "a deleted clip's conditions stop");
+    chance_param_get(in, "state", buf, sizeof buf);
+    CHECK(strstr(buf, "\n20") == NULL, "parked conditions are not persisted");
+    chance_on_lane_verb(in, "unstash", "8 0 2");               /* wrong sid: nothing */
+    CHECK(sc_store_match(&in->chance, 2, 36, 0.0, 0.0, 4.0) == SC_ALWAYS, "a stale unstash is refused");
+    chance_on_lane_verb(in, "unstash", "9 0 2");
+    CHECK(sc_store_match(&in->chance, 2, 36, 0.0, 0.0, 4.0) == r12, "Move's Undo of the delete brings them back");
+    CHECK(sc_store_count(&in->chance) == before, "...all of them, once");
+    /* note delete + Undo */
+    chance_param_set(in, "prune", "0 0.9 1.1");                /* the adopted step-5 note is gone */
+    chance_param_get(in, "of:0:555", buf, sizeof buf);
+    CHECK(atoi(buf) == SC_ALWAYS, "a deleted note's condition goes");
+    chance_param_set(in, "revive", "0 555 36 1");
+    chance_param_get(in, "of:0:555", buf, sizeof buf);
+    CHECK(atoi(buf) == r12, "chance:revive restores it when Move's Undo brings the note back");
+
     free(in);
     printf(fails ? "FAIL: %d\n" : "PASS: chain chance\n", fails);
     return fails ? 1 : 0;

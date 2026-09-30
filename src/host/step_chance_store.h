@@ -27,6 +27,9 @@
 #define SC_STORE_MAX 256
 /* Half the finest grid step would be 0.031 q; a frame at 300 BPM is ~0.015. */
 #define SC_MATCH_TOL 0.03
+/* Rows at and above this are PARKING (a deleted clip's conditions waiting for
+ * Move's Undo -- step_chance_follow.h), never a clip: not serialized. */
+#define SC_ROW_PARK 200
 
 typedef struct {
     uint8_t used;
@@ -165,7 +168,7 @@ static inline int sc_store_serialize(const sc_store_t *st, char *buf, int len)
     if (n < 0 || n >= len) return -1;
     for (int i = 0; i < SC_STORE_MAX; i++) {
         const sc_entry_t *e = &st->e[i];
-        if (!e->used) continue;
+        if (!e->used || e->row >= SC_ROW_PARK) continue;
         int w = snprintf(buf + n, (size_t)(len - n), "%d %lld %d %.17g %d\n",
                          e->row, (long long)e->id, e->pitch, e->start, e->cond);
         if (w < 0 || w >= len - n) return -1;
