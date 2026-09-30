@@ -1470,15 +1470,36 @@ ladder, 99..1 %) or **A:B** -- play on pass A of every B loop passes. The step
 menu also shows Move's own **Length** and **Velocity** for the held note.
 Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
 
-- **The gesture is the SHIM's, over MOVE's screen only** (`step_menu.h` pure,
-  `step_menu.c` glue). Menu is swallowed on BOTH edges, latched -- measured on
+- **The gesture is the SHIM's, over MOVE's screen AND the shadow UI**
+  (`step_menu.h` pure, `step_menu.c` glue). 1.6 took it over Move's screen
+  only; from the shadow UI Menu fell through and Move flipped to Session,
+  reported as the menu not opening. **Only in Move's NOTE view**: in Session
+  view and Set Overview there is no step editor, and Menu stays Move's own view
+  toggle. The view is Move's own announcement (`move_ui_mode`, shadow_dbus.c),
+  which never handled "Note Mode" before this -- the label stuck on Session
+  until a Track press. Measured with Schwung's screen reader OFF: 10/10
+  Note/Session toggles and 6/6 Set Overview exits announced, each twice. Only a
+  POSITIVE Session / Set Overview label refuses; unknown opens. Menu is swallowed on BOTH edges, latched -- measured on
   2.1.x, Menu with a step held still flips Note/Session and the pads start
   launching clips. Further Menu presses cycle Chance -> Length -> Velocity.
   The jog is SWALLOWED on Chance (Move would edit the note length under it),
   PASSED on Length (Move's own hold-step + jog) and REWRITTEN IN PLACE into a
   Volume detent on Velocity (Move's own hold-step + Volume; no touch note
-  needed, measured). Releasing the step closes it. With the shadow UI up a
-  held step is the p-lock gesture, so the menu never opens there.
+  needed, measured). Releasing the step closes it.
+- **On a p-lock grid the held step is HANDED to Move when the menu opens.**
+  The knob grid, a module's own grid and Scenes withhold a step press from
+  Move (`step_observe`) so a knob turn can lock a value, which leaves Move not
+  holding the step -- and Length and Velocity ARE Move's hold-step edits. So
+  opening the menu on a withheld step emits the press to Move then (after
+  compaction, the step's own velocity) and marks it used, so the withhold
+  never replays it as a tap. From then the release is Move's: taken at the
+  step menu's site, the withhold latch retired, the UI still told (its held
+  step feeds the p-lock gesture), and owed to Move through the menu's queue
+  (`sm_owe_release`) no earlier than `SM_HOLD_SAFE_MS` after the hand-off --
+  sooner is a tap to Move and toggles the note being edited. Over the shadow
+  UI the jog is not forwarded to the UI while the card is open, and a REWRITE
+  restores the packet's CIN, which the display-mode filter already zeroed.
+  `tests/host/test_step_menu_handoff.sh` pins the wiring.
 - **Chance reaches SCHWUNG's instruments only.** The gate
   (`step_chance_gate.h`, `chance_filter` in `chain_chance.c`) sits in
   `v2_on_midi` AHEAD of the LFO retrigger, MIDI FX and synth, and drops a

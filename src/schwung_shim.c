@@ -8205,6 +8205,20 @@ static uint8_t  step_press_vel[16];
  * a tap any finger can produce, and Move is entitled to see a shape it could
  * have received from hardware. */
 static uint8_t step_tap_replay[16];
+/* STEP HAND-OFF. The step menu is Move's step, and Length and Velocity are
+ * Move's own hold-step edits -- but a screen that withholds steps for the
+ * p-lock gesture (step_observe) has latched this press away from Move, so
+ * Move is not holding it and those edits would land nowhere. So when the menu
+ * opens on a withheld step, the press is HANDED to Move then (a note-on
+ * emitted after compaction, the step's own velocity), and from that moment
+ * the release is Move's too: taken at the step menu's site, the withhold's
+ * latch retired, and handed over through the menu's owed-release queue no
+ * earlier than SM_HOLD_SAFE_MS after the hand-off -- sooner would be a TAP to
+ * Move and toggle the very note being edited. The UI still gets the release,
+ * since its held-step state (the p-lock gesture) is fed by it. */
+static uint8_t  step_handed[16];
+static uint64_t step_handed_ms[16];
+static uint8_t  step_hand_press[16];
 /* A press that DID something on the grid is not a tap, however short it was.
  *
  * The tap/hold split is a stopwatch, and a stopwatch cannot tell a quick
@@ -8296,6 +8310,28 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
     step_press_ms[i] = 0;
     shim_step_hold_ms_last = (int)held_ms;
     if (held_ms < STEP_TAP_MS) { step_tap_replay[i] = 1; shim_step_tap_queued++; }
+}
+
+/* WHERE THE STEP MENU MAY OPEN: over Move's screen AND the shadow UI, in
+ * Move's NOTE view.
+ *
+ * 1.6 took it over Move's screen only, and from the shadow UI Menu fell
+ * through to the UI's own handling while Move flipped to Session -- which
+ * reads as the feature being broken. On a screen that withholds steps from
+ * Move for the p-lock gesture, the menu hands the press to Move when it opens
+ * (STEP HAND-OFF, below), so the whole menu works there too. */
+static int step_menu_eligibility(void)
+{
+    if (!shadow_ui_enabled) return 0;
+    /* ONLY WHERE THE STEPS ARE A SEQUENCER. In Session view and Set Overview
+     * there is no step editor under the finger, so the card has nothing to
+     * edit -- and Menu there is Move's own view toggle, which it should stay.
+     * Refused only on a POSITIVE Session / Set Overview label (Move's own view
+     * announcements, shadow_dbus.c); unknown still opens, so a label that has
+     * not caught up can never lock the menu out. */
+    const uint8_t m = shadow_control ? shadow_control->move_ui_mode : 0;
+    if (m == MOVE_UI_MODE_SESSION || m == MOVE_UI_MODE_SET_OVERVIEW) return 0;
+    return 1;
 }
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
@@ -9435,7 +9471,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * frame late, which nothing can see. */
     if (shadow_control)
         step_menu_frame(shadow_control, shadow_steps_held_mask,
-                        !shadow_display_mode && shadow_ui_enabled);
+                        step_menu_eligibility());
 
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
@@ -9469,19 +9505,52 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
 
             /* THE STEP MENU: hold one step, press Menu (step_menu.c). Over
-             * Move's screen only -- with the shadow UI up a held step is the
-             * p-lock gesture and Menu is the UI's. Both edges of a taken Menu
-             * press are swallowed (Move would flip Note/Session); the jog is
-             * swallowed on Chance and rewritten IN PLACE into a Volume detent
-             * on Velocity, which is Move's own hold-step + Volume edit. */
+             * Move's screen and the shadow UI alike (step_menu_eligibility).
+             * Both edges of a taken Menu press are swallowed (Move would flip
+             * Note/Session, and a swallowed press never reaches the shadow
+             * UI's own Menu handling further down); the jog is swallowed on
+             * Chance and rewritten IN PLACE into a Volume detent on Velocity,
+             * which is Move's own hold-step + Volume edit. */
             if (!overtake_active && (cin == 0x08 || cin == 0x09 || cin == 0x0B)) {
                 uint8_t sm_out[3];
                 const int sm = step_menu_on_input(status, d1, d2, sm_out, shadow_steps_held_mask,
                                                   shadow_shift_held,
-                                                  !shadow_display_mode && shadow_ui_enabled,
+                                                  step_menu_eligibility(),
                                                   now_mono_ms());
+                /* A HANDED step's release is Move's now (STEP HAND-OFF):
+                 * retire the withhold, owe Move the release, and still tell
+                 * the UI -- whatever the tap guard made of it. */
+                if (d1 >= 16 && d1 <= 31 && (type == 0x80 || (type == 0x90 && d2 == 0)) &&
+                    step_handed[d1 - 16]) {
+                    const int i = d1 - 16;
+                    const uint64_t now_h = now_mono_ms();
+                    const uint64_t due = step_handed_ms[i] + SM_HOLD_SAFE_MS;
+                    step_menu_owe_release(i, due > now_h ? due : now_h);
+                    step_handed[i] = 0;
+                    step_swallow_latch[i] = 0;
+                    step_used[i] = 0;
+                    step_press_ms[i] = 0;
+                    shadow_steps_held_mask &= ~(1u << i);
+                    if (shadow_control && shadow_control->step_observe &&
+                        shadow_display_mode && shadow_ui_midi_shm)
+                        shadow_ui_midi_publish(0x08, 0x80, d1, 0);
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    continue;
+                }
                 if (sm == SM_SWALLOW) {
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    /* STEP HAND-OFF: the menu opened on a step withheld from
+                     * Move. Give Move the press now; the withhold's own tap
+                     * replay must never fire for it. */
+                    if (type == 0xB0 && d1 == SM_CC_MENU && d2 > 0) {
+                        const int ms = step_menu_open_step();
+                        if (ms >= 0 && step_swallow_latch[ms] && !step_handed[ms]) {
+                            step_handed[ms] = 1;
+                            step_handed_ms[ms] = now_mono_ms();
+                            step_hand_press[ms] = 1;
+                            step_used[ms] = 1;
+                        }
+                    }
                     /* A swallowed STEP edge is invisible to midi_monitor (it
                      * reads the mailbox the swallow zeroes), so the held-step
                      * mask is kept here -- the step_note_withhold rule. */
@@ -9494,6 +9563,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 }
                 if (sm == SM_REWRITE) {
                     uint8_t *sh = shadow + MIDI_IN_OFFSET + j;
+                    /* The whole packet, CIN included: with the shadow UI up
+                     * the display-mode filter has already zeroed this jog in
+                     * Move's copy, and bytes 1-3 alone behind a zero CIN are a
+                     * terminator, not an event (see midi_in_swallow). */
+                    sh[0] = src[j];
                     sh[1] = sm_out[0]; sh[2] = sm_out[1]; sh[3] = sm_out[2];
                     continue;
                 }
@@ -10596,6 +10670,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                          d1 == 88 ||
                                          (d1 < 128 && claim_press_blocked[d1]));
 
+                /* The jog is the step menu's while it is open -- over the
+                 * shadow UI it would otherwise also move the UI's cursor
+                 * under the card. */
+                if (d1 == 14 && step_menu_open_step() >= 0)
+                    forward_to_shadow = 0;
+
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
                 }
@@ -10962,6 +11042,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             j += SHADOW_MIDI_IN_STRIDE;
             shim_step_tap_emitted++;
             step_tap_replay[i] = on ? 2 : 0;
+        }
+    }
+
+    /* === POST-IOCTL: THE STEP MENU'S HAND-OFF PRESSES ===
+     * A step withheld from Move (p-lock grids) handed to it because the step
+     * menu opened on it: the note-on Move never saw, so Move holds the step
+     * and its own Length / Velocity edits act on it. After compaction, like
+     * the tap replay above; see step_handed. */
+    if (global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        int j = 0;
+        for (int i = 0; i < 16; i++) {
+            if (!step_hand_press[i]) continue;
+            for (; j < SHADOW_MIDI_IN_BYTES; j += SHADOW_MIDI_IN_STRIDE)
+                if (shadow_midi_in_slot_empty(&src[j])) break;
+            if (j >= SHADOW_MIDI_IN_BYTES) break;   /* next frame */
+            src[j] = 0x09; src[j + 1] = 0x90; src[j + 2] = (uint8_t)(16 + i);
+            src[j + 3] = step_press_vel[i] ? step_press_vel[i] : 100;
+            memset(&src[j + 4], 0, 4);              /* synthetic: no timestamp */
+            j += SHADOW_MIDI_IN_STRIDE;
+            step_hand_press[i] = 0;
         }
     }
 
