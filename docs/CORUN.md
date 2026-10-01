@@ -197,6 +197,18 @@ Additive and backward-compatible: with no overlay open (`corunOverlayId == null`
 `coRunWants` collapses to `coRunCedes` and the dispatch behaves exactly as the
 framework does without view addressing.
 
+### Parameter pages in the chain-editor peer
+
+When `coRunView` is `PARAM_PAGES`, peer-owned knobs, knob touches, jog and Back
+go through the existing parameter-page MIDI handler inside `runCoRunChainEdit`,
+before generic chain-editor fallbacks. The outer view remains `OVERTAKE_MODULE`;
+checking only that outer view would route grid knobs to slot macros instead.
+The same visible-view context drives page polling and component-widget ticks.
+Escape and modal handling retain precedence, and tool-owned pads, steps and
+transport are not offered to the grid. `tests/host/test_corun_param_pages.sh`
+exercises the actual dispatch and page-input handlers with mocked host/controller
+boundaries; it is not a substitute for on-device parameter/audio testing.
+
 ## Move-firmware coupling
 
 `CORUN_TARGET_MOVE_NATIVE` runs as a pure shim-level split: Move firmware
