@@ -1576,6 +1576,24 @@ Design and measurements: `docs/plans/2026-09-30-step-menu-design.md`.
   routing problem (Move track MIDI Out Off: nothing ever matches).
 - **Unknown is never "drop"**: stopped transport, no clip, no row, unknown pass
   -- all play the note.
+- **The gate matches the pitch MOVE played, not the one it was handed.** The
+  slot's Transpose is applied in the shim (`shadow_chain_apply_transpose`)
+  BEFORE `v2_on_midi`, so a +12 slot delivers 76 for Move's 64 -- and every
+  condition on a transposed slot matched nothing (`chance:stats` "0 0" on
+  hardware, 2026-10-01). The shim pushes `chance:transpose` on change (keyed on
+  the instance, so a reloaded slot is told again) and `sc_gate` subtracts it
+  for the MATCH only; the dropped set stays keyed on the delivered pitch,
+  which is what the note-off carries.
+- **A RESTORED id is a HINT.** Move renumbers its notes when it loads a set,
+  so an id saved in `chance_<i>.txt` can name a different note after a
+  restart. The follow trusted it: it RELOCATED the step-1 chord's condition
+  onto the next note of that pitch and pruned the rest (hardware,
+  2026-10-01 -- one note of each chord then played every pass). A restore now
+  gives every entry a synthetic id (`sc_store_unbind_ids`), and the page
+  follow ADOPTS it by pitch + position, the path copies already take.
+  Playback never needed the id. `chance:diag` lists the last 16 note-ons the
+  gate saw (pitch, phase, pass, result, distance to the nearest condition) --
+  the readout that found this.
 
 ### Scenes -- a MORPH contribution, the table verbs, and the edit arm
 

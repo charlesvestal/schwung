@@ -36,10 +36,38 @@ int chance_filter(chain_instance_t *inst, const uint8_t *msg, int len, int sourc
     if (!inst || source != MOVE_MIDI_SOURCE_EXTERNAL || len < 3) return 1;
     const uint8_t type = msg[0] & 0xF0;
     if (type != 0x90 && type != 0x80) return 1;
-    return sc_gate(&inst->chance_gate, &inst->chance, msg, len,
-                   inst->clip_phase_valid, inst->clip_phase_beats,
-                   inst->clip_loop_start, inst->clip_loop_len,
-                   inst->lane_clip_slot, inst->chance_pass1 - 1);
+    const uint32_t matched0 = inst->chance_gate.matched;
+    const int play = sc_gate(&inst->chance_gate, &inst->chance, msg, len,
+                             inst->clip_phase_valid, inst->clip_phase_beats,
+                             inst->clip_loop_start, inst->clip_loop_len,
+                             inst->lane_clip_slot, inst->chance_pass1 - 1);
+    if (type == 0x90 && msg[2] > 0) {
+        /* chance:diag -- fixed ring, no allocation; one store walk per note-on. */
+        const int mp = (int)msg[1] - inst->chance_gate.transpose;
+        double best = -1.0;
+        const double ll = inst->clip_loop_len;
+        if (inst->clip_phase_valid && mp >= 0 && mp < 128) {
+            for (int i = 0; i < SC_STORE_MAX; i++) {
+                const sc_entry_t *e = &inst->chance.e[i];
+                if (!e->used || e->row != inst->lane_clip_slot || e->pitch != mp) continue;
+                double d = fabs(inst->clip_phase_beats - e->start);
+                if (ll > 0.0) {
+                    double w = fabs(inst->clip_phase_beats - ll - e->start); if (w < d) d = w;
+                    w = fabs(inst->clip_phase_beats + ll - e->start); if (w < d) d = w;
+                }
+                if (best < 0.0 || d < best) best = d;
+            }
+        }
+        const uint32_t k = inst->chance_diag_n++ % CHANCE_DIAG;
+        inst->chance_diag[k].pitch = msg[1];
+        inst->chance_diag[k].result = (inst->chance_gate.matched != matched0) ? (int8_t)play : -1;
+        inst->chance_diag[k].phase_valid = (int8_t)(inst->clip_phase_valid ? 1 : 0);
+        inst->chance_diag[k].row = (int8_t)inst->lane_clip_slot;
+        inst->chance_diag[k].phase = inst->clip_phase_beats;
+        inst->chance_diag[k].pass = inst->chance_pass1 - 1;
+        inst->chance_diag[k].nearest = best;
+    }
+    return play;
 }
 
 /* MOVE'S EDITS, as the lanes hear them (host/edit_follow.h issues each only
@@ -157,10 +185,20 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
         if (sscanf(val, "%d %lld %d %lf", &row, &id, &pitch, &start) != 4) return;
         sc_store_adopt(&inst->chance, row, (int64_t)id, pitch, start);
     } else if (strcmp(sub, "state") == 0) {
-        /* A refused document leaves the store as it was (sc_store_parse). */
-        sc_store_parse(&inst->chance, val);
+        /* A refused document leaves the store as it was (sc_store_parse).
+         * An accepted one is UNBOUND: its ids are re-learned from Move's live
+         * notes by position (sc_store_unbind_ids). */
+        if (sc_store_parse(&inst->chance, val) > 0) sc_store_unbind_ids(&inst->chance);
     } else if (strcmp(sub, "clear") == 0) {
         sc_store_parse(&inst->chance, "");
+    } else if (strcmp(sub, "transpose") == 0) {
+        /* The slot's semitones, pushed by the shim on change: it transposes
+         * Move's notes BEFORE they reach v2_on_midi, and the gate must match
+         * the pitch Move played (step_chance_gate.h). */
+        int t = atoi(val);
+        if (t > 127) t = 127;
+        if (t < -127) t = -127;
+        inst->chance_gate.transpose = t;
     }
 }
 
@@ -176,6 +214,27 @@ int chance_param_get(chain_instance_t *inst, const char *sub, char *buf, int buf
     if (strcmp(sub, "stats") == 0)
         return snprintf(buf, buf_len, "%u %u", (unsigned)inst->chance_gate.matched,
                         (unsigned)inst->chance_gate.dropped_n);
+    if (strcmp(sub, "transpose") == 0)
+        return snprintf(buf, buf_len, "%d", inst->chance_gate.transpose);
+    /* "pitch phase pass result nearest row valid;" oldest first -- ONE line,
+     * because a multi-line GET desyncs line-oriented readers. */
+    if (strcmp(sub, "diag") == 0) {
+        int off = 0;
+        buf[0] = 0;
+        const uint32_t n = inst->chance_diag_n;
+        const uint32_t from = (n > CHANCE_DIAG) ? n - CHANCE_DIAG : 0;
+        for (uint32_t i = from; i < n && off < buf_len - 1; i++) {
+            const uint32_t k = i % CHANCE_DIAG;
+            int w = snprintf(buf + off, (size_t)(buf_len - off), "%d %.4f %ld %d %.4f %d %d;",
+                             inst->chance_diag[k].pitch, inst->chance_diag[k].phase,
+                             inst->chance_diag[k].pass, inst->chance_diag[k].result,
+                             inst->chance_diag[k].nearest, inst->chance_diag[k].row,
+                             inst->chance_diag[k].phase_valid);
+            if (w < 0 || w >= buf_len - off) break;
+            off += w;
+        }
+        return off;
+    }
     if (strcmp(sub, "count") == 0)
         return snprintf(buf, buf_len, "%d", sc_store_count(&inst->chance));
     if (strcmp(sub, "state") == 0) {
