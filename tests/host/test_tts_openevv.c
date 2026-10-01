@@ -16,9 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
 
 #include "tts_openevv_map.h"
 #include "tts_config.h"
+#include "tts_upsample4.h"
 
 static int failures = 0;
 #define CHECK(cond, ...) do { \
@@ -139,11 +141,109 @@ static void test_clamp(void) {
           v.inflection == 100 && v.rough == 100 && v.breath == 0, "clamp");
 }
 
+/* ---- tts_upsample4.h ------------------------------------------------------
+ *
+ * The backend asks the engine for 11025 Hz and raises it here, because the
+ * engine's own 44.1 kHz path cost eleven times the speech. What must not
+ * change in trading it is the SOUND: the 5.0-5.5 kHz band where Eloquence
+ * still has speech (cutting it read as a duller voice), and images of the
+ * 11025 stream kept out of the audible band. */
+
+#define UP_IN 11025.0
+#define UP_OUT 44100.0
+#define UP_N 8192                 /* input samples per measurement */
+#define UP_SETTLE 512             /* output samples skipped at the start */
+
+static tts_up4_filter_t up_filter;
+static int16_t up_in[UP_N];
+static int16_t up_out[4 * UP_N];
+
+/* Amplitude of one frequency in the settled output (a single DFT bin). */
+static double up_level(const int16_t *x, int n, double hz, double rate) {
+    double re = 0.0, im = 0.0;
+    for (int i = UP_SETTLE; i < n; i++) {
+        double a = 2.0 * 3.14159265358979323846 * hz * i / rate;
+        re += x[i] * cos(a);
+        im += x[i] * sin(a);
+    }
+    return 2.0 * sqrt(re * re + im * im) / (n - UP_SETTLE);
+}
+
+static void up_tone(double hz, double amp) {
+    for (int i = 0; i < UP_N; i++)
+        up_in[i] = (int16_t)lrint(amp * sin(2.0 * 3.14159265358979323846 * hz * i / UP_IN));
+}
+
+static double up_db(double a, double b) { return 20.0 * log10(a / b); }
+
+static void test_upsample4(void) {
+    tts_up4_state_t st;
+    tts_up4_design(&up_filter);
+
+    /* Unity at DC, in every phase: a phase off by a count is a tone at 11025. */
+    for (int i = 0; i < UP_N; i++) up_in[i] = 12000;
+    tts_up4_reset(&st);
+    tts_up4_run(&up_filter, &st, up_in, UP_N, up_out);
+    int dc_ok = 1;
+    for (int i = UP_SETTLE; i < 4 * UP_N; i++)
+        if (abs(up_out[i] - 12000) > 1) { dc_ok = 0; break; }
+    CHECK(dc_ok, "upsample4: steady input must come out steady and at unity in all four phases");
+
+    /* Flat passband, the 5 kHz region included; images at least 60 dB down. */
+    static const double pass[] = { 200, 1000, 3000, 4500, 5000 };
+    for (unsigned k = 0; k < sizeof(pass) / sizeof(pass[0]); k++) {
+        double hz = pass[k];
+        up_tone(hz, 16000);
+        tts_up4_reset(&st);
+        tts_up4_run(&up_filter, &st, up_in, UP_N, up_out);
+        double sig = up_level(up_out, 4 * UP_N, hz, UP_OUT);
+        double gain = up_db(sig, 16000);
+        double lim = hz <= 4500 ? 0.1 : 0.5;
+        CHECK(fabs(gain) <= lim, "upsample4: %.0f Hz passes at %.2f dB, want within %.1f", hz, gain, lim);
+        for (int m = 1; m <= 3; m++) {
+            double lo = m * UP_IN - hz, hi = m * UP_IN + hz;
+            double worst = up_db(up_level(up_out, 4 * UP_N, lo, UP_OUT), sig);
+            double other = up_db(up_level(up_out, 4 * UP_N, hi, UP_OUT), sig);
+            if (other > worst) worst = other;
+            CHECK(worst <= -60.0, "upsample4: image of %.0f Hz near %.0f Hz is %.1f dB, want <= -60",
+                  hz, m * UP_IN, worst);
+        }
+    }
+
+    /* Streaming: the engine hands samples over a buffer at a time, so a run
+     * split into uneven pieces must equal the same run handed over whole --
+     * a seam at every callback is a buzz no level measurement would catch. */
+    up_tone(1234, 20000);
+    static int16_t whole[4 * UP_N], parts[4 * UP_N];
+    tts_up4_reset(&st);
+    tts_up4_run(&up_filter, &st, up_in, UP_N, whole);
+    tts_up4_reset(&st);
+    int at = 0, step = 1;
+    while (at < UP_N) {
+        int take = step < UP_N - at ? step : UP_N - at;
+        tts_up4_run(&up_filter, &st, up_in + at, take, parts + 4 * at);
+        at += take;
+        step = step * 3 % 517 + 1;
+    }
+    CHECK(memcmp(whole, parts, sizeof(whole)) == 0,
+          "upsample4: chunked input must produce exactly the unchunked output");
+
+    /* Full scale must clip, not wrap. */
+    for (int i = 0; i < UP_N; i++) up_in[i] = (i / 7) % 2 ? 32767 : -32768;
+    tts_up4_reset(&st);
+    tts_up4_run(&up_filter, &st, up_in, UP_N, up_out);
+    int wrapped = 0;
+    for (int i = 1; i < 4 * UP_N; i++)
+        if (abs(up_out[i] - up_out[i - 1]) > 40000) wrapped = 1;
+    CHECK(!wrapped, "upsample4: overshoot on a full-scale square must clamp, not wrap");
+}
+
 int main(void) {
     test_speed();
     test_cp1252();
     test_config_roundtrip();
     test_clamp();
+    test_upsample4();
     if (failures) {
         fprintf(stderr, "test_tts_openevv: %d failure(s)\n", failures);
         return 1;

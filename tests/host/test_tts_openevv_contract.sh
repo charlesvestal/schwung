@@ -57,11 +57,28 @@ while IFS='=' read -r name val; do
     grep -Eq "\\b${name} = ${val}\\b" "$SRC" ||
         fail "$SRC does not declare $name = $val as eci.h does"
 done <<< "$eci_vals"
-# The sample-rate CODE: 5 is 44100 in eci.h's table. Getting it wrong plays
-# 11025 Hz audio at 44100 -- chipmunks, not an error.
-grep -q '#define OPENEVV_SAMPLE_RATE_44100 5' "$SRC" ||
-    fail "the eciSampleRate code for 44100 Hz must be 5"
-grep -q '44100' "$ECI_H" || true
+# The sample-rate CODE: 1 is 11025 in eci.h's table (8000, 11025, 22050, ...).
+# The backend asks for the engine's native rate and upsamples 4x itself
+# (tts_upsample4.h); any other rate played through that 4x is speech at the
+# wrong speed -- chipmunks or a drawl, not an error.
+grep -q '#define OPENEVV_SAMPLE_RATE_11025 1' "$SRC" ||
+    fail "the eciSampleRate code for 11025 Hz must be 1"
+grep -q 'eciSampleRate, OPENEVV_SAMPLE_RATE_11025' "$SRC" ||
+    fail "the engine must be asked for 11025: its own 44.1 kHz sinc cost 11x the speech"
+grep -q 'tts_up4_run' "$SRC" ||
+    fail "11025 Hz audio must go through tts_upsample4.h before the 44.1 kHz ring"
+
+# The worker WAITS with eciSynchronize. The engine hands over about one buffer
+# per eciSpeaking call, so a sleep-and-poll on it paces the whole delivery,
+# first sample included, at the poll interval (1055 ms vs 262 for a sentence).
+grep -q 'eci\.Speaking' "$SRC" &&
+    fail "the openevv worker polls eciSpeaking -- wait with eciSynchronize"
+grep -q 'eci.Synchronize(h)' "$SRC" ||
+    fail "the openevv worker must wait for an utterance with eciSynchronize"
+# ...and a full ring is waited out IN the callback: eciDataNotProcessed makes
+# the engine sleep a flat 30 ms, and an interruption landing there waits it out.
+awk '/^static int openevv_callback/,/^}/' "$SRC" | grep -q 'return eciDataNotProcessed' &&
+    fail "the openevv callback answers eciDataNotProcessed -- a 30 ms engine sleep; wait for room instead"
 
 # --- 2. the manager's raw offset --------------------------------------------
 probe="${TMPDIR:-/tmp}/evv_off_$$"

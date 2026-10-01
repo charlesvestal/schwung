@@ -312,8 +312,10 @@ $(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # tts_config.c is the one tts.json writer; built here with the header-only
-# openevv mappings. Neither needs the engine, the shim or libeci.
-$(BUILD_DIR)/test_tts_openevv: test_tts_openevv.c ../../src/host/tts_config.c ../../src/host/tts_config.h ../../src/host/tts_openevv_map.h | $(BUILD_DIR)
+# openevv mappings. Neither needs the engine, the shim or libeci. The
+# upsampler (tts_upsample4.h) needs libm.
+$(BUILD_DIR)/test_tts_openevv: LDFLAGS += -lm
+$(BUILD_DIR)/test_tts_openevv: test_tts_openevv.c ../../src/host/tts_config.c ../../src/host/tts_config.h ../../src/host/tts_openevv_map.h ../../src/host/tts_upsample4.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is

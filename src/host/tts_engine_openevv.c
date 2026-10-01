@@ -52,10 +52,19 @@
 #include "unified_log.h"
 #include "tts_config.h"
 #include "tts_openevv_map.h"
+#include "tts_upsample4.h"
 
 #define OPENEVV_LIB "libeci.so.1"
-#define OPENEVV_FRAME 2048                 /* samples per callback buffer */
-#define OPENEVV_SAMPLE_RATE_44100 5        /* eciSampleRate code for 44100 Hz */
+/* The engine is asked for its NATIVE rate and raised to 44100 by
+ * tts_upsample4.h in the callback. Asking the engine for 44100 instead runs
+ * its own double-precision sinc on the synthesis thread, which measured at
+ * eleven times the cost of the speech: 262 ms against 22 for one sentence,
+ * all of it in front of the first sample and inside every interruption. */
+#define OPENEVV_SAMPLE_RATE_11025 1        /* eciSampleRate code for 11025 Hz */
+/* Samples per callback buffer, at 11025: 46 ms of audio, the same slice the
+ * old 2048-at-44100 buffer was. The first callback waits for a full one, so
+ * this is part of the time to first sound. */
+#define OPENEVV_FRAME 512
 #define OPENEVV_TEXT_MAX 8192              /* SHADOW_SCREENREADER_TEXT_LEN */
 
 /* ---- the slice of ECI this backend uses --------------------------------
@@ -85,7 +94,7 @@ typedef int (*eci_set_output_buffer_fn)(ECIHand, int, short *);
 typedef void (*eci_register_callback_fn)(ECIHand, ECICallback, void *);
 typedef int (*eci_add_text_fn)(ECIHand, const void *);
 typedef int (*eci_synthesize_fn)(ECIHand);
-typedef int (*eci_speaking_fn)(ECIHand);
+typedef int (*eci_synchronize_fn)(ECIHand);
 typedef int (*eci_copy_voice_fn)(ECIHand, int, int);
 typedef int (*eci_set_voice_param_fn)(ECIHand, int, int, int);
 
@@ -98,7 +107,7 @@ static struct {
     eci_register_callback_fn RegisterCallback;
     eci_add_text_fn AddText;
     eci_synthesize_fn Synthesize;
-    eci_speaking_fn Speaking;
+    eci_synchronize_fn Synchronize;
     eci_copy_voice_fn CopyVoice;
     eci_set_voice_param_fn SetVoiceParam;
 } eci;
@@ -128,7 +137,7 @@ static bool openevv_load_library(void) {
     RESOLVE(RegisterCallback, "eciRegisterCallback");
     RESOLVE(AddText, "eciAddText");
     RESOLVE(Synthesize, "eciSynthesize");
-    RESOLVE(Speaking, "eciSpeaking");
+    RESOLVE(Synchronize, "eciSynchronize");
     RESOLVE(CopyVoice, "eciCopyVoice");
     RESOLVE(SetVoiceParam, "eciSetVoiceParam");
 #undef RESOLVE
@@ -139,7 +148,8 @@ static bool openevv_load_library(void) {
 /* ---- the audio ring: ECI's thread writes, the RT reader reads ---------- */
 
 /* Mono at 44100 -- the reader duplicates to L=R. 4 s, and the callback's
- * backpressure (eciDataNotProcessed) keeps it from ever needing more. */
+ * backpressure (it waits for room, see openevv_callback) keeps it from ever
+ * needing more. */
 #define RING_SIZE (44100 * 4)
 static int16_t ring[RING_SIZE];
 static _Atomic int ring_write_pos = 0;     /* ECI callback */
@@ -218,8 +228,34 @@ static bool initialized = false;
 
 static short eci_frame[OPENEVV_FRAME];
 
+/* 11025 -> 44100. The filter is designed once by the worker before the first
+ * instance exists; the state belongs to whoever is producing -- the engine's
+ * thread inside the callback, or the worker after eciSynchronize has returned
+ * (so never both at once) -- and is reset when the utterance changes. */
+static tts_up4_filter_t up_filter;
+static tts_up4_state_t up_state;
+static uint32_t up_gen = 0;                /* the utterance up_state holds */
+static int16_t up_out[4 * OPENEVV_FRAME];
+static bool up_designed = false;
+
 static void worker_poke(void) {
     if (worker_started) sem_post(&worker_wake);   /* never blocks */
+}
+
+static bool ring_room(int n) {
+    int w = atomic_load_explicit(&ring_write_pos, memory_order_relaxed);
+    int r = atomic_load_explicit(&ring_read_pos, memory_order_acquire);
+    return RING_SIZE - 1 - ring_used(w, r) >= n;
+}
+
+/* One producer at a time: see up_state. */
+static void ring_push(const int16_t *s, int n) {
+    int w = atomic_load_explicit(&ring_write_pos, memory_order_relaxed);
+    for (int i = 0; i < n; i++) {
+        ring[w] = s[i];
+        w = (w + 1) % RING_SIZE;
+    }
+    atomic_store_explicit(&ring_write_pos, w, memory_order_release);
 }
 
 static int openevv_callback(ECIHand h, ECIMessage msg, int param, void *data) {
@@ -227,39 +263,58 @@ static int openevv_callback(ECIHand h, ECIMessage msg, int param, void *data) {
     if (msg != eciWaveformBuffer || param <= 0) return eciDataProcessed;
 
     uint32_t mine = atomic_load_explicit(&utt_gen, memory_order_relaxed);
-    if (mine != atomic_load_explicit(&req_gen, memory_order_acquire) ||
-        !atomic_load_explicit(&want_active, memory_order_relaxed))
-        return eciDataAbort;
-
     int n = param > OPENEVV_FRAME ? OPENEVV_FRAME : param;
-    int w = atomic_load_explicit(&ring_write_pos, memory_order_relaxed);
-    int r = atomic_load_explicit(&ring_read_pos, memory_order_acquire);
-    if (RING_SIZE - 1 - ring_used(w, r) < n)
-        return eciDataNotProcessed;        /* the engine re-offers in 30 ms */
 
-    for (int i = 0; i < n; i++) {
-        ring[w] = eci_frame[i];
-        w = (w + 1) % RING_SIZE;
+    /* A full ring is WAITED OUT here, on the engine's own thread, never
+     * answered with eciDataNotProcessed: that answer costs a flat 30 ms
+     * sleep inside the engine before the buffer is offered again
+     * (docs/api.md), and an interruption landing in that sleep waited for
+     * all of it. The ring holds 4 s and the engine runs far ahead of
+     * realtime, so any line longer than that parked the engine there. A
+     * stale generation is noticed within a millisecond instead. */
+    for (;;) {
+        if (mine != atomic_load_explicit(&req_gen, memory_order_acquire) ||
+            !atomic_load_explicit(&want_active, memory_order_relaxed))
+            return eciDataAbort;
+        if (ring_room(4 * n)) break;
+        const struct timespec ms = { 0, 1000 * 1000 };
+        nanosleep(&ms, NULL);
     }
-    atomic_store_explicit(&ring_write_pos, w, memory_order_release);
+
+    if (up_gen != mine) {
+        tts_up4_reset(&up_state);          /* no tail of the last utterance */
+        up_gen = mine;
+    }
+    tts_up4_run(&up_filter, &up_state, eci_frame, n, up_out);
+    ring_push(up_out, 4 * n);
     return eciDataProcessed;
 }
 
 static ECIHand worker_open(void) {
+    if (!up_designed) {
+        tts_up4_design(&up_filter);        /* transcendentals: here, never on audio */
+        up_designed = true;
+    }
     ECIHand h = eci.New();
     if (h == NULL_ECI_HAND) {
         unified_log("tts_openevv", LOG_LEVEL_ERROR, "eciNew failed");
         return NULL_ECI_HAND;
     }
-    if (eci.SetParam(h, eciSampleRate, OPENEVV_SAMPLE_RATE_44100) < 0)
-        unified_log("tts_openevv", LOG_LEVEL_WARN, "eciSampleRate 44100 refused");
+    /* Refused would leave the engine at a rate the upsampler was not built
+     * for, which is speech at the wrong speed rather than an error -- so it
+     * is a failure, not a warning. 11025 is the engine's default anyway. */
+    if (eci.SetParam(h, eciSampleRate, OPENEVV_SAMPLE_RATE_11025) < 0) {
+        unified_log("tts_openevv", LOG_LEVEL_ERROR, "eciSampleRate 11025 refused");
+        eci.Delete(h);
+        return NULL_ECI_HAND;
+    }
     eci.RegisterCallback(h, openevv_callback, NULL);
     if (!eci.SetOutputBuffer(h, OPENEVV_FRAME, eci_frame)) {
         unified_log("tts_openevv", LOG_LEVEL_ERROR, "eciSetOutputBuffer refused");
         eci.Delete(h);
         return NULL_ECI_HAND;
     }
-    unified_log("tts_openevv", LOG_LEVEL_INFO, "openevv instance ready (44100 Hz mono)");
+    unified_log("tts_openevv", LOG_LEVEL_INFO, "openevv instance ready (11025 Hz, upsampled to 44100)");
     return h;
 }
 
@@ -342,10 +397,25 @@ static void worker_speak(ECIHand h, const text_slot_t *slot) {
      * the jog outran the speech. The callback already answers eciDataAbort
      * for a stale generation, ON the engine's thread, and all three ways of
      * cancelling cost the same because each waits for the current message to
-     * finish (docs/api.md, "Waiting and stopping"). So just wait. */
-    const struct timespec tick = { 0, 5 * 1000 * 1000 };
-    while (eci.Speaking(h))
-        nanosleep(&tick, NULL);
+     * finish (docs/api.md, "Waiting and stopping"). So just wait.
+     *
+     * And wait with eciSynchronize, never a sleep-and-poll on eciSpeaking:
+     * the engine hands over about ONE buffer per eciSpeaking call, so a 5 ms
+     * poll paced delivery at a buffer per 5 ms -- measured, the same sentence
+     * took 1055 ms polled at 5 ms, 435 at 1 ms and 262 under eciSynchronize,
+     * and the poll sat in front of the first sample too. A stale utterance
+     * still ends promptly, because the callback is answering eciDataAbort. */
+    eci.Synchronize(h);
+
+    /* The filter holds the last few ms of the utterance (its delay); push
+     * silence through so the end of the word is heard rather than cut. Safe
+     * here: once eciSynchronize returns no callback is running. */
+    if (up_gen == gen && gen == atomic_load_explicit(&req_gen, memory_order_acquire) &&
+        ring_room(4 * TTS_UP4_PHASE_TAPS)) {
+        static const int16_t zeros[TTS_UP4_PHASE_TAPS];
+        tts_up4_run(&up_filter, &up_state, zeros, TTS_UP4_PHASE_TAPS, up_out);
+        ring_push(up_out, 4 * TTS_UP4_PHASE_TAPS);
+    }
 }
 
 static void *openevv_worker(void *arg) {
@@ -361,10 +431,7 @@ static void *openevv_worker(void *arg) {
         } else if (!active && h != NULL_ECI_HAND) {
             /* No eciStop -- see worker_speak. want_active is already false,
              * so the callback is answering eciDataAbort; wait it out. */
-            while (eci.Speaking(h)) {
-                const struct timespec t = { 0, 5 * 1000 * 1000 };
-                nanosleep(&t, NULL);
-            }
+            eci.Synchronize(h);
             eci.Delete(h);
             h = NULL_ECI_HAND;
             unified_log("tts_openevv", LOG_LEVEL_INFO, "openevv instance released");
@@ -449,7 +516,7 @@ static void openevv_load_config_once(void) {
 /* ---- public API --------------------------------------------------------- */
 
 bool openevv_tts_init(int sample_rate) {
-    (void)sample_rate;                     /* the engine is asked for 44100 */
+    (void)sample_rate;                     /* always 44100 out: 11025 upsampled */
     if (initialized) return true;
 
     if (!openevv_load_library()) return false;

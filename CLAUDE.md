@@ -2130,7 +2130,7 @@ a stub so eSpeak NG resolves without dragging in libpulse/libX11.
 ### openevv (Eloquence) is DLOPENED, and its language data is nobody's to license
 
 The third screen reader engine, `libs/openevv` (submodule) → `lib/libeci.so.1`,
-loaded by `src/host/tts_engine_openevv.c`. Four rules:
+loaded by `src/host/tts_engine_openevv.c`. Five rules:
 
 - **Never `-leci`.** A missing library must fall back to eSpeak, not stop
   MoveOriginal from starting; CI checks the shim has no `NEEDED libeci`. The
@@ -2142,6 +2142,15 @@ loaded by `src/host/tts_engine_openevv.c`. Four rules:
   through a triple buffer and reads a lock-free ring, and interruption is a
   GENERATION, never a flush from the reader. openevv also `abort()`s on arena
   exhaustion or corruption, and in this process that is MoveOriginal.
+- **Latency is decided by how we DRIVE it, not by the engine.** Ask for
+  **11025** and upsample 4x ourselves (`tts_upsample4.h`): the engine's own
+  44.1 kHz path is a double-precision sinc that cost 11x the speech. Wait with
+  **`eciSynchronize`**, never a sleep-poll on `eciSpeaking` — the engine hands
+  over one buffer per call, so the poll interval paced the whole delivery.
+  And **never answer `eciDataNotProcessed`**: it is a flat 30 ms sleep inside
+  the engine, and an interruption landing in it waits it out; the callback
+  waits for ring room itself. Together: first sound and interrupt-to-new-sound
+  both ~2x faster (x86, measured through the backend).
 - **`tts.json` has ONE writer**, `tts_config_save()`. Three engines each
   rewrote the whole file from their own key list, so the `evv_*` voice would
   have reverted on the next eSpeak save.
