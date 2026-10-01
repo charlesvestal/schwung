@@ -35,6 +35,9 @@ typedef struct {
     uint32_t rng;               /* xorshift32; 0 = unseeded */
     uint32_t matched;           /* note-ons that carried a condition */
     uint32_t dropped_n;         /* ...and of those, how many lost */
+    int      transpose;         /* the slot's semitones, ALREADY applied by the
+                                 * shim before the note reached us: the store
+                                 * holds Move's pitch, so a match subtracts it */
 } sc_gate_t;
 
 static inline uint32_t sc_gate_rand(sc_gate_t *g)
@@ -68,9 +71,17 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
     g->dropped[ch][note >> 3] &= (uint8_t)~bit;
     if (!st || !phase_valid || row < 0) return 1;
 
+    /* SLOT TRANSPOSE: the shim moved the note before we saw it, and the store
+     * holds the pitch MOVE played -- so match on that one. Matching on the
+     * delivered pitch silenced chance on every transposed slot (hardware,
+     * 2026-10-01: +12, "0 0" matched). The dropped set above stays keyed on
+     * the DELIVERED pitch, which is what its note-off will carry. */
+    const int move_note = (int)note - g->transpose;
+    if (move_note < 0 || move_note > 127) return 1;
+
     double grp = 0.0;
     int wrap = 0;
-    const int cond = sc_store_match_ex(st, row, note, phase, loop_start, loop_len, &grp, &wrap);
+    const int cond = sc_store_match_ex(st, row, move_note, phase, loop_start, loop_len, &grp, &wrap);
     if (cond == SC_ALWAYS) return 1;
     /* Matched across the wrap: the note starts the NEXT pass. */
     if (pass >= 0) pass += wrap;

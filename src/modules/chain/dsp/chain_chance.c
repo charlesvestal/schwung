@@ -161,6 +161,14 @@ void chance_param_set(chain_instance_t *inst, const char *sub, const char *val)
         sc_store_parse(&inst->chance, val);
     } else if (strcmp(sub, "clear") == 0) {
         sc_store_parse(&inst->chance, "");
+    } else if (strcmp(sub, "transpose") == 0) {
+        /* The slot's semitones, pushed by the shim on change: it transposes
+         * Move's notes BEFORE they reach v2_on_midi, and the gate must match
+         * the pitch Move played (step_chance_gate.h). */
+        int t = atoi(val);
+        if (t > 127) t = 127;
+        if (t < -127) t = -127;
+        inst->chance_gate.transpose = t;
     }
 }
 
@@ -176,6 +184,8 @@ int chance_param_get(chain_instance_t *inst, const char *sub, char *buf, int buf
     if (strcmp(sub, "stats") == 0)
         return snprintf(buf, buf_len, "%u %u", (unsigned)inst->chance_gate.matched,
                         (unsigned)inst->chance_gate.dropped_n);
+    if (strcmp(sub, "transpose") == 0)
+        return snprintf(buf, buf_len, "%d", inst->chance_gate.transpose);
     if (strcmp(sub, "count") == 0)
         return snprintf(buf, buf_len, "%d", sc_store_count(&inst->chance));
     if (strcmp(sub, "state") == 0) {

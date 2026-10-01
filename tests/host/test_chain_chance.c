@@ -70,6 +70,24 @@ int main(void) {
     note(in, 0, 36, MOVE_MIDI_SOURCE_EXTERNAL);
     in->midi_fx_pre_mode = 0;
 
+    /* ---- slot transpose: the shim moved the note before the chain saw it.
+     * The store holds Move's pitch; chance:transpose is what the shim pushes
+     * so the gate matches the note Move played (hardware, 2026-10-01). */
+    chance_param_get(in, "transpose", buf, sizeof buf);
+    CHECK(strcmp(buf, "0") == 0, "chance:transpose starts at 0");
+    chance_param_set(in, "transpose", "12");
+    chance_param_get(in, "transpose", buf, sizeof buf);
+    CHECK(strcmp(buf, "12") == 0, "chance:transpose reads back what was pushed");
+    chain_set_clip_pass(in, 1);
+    CHECK(note(in, 1, 48, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "+12: the kick delivered as 48 still rolls (drops pass 1)");
+    CHECK(note(in, 0, 48, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "+12: ...and its delivered note-off");
+    CHECK(note(in, 1, 36, MOVE_MIDI_SOURCE_EXTERNAL) == 1, "+12: a delivered 36 is Move's 24, not the kick");
+    note(in, 0, 36, MOVE_MIDI_SOURCE_EXTERNAL);
+    chance_param_set(in, "transpose", "-200");
+    chance_param_get(in, "transpose", buf, sizeof buf);
+    CHECK(strcmp(buf, "-127") == 0, "chance:transpose clamps to +-127");
+    chance_param_set(in, "transpose", "0");
+
     /* ---- persistence round trip ---- */
     int n = chance_param_get(in, "state", buf, sizeof buf);
     CHECK(n > 0 && strncmp(buf, "SC 1\n", 5) == 0, "chance:state serves the document");
