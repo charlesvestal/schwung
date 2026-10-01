@@ -230,9 +230,7 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "techno",
-        "kick",
-        "rumble",
+        "euclidean",
         "generative"
       ],
       "github_repo": "james-fish/schwung-omega",
