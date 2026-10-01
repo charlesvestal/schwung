@@ -223,6 +223,22 @@
   },
   "modules": [
     {
+      "id": "omega",
+      "name": "Omega",
+      "description": "Multi-engine techno kick synth with a feedback-free groove rumble, generative bass/bleep sequencer, and one-knob performer glue",
+      "author": "James Fish",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "euclidean",
+        "generative"
+      ],
+      "github_repo": "james-fish/schwung-omega",
+      "default_branch": "main",
+      "asset_name": "omega-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "dexed",
       "name": "Dexed",
       "description": "6-operator FM synthesizer (Dexed/MSFA) with .syx patch support",
