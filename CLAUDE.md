@@ -1316,6 +1316,9 @@ component load gate, and the input-dispatch order. Read it before editing
   watchdog does not respawn shadow_ui (it used to, within ~750 ms, reloading
   every slot un-faded), and SIGTERM now saves through that same path. A
   teardown must signal shadow_ui BEFORE killing the shim that serves its reads.
+- **Duplicating a set copies EVERYTHING but an exclude list**
+  (`set_state_copy.mjs`). It was a list of what to copy, and chance, lanes,
+  scenes and the send FX were silently dropped from every duplicate.
 - **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
   "this position is empty" made a filled chain position open the module picker —
   and the *correct* read milliseconds later is what made it permanent, by matching.

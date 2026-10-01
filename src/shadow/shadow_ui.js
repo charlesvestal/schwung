@@ -24,6 +24,7 @@ const OVERTAKE_MIDI_LOG = (typeof host_file_exists === "function") &&
 debugLog("shadow_ui.js loaded");
 
 /* Import shared utilities - single source of truth */
+import { setStateCopyCommand } from './set_state_copy.mjs';
 import {
     MoveMainKnob,      // CC 14 - jog wheel
     MoveMainButton,    // CC 3 - jog click
@@ -28771,39 +28772,28 @@ globalThis.tick = function() {
                      setName.toLowerCase().indexOf("duplicate") >= 0)) {
                     copySourceDir = detectCopySource(uuid);
                 }
+                /* A duplicate carries ALL of its source's state except the few
+                 * names set_state_copy.mjs excludes. This was a list of what to
+                 * copy, and every per-set file added after it -- chance, lanes,
+                 * scenes, send FX, send levels -- was silently left behind. */
+                let copied = false;
                 if (copySourceDir) {
                     debugLog("SET_CHANGED: duplicated set, copying from " + copySourceDir);
-                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                        const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
-                        if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                    const cmd = setStateCopyCommand(copySourceDir, newDir);
+                    const rc = cmd ? host_system_cmd(cmd) : -1;
+                    copied = rc === 0 && host_file_exists(newDir + "/slot_0.json");
+                    if (!copied) {
+                        debugLog("SET_CHANGED: copy from " + copySourceDir + " FAILED (rc=" + rc +
+                                 ") -- seeding as a new set");
                     }
-                    /* master_fx_N.json is bounded by MASTER_FX_SLOTS, NOT by
-                     * the instrument-slot count. They are different concepts
-                     * that merely happen to both be 4 today; copying both
-                     * families in one SHADOW_UI_SLOTS loop means duplicating a
-                     * set would silently drop Master FX 5-8. The C seeder
-                     * (shadow_set_pages.c) is split the same way. */
-                    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
-                        const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
-                        if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
-                    }
-                    /* The control document (Custom surface pages, CC map) is
-                     * part of the set: the copy list is by NAME, so a file not
-                     * named here is silently left behind by a duplicate. */
-                    {
-                        const ctl = host_read_file(copySourceDir + "/controls.json");
-                        if (ctl) host_write_file(newDir + "/controls.json", ctl);
-                    }
-                    /* Also copy chain config */
-                    const chainCfg = host_read_file(copySourceDir + "/shadow_chain_config.json");
-                    if (chainCfg) host_write_file(newDir + "/shadow_chain_config.json", chainCfg);
-                } else {
-                    /* New set — start with empty slots */
+                }
+                if (!copied) {
+                    /* New set (or a failed copy) — start with empty slots */
                     debugLog("SET_CHANGED: new set, starting with empty slots");
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
                     }
-                    /* Separate bound — see the copy path above. */
+                    /* master_fx_N is bounded by MASTER_FX_SLOTS, not the slot count. */
                     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
                     }
