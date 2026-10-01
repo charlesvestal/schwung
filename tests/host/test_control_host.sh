@@ -142,10 +142,14 @@ console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
 
-# The copy list on set DUPLICATION is by name: a file not named is lost.
+# Set DUPLICATION copies everything but an exclude list now
+# (src/shadow/set_state_copy.mjs; tests/host/test_set_state_copy.sh runs it).
+# controls.json must not be on that list.
 UI=src/shadow/shadow_ui.js
-perl -0ne 'exit(!/host_read_file\(copySourceDir \+ "\/controls\.json"\).*?host_write_file\(newDir \+ "\/controls\.json"/s)' "$UI" \
-  || { echo "FAIL: set duplication does not copy controls.json"; exit 1; }
+node --input-type=module -e "
+import { SET_STATE_COPY_EXCLUDE } from './src/shadow/set_state_copy.mjs';
+process.exit(SET_STATE_COPY_EXCLUDE.includes('controls.json') ? 1 : 0);
+" || { echo "FAIL: set duplication does not copy controls.json"; exit 1; }
 # The surface OWN writes go through the muted path, never straight to setSlotParam.
 [ "$(grep -c 'setParam: (key, value) => surfaceSetParam(focus.slot, key, value),' "$UI")" = 2 ] \
   || { echo "FAIL: a surface page controller writes around the learn mute"; exit 1; }
