@@ -88,6 +88,37 @@ int main(void) {
     CHECK(strcmp(buf, "-127") == 0, "chance:transpose clamps to +-127");
     chance_param_set(in, "transpose", "0");
 
+    /* ---- A RESTORED id is a HINT, not an identity. Move renumbers its notes
+     * when it loads a set; on hardware (2026-10-01) the step-1 chord's id 33
+     * (71 @ 16.065) came back as the 71 @ 17.434, the follow RELOCATED the
+     * condition onto it, and the rest of the chord was pruned. A restore must
+     * re-bind by pitch + position -- the adopt path copies already take. */
+    {
+        chain_instance_t *r = calloc(1, sizeof *r);
+        char d[256];
+        snprintf(d, sizeof d, "SC 1\n0 11 64 16 %d 16\n0 33 71 16.065 %d 16\n", r12, r12);
+        chance_param_set(r, "state", d);
+        CHECK(sc_store_count(&r->chance) == 2, "restore keeps every entry");
+        /* Move now calls the 71 @ 17.434 "33": the follow must not move the
+         * step-1 condition onto it */
+        chance_param_set(r, "move", "0 33 71 17.434");
+        chance_param_get(r, "of:0:33", buf, sizeof buf);
+        CHECK(atoi(buf) == SC_ALWAYS, "a reused id does not carry a restored condition");
+        CHECK(sc_store_match(&r->chance, 0, 71, 16.065, 16.0, 16.0) == r12,
+              "the condition stays on the note at its own position");
+        CHECK(sc_store_match(&r->chance, 0, 71, 17.434, 16.0, 16.0) == SC_ALWAYS,
+              "...and nothing appears on the note that took its old id");
+        /* the page shows the real 71 @ 16.065 as id 32: it is ADOPTED, and a
+         * prune of that page then keeps it */
+        chance_param_set(r, "adopt", "0 32 71 16.065");
+        chance_param_set(r, "adopt", "0 10 64 16");
+        chance_param_get(r, "of:0:32", buf, sizeof buf);
+        CHECK(atoi(buf) == r12, "the live note at the restored position adopts the condition");
+        chance_param_set(r, "prune", "0 16 20 10 32");
+        CHECK(sc_store_count(&r->chance) == 2, "adopted entries survive the page's prune");
+        free(r);
+    }
+
     /* ---- persistence round trip ---- */
     int n = chance_param_get(in, "state", buf, sizeof buf);
     CHECK(n > 0 && strncmp(buf, "SC 1\n", 5) == 0, "chance:state serves the document");
@@ -102,7 +133,11 @@ int main(void) {
     CHECK(sc_store_count(&in->chance) == 2, "a refused document leaves the store alone");
     CHECK(chance_param_get(in, "nope", buf, sizeof buf) == -1, "an unknown key is a FAILED read, not \"\"");
 
-    /* ---- relocate: Move nudged the snare ---- */
+    /* ---- relocate: Move nudged the snare ----
+     * A restore unbinds ids, so the page follow ADOPTS first (it sees the
+     * snare where it was saved), and only then can an id carry an edit. */
+    chance_param_set(in, "adopt", "2 101 36 0");
+    chance_param_set(in, "adopt", "2 102 38 1");
     chance_param_set(in, "move", "2 102 38 1.1");
     in->clip_phase_beats = 1.1; chain_set_clip_pass(in, 1);
     CHECK(note(in, 1, 38, MOVE_MIDI_SOURCE_EXTERNAL) == 0, "a relocated note keeps its condition");
