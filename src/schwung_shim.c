@@ -1512,6 +1512,19 @@ static void shadow_inprocess_process_midi(void) {
             if (cable != 0) {
                 continue;
             }
+            /* A transport-driven synth may have been silent long enough for
+             * the slot idle gate to park its render_block. Start/Continue can
+             * change its output without producing a MIDI note (breakbeat is
+             * one example), so wake the slot before its next audio block.
+             * Otherwise the opening beat waits for the next idle probe. */
+            if (status_usb == 0xFA || status_usb == 0xFB) {
+                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                    if (shadow_chain_slots[s].active && shadow_chain_slots[s].instance) {
+                        shadow_slot_idle[s] = 0;
+                        shadow_slot_silence_frames[s] = 0;
+                    }
+                }
+            }
             /* Broadcast to all active slots */
             if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
                 uint8_t msg[3] = { status_usb, 0, 0 };
