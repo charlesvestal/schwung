@@ -462,6 +462,18 @@
       "min_host_version": "0.12.1"
     },
     {
+      "id": "munchi-delay",
+      "name": "Munchi Delay",
+      "description": "CHOMPI TEMPO's dual delay: one knob from a tempo-synced echo (1 bar to 1/16) into diffusion reverb, with random octave, reverse and pan events on the clock, a buffer freeze, and repeats that duck under new material",
+      "author": "CHOMPI Club / Chase Bliss (port: charlesvestal)",
+      "component_type": "audio_fx",
+      "subcategory": "delay-echo",
+      "github_repo": "charlesvestal/schwung-munchi-delay",
+      "default_branch": "main",
+      "asset_name": "munchi-delay-module.tar.gz",
+      "min_host_version": "0.11.5"
+    },
+    {
       "id": "junologue-chorus",
       "name": "Junologue Chorus",
       "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
