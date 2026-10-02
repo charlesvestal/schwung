@@ -322,6 +322,25 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
      "an encoder on the browser page still edits the sound");
 }
 
+/* ---- page_first: a canvas page can LEAD its level ----
+ * Grids are planned before a levels canvas pages, so without this a module
+ * whose drawn page is the point (a station browser) always lands on knobs. */
+{
+  const H1 = { levels: { root: { name: "R", knobs: ["a", "b"], params: ["face", "a", "b"] } } };
+  const lead = (on) => CP.map((p) => (p.key === "face" ? { ...p, page_first: on } : p));
+  const first = planPages({ hierarchy: H1, chainParams: lead(true) }).pages;
+  ok(first[0] && first[0].canvas && first[0].canvas.key === "face",
+     "page_first puts the canvas page before the levels grid");
+  ok(first[0] && JSON.stringify(first[0].keys) === JSON.stringify(["a", "b"]),
+     "and it still carries the levels knobs");
+  ok(first.filter((p) => p.canvas).length === 1, "and is planned exactly once");
+  ok(first[1] && !first[1].canvas && JSON.stringify(first[1].keys) === JSON.stringify(["a", "b"]),
+     "with the grid after it");
+  const after = planPages({ hierarchy: H1, chainParams: lead(false) }).pages;
+  ok(after[0] && !after[0].canvas && after[1] && after[1].canvas,
+     "without it the grid still comes first");
+}
+
 if (fails) { console.error(fails + " failure(s)"); process.exit(1); }
 console.log("PASS: a module can own a page, keep the hosts chrome, and still be turned");
 '
