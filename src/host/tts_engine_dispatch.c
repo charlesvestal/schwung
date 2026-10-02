@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <pwd.h>
 #include "unified_log.h"
+#include "tts_config.h"
 
 /* Engine backend declarations */
 #if ENABLE_SCREEN_READER
@@ -57,78 +57,23 @@ extern float flite_tts_get_pitch(void);
 static int active_engine = ENGINE_ESPEAK;  /* Default to eSpeak-NG */
 static bool dispatch_initialized = false;
 
-/* Fix file ownership after writing as root */
-static void chown_to_ableton(const char *path) {
-    struct passwd *pw = getpwnam("ableton");
-    if (pw) chown(path, pw->pw_uid, pw->pw_gid);
-}
-
 /* Read engine choice from tts.json config */
 static void load_engine_choice(void) {
-    const char *config_path = "/data/UserData/schwung/config/tts.json";
-    FILE *f = fopen(config_path, "r");
-    if (!f) return;
-
-    char buf[512];
-    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[len] = '\0';
-
-    const char *engine_key = strstr(buf, "\"engine\"");
-    if (engine_key) {
-        const char *colon = strchr(engine_key, ':');
-        if (colon) {
-            if (strstr(colon, "\"flite\"")) {
-                active_engine = ENGINE_FLITE;
-            } else {
-                active_engine = ENGINE_ESPEAK;
-            }
-        }
-    }
+    tts_config_t cfg;
+    if (!tts_config_load(&cfg)) return;
+    active_engine = (strcmp(cfg.engine, "flite") == 0) ? ENGINE_FLITE : ENGINE_ESPEAK;
 }
 
-/* Save engine choice to tts.json (merge into existing config) */
+/* Save engine choice to tts.json, through the one writer (tts_config.h): it
+ * names the engine and nothing else, and every other key is carried. */
 static void save_engine_choice(void) {
-    /* Read existing config */
-    const char *config_path = "/data/UserData/schwung/config/tts.json";
-
-    float speed = 1.0f;
-    float pitch = 110.0f;
-    int volume = 70;
-
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        char buf[512];
-        size_t len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-        buf[len] = '\0';
-
-        /* Parse existing values to preserve them */
-        const char *p;
-        p = strstr(buf, "\"speed\"");
-        if (p) { p = strchr(p, ':'); if (p) speed = strtof(p + 1, NULL); }
-        p = strstr(buf, "\"pitch\"");
-        if (p) { p = strchr(p, ':'); if (p) pitch = strtof(p + 1, NULL); }
-        p = strstr(buf, "\"volume\"");
-        if (p) { p = strchr(p, ':'); if (p) volume = atoi(p + 1); }
-    }
-
-    /* Write back with engine field */
-    f = fopen(config_path, "w");
-    if (!f) {
+    const char *engine_name = (active_engine == ENGINE_FLITE) ? "flite" : "espeak";
+    tts_config_t cfg = {0};
+    snprintf(cfg.engine, sizeof(cfg.engine), "%s", engine_name);
+    if (!tts_config_update(TTS_CFG_ENGINE, &cfg)) {
         unified_log("tts_dispatch", LOG_LEVEL_ERROR, "Failed to save engine choice");
         return;
     }
-
-    const char *engine_name = (active_engine == ENGINE_FLITE) ? "flite" : "espeak";
-    fprintf(f, "{\n");
-    fprintf(f, "  \"engine\": \"%s\",\n", engine_name);
-    fprintf(f, "  \"speed\": %.2f,\n", speed);
-    fprintf(f, "  \"pitch\": %.1f,\n", pitch);
-    fprintf(f, "  \"volume\": %d\n", volume);
-    fprintf(f, "}\n");
-    fclose(f);
-    chown_to_ableton(config_path);
 
     unified_log("tts_dispatch", LOG_LEVEL_INFO, "Engine choice saved: %s", engine_name);
 }
