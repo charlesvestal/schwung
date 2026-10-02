@@ -450,6 +450,19 @@ function coRunCedes(grp) {
  * delegating pads/steps/transport + LEDs to the tool. */
 function coRunUiActive() { return coRunChainEditSlot >= 0 || corunOverlayId != null; }
 
+/* Is a shadow-UI screen what the OLED shows? display_mode 1, and not an
+ * overtake tool drawing its own screen with no co-run editor or overlay of ours
+ * over it. A co-run session ending keeps display_mode at 1 throughout, so
+ * display_mode alone cannot see that exit. See reconcileDisplayModeExit. */
+function shadowUiOnScreen() {
+    const mode = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
+    if (mode !== 1) return false;
+    /* An overtake tool drawing its own screen, with no co-run editor or
+     * overlay of ours over it, is not the shadow UI on screen. */
+    return !(view === VIEWS.OVERTAKE_MODULE && !coRunUiActive());
+}
+
 /* Should shadow_ui's co-run intercept handle this control group? ONE uniform rule
  * for every UI element, with no per-element special-casing:
  *  - chain-edit: handle it when the tool CEDES it (peer is shadow_ui, same
@@ -1666,15 +1679,51 @@ let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
  * schwung_shim.c, "Track tap: dismissing shadow UI"), writing display_mode = 0
  * directly. JS never runs a handler for those at all, so a fix at any input
  * site would have covered one exit of three.
+ *
+ * LEAVING IS A RELEASE OF EVERY KNOB, because off screen a knob release never
+ * reaches this process -- the shim hands knob touches to Move while the shadow
+ * UI is hidden, and to the tool once a co-run session ends. Turn a knob,
+ * dismiss while still touching it, let go, come back: the card was up and
+ * stayed up until that same knob was touched and released again. Reported
+ * from hardware, reproduced by injection (letting go BEFORE the dismiss does
+ * not do it) and then measured, because closing the card alone did NOT fix it:
+ * pendingHierKnobIndex is the "this knob is held" state, only a release clears
+ * it, and processPendingHierKnob re-raises the card for a held knob on EVERY
+ * tick -- each raise a fresh 700 ms decay, so it never decayed. The close here
+ * was undone one tick later. So this does what the release handlers do, in
+ * their order: drain the pending turn (which shows feedback), drop the held
+ * state, THEN close the card -- and forget the touches, or the next card for
+ * that knob is stamped "held, no deadline". setView's own reset cannot catch
+ * any of it: the view does not change, you leave the chain editor and come
+ * back to the chain editor.
+ *
+ * "On screen" is display_mode 1 AND a shadow-UI view drawn: a co-run session
+ * ending (an overtake tool's chain editor or overlay closing) keeps
+ * display_mode at 1 the whole time, because the tool's own screen is still
+ * up, so display_mode alone never saw that exit.
+ *
+ * Run EVERY tick: it is one native read and two compares. It sat in the
+ * feedback guard's 4 Hz block, where a dismiss and return inside 250 ms was
+ * never seen at all.
  */
-let lastDisplayMode = -1;
+let lastShadowUiOnScreen = null;
 function reconcileDisplayModeExit() {
-    const mode = (typeof shadow_get_display_mode === "function")
-        ? shadow_get_display_mode() : 1;
-    if (mode === lastDisplayMode) return;
-    /* Leaving, by any route. -1 is the first tick, which is not a transition. */
-    if (lastDisplayMode === 1 && mode !== 1) knobCardClose();
-    lastDisplayMode = mode;
+    const on = shadowUiOnScreen();
+    if (on === lastShadowUiOnScreen) return;
+    /* Leaving, by any route. null is the first tick, which is not a transition. */
+    if (lastShadowUiOnScreen === true && !on) {
+        /* A co-run session has already handed the view back by now, so a
+         * drain there would resolve its knob under the wrong context: drop the
+         * at-most-one-frame of turn instead. */
+        if (pendingHierKnobIndex >= 0 && pendingHierKnobDelta !== 0 && !coRunUiActive()) {
+            processPendingHierKnob();
+        }
+        pendingHierKnobIndex = -1;
+        pendingHierKnobDelta = 0;
+        knobCardClose();
+        knobTouched.fill(false);
+    }
+    lastShadowUiOnScreen = on;
 }
 
 function knobCardClose() {
@@ -28471,6 +28520,9 @@ globalThis.tick = function() {
     /* Continuous feedback guard: bypass Line In slots while speaker-feedback risk
      * is present (boot or headphones unplugged), un-bypass when safe, and raise
      * the modal when the shadow UI is on screen. Throttled to a few times/sec. */
+    /* Every tick, not in the throttled block below -- see its own comment. */
+    try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
+
     if (++_feedbackHoldTickCounter >= FEEDBACK_HOLD_CHECK_INTERVAL) {
         _feedbackHoldTickCounter = 0;
         /* Spanned: reads `synth_module` for all FOUR slots unconditionally,
@@ -28481,7 +28533,6 @@ globalThis.tick = function() {
          * `synth_module` the last session logged and attributed elsewhere.
          * Predicted, not yet measured — this span is the test. */
         const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.feedback_guard") : 0;
-        try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }
