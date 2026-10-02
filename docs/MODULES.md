@@ -2762,6 +2762,18 @@ Three things worth knowing before you declare it:
   `ctx` carries the same non-drawing methods as a dive's (`getParam`,
   `setParam`, `getValue`, `setValue`, `measureText`, `shiftHeld`, `now`,
   `random`, `close`), so one script serves both routes.
+- **`ctx.openTextEntry({ title, initial })` (a page's hooks only)** opens the
+  host's on-screen keyboard over the page, for a search or a name. It opens when
+  the hook returns, and the answer comes back through the page's
+  **`onTextEntry(ctx, { text, cancelled })`** hook with a fresh ctx (so it can
+  `setParam`). Cancelling answers too, with `text: null`. It returns `false`
+  (and opens nothing) when the keyboard is already up. A fullscreen dive has no
+  keyboard: it draws over the page, not over a dive.
+- **`ctx.openFileInTool(path, toolId)` (a page's hooks only)** opens a file in an
+  installed Tool module — a downloaded WAV in `waveform-editor`, say. It is
+  queued and run on the next tick (starting a tool takes the screen, which must
+  not happen mid-gesture), and the knob grid is left first. Returns `false`
+  when the tool is not installed.
 
 See `CANVAS_PAGES.md` for the model this belongs to.
 
