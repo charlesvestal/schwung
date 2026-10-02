@@ -28122,6 +28122,29 @@ function corunTeardown() {
     coRunKeepMask = 0;
 }
 
+/* Route the visible co-run grid through its own controller, not slot macros.
+ * Keep the same surface ownership rule as the other co-run editor handlers.
+ * Pads/steps/transport are deliberately not grid controls here. */
+function dispatchCoRunParamPagesMidi(data) {
+    if (!coRunUiActive() || coRunView !== VIEWS.PARAM_PAGES ||
+        !paramPagesActive() || isTextEntryActive()) return false;
+    const type = data[0] & 0xF0;
+    const key = data[1];
+    let group = 0;
+    if (type === 0xB0) {
+        if (key >= KNOB_CC_START && key <= KNOB_CC_END) group = CORUN_GRP_KNOBS;
+        else if (key === MoveMainKnob || key === MoveMainButton) group = CORUN_GRP_JOG;
+        else if (key === MoveBack) group = CORUN_GRP_BACK;
+    } else if ((type === MidiNoteOn || type === MidiNoteOff) &&
+               key >= MoveKnob1Touch && key <= MoveKnob8Touch) {
+        group = CORUN_GRP_TOUCH;
+    }
+    if (!group || !coRunWants(group)) return false;
+    let consumed = false;
+    runCoRunChainEdit(function() { consumed = handleParamPagesMidi(data); });
+    return consumed;
+}
+
 /* Co-run helpers — see coRunChainEditSlot / coRunView declarations near top.
  *
  * runCoRunChainEdit(fn): temporarily set the outer `view` to coRunView so any
@@ -28324,12 +28347,20 @@ globalThis.tick = function() {
      * verbatim by tests/host/test_param_pages_wiring.sh as the proof that the
      * view is ticked at all, and loosening a real invariant to make room for a
      * new call is the wrong trade. */
-    if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
-    /* Off the grid IS the end of the visit -- see endComponentWidgetVisit. Its
-     * own statement for the same reason as the line above: that one is pinned
-     * verbatim by test_param_pages_wiring.sh. */
-    else endComponentWidgetVisit();
-    if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    if (view === VIEWS.OVERTAKE_MODULE && coRunUiActive() &&
+        coRunView === VIEWS.PARAM_PAGES) {
+        runCoRunChainEdit(function() {
+            tickComponentWidgets();
+            tickParamPages();
+        });
+    } else {
+        if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
+        /* Off the grid IS the end of the visit -- see endComponentWidgetVisit. Its
+         * own statement for the same reason as the line above: that one is pinned
+         * verbatim by test_param_pages_wiring.sh. */
+        else endComponentWidgetVisit();
+        if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    }
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when
      * nothing is pending (one boolean test). */
@@ -30289,6 +30320,13 @@ globalThis.onMidiMessageInternal = function(data) {
              * navigation and calls host_suspend_overtake() when it decides to
              * park. Fall through to its onMidiMessageInternal (Shift+Back above
              * is still the host's universal full-exit). */
+        }
+
+        /* After escape/modal handling, before generic editor fallbacks.
+         * A consumed event must not also turn a slot macro or reach the tool. */
+        if (dispatchCoRunParamPagesMidi(data)) {
+            needsRedraw = true;
+            return;
         }
 
         /* CO-RUN: intercept chain-editor navigation CCs (jog turn, jog click,
