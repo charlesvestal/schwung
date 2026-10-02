@@ -22400,6 +22400,9 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
 
     const state = canvasPageState(slot, cacheKey);
     const closed = { wanted: false };
+    /* ctx.openTextEntry records a wish, like ctx.close: the keyboard opens when
+     * the hook RETURNS, never inside it. */
+    let textWanted = null;
     const prefix = getComponentParamPrefix(component);
     const full = (k) => (String(k).includes(":") ? String(k)
                         : (prefix ? `${prefix}:${k}` : String(k)));
@@ -22424,9 +22427,44 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
          * controller owns the door, so this only records the wish; the caller
          * reads it back and leaves the door on the module's behalf. */
         close: () => { closed.wanted = true; return true; },
+        /*
+         * The host's on-screen keyboard, for a page that needs TEXT -- a search,
+         * a name. A canvas page cannot draw one (it owns a 45px band and only
+         * the jog and click), and the module importing text_entry.mjs itself
+         * would fight the host for the screen and the input. The keyboard is
+         * drawn over every view but the fullscreen dive and takes input first,
+         * so the page needs nothing else. The answer comes back through the
+         * page's onTextEntry hook with a FRESH ctx, so it can set params:
+         *   onTextEntry(ctx, { text, cancelled })
+         * False when the keyboard is already up (nothing is opened).
+         */
+        /*
+         * Open a file in a Tool module (e.g. a downloaded WAV in the Waveform
+         * Editor). QUEUED, not done here: starting a tool takes the whole
+         * screen, and doing that inside the grid's input handling would tear
+         * the controller down mid-gesture. The tick runs it. False when the
+         * tool is not installed (nothing is queued).
+         */
+        openFileInTool: (path, toolId) => {
+            if (!path || !toolId) return false;
+            if (!toolModules || !toolModules.length) toolModules = scanForToolModules();
+            if (!toolModules.find((t) => t.id === toolId)) return false;
+            pendingCanvasToolOpen = { path: String(path), toolId: String(toolId) };
+            return true;
+        },
+        openTextEntry: (opts) => {
+            if (isTextEntryActive() || textWanted) return false;
+            const o = opts || {};
+            textWanted = {
+                title: String(o.title == null ? "" : o.title),
+                initial: String(o.initial == null ? "" : o.initial),
+            };
+            return true;
+        },
     };
     try {
         const r = ov[hook](ctx, payload || {});
+        if (textWanted) openCanvasPageTextEntry(slot, component, canvas, textWanted);
         /* CANVAS_PAGE_CLOSE outranks whatever the hook returned: a module that
          * asked to leave has finished, and the controller must not also act on
          * a stale answer from the same call. */
@@ -22436,6 +22474,41 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
         debugLog(`canvas page ${cacheKey} disabled after throw in ${hook}: ${e}`);
         return undefined;
     }
+}
+
+/* A tool a canvas page asked to open a file in (ctx.openFileInTool), run from
+ * the tick -- see the ctx method. */
+let pendingCanvasToolOpen = null;
+function serviceCanvasToolOpen() {
+    const req = pendingCanvasToolOpen;
+    if (!req) return;
+    pendingCanvasToolOpen = null;
+    const tool = (toolModules || []).find((t) => t.id === req.toolId);
+    if (!tool) return;
+    if (paramPagesActive()) exitParamPages();
+    startInteractiveTool(tool, req.path);
+    needsRedraw = true;
+}
+
+/* The keyboard a canvas page asked for (ctx.openTextEntry), answered through
+ * its onTextEntry hook. Both exits answer, so the page never waits on a
+ * keyboard that is gone. */
+function openCanvasPageTextEntry(slot, component, canvas, req) {
+    openTextEntry({
+        title: req.title,
+        initialText: req.initial,
+        onAnnounce: announce,
+        onConfirm: (text) => {
+            canvasPageHook(slot, component, canvas, "onTextEntry",
+                           { text: String(text == null ? "" : text), cancelled: false });
+            needsRedraw = true;
+        },
+        onCancel: () => {
+            canvasPageHook(slot, component, canvas, "onTextEntry", { text: null, cancelled: true });
+            needsRedraw = true;
+        },
+    });
+    needsRedraw = true;
 }
 
 /*
@@ -28529,6 +28602,7 @@ globalThis.tick = function() {
      * the modal when the shadow UI is on screen. Throttled to a few times/sec. */
     /* Every tick, not in the throttled block below -- see its own comment. */
     try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
+    try { serviceCanvasToolOpen(); } catch (e) { debugLog("serviceCanvasToolOpen error: " + e); }
 
     if (++_feedbackHoldTickCounter >= FEEDBACK_HOLD_CHECK_INTERVAL) {
         _feedbackHoldTickCounter = 0;
