@@ -538,6 +538,12 @@ function pageHasKnobs(p) {
               (p.kind === PAGE_KNOBS || p.canvas));
 }
 
+/* A canvas page that declared extra_keys: read-only values it draws from. */
+function canvasHasExtraKeys(p) {
+    return !!(p && p.canvas && Array.isArray(p.canvas.extraKeys) &&
+              p.canvas.extraKeys.length && Array.isArray(p.keys));
+}
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const rawSetParam = io.setParam || (() => {});
@@ -2534,7 +2540,19 @@ export function createController(io = {}) {
         if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
         /* Reads AND live values: a custom browser page carrying knobs needs
          * both, or its picture is drawn from values nobody ever fetched. */
-        if (!pageHasKnobs(p)) return null;
+        /*
+         * A module-drawn page with NO knobs still reads its declared extra_keys.
+         *
+         * Without this a canvas page could only stay live by borrowing a knob:
+         * dr32's Resample page carries Master's knob for no other reason, and a
+         * level's knob grid is always planned BEFORE its canvas page -- so a
+         * module that wants its canvas to be the page you land on (Radio
+         * Garden's browser) could not have both. The rotation already copes
+         * with an empty key list: every key-indexed lane is guarded on
+         * p.keys.length, and the stops degrade to the preset-name stop plus
+         * the extras.
+         */
+        if (!pageHasKnobs(p) && !canvasHasExtraKeys(p)) return null;
 
         refreshModulatedValues(p);
         /* Before anything spends this tick's stop: which step is under the
