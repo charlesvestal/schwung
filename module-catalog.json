@@ -2345,7 +2345,7 @@
     {
       "id": "move-bitwig",
       "name": "Move Bitwig",
-      "description": "Bitwig Studio groovebox: play instruments, sequence notes and drum expressions, browse devices, and launch clips and scenes.",
+      "description": "Bitwig Controller: play instruments, sequence notes and drum expressions, browse devices, and launch clips and scenes.",
       "author": "pi43r",
       "component_type": "overtake",
       "subcategory": "controller",
