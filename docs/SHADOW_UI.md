@@ -362,6 +362,20 @@ falls back **immediately**, so the well-behaved fleet never sees the hold, and
 entering still costs the one read it always did (`module` and `is_loading` are
 read lazily, on the ambiguous branch only).
 
+**The gate only works if the shim SERVES `<prefix>:ui_hierarchy`, and the two
+global sends did not.** An audio-FX DSP declares its hierarchy in `module.json`,
+not through a `get_param`, so the shim reads `ui_hierarchy` from the module.json
+snapshot when the plugin returns nothing. The Master FX handler did that; the
+`send<N>:fx<M>:` handler had no `ui_hierarchy` branch at all, so the read fell
+through to the generic plugin passthrough, got `-1`, and served `""`. Named + no
+hierarchy is the "declares none" case above, so the send fell back to the bare
+preset browser — a module that loads and plays on a send with **no editor** (the
+"can't load UI on a send" report; `chain_params` was already served, so a slot
+or Master FX insert of the same module came up fine). `chain_params` and
+`ui_hierarchy` are now sourced through one `fx_slot_serve_ui_hierarchy()` that
+Master FX and both sends call, so the two targets cannot drift
+(`shadow_chain_mgmt.c`).
+
 The wait is view-agnostic — it sits in front of the destination choice, so it
 works with Param View on Knobs or List and with the screen reader on — and it
 is drawn and serviced on **both** draw paths, main and co-run. The probe runs
