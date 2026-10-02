@@ -4913,6 +4913,88 @@ static void pserve_emit(pserve_span_t *ps) {
                       ps->req_type == 1, us);
 }
 
+/*
+ * Serve a loaded FX position's ui_hierarchy into `shadow_param`: ask the plugin
+ * first, then fall back to the module.json snapshot at s->module_path.
+ *
+ * Master FX and the global send buses are the SAME editor reading the SAME kind
+ * of position (a master_fx_slot_t), so the answer is sourced the same way for
+ * both — and it lives in one function rather than two copies for the reason the
+ * chain_params / state scrapers next door record in their own war stories: a
+ * copied module.json walk drifts, and a UI contract that drifts reads as "this
+ * module has no hierarchy" with nothing logged. An audio-FX DSP almost never
+ * implements a ui_hierarchy get_param (it is declared in module.json), so the
+ * fallback is the path that actually answers; a send had no branch here at all,
+ * so the generic get_param passthrough returned served-empty and the send
+ * editor could not plan its pages — the "can't load UI on a send" report.
+ *
+ * Writes value/error/result_len and NEVER publishes: the caller owns the
+ * response. On total failure it sets error 12 (a read failure, i.e. null to
+ * JS), the code the Master FX path has always returned here.
+ */
+static void fx_slot_serve_ui_hierarchy(master_fx_slot_t *s, shadow_param_t *shadow_param) {
+    if (s && s->api && s->instance && s->api->get_param) {
+        int len = s->api->get_param(s->instance, "ui_hierarchy",
+                                    shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+        if (len > 2) {
+            shadow_param->error = 0;
+            shadow_param->result_len = len;
+            return;
+        }
+    }
+    /* Fall back to reading ui_hierarchy from module.json */
+    char module_dir[256];
+    strncpy(module_dir, s ? s->module_path : "", sizeof(module_dir) - 1);
+    module_dir[sizeof(module_dir) - 1] = '\0';
+    char *last_slash = strrchr(module_dir, '/');
+    if (last_slash) *last_slash = '\0';
+
+    char json_path[512];
+    snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+
+    FILE *f = fopen(json_path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (size > 0 && size < 65536) {
+            char *json = malloc(size + 1);
+            if (json) {
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
+
+                const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
+                if (ui_hier) {
+                    const char *obj_start = strchr(ui_hier + 14, '{');
+                    if (obj_start) {
+                        int depth = 1;
+                        const char *obj_end = obj_start + 1;
+                        while (*obj_end && depth > 0) {
+                            if (*obj_end == '{') depth++;
+                            else if (*obj_end == '}') depth--;
+                            obj_end++;
+                        }
+                        int len = (int)(obj_end - obj_start);
+                        if (len > 0 && len < SHADOW_PARAM_VALUE_LEN - 1) {
+                            memcpy(shadow_param->value, obj_start, len);
+                            shadow_param->value[len] = '\0';
+                            shadow_param->error = 0;
+                            shadow_param->result_len = len;
+                            free(json);
+                            fclose(f);
+                            return;
+                        }
+                    }
+                }
+                free(json);
+            }
+        }
+        fclose(f);
+    }
+    shadow_param->error = 12;
+    shadow_param->result_len = -1;
+}
+
 void shadow_inprocess_handle_param_request(void) {
     /* FIRST, and unconditionally: a finished FX load is installed here because
      * this is the one chain-manager function the shim calls every SPI frame,
@@ -5293,6 +5375,17 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_param->value[2] = '\0';
                     shadow_param->error = 0;
                     shadow_param->result_len = 2;
+                } else if (!is_set && strcmp(send_param, "ui_hierarchy") == 0) {
+                    /* The knob grid's level/widget contract, sourced exactly as
+                     * master_fx:fxN:ui_hierarchy is — plugin first, then the
+                     * module.json snapshot. Without this branch the read fell
+                     * through to the generic plugin passthrough below, which an
+                     * audio-FX DSP answers with -1 (the hierarchy lives in
+                     * module.json, not the plugin), so the send served "" and
+                     * the editor planned no pages: the "can't load UI on a send"
+                     * report. The fallback shared with Master FX is what fixes
+                     * it. */
+                    fx_slot_serve_ui_hierarchy(sfx, shadow_param);
                 } else if (sfx->instance && sfx->api) {
                     if (is_set) {
                         if (shadow_scene_bus_edit_write(send_idx + 1, send_fx, send_param,
@@ -5899,68 +5992,8 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_param->error = 0;
                 shadow_param->result_len = 2;
             } else if (strcmp(param_key, "ui_hierarchy") == 0) {
-                if (mfx->api && mfx->instance && mfx->api->get_param) {
-                    int len = mfx->api->get_param(mfx->instance, "ui_hierarchy",
-                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
-                    if (len > 2) {
-                        shadow_param->error = 0;
-                        shadow_param->result_len = len;
-                        shadow_param_publish_response(req_id);
-                        return;
-                    }
-                }
-                /* Fall back to reading ui_hierarchy from module.json */
-                char module_dir[256];
-                strncpy(module_dir, mfx->module_path, sizeof(module_dir) - 1);
-                module_dir[sizeof(module_dir) - 1] = '\0';
-                char *last_slash = strrchr(module_dir, '/');
-                if (last_slash) *last_slash = '\0';
-
-                char json_path[512];
-                snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
-
-                FILE *f = fopen(json_path, "r");
-                if (f) {
-                    fseek(f, 0, SEEK_END);
-                    long size = ftell(f);
-                    fseek(f, 0, SEEK_SET);
-                    if (size > 0 && size < 65536) {
-                        char *json = malloc(size + 1);
-                        if (json) {
-                            size_t nread = fread(json, 1, size, f);
-                            json[nread] = '\0';
-
-                            const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
-                            if (ui_hier) {
-                                const char *obj_start = strchr(ui_hier + 14, '{');
-                                if (obj_start) {
-                                    int depth = 1;
-                                    const char *obj_end = obj_start + 1;
-                                    while (*obj_end && depth > 0) {
-                                        if (*obj_end == '{') depth++;
-                                        else if (*obj_end == '}') depth--;
-                                        obj_end++;
-                                    }
-                                    int len = (int)(obj_end - obj_start);
-                                    if (len > 0 && len < SHADOW_PARAM_VALUE_LEN - 1) {
-                                        memcpy(shadow_param->value, obj_start, len);
-                                        shadow_param->value[len] = '\0';
-                                        shadow_param->error = 0;
-                                        shadow_param->result_len = len;
-                                        free(json);
-                                        fclose(f);
-                                        shadow_param_publish_response(req_id);
-                                        return;
-                                    }
-                                }
-                            }
-                            free(json);
-                        }
-                    }
-                    fclose(f);
-                }
-                shadow_param->error = 12;
-                shadow_param->result_len = -1;
+                /* Same source for Master FX and the send buses — see the helper. */
+                fx_slot_serve_ui_hierarchy(mfx, shadow_param);
             } else if (mfx->api && mfx->instance && mfx->api->get_param) {
                 /* A scene-driven param answers its base (or, armed, its lock). */
                 int len = shadow_scene_bus_read(0, mfx_slot, param_key,
