@@ -4749,6 +4749,14 @@ Schwung Manager and the shared store utilities select the entry matching the
 catalog module ID. If it is missing, the manager falls back to the catalog's
 `asset_name` latest-release URL.
 
+**Install Custom Module → From GitHub URL** reads the same shape. Pasting a repo
+whose `release.json` carries `modules` opens a chooser listing each id and
+version; picking one installs that entry (beta/stable channels apply as for a
+catalog install). A map with a single entry installs without asking, and a file
+with only `modules` (no top-level `download_url`) is accepted. Keeping a
+top-level `version`/`download_url` beside `modules` is still worthwhile: older
+managers ignore `modules` and install that one.
+
 Optional fields: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Fields like `name`, `description`, and `requires` in `release.json` override their catalog equivalents.
 
 The release workflow should auto-update `release.json` on each tagged release (see the workflow template above for an example).

@@ -1,0 +1,49 @@
+{{template "base" .}}
+
+{{define "title"}}Choose a Module - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <nav aria-label="Breadcrumb" class="breadcrumb">
+        <ol>
+            <li><a href="/modules">Modules</a></li>
+            <li aria-current="page">Install from GitHub</li>
+        </ol>
+    </nav>
+    <h1>Choose a Module</h1>
+    <p><code>{{.Repo}}</code> publishes {{len .Modules}} modules. Pick the one to install.</p>
+</div>
+
+<div class="module-list">
+    <table aria-label="Modules in {{.Repo}}">
+        <thead>
+            <tr>
+                <th scope="col">Module</th>
+                <th scope="col">Version</th>
+                <th scope="col" class="col-actions">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Modules}}
+            <tr>
+                <td><code>{{.ID}}</code></td>
+                <td>{{if .Version}}{{versionStr .Version}}{{else}}&mdash;{{end}}</td>
+                <td class="col-actions">
+                    <form method="POST" action="/modules/install-custom" class="inline-form">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="source" value="github">
+                        <input type="hidden" name="url" value="{{$.Repo}}">
+                        <input type="hidden" name="module" value="{{.ID}}">
+                        <button type="submit" class="btn btn-primary btn-small" aria-label="Install {{.ID}}">Install</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<div class="form-actions">
+    <a href="/modules" class="btn btn-secondary">Cancel</a>
+</div>
+{{end}}

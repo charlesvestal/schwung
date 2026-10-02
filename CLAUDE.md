@@ -1908,6 +1908,13 @@ entry before downloading:
 }}
 ```
 
+**Custom installs read it too**: Install Custom Module → From GitHub URL on a
+multi-module `release.json` shows a chooser of the ids, then installs the
+picked one through `forModule` + `resolveReleaseForChannel`, like a catalog
+install (one entry installs without asking; `modules` alone counts as found).
+Before, it read only the top-level `download_url`, so only the first module
+was ever installable by URL.
+
 Optional: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Release workflow should auto-update this file on each tagged release.
 
 ### Catalog Entry

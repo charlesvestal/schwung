@@ -1056,6 +1056,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/repair.html",
 		"templates/boot.html",
 		"templates/platforms.html",
+		"templates/install_custom_choose.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -2052,6 +2053,31 @@ func firstModuleDir(entries []os.DirEntry) (os.DirEntry, bool) {
 	return nil, false
 }
 
+// rawGitHubBase is where a custom install fetches release.json from. A var so
+// tests can point it at an httptest server; nothing else reassigns it.
+var rawGitHubBase = "https://raw.githubusercontent.com"
+
+// customModuleChoice is one row of the multi-module chooser.
+type customModuleChoice struct {
+	ID      string
+	Version string
+}
+
+// renderCustomModuleChooser lists the modules a multi-module release.json
+// publishes; each row POSTs back to /modules/install-custom naming its id.
+func (app *App) renderCustomModuleChooser(w http.ResponseWriter, r *http.Request, repo string, rel ReleaseJSON) {
+	choices := make([]customModuleChoice, 0, len(rel.Modules))
+	for id, m := range rel.Modules {
+		entry, _ := resolveReleaseForChannel(m, app.channel())
+		choices = append(choices, customModuleChoice{ID: id, Version: entry.Version})
+	}
+	sort.Slice(choices, func(i, j int) bool { return choices[i].ID < choices[j].ID })
+	app.render(w, r, "install_custom_choose.html", map[string]any{
+		"Repo":    repo,
+		"Modules": choices,
+	})
+}
+
 func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 	source := r.FormValue("source")
 	switch source {
@@ -2073,14 +2099,21 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		var rel ReleaseJSON
 		var found bool
 		for _, branch := range []string{"main", "master"} {
-			u := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json", repo, branch)
+			u := fmt.Sprintf("%s/%s/%s/release.json", rawGitHubBase, repo, branch)
 			resp, err := client.Get(u)
 			if err != nil {
 				continue
 			}
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				if json.NewDecoder(resp.Body).Decode(&rel) == nil && rel.DownloadURL != "" {
+				// Decode into a fresh value so a rejected main cannot leak
+				// fields into master's. A multi-module file may carry only
+				// `modules`: its top-level download_url is a courtesy to
+				// older managers, not a requirement.
+				var cand ReleaseJSON
+				if json.NewDecoder(resp.Body).Decode(&cand) == nil &&
+					(cand.DownloadURL != "" || len(cand.Modules) > 0) {
+					rel = cand
 					found = true
 					break
 				}
@@ -2091,9 +2124,44 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// A repo publishing several modules: pick one, through the same
+		// forModule -> channel chain catalog installs use (resolveDownloadURL).
+		// A plain single-module file keeps its top-level download_url.
+		downloadURL := rel.DownloadURL
+		if len(rel.Modules) > 0 {
+			moduleID := strings.TrimSpace(r.FormValue("module"))
+			if moduleID == "" && len(rel.Modules) == 1 {
+				for id := range rel.Modules {
+					moduleID = id
+				}
+			}
+			if moduleID == "" {
+				app.renderCustomModuleChooser(w, r, repo, rel)
+				return
+			}
+			sel, ok := rel.forModule(moduleID)
+			if !ok {
+				http.Redirect(w, r, "/modules?flash_type="+flashError+"&flash="+
+					url.QueryEscape("Module "+moduleID+" is not in "+repo+"'s release.json"),
+					http.StatusSeeOther)
+				return
+			}
+			entry, served := resolveReleaseForChannel(sel, app.channel())
+			app.logger.Info("custom install: release.json module resolved", "repo", repo,
+				"id", moduleID, "requested_channel", app.channel(),
+				"served_channel", served, "version", entry.Version)
+			downloadURL = entry.DownloadURL
+			if downloadURL == "" {
+				http.Redirect(w, r, "/modules?flash_type="+flashError+"&flash="+
+					url.QueryEscape("release.json in "+repo+" names no download_url for "+moduleID),
+					http.StatusSeeOther)
+				return
+			}
+		}
+
 		// Download and extract.
-		app.logger.Info("custom install from github", "repo", repo, "url", rel.DownloadURL)
-		dlResp, err := client.Get(rel.DownloadURL)
+		app.logger.Info("custom install from github", "repo", repo, "url", downloadURL)
+		dlResp, err := client.Get(downloadURL)
 		if err != nil || dlResp.StatusCode != http.StatusOK {
 			http.Redirect(w, r, "/modules?flash=Download+failed+for+"+repo, http.StatusSeeOther)
 			return
