@@ -2341,6 +2341,23 @@
       "default_branch": "main",
       "asset_name": "snake-module.tar.gz",
       "min_host_version": "0.9.18"
+    },
+    {
+      "id": "oktonik",
+      "name": "OKTONIK",
+      "description": "Live harmonic performance: play chords, adaptive melodies and independent bass from Move's pads.",
+      "author": "Skerry Vibe",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "tags": [
+        "chord",
+        "bass",
+        "polyphonic"
+      ],
+      "github_repo": "skerryvibe/oktonik",
+      "default_branch": "main",
+      "asset_name": "oktonik-module.tar.gz",
+      "min_host_version": "1.6.2"
     }
   ]
 }
