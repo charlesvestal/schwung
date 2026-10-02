@@ -341,6 +341,43 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
      "without it the grid still comes first");
 }
 
+/* ---- a canvas page with NO knobs still reads its extra_keys ----
+ * A level whose knob grid would come first cannot have its canvas be the page
+ * you land on unless the canvas level carries no knobs -- and without this the
+ * rotation returned before reading anything, so the picture never went live. */
+{
+  const HIER0 = { levels: {
+    root: { name: "R", knobs: [], params: [{ level: "radio", label: "Radio" }, { level: "ctl", label: "Controls" }] },
+    radio: { name: "Radio", params: ["browse"], knobs: [] },
+    ctl: { name: "Controls", params: ["a"], knobs: ["a"] } } };
+  const CP0 = [
+    { key: "browse", name: "Browse", type: "canvas", canvas_script: "b.js",
+      as_page: true, enterable: true, extra_keys: ["status"] },
+    { key: "a", name: "A", type: "float", min: 0, max: 1, step: 0.01 },
+  ];
+  const plan0 = planPages({ hierarchy: HIER0, chainParams: CP0 });
+  ok(plan0.pages[0] && plan0.pages[0].canvas && plan0.pages[0].keys.length === 0,
+     "a knobless canvas level plans as the FIRST page, with no keys");
+  const store = { ui_hierarchy: JSON.stringify(HIER0), chain_params: JSON.stringify(CP0),
+                  a: "0.5", status: "streaming" };
+  let t = 0;
+  const ctrl = createController({
+    getParam: (k) => { const b = String(k).split(":").pop();
+                       return store[b] === undefined ? null : store[b]; },
+    setParam: () => true, announce: () => {}, now: () => (t += 16),
+  });
+  ctrl.load({ prefix: "synth" });
+  ctrl.setLayout(LAYOUT_MOVY);
+  ctrl.goToPage(0, { remember: false });
+  for (let i = 0; i < 20; i++) ctrl.tick();
+  ok(ctrl.onCanvasPage(), "the knobless canvas page is the current page");
+  ok(ctrl.state.values.status === "streaming",
+     "its extra key is read even though the page has no knob");
+  store.status = "buffering";
+  for (let i = 0; i < 20; i++) ctrl.tick();
+  ok(ctrl.state.values.status === "buffering", "and it stays live");
+}
+
 if (fails) { console.error(fails + " failure(s)"); process.exit(1); }
 console.log("PASS: a module can own a page, keep the hosts chrome, and still be turned");
 '
