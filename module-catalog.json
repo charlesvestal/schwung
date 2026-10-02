@@ -4,13 +4,13 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "1.6.2",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.6.2/schwung.tar.gz",
+    "latest_version": "1.6.3",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.6.3/schwung.tar.gz",
     "min_host_version": "0.1.0",
     "channels": {
       "stable": {
-        "version": "1.6.2",
-        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.6.2/schwung.tar.gz"
+        "version": "1.6.3",
+        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.6.3/schwung.tar.gz"
       }
     }
   },
@@ -572,7 +572,7 @@
       "github_repo": "charlesvestal/schwung-webstream",
       "default_branch": "main",
       "asset_name": "webstream-module.tar.gz",
-      "min_host_version": "0.3.11"
+      "min_host_version": "1.6.3"
     },
     {
       "id": "nam",
