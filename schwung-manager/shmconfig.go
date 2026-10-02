@@ -58,6 +58,10 @@ const (
 	offOpenToolCmd     = 56 // uint8 — 0=none, 1=open tool
 	offSkipbackSeconds = 62 // uint16 — 30/60/120/180/240/300 (after sampler_source_request, sampler_silent; pinned by tests/host/test_manager_shm_offsets.sh)
 	offStayInShadow    = 85 // uint8 — "Keep Schwung": a Track tap switches slot
+	// openevv (Eloquence) voice, seven uint8s APPENDED to shadow_control_t:
+	// voice (preset 1..8), gender, head, pitch, inflection, rough, breath.
+	// tests/host/test_tts_openevv_contract.sh computes this with offsetof.
+	offTTSEvvVoice = 218
 	// The mapping is capped here, not sized to the struct: CONTROL_BUFFER_SIZE
 	// is 256 for a struct that uses ~86, and mapping the declared cap means a
 	// field appended later needs only its offset added above. The ACTUAL length
@@ -201,6 +205,34 @@ func (s *ShmConfig) SetSkipbackSeconds(v uint16)      { s.setU16(offSkipbackSeco
 
 func (s *ShmConfig) StayInShadow() bool     { return s.getU8(offStayInShadow) != 0 }
 func (s *ShmConfig) SetStayInShadow(v bool) { s.setU8(offStayInShadow, boolU8(v)) }
+
+// TTSEvvFields names the seven openevv voice bytes in their SHM order.
+var TTSEvvFields = []string{"voice", "gender", "head", "pitch", "inflection", "rough", "breath"}
+
+func ttsEvvOffset(field string) int {
+	for i, f := range TTSEvvFields {
+		if f == field {
+			return offTTSEvvVoice + i
+		}
+	}
+	return -1
+}
+
+// TTSEvv reads one openevv voice byte; ok is false for an unknown field or a
+// segment too short to hold it (an older shim).
+func (s *ShmConfig) TTSEvv(field string) (uint8, bool) {
+	off := ttsEvvOffset(field)
+	if off < 0 || !s.fits(off, 1) {
+		return 0, false
+	}
+	return s.getU8(off), true
+}
+
+func (s *ShmConfig) SetTTSEvv(field string, v uint8) {
+	if off := ttsEvvOffset(field); off >= 0 {
+		s.setU8(off, v)
+	}
+}
 
 func (s *ShmConfig) SetOpenToolCmd(v uint8) { s.setU8(offOpenToolCmd, v) }
 

@@ -148,6 +148,20 @@ jobs:
           file build/link-subscriber | grep -q 'aarch64' || \
             { echo "WRONG ARCH"; file build/link-subscriber; exit 1; }
           echo "ok"
+          # openevv (Eloquence) is DLOPENED by the shim, so a build without it
+          # links, boots and speaks -- in eSpeak, having fallen back without a
+          # word. That is the link-subscriber shape again, and gets its check.
+          printf '%-48s ' build/lib/libeci.so.1
+          test -f build/lib/libeci.so.1 || { echo "MISSING"; exit 1; }
+          file -L build/lib/libeci.so.1 | grep -q 'aarch64' || \
+            { echo "WRONG ARCH"; file -L build/lib/libeci.so.1; exit 1; }
+          echo "ok"
+          # ...and the shim must NOT link it: a NEEDED libeci would turn a
+          # missing library into a MoveOriginal that does not start.
+          printf '%-48s ' "schwung-shim.so has no NEEDED libeci"
+          if readelf -d build/schwung-shim.so | grep -q 'libeci'; then
+            echo "LINKED (must be dlopened)"; exit 1; fi
+          echo "ok"
       - name: Install ripgrep
         # test_chain_host_file_split.sh uses rg. host-tests installs it in its
         # own job; this one runs the same script on the runner, not in the
@@ -188,3 +202,7 @@ jobs:
           # device with no web UI and no way to update itself back out.
           tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-manager$' || {
             echo "tarball has no schwung-manager — no web UI, and no way to update off this build"; exit 1; }
+          tar -tzf schwung.tar.gz | grep -q 'schwung/lib/libeci.so.1$' || {
+            echo "tarball has no libeci.so.1 — the Eloquence engine would fall back to eSpeak"; exit 1; }
+          tar -tzf schwung.tar.gz | grep -q 'schwung/licenses/OPENEVV_NOTICE.txt$' || {
+            echo "tarball ships libeci.so.1 without openevv's NOTICE"; exit 1; }

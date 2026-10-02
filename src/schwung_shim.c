@@ -4569,6 +4569,17 @@ static void init_shadow_shm(void)
         shadow_control->tts_pitch = 110;    /* 110 Hz */
         shadow_control->tts_speed = 1.5f;   /* 1.5x speed */
         shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
+        {
+            /* Eloquence voice: preset 1 until tts_init() syncs tts.json in. */
+            const tts_evv_voice_t evv = TTS_EVV_DEFAULT_VOICE;
+            shadow_control->tts_evv_voice = evv.voice;
+            shadow_control->tts_evv_gender = evv.gender;
+            shadow_control->tts_evv_head = evv.head;
+            shadow_control->tts_evv_pitch = evv.pitch;
+            shadow_control->tts_evv_inflection = evv.inflection;
+            shadow_control->tts_evv_rough = evv.rough;
+            shadow_control->tts_evv_breath = evv.breath;
+        }
         shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
         shadow_control->tts_debounce_ms = 50; /* default debounce ms */
         /* Clear display overlay state — stale values from previous session
@@ -4723,6 +4734,61 @@ static char pending_tts_message[SHADOW_SCREENREADER_TEXT_LEN] = {0};
 static uint64_t last_message_time_ms = 0;
 static bool has_pending_message = false;
 
+/* The engine name for shadow_control_t.tts_engine -- 0/1/2, see its comment. */
+static const char *shadow_tts_engine_name(uint8_t engine)
+{
+    return engine == 1 ? "flite" : (engine == 2 ? "openevv" : "espeak");
+}
+
+static uint8_t shadow_tts_engine_index(const char *name)
+{
+    if (strcmp(name, "flite") == 0) return 1;
+    if (strcmp(name, "openevv") == 0) return 2;
+    return 0;
+}
+
+/*
+ * Apply every TTS setting the shadow UI publishes, engine first. One place,
+ * because there were two copies (the debounced speak and the boot test
+ * phrase) and a third engine would have had to be added to both.
+ *
+ * An engine switch that is REFUSED (openevv with no libeci.so.1) leaves the
+ * dispatcher on the old engine; writing that back into SHM is what makes the
+ * menu snap back instead of claiming an engine nobody is speaking with, and
+ * stops the switch being retried before every utterance.
+ */
+static bool shadow_tts_synced = false;  /* set once tts_init() has seeded SHM */
+
+static void shadow_apply_tts_settings(void)
+{
+    /* Before the sync in shim_init_subsystems, SHM holds boot defaults, not
+     * the user's settings -- applying them would save the defaults over
+     * tts.json (tts_speed boots at 1.5, the evv voice at preset 1). */
+    if (!shadow_control || !shadow_tts_synced) return;
+
+    const char *requested_engine = shadow_tts_engine_name(shadow_control->tts_engine);
+    if (strcmp(tts_get_engine(), requested_engine) != 0) {
+        tts_set_engine(requested_engine);
+        shadow_control->tts_engine = shadow_tts_engine_index(tts_get_engine());
+    }
+
+    tts_set_enabled(shadow_control->tts_enabled != 0);
+    tts_set_volume(shadow_control->tts_volume);
+    tts_set_speed(shadow_control->tts_speed);
+    tts_set_pitch((float)shadow_control->tts_pitch);
+
+    tts_evv_voice_t evv = {
+        .voice = shadow_control->tts_evv_voice,
+        .gender = shadow_control->tts_evv_gender,
+        .head = shadow_control->tts_evv_head,
+        .pitch = shadow_control->tts_evv_pitch,
+        .inflection = shadow_control->tts_evv_inflection,
+        .rough = shadow_control->tts_evv_rough,
+        .breath = shadow_control->tts_evv_breath,
+    };
+    tts_set_evv_voice(&evv);
+}
+
 static void shadow_check_screenreader(void)
 {
     if (!shadow_screenreader_shm) return;
@@ -4750,19 +4816,7 @@ static void shadow_check_screenreader(void)
     uint16_t debounce_ms = shadow_control ? shadow_control->tts_debounce_ms : TTS_DEBOUNCE_MS_DEFAULT;
     if (has_pending_message && (now_ms - last_message_time_ms >= debounce_ms)) {
         /* Apply TTS settings from shared memory before speaking */
-        if (shadow_control) {
-            /* Check for engine switch (must happen before other settings) */
-            const char *current_engine = tts_get_engine();
-            const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
-            if (strcmp(current_engine, requested_engine) != 0) {
-                tts_set_engine(requested_engine);
-            }
-
-            tts_set_enabled(shadow_control->tts_enabled != 0);
-            tts_set_volume(shadow_control->tts_volume);
-            tts_set_speed(shadow_control->tts_speed);
-            tts_set_pitch((float)shadow_control->tts_pitch);
-        }
+        shadow_apply_tts_settings();
 
         /* Speak the buffered message */
         if (tts_speak(pending_tts_message)) {
@@ -4920,17 +4974,7 @@ static void shadow_mix_audio(void)
         if (tts_test_frame_count == 1035) {  /* ~3 seconds at 44.1kHz, 128 frames/block */
             printf("TTS test: Speaking test phrase...\n");
             /* Apply TTS settings before test phrase */
-            {
-                const char *current_engine = tts_get_engine();
-                const char *requested_engine = shadow_control->tts_engine == 1 ? "flite" : "espeak";
-                if (strcmp(current_engine, requested_engine) != 0) {
-                    tts_set_engine(requested_engine);
-                }
-            }
-            tts_set_enabled(shadow_control->tts_enabled != 0);
-            tts_set_volume(shadow_control->tts_volume);
-            tts_set_speed(shadow_control->tts_speed);
-            tts_set_pitch((float)shadow_control->tts_pitch);
+            shadow_apply_tts_settings();
             tts_speak("Text to speech is working");
             tts_test_done = true;
         }
@@ -6219,7 +6263,17 @@ static void shim_init_subsystems(void)
         shadow_control->tts_volume = tts_get_volume();
         shadow_control->tts_speed = tts_get_speed();
         shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
-        shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
+        shadow_control->tts_engine = shadow_tts_engine_index(tts_get_engine());
+        tts_evv_voice_t evv;
+        tts_get_evv_voice(&evv);
+        shadow_control->tts_evv_voice = evv.voice;
+        shadow_control->tts_evv_gender = evv.gender;
+        shadow_control->tts_evv_head = evv.head;
+        shadow_control->tts_evv_pitch = evv.pitch;
+        shadow_control->tts_evv_inflection = evv.inflection;
+        shadow_control->tts_evv_rough = evv.rough;
+        shadow_control->tts_evv_breath = evv.breath;
+        shadow_tts_synced = true;
         unified_log("shim", LOG_LEVEL_INFO,
                    "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
                    shadow_control->tts_enabled ? "ON" : "OFF",

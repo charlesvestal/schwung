@@ -342,7 +342,7 @@ import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
-import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
+import { createGlobalGridIo, GLOBAL_SECTIONS, EVV_PRESETS, EVV_VOICE_FIELDS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -16920,8 +16920,10 @@ function globalGridIoFor() {
             /* ---- screen reader */
             case "screen_reader_enabled":
                 return bit(typeof tts_get_enabled === "function" && tts_get_enabled());
-            case "screen_reader_engine":
-                return (typeof tts_get_engine === "function" && tts_get_engine() === "flite") ? "flite" : "espeak";
+            case "screen_reader_engine": {
+                const e = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
+                return (e === "flite" || e === "openevv") ? e : "espeak";
+            }
             case "screen_reader_speed":
                 return String(typeof tts_get_speed === "function" ? tts_get_speed() : 1.0);
             case "screen_reader_pitch":
@@ -16930,6 +16932,19 @@ function globalGridIoFor() {
                 return String(typeof tts_get_volume === "function" ? tts_get_volume() : 70);
             case "screen_reader_debounce":
                 return String(typeof tts_get_debounce === "function" ? tts_get_debounce() : 300);
+            case "screen_reader_evv_voice":
+            case "screen_reader_evv_gender":
+            case "screen_reader_evv_head":
+            case "screen_reader_evv_pitch":
+            case "screen_reader_evv_inflection":
+            case "screen_reader_evv_rough":
+            case "screen_reader_evv_breath": {
+                /* SHM, not IPC -- free to read on every re-plan. null from
+                 * the binding means no shared memory, which is not a value. */
+                if (typeof tts_get_evv !== "function") return null;
+                const v = tts_get_evv(key.slice("screen_reader_evv_".length));
+                return (v === null || v === undefined) ? null : String(v);
+            }
 
             /* ---- set pages / shortcuts / services */
             case "set_pages_enabled":
@@ -17058,7 +17073,9 @@ function globalGridIoFor() {
                 if (typeof tts_set_enabled === "function") tts_set_enabled(on);
                 return;
             case "screen_reader_engine":
-                if (typeof tts_set_engine === "function") tts_set_engine(value === "flite" ? "flite" : "espeak");
+                if (typeof tts_set_engine === "function") {
+                    tts_set_engine((value === "flite" || value === "openevv") ? value : "espeak");
+                }
                 return;
             case "screen_reader_speed":
                 if (typeof tts_set_speed === "function") tts_set_speed(parseFloat(value));
@@ -17071,6 +17088,29 @@ function globalGridIoFor() {
                 return;
             case "screen_reader_debounce":
                 if (typeof tts_set_debounce === "function") tts_set_debounce(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_evv_voice": {
+                /* A preset is a starting point: load all six of its values
+                 * into the rows beneath, so what the sliders show is what is
+                 * spoken. The grid picks them up on its value rotation. */
+                if (typeof tts_set_evv !== "function") return;
+                const n = parseInt(value, 10) || 1;
+                tts_set_evv("voice", n);
+                const preset = EVV_PRESETS[Math.max(0, Math.min(EVV_PRESETS.length - 1, n - 1))];
+                for (const k of Object.keys(EVV_VOICE_FIELDS)) {
+                    tts_set_evv(EVV_VOICE_FIELDS[k], preset[EVV_VOICE_FIELDS[k]]);
+                }
+                return;
+            }
+            case "screen_reader_evv_gender":
+            case "screen_reader_evv_head":
+            case "screen_reader_evv_pitch":
+            case "screen_reader_evv_inflection":
+            case "screen_reader_evv_rough":
+            case "screen_reader_evv_breath":
+                if (typeof tts_set_evv === "function") {
+                    tts_set_evv(EVV_VOICE_FIELDS[key], Math.round(parseFloat(value)));
+                }
                 return;
 
             /* ---- set pages / shortcuts / services */

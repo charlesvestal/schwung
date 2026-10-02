@@ -148,11 +148,13 @@
         "type": "enum",
         "options": [
           "eSpeak-NG",
-          "Flite"
+          "Flite",
+          "Eloquence (openevv)"
         ],
         "values": [
           "espeak",
-          "flite"
+          "flite",
+          "openevv"
         ]
       },
       {
@@ -186,6 +188,84 @@
         "min": 0,
         "max": 1000,
         "step": 50
+      },
+      {
+        "key": "screen_reader_evv_voice",
+        "label": "Eloquence Voice",
+        "type": "enum",
+        "options": [
+          "Adult Male 1",
+          "Adult Female 1",
+          "Child 1",
+          "Adult Male 2",
+          "Adult Male 3",
+          "Adult Female 2",
+          "Elderly Female 1",
+          "Elderly Male 1"
+        ],
+        "values": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      {
+        "key": "screen_reader_evv_gender",
+        "label": "Eloquence Gender",
+        "type": "enum",
+        "options": [
+          "Male",
+          "Female"
+        ],
+        "values": [
+          0,
+          1
+        ]
+      },
+      {
+        "key": "screen_reader_evv_head",
+        "label": "Eloquence Head Size",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "key": "screen_reader_evv_pitch",
+        "label": "Eloquence Base Pitch",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "key": "screen_reader_evv_inflection",
+        "label": "Eloquence Inflection",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "key": "screen_reader_evv_rough",
+        "label": "Eloquence Roughness",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "key": "screen_reader_evv_breath",
+        "label": "Eloquence Breathiness",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "step": 1
       }
     ]
   },

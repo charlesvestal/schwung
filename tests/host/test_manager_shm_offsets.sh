@@ -53,6 +53,7 @@ offSkipbackReqVol skipback_require_volume
 offOpenToolCmd open_tool_cmd
 offSkipbackSeconds skipback_seconds
 offStayInShadow stay_in_shadow
+offTTSEvvVoice tts_evv_voice
 '
 
 {

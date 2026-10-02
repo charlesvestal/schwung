@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include "unified_log.h"
+#include "tts_config.h"
 
 /* Forward declarations */
 static void* espeak_synthesis_thread(void *arg);
@@ -203,38 +204,17 @@ static void espeak_save_state(void) {
 }
 
 static void espeak_save_config(void) {
-    const char *config_path = "/data/UserData/schwung/config/tts.json";
-
-    /* Read existing engine choice to preserve it */
-    char engine_name[16] = "espeak";
-    FILE *fr = fopen(config_path, "r");
-    if (fr) {
-        char buf[512];
-        size_t len = fread(buf, 1, sizeof(buf) - 1, fr);
-        fclose(fr);
-        buf[len] = '\0';
-        const char *ek = strstr(buf, "\"engine\"");
-        if (ek) {
-            const char *colon = strchr(ek, ':');
-            if (colon && strstr(colon, "\"flite\"")) {
-                strcpy(engine_name, "flite");
-            }
-        }
-    }
-
-    FILE *f = fopen(config_path, "w");
-    if (!f) {
+    /* Through the one writer, which carries every key this engine does not
+     * own (the engine choice, the openevv voice) -- see tts_config.h. */
+    tts_config_t cfg;
+    tts_config_load(&cfg);
+    cfg.speed = tts_speed;
+    cfg.pitch = tts_pitch;
+    cfg.volume = tts_volume;
+    if (!tts_config_save(&cfg)) {
         unified_log("tts_engine", LOG_LEVEL_ERROR, "Failed to save TTS config");
         return;
     }
-
-    fprintf(f, "{\n");
-    fprintf(f, "  \"engine\": \"%s\",\n", engine_name);
-    fprintf(f, "  \"speed\": %.2f,\n", tts_speed);
-    fprintf(f, "  \"pitch\": %.1f,\n", tts_pitch);
-    fprintf(f, "  \"volume\": %d\n", tts_volume);
-    fprintf(f, "}\n");
-    fclose(f);
 
     unified_log("tts_engine", LOG_LEVEL_INFO,
                "TTS config saved: speed=%.2f, pitch=%.1f, volume=%d",
@@ -242,53 +222,17 @@ static void espeak_save_config(void) {
 }
 
 static void espeak_load_config(void) {
-    const char *config_path = "/data/UserData/schwung/config/tts.json";
-    FILE *f = fopen(config_path, "r");
-    if (!f) {
+    tts_config_t cfg;
+    if (!tts_config_load(&cfg)) {
         unified_log("tts_engine", LOG_LEVEL_DEBUG, "No TTS config file found, using defaults");
         return;
     }
-
-    char config_buf[512];
-    size_t len = fread(config_buf, 1, sizeof(config_buf) - 1, f);
-    fclose(f);
-    config_buf[len] = '\0';
-
-    const char *speed_key = strstr(config_buf, "\"speed\"");
-    if (speed_key) {
-        const char *colon = strchr(speed_key, ':');
-        if (colon) {
-            float speed = strtof(colon + 1, NULL);
-            if (speed >= 0.5f && speed <= 6.0f) {
-                tts_speed = speed;
-                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS speed: %.2f", speed);
-            }
-        }
-    }
-
-    const char *pitch_key = strstr(config_buf, "\"pitch\"");
-    if (pitch_key) {
-        const char *colon = strchr(pitch_key, ':');
-        if (colon) {
-            float pitch = strtof(colon + 1, NULL);
-            if (pitch >= 80.0f && pitch <= 180.0f) {
-                tts_pitch = pitch;
-                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS pitch: %.1f Hz", pitch);
-            }
-        }
-    }
-
-    const char *volume_key = strstr(config_buf, "\"volume\"");
-    if (volume_key) {
-        const char *colon = strchr(volume_key, ':');
-        if (colon) {
-            int volume = atoi(colon + 1);
-            if (volume >= 0 && volume <= 100) {
-                tts_volume = volume;
-                unified_log("tts_engine", LOG_LEVEL_INFO, "Loaded TTS volume: %d", volume);
-            }
-        }
-    }
+    tts_speed = cfg.speed;
+    tts_pitch = cfg.pitch;
+    tts_volume = cfg.volume;
+    unified_log("tts_engine", LOG_LEVEL_INFO,
+               "Loaded TTS config: speed=%.2f, pitch=%.1f Hz, volume=%d",
+               tts_speed, tts_pitch, tts_volume);
 }
 
 bool espeak_tts_init(int sample_rate) {

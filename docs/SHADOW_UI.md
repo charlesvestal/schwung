@@ -80,7 +80,7 @@ change) plan it the same way the first plan did. Default `true`: every other
 caller keeps the grid's chunking.
 
 The contract test plans with `paginate: false`, the way the screen does, and
-pins the per-section counts (7/8/6/1/4/3) plus the exact page list.
+pins the per-section counts (7/9/13/1/4/3 declared) plus the exact page list.
 
 Three consequences worth knowing:
 
@@ -112,6 +112,21 @@ Three consequences worth knowing:
   editor behind it, and it is the screen you go to to turn TTS off.
   `paramPagesEnabled()` still refuses the chrome for every *component*; that
   seam is unchanged.
+
+- **The Screen Reader section is ENGINE-SHAPED, and that is a `visible_if`,
+  answered by the contract's OWN io.** Picking Engine → Eloquence (openevv)
+  shows seven voice rows — Voice, Gender, Head Size, Base Pitch, Inflection,
+  Roughness, Breathiness — and hides Pitch (Hz), which only eSpeak and Flite
+  read. The conditions ride the LEVEL entries (the planner's `isHiddenParam`
+  reads them there, never chain_params), and `createGlobalGridIo` answers
+  `visible()` from its own stored values (`"openevv"`, not the enum index).
+  Without that hook the host's default evaluator binds to the LIST editor's
+  slot, which is not Global Settings, and a condition it cannot read FAILS
+  OPEN — every engine's rows at once, the same way the knob grid shipped
+  `visible_if` broken. Picking a Voice loads that preset's six values into the
+  rows beneath it (`EVV_PRESETS`, pinned to openevv's `enus.settings`), so the
+  sliders always show what is being spoken. The section declares 13 and shows
+  6 or 12; the contract test plans it both ways.
 
 Persistence is **three** things and conflating them loses a write silently: a
 shared `saveMasterFxChainConfig()` sink (derived from the routing table, never

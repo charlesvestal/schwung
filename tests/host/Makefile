@@ -116,7 +116,8 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_lane_store \
 	$(BUILD_DIR)/test_lane_state_roundtrip \
 	$(BUILD_DIR)/test_slot_clip_phase \
-	$(BUILD_DIR)/test_rec_arm
+	$(BUILD_DIR)/test_rec_arm \
+	$(BUILD_DIR)/test_tts_openevv
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -308,6 +309,13 @@ $(BUILD_DIR)/test_voice_send_source: test_voice_send_source.c ../../src/host/voi
 $(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 $(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# tts_config.c is the one tts.json writer; built here with the header-only
+# openevv mappings. Neither needs the engine, the shim or libeci. The
+# upsampler (tts_upsample4.h) needs libm.
+$(BUILD_DIR)/test_tts_openevv: LDFLAGS += -lm
+$(BUILD_DIR)/test_tts_openevv: test_tts_openevv.c ../../src/host/tts_config.c ../../src/host/tts_config.h ../../src/host/tts_openevv_map.h ../../src/host/tts_upsample4.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is

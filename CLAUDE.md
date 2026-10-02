@@ -1341,6 +1341,13 @@ component load gate, and the input-dispatch order. Read it before editing
   property of the CONTRACT, never inferred from the layout — the layout is
   also `LAYOUT_LIST` with the screen reader on or Param View set to List, and
   a module's pages are authored groupings that must keep their shape.
+- **The Screen Reader section is ENGINE-SHAPED**: Engine → Eloquence shows
+  seven voice rows and hides Pitch (Hz), by `visible_if` on the LEVEL entries,
+  answered by `createGlobalGridIo`'s own `visible()` against STORED values. The
+  host's default evaluator reads the list editor's slot and FAILS OPEN here.
+  A Voice pick loads its preset into the six rows (`EVV_PRESETS`, held to
+  openevv's `enus.settings` in three places by
+  `test_tts_openevv_contract.sh`).
 - **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
   orphan sweep into "Other", asserted over all 95 modules. It was one flat list
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
@@ -2119,3 +2126,35 @@ and whose NC clause is incompatible with every GPL component above.
 
 **`lib/libpcaudio.so.0` is ours** (`src/host/pcaudio_stub.c`), not pcaudiolib —
 a stub so eSpeak NG resolves without dragging in libpulse/libX11.
+
+### openevv (Eloquence) is DLOPENED, and its language data is nobody's to license
+
+The third screen reader engine, `libs/openevv` (submodule) → `lib/libeci.so.1`,
+loaded by `src/host/tts_engine_openevv.c`. Five rules:
+
+- **Never `-leci`.** A missing library must fall back to eSpeak, not stop
+  MoveOriginal from starting; CI checks the shim has no `NEEDED libeci`. The
+  ECI numbers are declared in the backend so the shim compiles without the
+  submodule, and the contract test holds them to `eci.h`.
+- **No ECI call on the SPI callback.** `eciNew` maps a 256 MB arena and starts
+  a thread, and a cancel waits ~27 ms for the engine to finish its message. One
+  SCHED_OTHER worker (cores 0–2) owns the instance; the RT side publishes text
+  through a triple buffer and reads a lock-free ring, and interruption is a
+  GENERATION, never a flush from the reader. openevv also `abort()`s on arena
+  exhaustion or corruption, and in this process that is MoveOriginal.
+- **Latency is decided by how we DRIVE it, not by the engine.** Ask for
+  **11025** and upsample 4x ourselves (`tts_upsample4.h`): the engine's own
+  44.1 kHz path is a double-precision sinc that cost 11x the speech. Wait with
+  **`eciSynchronize`**, never a sleep-poll on `eciSpeaking` — the engine hands
+  over one buffer per call, so the poll interval paced the whole delivery.
+  And **never answer `eciDataNotProcessed`**: it is a flat 30 ms sleep inside
+  the engine, and an interruption landing in it waits it out; the callback
+  waits for ring room itself. Together: first sound and interrupt-to-new-sound
+  both ~2x faster (x86, measured through the backend).
+- **`tts.json` has ONE writer**, `tts_config_save()`. Three engines each
+  rewrote the whole file from their own key list, so the `evv_*` voice would
+  have reverted on the next eSpeak save.
+- **The engine is MIT; the IBM language data compiled into it is NOT
+  licensed** (openevv's own NOTICE; the rights are in litigation). It ships in
+  every tarball by decision, with `licenses/OPENEVV_{LICENSE,NOTICE}.txt`
+  beside it; `SCHWUNG_ALLOW_NO_OPENEVV=1` builds without it.

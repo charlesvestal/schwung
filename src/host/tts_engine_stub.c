@@ -81,3 +81,14 @@ const char *tts_get_engine(void)
 {
     return "espeak";
 }
+
+void tts_set_evv_voice(const tts_evv_voice_t *voice)
+{
+    (void)voice;
+}
+
+void tts_get_evv_voice(tts_evv_voice_t *out)
+{
+    const tts_evv_voice_t def = TTS_EVV_DEFAULT_VOICE;
+    if (out) *out = def;
+}

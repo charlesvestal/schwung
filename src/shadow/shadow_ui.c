@@ -3038,7 +3038,9 @@ static JSValue js_tts_get_volume(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt32(ctx, shadow_control->tts_volume);
 }
 
-/* tts_set_engine(name) - Write engine choice to shared memory (0=espeak, 1=flite) */
+/* tts_set_engine(name) - Write engine choice to shared memory
+ * (0=espeak, 1=flite, 2=openevv). The shim applies it before the next
+ * utterance, and writes the engine back if the switch was refused. */
 static JSValue js_tts_set_engine(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3049,6 +3051,8 @@ static JSValue js_tts_set_engine(JSContext *ctx, JSValueConst this_val,
 
     if (strcmp(name, "flite") == 0) {
         shadow_control->tts_engine = 1;
+    } else if (strcmp(name, "openevv") == 0) {
+        shadow_control->tts_engine = 2;
     } else {
         shadow_control->tts_engine = 0;  /* default: espeak */
     }
@@ -3062,7 +3066,66 @@ static JSValue js_tts_get_engine(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewString(ctx, "espeak");
-    return JS_NewString(ctx, shadow_control->tts_engine == 1 ? "flite" : "espeak");
+    switch (shadow_control->tts_engine) {
+    case 1:  return JS_NewString(ctx, "flite");
+    case 2:  return JS_NewString(ctx, "openevv");
+    default: return JS_NewString(ctx, "espeak");
+    }
+}
+
+/*
+ * The openevv (Eloquence) voice fields, by name: "voice" (preset 1..8),
+ * "gender" (0/1), and "head" / "pitch" / "inflection" / "rough" / "breath"
+ * (0..100). Same shape as the rest of this group -- a clamped write into
+ * shared memory, applied by the shim before the next utterance.
+ */
+static volatile uint8_t *tts_evv_field(const char *name, int *lo, int *hi) {
+    if (!shadow_control || !name) return NULL;
+    *lo = 0; *hi = 100;
+    if (strcmp(name, "voice") == 0) { *lo = 1; *hi = 8; return &shadow_control->tts_evv_voice; }
+    if (strcmp(name, "gender") == 0) { *hi = 1; return &shadow_control->tts_evv_gender; }
+    if (strcmp(name, "head") == 0) return &shadow_control->tts_evv_head;
+    if (strcmp(name, "pitch") == 0) return &shadow_control->tts_evv_pitch;
+    if (strcmp(name, "inflection") == 0) return &shadow_control->tts_evv_inflection;
+    if (strcmp(name, "rough") == 0) return &shadow_control->tts_evv_rough;
+    if (strcmp(name, "breath") == 0) return &shadow_control->tts_evv_breath;
+    return NULL;
+}
+
+/* tts_set_evv(field, value) */
+static JSValue js_tts_set_evv(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2 || !shadow_control) return JS_UNDEFINED;
+
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_UNDEFINED;
+    double v = 0;
+    JS_ToFloat64(ctx, &v, argv[1]);
+
+    int lo, hi;
+    volatile uint8_t *field = tts_evv_field(name, &lo, &hi);
+    if (field) {
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+        *field = (uint8_t)(v + 0.5);
+    }
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+/* tts_get_evv(field) -> number, or null for an unknown field */
+static JSValue js_tts_get_evv(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_NULL;
+
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_NULL;
+    int lo, hi;
+    volatile uint8_t *field = tts_evv_field(name, &lo, &hi);
+    JS_FreeCString(ctx, name);
+    return field ? JS_NewInt32(ctx, *field) : JS_NULL;
 }
 
 /* tts_set_debounce(ms) - Write debounce time to shared memory */
@@ -3953,6 +4016,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "tts_get_volume", JS_NewCFunction(ctx, js_tts_get_volume, "tts_get_volume", 0));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_engine", JS_NewCFunction(ctx, js_tts_set_engine, "tts_set_engine", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_engine", JS_NewCFunction(ctx, js_tts_get_engine, "tts_get_engine", 0));
+    JS_SetPropertyStr(ctx, global_obj, "tts_set_evv", JS_NewCFunction(ctx, js_tts_set_evv, "tts_set_evv", 2));
+    JS_SetPropertyStr(ctx, global_obj, "tts_get_evv", JS_NewCFunction(ctx, js_tts_get_evv, "tts_get_evv", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_set_debounce", JS_NewCFunction(ctx, js_tts_set_debounce, "tts_set_debounce", 1));
     JS_SetPropertyStr(ctx, global_obj, "tts_get_debounce", JS_NewCFunction(ctx, js_tts_get_debounce, "tts_get_debounce", 0));
 
