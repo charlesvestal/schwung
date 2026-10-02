@@ -1861,7 +1861,14 @@ function knobCardOpen(knobIndex, focus) {
 
     const hierarchy = chainTargetHierarchy(target, comp.key);
     const chainParams = chainTargetChainParams(target, comp.key);
-    if (!hierarchy || !chainParams || !chainParams.length) return;
+    /* A missing hierarchy is NOT a reason to drop the row. A module that
+     * declares none (9W9 2.7 serves "" and 99 chain_params; Radio Garden has
+     * three) gets its knob grid paginated from chain_params, and the knobs
+     * here map chain_params[i] by the same rule (buildChainKnobContext's
+     * fallback) -- so the row is that grid page, and buildMetaIndex reads the
+     * metadata from chain_params alone. Requiring a hierarchy gave these
+     * modules the one-line card and nothing else. */
+    if (!chainParams || !chainParams.length) return;
 
     const keys = new Array(NUM_KNOBS).fill(null);
     for (let i = 0; i < NUM_KNOBS; i++) {
