@@ -16,7 +16,7 @@ function harness(source=after){
   const log={tool:[],grid:[],writes:[],macro:[],touch:[],ticks:[],escape:0};
   const VIEWS={PARAM_PAGES:1,OVERTAKE_MODULE:2,CHAIN_EDIT:3,COMPONENT_EDIT:4,CANVAS:5,ENUM_PICKER:6};
   const c={console:{log(){}},Date,VIEWS,view:VIEWS.OVERTAKE_MODULE,coRunView:VIEWS.PARAM_PAGES,
-    coRunChainEditSlot:1,corunOverlayId:null,keepMask:0,active:true,needsRedraw:false,
+    coRunChainEditSlot:1,corunOverlayId:null,corunOverlayRootView:-1,closed:0,keepMask:0,active:true,needsRedraw:false,
     CORUN_GRP_KNOBS:1,CORUN_GRP_JOG:2,CORUN_GRP_BACK:4,CORUN_GRP_TOUCH:8,
     KNOB_CC_START:71,KNOB_CC_END:78,NUM_KNOBS:8,MoveMainKnob:14,MoveMainButton:3,MoveBack:51,
     MoveKnob1Touch:0,MoveKnob8Touch:7,MidiNoteOn:144,MidiNoteOff:128,MidiCC:176,
@@ -37,6 +37,7 @@ function harness(source=after){
     handleJog:()=>log.macro.push('jog'),handleSelect:()=>log.macro.push('click'),
     handleBack:()=>{c.view=VIEWS.CHAIN_EDIT;},
     shadow_corun_end:()=>{c.coRunChainEditSlot=-1;},
+    shadow_corun_close:()=>{c.closed++;c.corunOverlayId=null;c.corunOverlayRootView=-1;},
     paramPagesActive:()=>c.active,
     isHardwarePadPress:d=>(d[0]&240)===144&&d[1]>=68&&d[1]<=99&&d[2]>0,
     _midiCount:0,_midiWindowStart:0,_knobTurnCount:0,controllerIo:null,currentChrome:null,currentSlot:1,
@@ -77,9 +78,28 @@ test('eight knobs, negative deltas and MIDI channels reach controller, not macro
   const h=harness();for(let i=0;i<8;i++){h.send([179,71+i,1]);h.send([179,71+i,127]);}
   assert.equal(h.log.writes.length,16);assert.equal(h.log.writes[15].delta,-1);assert.equal(h.log.macro.length,0);
 });
-test('touch down, velocity-zero and note-off releases reach grid once',()=>{
-  const h=harness();for(const d of [[144,0,100],[144,0,0],[144,1,100],[128,1,0]])h.send(d);
-  assert.deepEqual(h.log.touch,[[0,true],[0,false],[1,true],[1,false]]);assert.equal(h.log.tool.length,0);
+test('touch down, velocity-zero and note-off releases reach grid once, and still reach the tool',()=>{
+  const h=harness();const ev=[[144,0,100],[144,0,0],[144,1,100],[128,1,0]];ev.forEach(h.send);
+  assert.deepEqual(h.log.touch,[[0,true],[0,false],[1,true],[1,false]]);
+  // The co-run touch path has always forwarded both edges to the tool.
+  assert.deepEqual(h.log.tool,ev);
+  assert.equal(h.c.knobTouched[0],false);assert.equal(h.c.knobTouched[1],false);
+});
+test('a touch held into the grid is released in host bookkeeping by the grid',()=>{
+  const h=harness();h.c.knobTouched[2]=true;h.send([128,2,0]);assert.equal(h.c.knobTouched[2],false);
+});
+test('Back at the root of an overlay whose root IS the grid closes the overlay',()=>{
+  // global_settings: CORUN_ENTRIES enters the grid, so its root view is PARAM_PAGES.
+  const h=harness();h.c.corunOverlayId='global_settings';h.c.corunOverlayRootView=h.c.VIEWS.PARAM_PAGES;
+  h.c.keepMask=h.c.CORUN_GRP_BACK;  // an overlay handles what the tool KEEPS
+  h.send([176,51,127]);
+  assert.equal(h.c.closed,1);assert.equal(h.c.corunOverlayId,null);assert.equal(h.log.tool.length,0);
+});
+test('Back in a grid BELOW an overlay root still navigates the grid',()=>{
+  const h=harness();h.c.corunOverlayId='master_fx';h.c.corunOverlayRootView=h.c.VIEWS.CHAIN_EDIT;
+  h.c.keepMask=h.c.CORUN_GRP_BACK;
+  h.send([176,51,127]);
+  assert.equal(h.c.closed,0);assert.equal(h.c.coRunView,h.c.VIEWS.CHAIN_EDIT);assert.equal(h.c.corunOverlayId,'master_fx');
 });
 test('pad/step notes and transport remain tool-owned',()=>{
   const h=harness();const events=[[144,68,100],[128,68,0],[144,72,100],[144,72,0],[144,16,100],[128,16,0],[176,85,127]];
