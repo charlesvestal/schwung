@@ -508,6 +508,8 @@ function canvasPageParams(chainParams) {
              * Measured on the uncapped version -- twenty keys took a
              * three-knob page from a knob refresh every 4 ticks to every 24. */
             extraKeys: declaredCanvasExtraKeys(p),
+            /* Planned BEFORE the level's knob grid instead of after it. */
+            pageFirst: p.page_first === true || p.pageFirst === true,
             name: p.name || p.short_name || p.key,
         });
     }
@@ -998,6 +1000,22 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          */
         const authored = knobKeys(lvl).filter(
             (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k));
+
+        /*
+         * `page_first`: a canvas page that LEADS its level -- before the knob
+         * grid rather than after it. A module whose drawn page is the thing you
+         * came for (Radio Garden's station browser) otherwise lands you on the
+         * knobs every time, because grids are always planned first. It still
+         * carries the level's knobs, so the encoders work on it exactly as on
+         * the grid, and the grid follows it.
+         */
+        for (const key of paramKeys(lvl)) {
+            const cp = canvasPages.get(key);
+            if (!cp || !cp.pageFirst) continue;
+            if (isHiddenParam(lvl, key, isVisible)) continue;
+            if (cp.presetBrowser && lvl.list_param && lvl.count_param) continue;
+            emitCanvasPage(cp, key);
+        }
         /* Overflow keys are filtered further than authored ones: a knob the
          * author placed is otherwise intent and is honoured whatever it is
          * called, but a key we are pulling in from params[] has to earn its
@@ -1134,6 +1152,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             if (isHiddenParam(lvl, key, isVisible)) continue;
             /* Already merged into the level's preset browser above. */
             if (cp.presetBrowser && lvl.list_param && lvl.count_param) continue;
+            /* Already emitted ahead of the grids -- see emitCanvasPage. */
+            if (cp.pageFirst) continue;
+            emitCanvasPage(cp, key);
+        }
+
+        function emitCanvasPage(cp, key) {
             emitted.add(key);
             pages.push({
                 kind: PAGE_KNOBS,
