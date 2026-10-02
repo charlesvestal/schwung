@@ -205,7 +205,12 @@ before generic chain-editor fallbacks. The outer view remains `OVERTAKE_MODULE`;
 checking only that outer view would route grid knobs to slot macros instead.
 The same visible-view context drives page polling and component-widget ticks.
 Escape and modal handling retain precedence, and tool-owned pads, steps and
-transport are not offered to the grid. `tests/host/test_corun_param_pages.sh`
+transport are not offered to the grid. Two exceptions keep the older contract:
+a knob TOUCH the grid takes is still forwarded to the tool (both edges, as the
+chain-editor touch path always did), and Back at the root of an overlay whose
+root view IS the grid (`global_settings`) still goes to the overlay branch and
+closes the overlay -- the grid's own Back would run its exit and leave the
+overlay half-open. `tests/host/test_corun_param_pages.sh`
 exercises the actual dispatch and page-input handlers with mocked host/controller
 boundaries; it is not a substitute for on-device parameter/audio testing.
 

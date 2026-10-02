@@ -28140,8 +28140,20 @@ function dispatchCoRunParamPagesMidi(data) {
         group = CORUN_GRP_TOUCH;
     }
     if (!group || !coRunWants(group)) return false;
+    /* An overlay whose ROOT is the grid (global_settings) closes on Back at
+     * that root. The grid's own Back would run its exit (onExit ->
+     * leaveGlobalSettings), which moves coRunView but never closes the
+     * overlay -- corunOverlayId and the overlay keep mask stay applied. Leave
+     * it to the overlay branch below, exactly as before the grid was routed. */
+    if (group === CORUN_GRP_BACK && corunOverlayId != null &&
+        coRunView === corunOverlayRootView) return false;
     let consumed = false;
     runCoRunChainEdit(function() { consumed = handleParamPagesMidi(data); });
+    /* Same touch bookkeeping as the chain-editor co-run touch path, so a
+     * knob held across a grid <-> editor transition is not left marked. */
+    if (consumed && group === CORUN_GRP_TOUCH) {
+        knobTouched[key - MoveKnob1Touch] = (type === MidiNoteOn && data[2] > 0);
+    }
     return consumed;
 }
 
@@ -30324,9 +30336,17 @@ globalThis.onMidiMessageInternal = function(data) {
 
         /* After escape/modal handling, before generic editor fallbacks.
          * A consumed event must not also turn a slot macro or reach the tool. */
+        /* A knob TOUCH the grid took still falls through to the tool forward
+         * below (skipping the chain-editor touch handler), as the co-run touch
+         * path always has: the tool keeps seeing both edges, so nothing it
+         * tracks is stranded when the grid closes mid-touch. */
+        let coRunGridTookTouch = false;
         if (dispatchCoRunParamPagesMidi(data)) {
             needsRedraw = true;
-            return;
+            const _t = status & 0xF0;
+            if (!((_t === MidiNoteOn || _t === MidiNoteOff) &&
+                  d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch)) return;
+            coRunGridTookTouch = true;
         }
 
         /* CO-RUN: intercept chain-editor navigation CCs (jog turn, jog click,
@@ -30464,7 +30484,7 @@ globalThis.onMidiMessageInternal = function(data) {
          * notes pre-change; keeping that avoids a stranded knobTouched on exit).
          * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
          * (pendingKnob) paths, which is what actually clears the value popup. */
-        if (coRunUiActive() &&
+        if (coRunUiActive() && !coRunGridTookTouch &&
                 ((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
                 d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunWants(CORUN_GRP_TOUCH)) {
             const _tk = d1 - MoveKnob1Touch;
