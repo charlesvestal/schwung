@@ -260,15 +260,19 @@ if (buildSlotPatchJsonMaker) {
     const setChangedEnd = src.indexOf("Refresh UI state immediately", setChangedAt);
     const setChangedBlock = src.slice(setChangedAt, setChangedEnd);
     const calls = (setChangedBlock.match(/syncUserPresetRecordsFromChain\(/g) || []).length;
-    /* One call per branch: loaded+parsed, loaded+parse-failed, empty state,
-       no state file -- so a set switch that lands a slot in ANY of those
-       branches still syncs (parse-failure and "no file" must CLEAR, which is
-       exactly the shape of the bug this closes: an old record surviving
-       because the new slot has nothing to overwrite it with). */
-    if (calls < 4) {
+    /* One call per branch: loaded+parsed, loaded+parse-failed, and no state
+       (an empty file and a missing one are the same branch) -- so a set
+       switch that lands a slot in ANY of those still syncs (parse-failure
+       and "no state" must CLEAR, which is exactly the shape of the bug this
+       closes: an old record surviving because the new slot has nothing to
+       overwrite it with). */
+    if (calls < 3) {
       fail("SET_CHANGED Pass 2 calls syncUserPresetRecordsFromChain " + calls +
-           " time(s), expected at least 4 -- some branch (parsed / parse-failed / " +
-           "empty / no-file) is not syncing, so a record can survive a set switch");
+           " time(s), expected at least 3 -- some branch (parsed / parse-failed / " +
+           "no state) is not syncing, so a record can survive a set switch");
+    }
+    if ((setChangedBlock.match(/syncUserPresetRecordsFromChain\(i, null\)/g) || []).length < 2) {
+      fail("SET_CHANGED Pass 2 must CLEAR the record on both parse failure and no state");
     }
     if (!/syncUserPresetRecordsFromChain\(i, chain\)/.test(setChangedBlock)) {
       fail("SET_CHANGED Pass 2 never syncs from a successfully parsed chain");
