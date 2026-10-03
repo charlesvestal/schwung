@@ -855,6 +855,7 @@ typedef struct shadow_control_t {
  * gates notes into Schwung's instrument, never Move's), so the card says so
  * instead of taking a jog that silently does nothing. */
 #define SM_FLAG_NO_SYNTH 0x01
+#define SM_FLAG_UNREADABLE 0x02   /* the clip's notes are in a format we cannot read */
 
 
 /* Values for shadow_control_t.speaker_eq_mode. */
