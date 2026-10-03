@@ -866,6 +866,17 @@ let autosaveCounter = 0;
  * that slot, SHADOW_UI_SLOTS is the master FX chain, null means idle. One step
  * per tick — see the drain block in globalThis.tick. */
 let autosaveJob = null;
+/* SET-SWITCH RESTORES THAT HAVE NOT BEEN CONFIRMED, per slot: null, or
+ * { exp, outgoing } -- what the incoming set's file says the slot should hold
+ * (slotFileExpectation) and the module signature the slot had in the OUTGOING
+ * set. While an entry stands, autosave will not write that slot if it still
+ * holds the outgoing modules: that is exactly the state a restore that never
+ * landed leaves behind, and saving it writes the old set's module into the new
+ * set's file -- measured on a Move, a set switch left JE-8086 in a slot whose
+ * file said Mini-JV, and the next autosave made that permanent. Cleared when
+ * the slot matches its file (a late load landed), when it holds anything else
+ * (the user changed it), and on the next set change. */
+let slotRestorePending = [null, null, null, null];
 /* Exact bytes last written to each slot_N.json, so an unchanged slot skips the
  * eMMC write entirely (measured ~120ms per write — the single most expensive
  * thing the UI thread did). Cleared whenever the file set changes underneath
@@ -8100,6 +8111,56 @@ function setSlotParamWithTimeout(slot, key, value, timeoutMs) {
     return setSlotParam(slot, key, value);
 }
 
+/* What a slot file says the slot holds: module ids by position, "" for an
+ * empty position. A missing or near-empty file is an empty slot; an unreadable
+ * one is null (nothing can be confirmed against it). */
+function slotFileExpectation(raw) {
+    if (!raw || raw.length <= 10) return { synth: "", midiFx: [], fx: [] };
+    try {
+        const parsed = JSON.parse(raw);
+        const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+        /* The synth names its module `module`; MIDI FX and audio FX entries
+         * name theirs `type` (the autosave writer and chain_patch.c's parser
+         * agree on that). Reading `module` for an FX made every slot with an
+         * audio FX look mismatched. */
+        const id = (e) => !e ? "" : String(e.type || e.module || "");
+        return {
+            synth: (chain && chain.synth && chain.synth.module) ? String(chain.synth.module) : "",
+            midiFx: (chain && Array.isArray(chain.midi_fx)) ? chain.midi_fx.map(id) : [],
+            fx: (chain && Array.isArray(chain.audio_fx)) ? chain.audio_fx.map(id) : []
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+/* Does the slot hold what `exp` says? true / false, or null when a read did
+ * not complete -- which is not news about the slot (see CLAUDE.md, "A param
+ * read has THREE answers"). Positions past the file's list must be empty. */
+function slotMatchesExpectation(slot, exp) {
+    const read = (key) => {
+        const v = getSlotParam(slot, key);
+        return (v === null || v === undefined) ? null : v;
+    };
+    const synth = read("synth_module");
+    if (synth === null) return null;
+    if (synth !== exp.synth) return false;
+    const groups = [["midi_fx", exp.midiFx, "midi_fx_count", MAX_MIDI_FX],
+                    ["fx", exp.fx, "fx_count", MAX_FX]];
+    for (const [prefix, list, countKey, cap] of groups) {
+        const raw = read(countKey);
+        if (raw === null) return null;
+        const live = parseInt(raw, 10);
+        const n = Math.min(Math.max(isNaN(live) ? 0 : live, list.length), cap);
+        for (let k = 0; k < n; k++) {
+            const v = read(`${prefix}${k + 1}_module`);
+            if (v === null) return null;
+            if (v !== (list[k] || "")) return false;
+        }
+    }
+    return true;
+}
+
 function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logLabel) {
     let ok = setSlotParamWithTimeout(slot, key, value, timeoutMs);
     if (!ok) {
@@ -10973,6 +11034,21 @@ function noteLaneWriteRefusal(slot, key) {
     announce("Armed, clip phase unknown");
 }
 
+/* Must autosave leave slot i alone? Only while a set-switch restore is
+ * unconfirmed AND the slot still holds the outgoing set's modules -- or its
+ * state cannot be read, since an unknown is no licence to write. Resolves the
+ * entry as soon as the slot matches its file or holds anything else. */
+function slotRestoreHolds(i) {
+    const pend = slotRestorePending[i];
+    if (!pend) return false;
+    const match = slotMatchesExpectation(i, pend.exp);
+    if (match === true) { slotRestorePending[i] = null; return false; }
+    const sig = getSlotModuleSignature(i);
+    if (match === null || sig === null || sig === pend.outgoing) return true;
+    slotRestorePending[i] = null;   /* someone put something else there */
+    return false;
+}
+
 function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
@@ -10987,6 +11063,8 @@ function autosaveOneSlot(i) {
      * where the slot still has one. */
     persistSlotLanes(i);
     persistSlotChance(i);
+    /* A set-switch restore that was never confirmed (slotRestorePending). */
+    if (slotRestoreHolds(i)) return;
     /* Sync chainConfigs from DSP before checking - prevents clobbering
      * valid autosave files for slots we haven't navigated to yet.
      * Read ONCE and reused as `currentSig` below — it used to be read
@@ -29016,50 +29094,78 @@ globalThis.tick = function() {
              *    then load new slots. This reduces peak memory when switching
              *    between sets with heavy synths. */
 
-            /* Pass 1: Clear all slots to free memory before loading anything new */
+            /* Pass 1: Clear all slots to free memory before loading anything new.
+             *
+             * These writes run on the shim's slot loader, not the SPI
+             * callback: each one holds the param channel for a fade plus the
+             * module's own create/destroy, which is routinely hundreds of ms
+             * and can be seconds. They used to be given 1.5 s and their result
+             * ignored -- a timed-out clear left the outgoing module in place,
+             * and a timed-out load_file was SENT AGAIN, starting a second full
+             * load of a module still being constructed. So: budgets sized for
+             * the loader, and every slot confirmed by reading it back. */
+            const RESTORE_CLEAR_MS = 10000;
+            const RESTORE_LOAD_MS = 15000;
+            autosaveJob = null;   /* a drain in progress would continue into the NEW dir */
+            const outgoingSig = [];
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                outgoingSig[i] = getSlotModuleSignature(i);
+                slotRestorePending[i] = null;
+            }
             debugLog("SET_CHANGED: pass 1 — clearing all slots");
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-                setSlotParamWithTimeout(i, "clear", "", 1500);
+                if (!setSlotParamWithTimeout(i, "clear", "", RESTORE_CLEAR_MS)) {
+                    debugLog("SET_CHANGED: slot " + (i + 1) + " clear not answered");
+                }
             }
 
             /* Pass 2: Load new state for non-empty slots */
             debugLog("SET_CHANGED: pass 2 — loading new slot states");
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 const path = activeSlotStateDir + "/slot_" + i + ".json";
-                if (host_file_exists(path)) {
-                    const raw = host_read_file(path);
-                    /* Non-empty state: try load_file with extended timeout + retry. */
-                    if (raw && raw.length > 10) {
-                        let loadOk = setSlotParamWithTimeout(i, "load_file", path, 1500);
-                        if (!loadOk) {
-                            debugLog("SET_CHANGED: load_file timeout slot " + (i + 1) + " path " + path + " (retry)");
-                            loadOk = setSlotParamWithTimeout(i, "load_file", path, 3000);
-                        }
-                        if (loadOk) {
-                            debugLog("SET_CHANGED: slot " + (i + 1) + " loaded");
-                        } else {
-                            debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout)");
-                        }
-                        /* load_file (native) restores the DSP side but not
-                         * this pure-JS bookkeeping -- same gap the boot-restore
-                         * loop's bypass comment describes. The map is keyed
-                         * (slot, prefix), not by set, so without this a preset
-                         * record from the OUTGOING set's slot i survives onto
-                         * the INCOMING set's slot i and gets written into ITS
-                         * autosave. Sync (and clear on parse failure) either way. */
-                        try {
-                            const parsed = JSON.parse(raw);
-                            const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
-                            syncUserPresetRecordsFromChain(i, chain);
-                        } catch (e) {
-                            syncUserPresetRecordsFromChain(i, null);
-                        }
-                    } else {
-                        debugLog("SET_CHANGED: slot " + (i + 1) + " empty state (already cleared)");
+                const raw = host_file_exists(path) ? host_read_file(path) : null;
+                const hasState = !!(raw && raw.length > 10);
+                const exp = slotFileExpectation(raw);
+                const restore = () => {
+                    if (!hasState) return setSlotParamWithTimeout(i, "clear", "", RESTORE_CLEAR_MS);
+                    return setSlotParamWithTimeout(i, "load_file", path, RESTORE_LOAD_MS);
+                };
+                /* An empty slot was cleared in pass 1; only a load is sent here. */
+                let answered = hasState ? restore() : true;
+                let confirmed = exp ? slotMatchesExpectation(i, exp) : null;
+                if (confirmed === false) {
+                    /* It holds something other than its file -- the restore did
+                     * not land. Once more, from a clean slot. Never re-sent on a
+                     * mere timeout: the write may be landing as we speak, and
+                     * the readback above is what says whether it did. */
+                    debugLog("SET_CHANGED: slot " + (i + 1) + " does not match " + path + " (retry)");
+                    if (hasState) setSlotParamWithTimeout(i, "clear", "", RESTORE_CLEAR_MS);
+                    answered = restore();
+                    confirmed = slotMatchesExpectation(i, exp);
+                }
+                if (confirmed === true) {
+                    debugLog("SET_CHANGED: slot " + (i + 1) + (hasState ? " loaded" : " empty"));
+                } else {
+                    debugLog("SET_CHANGED: slot " + (i + 1) + " NOT confirmed (answered=" + answered +
+                             ", match=" + confirmed + ") -- autosave holds it until it is");
+                    if (exp) slotRestorePending[i] = { exp: exp, outgoing: outgoingSig[i] };
+                }
+                if (hasState) {
+                    /* load_file (native) restores the DSP side but not
+                     * this pure-JS bookkeeping -- same gap the boot-restore
+                     * loop's bypass comment describes. The map is keyed
+                     * (slot, prefix), not by set, so without this a preset
+                     * record from the OUTGOING set's slot i survives onto
+                     * the INCOMING set's slot i and gets written into ITS
+                     * autosave. Sync (and clear on parse failure) either way. */
+                    try {
+                        const parsed = JSON.parse(raw);
+                        const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                        syncUserPresetRecordsFromChain(i, chain);
+                    } catch (e) {
                         syncUserPresetRecordsFromChain(i, null);
                     }
                 } else {
-                    debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
                     syncUserPresetRecordsFromChain(i, null);
                 }
             }

@@ -21,6 +21,7 @@
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_plock.h"       /* a held step button -> a phase, in one place */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
+#include "slot_load_job.h"    /* which slot writes load a module — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
 #include "param_slow.h"    /* attribute a serve that ate the frame — header-only */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
@@ -56,6 +57,12 @@
  */
 __attribute__((weak)) void shim_rt_audit_note_module(const char *id) { (void)id; }
 
+/* The slot loader thread lives in the shim worker for the same reason, and
+ * these weak fallbacks mean "no loader": shadow_slot_load_post then declines
+ * and the write runs synchronously, exactly as it did before the loader. */
+__attribute__((weak)) int shim_slot_loader_start(void (*run)(void)) { (void)run; return 0; }
+__attribute__((weak)) void shim_slot_loader_wake(void) { }
+
 /* ============================================================================
  * Globals
  * ============================================================================ */
@@ -88,6 +95,12 @@ void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
                                      int n_sends, const int16_t *post_fx,
                                      int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
+/* A staged module swap (chain_synth_load.c / chain_fx_load.c): stage on the
+ * slot loader, fade + commit on the callback, retire on the loader. All three
+ * or none: a chain DSP without them falls back to parking the slot. */
+int (*shadow_chain_load_stage)(void *instance, const char *key, const char *value) = NULL;
+int (*shadow_chain_load_swap_step)(void *instance, int force) = NULL;
+void (*shadow_chain_load_retire)(void) = NULL;
 uint32_t (*shadow_chain_set_scene_morph)(void *, uint8_t, uint8_t, float, uint8_t, uint8_t) = NULL;
 int (*shadow_chain_take_lane_edit)(void *instance, uint32_t *jid, int *kind) = NULL;
 /* Optional, and NULL on any chain built before automation lanes. A NULL here
@@ -2903,6 +2916,12 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
+    shadow_chain_load_stage = (int (*)(void *, const char *, const char *))
+        dlsym(shadow_dsp_handle, "chain_load_stage");
+    shadow_chain_load_swap_step = (int (*)(void *, int))
+        dlsym(shadow_dsp_handle, "chain_load_swap_step");
+    shadow_chain_load_retire = (void (*)(void))
+        dlsym(shadow_dsp_handle, "chain_load_retire");
     shadow_chain_set_scene_morph = (uint32_t (*)(void *, uint8_t, uint8_t, float, uint8_t, uint8_t))
         dlsym(shadow_dsp_handle, "chain_set_scene_morph");
     shadow_chain_take_lane_edit = (int (*)(void *, uint32_t *, int *))
@@ -3136,6 +3155,10 @@ void shadow_inprocess_handle_ui_request(void) {
 
     uint32_t request_id = ctrl->ui_request_id;
     if (request_id == shadow_ui_request_seen) return;
+    /* Not consumed while a slot load is in flight: the clear below unloads
+     * modules ON the callback, and would wait on the loader's _dl_load_lock.
+     * See shadow_slot_load_post. Taken next frame instead. */
+    if (shadow_slot_load_busy()) return;
     shadow_ui_request_seen = request_id;
 
     int slot = ctrl->ui_slot;
@@ -3238,6 +3261,10 @@ void shadow_inprocess_handle_ui_request(void) {
 
 void shadow_process_fade_completions(void) {
     if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
+    /* These load and unload modules ON the callback; while the slot loader
+     * holds glibc's _dl_load_lock that would block here behind a SCHED_OTHER
+     * thread. The pending action is kept, so it simply runs a frame later. */
+    if (shadow_slot_load_busy()) return;
 
     for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; slot++) {
         slot_fade_t *fade = &shadow_chain_slots[slot].fade;
@@ -4995,6 +5022,360 @@ static void fx_slot_serve_ui_hierarchy(master_fx_slot_t *s, shadow_param_t *shad
     shadow_param->result_len = -1;
 }
 
+/*
+ * What the shim does after a write has been forwarded to a slot's chain host:
+ * activate the slot for a module that just arrived, refresh its default
+ * forward channel, and tell the UI. Split out of the param handler so the
+ * synchronous path and the off-callback slot load (shadow_slot_load_tick) run
+ * ONE copy of it — a second copy is exactly how a set restore ended up
+ * leaving a slot inactive once before.
+ *
+ * Runs on the SPI thread, after the instance is back in shadow_chain_slots[].
+ */
+static void shadow_slot_after_forwarded_write(int slot, const char *key, const char *value)
+{
+    if (strcmp(key, "synth:module") == 0) {
+        if (value[0] != '\0') {
+            shadow_chain_slots[slot].active = 1;
+            shadow_chain_slots[slot].fade.target = 1.0f;
+            shadow_slot_refresh_default_fwd(slot);
+            shadow_ui_state_update_slot(slot);
+        }
+    }
+    /* Any FX position, not just the first two: a slot whose only
+     * module lands in fx5 or midi_fx4 must activate too, or it is
+     * never mixed.  The shape test costs no IPC; the confirming probe
+     * is three in-process reads and only runs on a module write to an
+     * inactive slot, which is a user action, not a per-frame one. */
+    if (!shadow_chain_slots[slot].active &&
+        shadow_key_is_fx_module(key) &&
+        value[0] != '\0' &&
+        shadow_slot_has_loaded_component(shadow_plugin_v2,
+                                         shadow_chain_slots[slot].instance)) {
+        shadow_chain_slots[slot].active = 1;
+        shadow_chain_slots[slot].fade.target = 1.0f;
+    }
+    if (strcmp(key, "load_file") == 0) {
+        shadow_slot_refresh_default_fwd(slot);   /* the set-restore path, too */
+        /* JS uses load_file on SET_CHANGED to restore slots from
+         * per-set state. Unlike synth:module / fx*:module /
+         * load_patch, load_file does not pass through the
+         * explicit-activation branches above — so without this
+         * the slot stays inactive until lazy activation fires on
+         * a matching MIDI event. If MIDI never hits the slot's
+         * channel post-load (or the query races the instance
+         * state), the slot remains silent even though the patch
+         * and synth are correctly loaded in the DSP. Query the
+         * instance and activate eagerly to mirror the other load
+         * paths. */
+        /* Five unrolled probes used to live here, one per FX position,
+         * and they saw only fx1/fx2/midi_fx1/midi_fx2 — a set whose
+         * only module sat in fx5 restored silent.  Extending them
+         * position-by-position to the caps would put SEVENTEEN reads
+         * on a handler that runs in the SPI callback.  The shared
+         * probe covers all eight of each in three. */
+        if (shadow_slot_has_loaded_component(shadow_plugin_v2,
+                                             shadow_chain_slots[slot].instance)) {
+            shadow_chain_slots[slot].active = 1;
+            shadow_chain_slots[slot].fade.target = 1.0f;
+            shadow_ui_state_update_slot(slot);
+        }
+    }
+    if (strcmp(key, "load_patch") == 0 ||
+        strcmp(key, "patch") == 0) {
+        int idx = atoi(value);
+        if (idx < 0 || idx == SHADOW_PATCH_INDEX_NONE) {
+            shadow_chain_slots[slot].active = 0;
+            shadow_chain_slots[slot].patch_index = -1;
+            capture_clear(&shadow_chain_slots[slot].capture);
+            shadow_chain_slots[slot].patch_name[0] = '\0';
+        } else {
+            shadow_chain_slots[slot].active = 1;
+            shadow_chain_slots[slot].fade.target = 1.0f;
+            shadow_chain_slots[slot].patch_index = idx;
+            shadow_slot_load_capture(slot, idx);
+
+            shadow_slot_refresh_default_fwd(slot);
+        }
+        shadow_ui_state_update_slot(slot);
+    }
+
+    if (shadow_midi_out_log_enabled()) {
+        if (strcmp(key, "synth:module") == 0 ||
+            shadow_key_is_fx_module(key)) {
+            shadow_midi_out_logf("param_set: slot=%d key=%s val=%s active=%d",
+                slot, key, value, shadow_chain_slots[slot].active);
+        }
+    }
+}
+
+/* ============================================================================
+ * Slot module loads — off the SPI callback
+ * ============================================================================
+ *
+ * See slot_load_job.h for why, and for the shape. In short: a slot's module
+ * writes used to block the SPI callback for as long as the chain host's
+ * dlopen + create_instance + state restore took (432 ms measured for one
+ * `load_file`), silencing the whole device. Now a one-module write
+ * (synth:module, fxN:module, midi_fxN:module) is STAGED on a loader thread and
+ * swapped with a 20 ms fade of THAT module alone, everything else in the slot
+ * running throughout (chain_synth_load.c, chain_fx_load.c); a whole-patch
+ * load fades the slot out, PARKS its chain instance — pointer taken out of
+ * shadow_chain_slots[] — hands it to the loader, and fades it back in.
+ *
+ * WHY PARKING IS ENOUGH ON THE RT SIDE (the PARK kind). Every chain host entry point the shim
+ * calls (render_block, on_midi, set_param, get_param, process_fx, the drains,
+ * the clip-phase and lane hooks) starts with `if (!inst) return`, and the
+ * shim's own loops already skip a NULL instance, because a slot whose
+ * create_instance failed at boot has always been one. So nothing on the
+ * callback can reach the instance while the loader owns it, without a gate on
+ * any of the ~130 reader sites.
+ *
+ * WHAT IS PAUSED WHILE A LOAD IS IN FLIGHT, and why each one:
+ *   - the param channel: the load's own request is unanswered, so no client
+ *     can claim it (shadow_param_claim needs request_type == 0). Same as when
+ *     the callback blocked, minus the device going silent.
+ *   - fade-completion loads and UI patch requests (shadow_process_fade_
+ *     completions, shadow_inprocess_handle_ui_request): both load or unload
+ *     modules ON the callback, and dlopen/dlclose there would wait on glibc's
+ *     _dl_load_lock, held by the loader at SCHED_OTHER, with no priority
+ *     inheritance — the hiccup back by another route. They retry next frame.
+ *   - Move-model chain commands (schwung_shim.c): popped and dropped for a
+ *     NULL instance otherwise, which would lose a lane edit for the parked
+ *     slot. Left queued instead.
+ *
+ * THE LOADER IS ITS OWN THREAD, not the shim worker loop: that one sleeps
+ * 200 ms between passes and runs a ~1.4 s set scan, and a module pick
+ * answered with the default 100 ms param deadline must not wait behind
+ * either. The thread is created in shim_worker.c (shim_slot_loader_start,
+ * from shim init) and demotes itself to SCHED_OTHER on cores 0-2 — never a
+ * pthread_create from the callback, which would inherit FIFO 70, and never
+ * from this file (tests/host/test_fx_load_off_callback.sh).
+ *
+ * Consequence worth knowing: a thread a module creates from create_instance
+ * now inherits SCHED_OTHER, not FIFO 70. That is the documented contract
+ * (docs/REALTIME_SAFETY.md: set your priority explicitly) and what bus FX
+ * inserts have always got; a module that relied on inheriting 70 for an audio
+ * thread was relying on the bug.
+ */
+static struct {
+    volatile int state;                      /* SLOT_LOAD_* */
+    int kind;                                /* SLOT_LOAD_KIND_* */
+    int slot;
+    uint32_t req_id;
+    void *instance;                          /* PARK: the parked instance; STAGED: the live one */
+    char key[SHADOW_PARAM_KEY_LEN];
+    int fade_blocks;                         /* PARK: blocks waited for the fade-out */
+    float saved_fade_target;                 /* PARK: the fade target before ours */
+    struct timespec t_post;                  /* RT stamps; loader reports */
+    double stage_ms;                         /* loader → loader, for the retire log */
+} slot_load_job;
+/* The job's value, beside it rather than in it: 128 KB, and BSS. */
+static char slot_load_value[SHADOW_PARAM_VALUE_LEN];
+
+static volatile int slot_load_running = 0;  /* loader thread is up */
+
+/* True from the post until the old module (STAGED) or the parked instance
+ * (PARK) is fully dealt with — so it includes the retire, whose dlclose holds
+ * _dl_load_lock just as a dlopen does. */
+int shadow_slot_load_busy(void) {
+    return __atomic_load_n(&slot_load_job.state, __ATOMIC_ACQUIRE) != SLOT_LOAD_IDLE;
+}
+
+/* The slot a PARK job currently holds, or -1. While parked the slot was faded
+ * out first, so the mixer passes nothing for it — not even Move's own track,
+ * which would otherwise jump back in DRY halfway through a fade. */
+int shadow_slot_load_parked_slot(void) {
+    int st = __atomic_load_n(&slot_load_job.state, __ATOMIC_ACQUIRE);
+    if (slot_load_job.kind != SLOT_LOAD_KIND_PARK) return -1;
+    return (st == SLOT_LOAD_WORKING || st == SLOT_LOAD_DONE) ? slot_load_job.slot : -1;
+}
+
+static double slot_load_ms_since(const struct timespec *t0) {
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    return (double)(t1.tv_sec - t0->tv_sec) * 1000.0 +
+           (double)(t1.tv_nsec - t0->tv_nsec) / 1e6;
+}
+
+/* LOADER THREAD, once per wake. */
+static void shadow_slot_load_run(void) {
+    int st = __atomic_load_n(&slot_load_job.state, __ATOMIC_ACQUIRE);
+
+    if (st == SLOT_LOAD_RETIRING) {
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (shadow_chain_load_retire) shadow_chain_load_retire();
+        double retire_ms = slot_load_ms_since(&t0);
+        int slot = slot_load_job.slot;
+        double stage_ms = slot_load_job.stage_ms;
+        char key[SHADOW_PARAM_KEY_LEN];
+        memcpy(key, slot_load_job.key, sizeof(key));
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_IDLE, __ATOMIC_RELEASE);
+        unified_log("shim", LOG_LEVEL_INFO,
+                    "slot-load: slot %d %s staged in %.1f ms, old module "
+                    "retired in %.1f ms, all off the SPI callback", slot, key, stage_ms, retire_ms);
+        return;
+    }
+    if (st != SLOT_LOAD_WORKING) return;
+
+    double queued_ms = slot_load_ms_since(&slot_load_job.t_post);
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (slot_load_job.kind == SLOT_LOAD_KIND_STAGED) {
+        /* The live instance: the stage reads only its module_dir and host API,
+         * both fixed at create, while the callback keeps rendering it. */
+        shadow_chain_load_stage(slot_load_job.instance, slot_load_job.key, slot_load_value);
+        slot_load_job.stage_ms = slot_load_ms_since(&t0);
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_DONE, __ATOMIC_RELEASE);
+        return;   /* logged after the retire, with both numbers */
+    }
+
+    if (shadow_plugin_v2 && shadow_plugin_v2->set_param && slot_load_job.instance)
+        shadow_plugin_v2->set_param(slot_load_job.instance,
+                                    slot_load_job.key, slot_load_value);
+    double load_ms = slot_load_ms_since(&t0);
+
+    /* Copied out BEFORE the release: after it, RT may reuse the job. */
+    int slot = slot_load_job.slot;
+    char key[SHADOW_PARAM_KEY_LEN];
+    memcpy(key, slot_load_job.key, sizeof(key));
+    __atomic_store_n(&slot_load_job.state, SLOT_LOAD_DONE, __ATOMIC_RELEASE);
+
+    /* This thread may log; the callback may not. */
+    unified_log("shim", LOG_LEVEL_INFO,
+                "slot-load: slot %d %s took %.1f ms off the SPI callback "
+                "(queued %.1f ms, slot parked)", slot, key, load_ms, queued_ms);
+}
+
+void shadow_slot_load_start(void) {
+    if (shim_slot_loader_start(shadow_slot_load_run))
+        __atomic_store_n(&slot_load_running, 1, __ATOMIC_RELEASE);
+    else
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "slot-load: no loader thread; slot module loads stay on the SPI callback");
+}
+
+/* RT. PARK FIRST, then publish to the loader: from the NULL store on, nothing
+ * on the callback reaches the instance. */
+static void shadow_slot_load_park_and_wake(void) {
+    shadow_chain_slots[slot_load_job.slot].instance = NULL;
+    __atomic_store_n(&slot_load_job.state, SLOT_LOAD_WORKING, __ATOMIC_RELEASE);
+    shim_slot_loader_wake();
+}
+
+/*
+ * RT. Take a load off the callback. Returns 1 if the request is now the
+ * loader's (the caller must NOT answer it), 0 if the caller should fall back
+ * to the synchronous write — no loader thread, or (impossible while the
+ * channel is held, but cheap to refuse) one already in flight.
+ */
+static int shadow_slot_load_post(int slot, uint32_t req_id,
+                                 const char *key, const char *value) {
+    if (!__atomic_load_n(&slot_load_running, __ATOMIC_ACQUIRE)) return 0;
+    if (shadow_slot_load_busy()) return 0;
+    void *inst = shadow_chain_slots[slot].instance;
+    if (!inst) return 0;
+
+    int staged = slot_load_key_is_staged(key) &&
+                 shadow_chain_load_stage && shadow_chain_load_swap_step &&
+                 shadow_chain_load_retire;
+    /* RE-PICKING THE SAME MODULE IS PARKED, not staged. Staging builds the new
+     * instance while the old one lives, and some modules allow ONE per device
+     * (JE-8086's pipeline flock refuses the second create_instance). The old
+     * order — unload, then load — is what a reload of the same module needs. */
+    if (staged && slot_load_key_is_synth_swap(key) &&
+        shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+        char cur[128];
+        int n = shadow_plugin_v2->get_param(inst, "synth_module", cur, sizeof(cur));
+        if (n > 0 && n < (int)sizeof(cur)) {
+            cur[n] = '\0';
+            if (strcmp(cur, value) == 0) staged = 0;
+        }
+    }
+
+    slot_load_job.kind = staged ? SLOT_LOAD_KIND_STAGED : SLOT_LOAD_KIND_PARK;
+    slot_load_job.slot = slot;
+    slot_load_job.req_id = req_id;
+    slot_load_job.instance = inst;
+    slot_load_job.fade_blocks = 0;
+    slot_load_job.saved_fade_target = shadow_chain_slots[slot].fade.target;
+    slot_load_job.stage_ms = 0.0;
+    strncpy(slot_load_job.key, key, sizeof(slot_load_job.key) - 1);
+    slot_load_job.key[sizeof(slot_load_job.key) - 1] = '\0';
+    strncpy(slot_load_value, value, sizeof(slot_load_value) - 1);
+    slot_load_value[sizeof(slot_load_value) - 1] = '\0';
+    clock_gettime(CLOCK_MONOTONIC, &slot_load_job.t_post);
+
+    if (staged) {
+        /* NOT parked: the slot plays on, old module and all, while it stages. */
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_WORKING, __ATOMIC_RELEASE);
+        shim_slot_loader_wake();
+        return 1;
+    }
+    if (shadow_chain_slots[slot].fade.gain > 0.0f) {
+        /* Audible: fade the slot out first, park when it is down. */
+        shadow_chain_slots[slot].fade.target = 0.0f;
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_FADING, __ATOMIC_RELEASE);
+        return 1;
+    }
+    shadow_slot_load_park_and_wake();
+    return 1;
+}
+
+/* RT. Answer the request held since the post. */
+static void shadow_slot_load_answer(shadow_param_t *shadow_param) {
+    /* publish_response refuses a request_id that is not ours — but nothing
+     * can have replaced it, since the channel was never released. */
+    if (!shadow_param) return;
+    shadow_param->error = 0;
+    shadow_param->result_len = 0;
+    shadow_param_publish_response(slot_load_job.req_id);
+}
+
+/*
+ * RT, every frame, from the top of the param handler. Returns 1 while the
+ * load's own request is still held (serve nothing this frame), 0 otherwise —
+ * including during a STAGED retire, when the channel is free again and only a
+ * second LOAD has to wait (see the handler).
+ */
+static int shadow_slot_load_tick(shadow_param_t *shadow_param) {
+    int st = __atomic_load_n(&slot_load_job.state, __ATOMIC_ACQUIRE);
+    if (st == SLOT_LOAD_IDLE || st == SLOT_LOAD_RETIRING) return 0;
+    if (st == SLOT_LOAD_WORKING) return 1;
+    int slot = slot_load_job.slot;
+
+    if (st == SLOT_LOAD_FADING) {
+        if (shadow_chain_slots[slot].fade.gain > 0.0f &&
+            ++slot_load_job.fade_blocks <= SLOT_LOAD_FADE_MAX_BLOCKS)
+            return 1;
+        shadow_slot_load_park_and_wake();
+        return 1;
+    }
+
+    /* SLOT_LOAD_DONE */
+    if (slot_load_job.kind == SLOT_LOAD_KIND_STAGED) {
+        /* Fade the outgoing module (only) out, then swap. 0 until it has. */
+        if (!shadow_chain_load_swap_step(shadow_chain_slots[slot].instance, 0))
+            return 1;
+        shadow_slot_after_forwarded_write(slot, slot_load_job.key, slot_load_value);
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_RETIRING, __ATOMIC_RELEASE);
+        shim_slot_loader_wake();
+        shadow_slot_load_answer(shadow_param);
+        return 0;
+    }
+
+    /* PARK: reinstall, restore the fade we took, then the same activation the
+     * synchronous path runs (which may itself set the target to 1). */
+    shadow_chain_slots[slot].instance = slot_load_job.instance;
+    slot_load_job.instance = NULL;
+    shadow_chain_slots[slot].fade.target = slot_load_job.saved_fade_target;
+    shadow_slot_after_forwarded_write(slot, slot_load_job.key, slot_load_value);
+    __atomic_store_n(&slot_load_job.state, SLOT_LOAD_IDLE, __ATOMIC_RELEASE);
+    shadow_slot_load_answer(shadow_param);
+    return 0;
+}
+
 void shadow_inprocess_handle_param_request(void) {
     /* FIRST, and unconditionally: a finished FX load is installed here because
      * this is the one chain-manager function the shim calls every SPI frame,
@@ -5007,6 +5388,11 @@ void shadow_inprocess_handle_param_request(void) {
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
 
+    /* A slot module load in flight holds the channel: its request is answered
+     * by this call on the frame the loader finishes, and nothing else is
+     * served until then. See shadow_slot_load_post. */
+    if (shadow_slot_load_tick(shadow_param)) return;
+
     /* Acquire-load pairs with shadow_ui's release-store of request_type, so
      * the trace context (and key/value) it wrote first are visible here. */
     uint8_t req_type = __atomic_load_n(&shadow_param->request_type, __ATOMIC_ACQUIRE);
@@ -5017,6 +5403,12 @@ void shadow_inprocess_handle_param_request(void) {
      * and publish_response would then clear request_type, releasing a claim
      * its owner still believes it holds. Come back next frame. */
     if (req_type == SHADOW_PARAM_CLAIMED) return;
+    /* A second LOAD waits out the first's tail (a STAGED job's retire, whose
+     * dlclose still holds the loader). Left pending, served a frame later;
+     * everything else is served as usual. */
+    if (req_type == 1 && shadow_slot_load_busy() &&
+        slot_load_key_is_async(shadow_param->key))
+        return;
     uint32_t req_id = shadow_param->request_id;
 
     /* Span the actual servicing of this request (all return paths below),
@@ -6185,6 +6577,14 @@ void shadow_inprocess_handle_param_request(void) {
              * A no-op for `lanes:*` keys, so the translated plock above
              * cannot re-enter it. */
             if (!shadow_lanes_plock_from_write(slot, key_copy, value_copy)) {
+                /* A MODULE LOAD does not run here. dlopen + create_instance +
+                 * state restore blocked this callback for up to 432 ms
+                 * (measured), silencing the whole device; the slot is parked
+                 * and the write handed to the loader thread instead, and the
+                 * request is answered when it lands. See slot_load_job.h. */
+                if (slot_load_key_is_async(key_copy) &&
+                    shadow_slot_load_post(slot, req_id, key_copy, value_copy))
+                    return;
                 shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                             key_copy, value_copy);
                 /* The OTHER p-lock path -- the host's param-pages io, which
@@ -6204,79 +6604,7 @@ void shadow_inprocess_handle_param_request(void) {
              * every finding it is meant to carry. The next module load
              * overwrites it, which is the correct lifetime. */
 
-            if (strcmp(key_copy, "synth:module") == 0) {
-                if (value_copy[0] != '\0') {
-                    shadow_chain_slots[slot].active = 1;
-    shadow_chain_slots[slot].fade.target = 1.0f;
-                    shadow_slot_refresh_default_fwd(slot);
-                    shadow_ui_state_update_slot(slot);
-                }
-            }
-            /* Any FX position, not just the first two: a slot whose only
-             * module lands in fx5 or midi_fx4 must activate too, or it is
-             * never mixed.  The shape test costs no IPC; the confirming probe
-             * is three in-process reads and only runs on a module write to an
-             * inactive slot, which is a user action, not a per-frame one. */
-            if (!shadow_chain_slots[slot].active &&
-                shadow_key_is_fx_module(key_copy) &&
-                value_copy[0] != '\0' &&
-                shadow_slot_has_loaded_component(shadow_plugin_v2,
-                                                 shadow_chain_slots[slot].instance)) {
-                shadow_chain_slots[slot].active = 1;
-                shadow_chain_slots[slot].fade.target = 1.0f;
-            }
-            if (strcmp(key_copy, "load_file") == 0) {
-                shadow_slot_refresh_default_fwd(slot);   /* the set-restore path, too */
-                /* JS uses load_file on SET_CHANGED to restore slots from
-                 * per-set state. Unlike synth:module / fx*:module /
-                 * load_patch, load_file does not pass through the
-                 * explicit-activation branches above — so without this
-                 * the slot stays inactive until lazy activation fires on
-                 * a matching MIDI event. If MIDI never hits the slot's
-                 * channel post-load (or the query races the instance
-                 * state), the slot remains silent even though the patch
-                 * and synth are correctly loaded in the DSP. Query the
-                 * instance and activate eagerly to mirror the other load
-                 * paths. */
-                /* Five unrolled probes used to live here, one per FX position,
-                 * and they saw only fx1/fx2/midi_fx1/midi_fx2 — a set whose
-                 * only module sat in fx5 restored silent.  Extending them
-                 * position-by-position to the caps would put SEVENTEEN reads
-                 * on a handler that runs in the SPI callback.  The shared
-                 * probe covers all eight of each in three. */
-                if (shadow_slot_has_loaded_component(shadow_plugin_v2,
-                                                     shadow_chain_slots[slot].instance)) {
-                    shadow_chain_slots[slot].active = 1;
-                    shadow_chain_slots[slot].fade.target = 1.0f;
-                    shadow_ui_state_update_slot(slot);
-                }
-            }
-            if (strcmp(key_copy, "load_patch") == 0 ||
-                strcmp(key_copy, "patch") == 0) {
-                int idx = atoi(value_copy);
-                if (idx < 0 || idx == SHADOW_PATCH_INDEX_NONE) {
-                    shadow_chain_slots[slot].active = 0;
-                    shadow_chain_slots[slot].patch_index = -1;
-                    capture_clear(&shadow_chain_slots[slot].capture);
-                    shadow_chain_slots[slot].patch_name[0] = '\0';
-                } else {
-                    shadow_chain_slots[slot].active = 1;
-    shadow_chain_slots[slot].fade.target = 1.0f;
-                    shadow_chain_slots[slot].patch_index = idx;
-                    shadow_slot_load_capture(slot, idx);
-
-                    shadow_slot_refresh_default_fwd(slot);
-                }
-                shadow_ui_state_update_slot(slot);
-            }
-
-            if (shadow_midi_out_log_enabled()) {
-                if (strcmp(key_copy, "synth:module") == 0 ||
-                    shadow_key_is_fx_module(key_copy)) {
-                    shadow_midi_out_logf("param_set: slot=%d key=%s val=%s active=%d",
-                        slot, key_copy, value_copy, shadow_chain_slots[slot].active);
-                }
-            }
+            shadow_slot_after_forwarded_write(slot, key_copy, value_copy);
         } else {
             shadow_param->error = 3;
             shadow_param->result_len = -1;

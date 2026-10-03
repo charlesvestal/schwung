@@ -1207,36 +1207,33 @@ equivalent `set_param`. Seven modules in the audit had exactly that bug.
 
 See `docs/REALTIME_SAFETY.md` for the measurements.
 
-#### One qualification: a BUS insert is constructed off the callback
+#### One qualification: modules are LOADED off the callback
 
-An audio FX loaded into a chain **slot** is created, configured and processed on
-the callback, exactly as the table above says. An audio FX loaded into a chain
-**bus insert position** is loaded by the chain's bus worker (`chain_bus.c`,
-`SCHED_OTHER` on cores 0–2): its `dlopen`, `create_instance`, `destroy_instance`
-and the `set_param` that restores its saved state run **there**, while
-`process_block`, `on_midi` and every live `set_param` / `get_param` still run on
-the callback.
+A module's `dlopen`, `create_instance`, `destroy_instance` and the `set_param`
+that restores its saved state run on a `SCHED_OTHER` thread on cores 0–2 — the
+shim's slot loader for a chain **slot**, the chain's bus worker (`chain_bus.c`)
+for a **bus insert position**. `process_block`, `render_block`, `on_midi` and
+every live `set_param` / `get_param` still run on the callback, exactly as the
+table above says. A new module is built while the old one keeps playing, and
+only that module is faded and swapped; the rest of the slot, and the device,
+never stops. (Loading a whole patch fades its slot out and back in.)
 
 This is not permission to relax anything:
 
-- **You still may not do the forbidden things at create time.** You have no way
-  to know which of the two you were loaded as, and the slot case — the common
-  one — is the callback.
+- **You still may not do the forbidden things at create time.** The live entry
+  points are the callback, and a slow `create_instance` is a module pick that
+  takes that long to be heard — and a UI that waits for it.
 - **Process-global initialisation must be thread-safe.** The same module can be
-  constructed on the worker for a bus and on the callback for a slot **at the
-  same time**. Per-instance state is unaffected; a shared static table, a lazily
-  built wavetable, or a library init that is not reentrant is not.
+  constructed on the loader for one slot while another instance of it renders
+  on the callback **at the same time**. Per-instance state is unaffected; a
+  shared static table, a lazily built wavetable, or a library init that is not
+  reentrant is not.
+- **A thread you create in `create_instance` inherits `SCHED_OTHER`**, not the
+  callback's FIFO 70. If it produces audio, set its policy explicitly
+  (`PTHREAD_EXPLICIT_SCHED`); relying on inheritance was never supported.
 
-There is also a **priority inversion** on the loader lock that nothing here
-fixes: `dlopen` now runs on two threads, and glibc serialises them on
-`_dl_load_lock`, which has no priority inheritance. A FIFO-70 load on the
-callback can therefore wait behind the `SCHED_OTHER` worker's for as long as
-anything on cores 0–2 keeps the worker off the CPU. The comment in
-`v2_destroy_instance` (`chain_host.c`) is the record of it; serialising the two
-would be a real design change and has not been attempted.
-
-**"There is no control thread" remains the rule to write code against.** This is
-the one place the host does not hold still, and it buys you nothing. The same
+**"There is no control thread" remains the rule to write code against.** Loading
+is the one place the host does not hold still, and it buys you nothing. The same
 qualification is in `src/host/plugin_api_v1.h` and in rule 4 of
 `docs/REALTIME_SAFETY.md` — all three must move together.
 

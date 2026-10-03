@@ -44,6 +44,15 @@ session. What catches it is `spi_timing`'s `Pre(us): ... param=avg/max` line
 
 **On-device E2E tests** (opt-in, not in CI): `tools/pytest-schwung/` is a pip-installable pytest plugin that drives a real Move end-to-end through `schwung-testd`, an opt-in test-bus daemon (TCP loopback, started manually over SSH; built into the tarball but not auto-started). Tests inject MIDI, wait for SPI frames, snapshot pad LEDs, capture MIDI_OUT, and reset to a known-empty set (`pristine_set`). Run `pytest tests/e2e` against attached hardware. Full protocol, fixtures, and hardware pitfalls in `tools/pytest-schwung/README.md`.
 
+**`schwung-testd` is a third client of the param channel, and it must claim it
+the way shadow_ui and schwung-manager do** -- compare-exchange on the head word,
+refusing a channel that holds an unread answer, and consuming its own answer
+after copying it out. It used to wait for `request_type == 0` and then zero
+`response_ready`, which destroyed the shadow UI's answers unread: a set switch
+under test lost nearly every restore answer and took ~70 s. Any measurement of
+UI behaviour taken with an older testd running beside it is suspect.
+`tests/host/test_testd_param_claim.sh` pins the protocol.
+
 **OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes **both** the shim and the `shadow_ui` process emit realtime-safe spans as OTLP/JSONL to `/data/UserData/schwung/traces/`, one file per service (`schwung-shim-*` / `schwung-shadow-ui-*`). Shim: `spi.pre`/`spi.post` roots + `shadow.mix_audio`, `midi.process`, `param.serve` children. shadow_ui: `js.tick` + `param.get`. Spans correlate **cross-process by trace_id** — the shim's `param.serve` is emitted as a child of shadow_ui's `param.get` (context propagated through `shadow_param_t`), so Tempo/Jaeger stitch the two files into one trace. JS modules (overtake/chain, incl. ion) can add spans via `host_trace_begin(name) -> handle` / `host_trace_end(handle)` (shadow_ui context only); balance the pair within one `tick()` (handles come from a 16-entry table reset each `js.tick`). `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
 
 **Two more UI perf diagnostics** (both off by default):
