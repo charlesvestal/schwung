@@ -2039,6 +2039,18 @@
       "min_host_version": "1.0.0"
     },
     {
+      "id": "elusive-muse",
+      "name": "Elusive Muse",
+      "description": "Click the jog wheel and one of 1,000 original prompts, in the spirit of Oblique Strategies, comes out of pixel static with a few glassy notes. Audio passes through untouched",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "github_repo": "kliegsablaze/elusive-muse",
+      "default_branch": "main",
+      "asset_name": "elusive-muse-module.tar.gz",
+      "min_host_version": "1.6.2"
+    },
+    {
       "id": "maze_seq",
       "name": "Maze",
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
