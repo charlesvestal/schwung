@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# NOT pipefail: every check here is `producer | grep -q ... || say`, and under
+# pipefail grep's early exit hands the producer a SIGPIPE that fails the
+# pipeline -- timing-dependent, green on macOS and red in CI. Without it a
+# pipeline's status is grep's, which is the question each check asks.
+set -eu
 cd "$(dirname "$0")/../.."
 
 # A CHAIN SLOT'S MODULE LOADS MUST NOT RUN ON THE SPI CALLBACK.
@@ -106,8 +110,14 @@ n=$(grep -c 'shadow_slot_load_start()' "$s" || true)
 
 # ---- 6. paths that wait while a load is in flight --------------------------
 for fn in shadow_process_fade_completions shadow_inprocess_handle_ui_request; do
-  awk "/^void ${fn}\\(void\\) \\{/,/^}/" "$c" | grep -q 'shadow_slot_load_busy()' \
-    || say "${fn} loads/unloads on the callback and must wait while a slot load is in flight"
+  # Body captured first, THEN searched: `sed ... | grep -q` under pipefail
+  # fails whenever grep exits on its first match and sed takes the SIGPIPE --
+  # timing-dependent, so it passed on macOS and failed in CI.
+  body=$(sed -n "/^void ${fn}(void) {/,/^}/p" "$c")
+  case "$body" in
+    *'shadow_slot_load_busy()'*) ;;
+    *) say "${fn} loads/unloads on the callback and must wait while a slot load is in flight" ;;
+  esac
 done
 grep -q '!shadow_slot_load_busy() &&' "$s" \
   || say "Move-model chain commands must stay queued while a slot is parked"
