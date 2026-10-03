@@ -43,6 +43,7 @@ typedef struct {
     int      triplet;
     int      n;
     int      truncated;       /* more notes in the window than SM_PAGE_MAX */
+    int      unreadable;      /* invalid BECAUSE the clip's notes did not decode */
     double   lo, hi;          /* the window the notes were taken from */
     sm_note_t notes[SM_PAGE_MAX];
 } sm_page_t;
@@ -59,6 +60,10 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
 {
     static sm_page_t w;
     memset(&w, 0, sizeof w);
+    /* Said out loud, not folded into "no note": a Move whose note format we
+     * cannot read showed "No note" on every step (2.1.1), which reads as a
+     * usage problem rather than as a bug to report. */
+    w.unreadable = m && m->valid && ref && ref->unreadable && ref->track == m->selected_track;
     if (m && m->valid && ref && ref->valid && n >= 0 && notes &&
         ref->track >= 0 && ref->track < MM_TRACKS && ref->slot >= 0 && ref->slot < MM_SLOTS &&
         m->step_beats > 0.0) {
@@ -333,7 +338,8 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
     ctl->step_menu_field = g_sm.field;
     ctl->step_menu_step = g_sm.step;
     ctl->step_menu_track = (uint8_t)(g_pg.valid ? g_pg.track : 0);
-    ctl->step_menu_flags = (g_pg.valid && !slot_has_synth(g_pg.track)) ? SM_FLAG_NO_SYNTH : 0;
+    ctl->step_menu_flags = ((g_pg.valid && !slot_has_synth(g_pg.track)) ? SM_FLAG_NO_SYNTH : 0) |
+                           (g_pg.unreadable ? SM_FLAG_UNREADABLE : 0);
     ctl->step_menu_cond = SM_CELL_EMPTY;
     ctl->step_menu_vel = 0;
     ctl->step_menu_len_c = 0;

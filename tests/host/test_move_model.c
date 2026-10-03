@@ -254,6 +254,35 @@ static size_t hexbytes(const char *hex, uint8_t *out)
     return n;
 }
 
+/* Move 2.1.1 recordings, read live off the device (2026-10-03): the same
+ * records with an f32 probability (1.0) after the head. Four plain notes on
+ * pads 36-39; four hits of one pad, three with a pressure lane (21/1/23). */
+static const char *NOTES_211_PLAIN =
+    "0000002400000000000000003fd000000000000042c8000000000000013f8000000000000000000001000000253ff000"
+    "00000000003fd000000000000042c8000000000000013f80000000000000000000020000002640000000000000003fd0"
+    "00000000000042c8000000000000013f80000000000000000000030000002740080000000000003fd000000000000042"
+    "c8000000000000013f8000000000000000000004";
+static const char *NOTES_211_PRESSURE =
+    "00000024400e9ef257dfac863ff04559b2b270f942fe000000000000013f80000000000001ffffffff000000153fdff4"
+    "3c5b0b822c00000000000000003fe18b5bfb912d7000000000000000003fe18b5bfb912d70402e0000000000003fe31c"
+    "4a21b96168402e0000000000003fe31c4a21b96168403e0000000000003fe4ad87efc4cdc1403e0000000000003fe4ad"
+    "87efc4cdc140468000000000003fe63e7615ed01b940468000000000003fe63e7615ed01b9404e0000000000003fe7cf"
+    "b3e3f86e13404e0000000000003fe7cfb3e3f86e1340524000000000003fe960a20a20a20a40524000000000003fe960"
+    "a20a20a20a40568000000000003feaf1dfd82c0e6440568000000000003feaf1dfd82c0e644059c000000000003fec82"
+    "cdfe54425b4059c000000000003fec82cdfe54425b405bc000000000003fee140bcc5faeb5405bc000000000003fee14"
+    "0bcc5faeb540584000000000003fefa4fa7e33862140584000000000003fefa4fa7e3386214041000000000000000000"
+    "0100000024401f0d1073eff92e3fe317f46800ae9742da000000000000013f80000000000001ffffffff000000013fdf"
+    "f43c5b0b822c00000000000000000000000200000024402792bdeec7a6a93ff15d3a7690233142a6000000000000013f"
+    "80000000000001ffffffff000000173fdff43c5b0b822c00000000000000003fe18b0c53adf50e00000000000000003f"
+    "e18b0c53adf50e40240000000000003fe31c4a21b9616840240000000000003fe31c4a21b9616840330000000000003f"
+    "e4ad38d38d38d440330000000000003fe4ad38d38d38d4403c0000000000003fe63e7615ed01b9403c0000000000003f"
+    "e63e7615ed01b940428000000000003fe7cf64c7c0d92540428000000000003fe7cf64c7c0d92540460000000000003f"
+    "e960a295cc457f40460000000000003fe960a295cc457f404a8000000000003feaf190bbf47976404a8000000000003f"
+    "eaf190bbf4797640500000000000003fec82ce89ffe5d040500000000000003fec82ce89ffe5d04051c000000000003f"
+    "ee13bcb02819c74051c000000000003fee13bcb02819c740514000000000003fefa4ab61fbf13340514000000000003f"
+    "efa4ab61fbf133404c8000000000003ff09af4522ddd0c404c8000000000003ff09af4522ddd0c403200000000000000"
+    "00000300000024402b9aed4bec04923fc4c333790904ed41d0000000000000013f8000000000000000000004";
+
 static const mm_note_t *by_id(const mm_note_t *nt, int n, int64_t id)
 {
     for (int i = 0; i < n; i++) if (nt[i].id == id) return &nt[i];
@@ -269,7 +298,7 @@ static void test_notes_lanes(void)
     CHECK(len == 1853);
 
     /* The whole recording, every record, exactly to the end. */
-    const int n = mm_decode_notes_buf(buf, len, nt, 64, pool, 256);
+    const int n = mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 64, pool, 256);
     CHECK(n == 9);
     /* 16 Pitches: the pad's own note, the pitch only in the lane -- exact
      * semitones at 8191/48 per semitone. */
@@ -307,7 +336,7 @@ static void test_notes_lanes(void)
             "00000028 4000000000000000 3fd0000000000000 42fe0000 00000000 01 00000001 fffffffe 00000001 0000000000000000 406554aaa0000000 0000000d";
         uint8_t mb[256];
         const size_t ml = hexbytes(mixed, mb);
-        CHECK(mm_decode_notes_buf(mb, ml, nt, 8, NULL, 0) == 3);
+        CHECK(mm_decode_notes_buf(mb, ml, MM_NOTES_FMT_210, nt, 8, NULL, 0) == 3);
         CHECK(nt[0].id == 0xb && nt[1].id == 12 && nt[2].id == 13);
         CHECK(fabs(nt[1].pitch_offset - 16.0) < 1e-6 && fabs(nt[2].pitch_offset - 1.0) < 1e-6);
         CHECK(nt[0].pitch_offset == 0.0 && nt[0].pressure_count == 0);
@@ -317,7 +346,7 @@ static void test_notes_lanes(void)
      * except the ones that land exactly on a record boundary. */
     int boundaries = 0, bad_trunc = 0;
     for (size_t cut = 1; cut < len; cut++) {
-        int r = mm_decode_notes_buf(buf, cut, nt, 64, pool, 256);
+        int r = mm_decode_notes_buf(buf, cut, MM_NOTES_FMT_210, nt, 64, pool, 256);
         if (r >= 0) boundaries++;
         else if (r != -1) bad_trunc++;
     }
@@ -328,22 +357,130 @@ static void test_notes_lanes(void)
     memcpy(bad, buf, len);
     {   /* note id 1's lane type sits at 29 + 4 */
         bad[33] = 0xff; bad[34] = 0xff; bad[35] = 0xff; bad[36] = 0xfd;
-        CHECK(mm_decode_notes_buf(bad, len, nt, 64, pool, 256) == -1);
+        CHECK(mm_decode_notes_buf(bad, len, MM_NOTES_FMT_210, nt, 64, pool, 256) == -1);
     }
     /* A point count that runs past the end. */
     memcpy(bad, buf, len);
     bad[37] = 0x7f;
-    CHECK(mm_decode_notes_buf(bad, len, nt, 64, pool, 256) == -1);
+    CHECK(mm_decode_notes_buf(bad, len, MM_NOTES_FMT_210, nt, 64, pool, 256) == -1);
     /* An absurd lane count. */
     memcpy(bad, buf, len);
     bad[29] = 0x00; bad[30] = 0x00; bad[31] = 0x10; bad[32] = 0x00;
-    CHECK(mm_decode_notes_buf(bad, len, nt, 64, pool, 256) == -1);
+    CHECK(mm_decode_notes_buf(bad, len, MM_NOTES_FMT_210, nt, 64, pool, 256) == -1);
     /* Too little room: never a partial list. */
-    CHECK(mm_decode_notes_buf(buf, len, nt, 8, pool, 256) == -1);
-    CHECK(mm_decode_notes_buf(buf, len, nt, 64, pool, 50) == -1);
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 8, pool, 256) == -1);
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 64, pool, 50) == -1);
     /* ...but no pool at all is fine: counted, not kept. */
-    CHECK(mm_decode_notes_buf(buf, len, nt, 64, NULL, 0) == 9);
-    CHECK(mm_decode_notes_buf(buf, 0, nt, 64, pool, 256) == 0);   /* an empty clip is not unknown */
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 64, NULL, 0) == 9);
+    CHECK(mm_decode_notes_buf(buf, 0, MM_NOTES_FMT_210, nt, 64, pool, 256) == 0);   /* an empty clip is not unknown */
+}
+
+static void test_notes_probability_layout(void)
+{
+    static uint8_t buf[2048], t1[4096];
+    static mm_note_t nt[16];
+    static mm_expr_point_t pool[128];
+
+    size_t len = hexbytes(NOTES_211_PLAIN, buf);
+    CHECK(len == 164);
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == 4);
+    for (int i = 0; i < 4; i++) {
+        CHECK(nt[i].pitch == 36 + i && nt[i].id == i + 1);
+        CHECK(nt[i].start == (double)i && fabs(nt[i].vel - 100.0f) < 1e-4);
+        CHECK(nt[i].probability == 1.0f && nt[i].enabled == 1);
+        CHECK(nt[i].pressure_count == 0 && nt[i].pitch_offset == 0.0);
+    }
+    /* The wrong layout is UNKNOWN, never notes: this is the 2.1.1 bug --
+     * the probability's 0x3f800000 read as a lane count. */
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 16, pool, 128) == -1);
+    /* A probability outside 0..1 is not a probability. */
+    buf[29] = 0x40;                                   /* 2.0f */
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == -1);
+    buf[29] = 0x3f; buf[30] = 0x00;                   /* 0.5f */
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == 4);
+    CHECK(nt[0].probability == 0.5f);
+
+    len = hexbytes(NOTES_211_PRESSURE, buf);
+    CHECK(len == 908);
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == 4);
+    const int press[4] = { 21, 1, 23, 0 };
+    const float vel[4] = { 127, 109, 83, 26 };
+    for (int i = 0; i < 4; i++) {
+        CHECK(nt[i].pitch == 36 && nt[i].id == i + 1);
+        CHECK(nt[i].pressure_count == press[i] && fabs(nt[i].vel - vel[i]) < 1e-3);
+        CHECK(nt[i].probability == 1.0f);
+    }
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_210, nt, 16, pool, 128) == -1);
+    /* ALL OR NOTHING holds in the new layout too. */
+    int boundaries = 0;
+    for (size_t cut = 1; cut < len; cut++) {
+        int r = mm_decode_notes_buf(buf, cut, MM_NOTES_FMT_PROB, nt, 16, pool, 128);
+        CHECK(r == -1 || r >= 0);
+        if (r >= 0) boundaries++;
+    }
+    CHECK(boundaries == 3);
+
+    /* Plausibility: a pitch Move cannot store is not a note. */
+    len = hexbytes(NOTES_211_PLAIN, buf);
+    buf[0] = 0; buf[1] = 0; buf[2] = 0; buf[3] = 200;
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == -1);
+
+    /* And a 2.1.0 recording is not readable as 2.1.1. */
+    len = hexbytes(LANE_TEST_T1, t1);
+    CHECK(mm_decode_notes_buf(t1, len, MM_NOTES_FMT_PROB, nt, 16, pool, 128) == -1);
+    CHECK(mm_decode_notes_buf(t1, len, 7, nt, 16, pool, 128) == -1);   /* unknown layout */
+}
+
+/* A FIELD WE HAVE NEVER SEEN. 2.1.1 added one after the head; the next
+ * firmware may add another. The layout is learned from the clip itself --
+ * exactly one candidate may decode it, to the last byte -- so a new field
+ * costs nothing, and anything ambiguous is refused rather than guessed. */
+static size_t widen_211_plain(uint8_t *dst, int notes, uint32_t pre_word, int post_words)
+{
+    static uint8_t src[256];
+    hexbytes(NOTES_211_PLAIN, src);
+    size_t o = 0;
+    for (int i = 0; i < notes; i++) {
+        const uint8_t *r = src + 41u * (size_t)i;     /* a 2.1.1 plain record is 41 bytes */
+        memcpy(dst + o, r, 33); o += 33;               /* head + probability */
+        dst[o++] = (uint8_t)(pre_word >> 24); dst[o++] = (uint8_t)(pre_word >> 16);
+        dst[o++] = (uint8_t)(pre_word >> 8);  dst[o++] = (uint8_t)pre_word;
+        memcpy(dst + o, r + 33, 8); o += 8;            /* lane_count 0 + id */
+        for (int k = 0; k < post_words; k++) { memset(dst + o, 0xAB, 4); o += 4; }
+    }
+    return o;
+}
+
+static void test_notes_unknown_layout(void)
+{
+    static uint8_t buf[4096];
+    static mm_note_t nt[16];
+
+    /* The known layouts detect as themselves. */
+    size_t len = hexbytes(NOTES_211_PLAIN, buf);
+    CHECK(mm_detect_note_layout(buf, len) == MM_NOTES_FMT_PROB);
+    len = hexbytes(NOTES_211_PRESSURE, buf);
+    CHECK(mm_detect_note_layout(buf, len) == MM_NOTES_FMT_PROB);
+    len = hexbytes(LANE_TEST_T1, buf);
+    CHECK(mm_detect_note_layout(buf, len) == MM_NOTES_FMT_210);
+
+    /* One new field after probability: learned, and the notes are right. */
+    len = widen_211_plain(buf, 4, 7, 0);
+    CHECK(mm_decode_notes_buf(buf, len, MM_NOTES_FMT_PROB, nt, 16, NULL, 0) == -1);
+    const int f = mm_detect_note_layout(buf, len);
+    CHECK(f == MM_NOTES_FMT_UNKNOWN(2, 0));
+    CHECK(mm_decode_notes_buf(buf, len, f, nt, 16, NULL, 0) == 4);
+    CHECK(nt[3].pitch == 39 && nt[3].id == 4 && nt[3].start == 3.0);
+
+    /* ...and one after the id. */
+    len = widen_211_plain(buf, 4, 7, 1);
+    CHECK(mm_detect_note_layout(buf, len) == MM_NOTES_FMT_UNKNOWN(2, 1));
+
+    /* AMBIGUOUS is refused: one note whose new field is 0 fits both
+     * "+2 words before the lanes" and "+1 before, +1 after the id". */
+    len = widen_211_plain(buf, 1, 0, 0);
+    CHECK(mm_detect_note_layout(buf, len) == -1);
+    CHECK(mm_detect_note_layout(buf, 0) == -1);       /* an empty clip says nothing */
 }
 
 /* The reader's tear check must not treat a moving scalar as a torn read:
@@ -374,6 +511,8 @@ int main(void)
 {
     test_pair_consistent();
     test_notes_lanes();
+    test_notes_probability_layout();
+    test_notes_unknown_layout();
     test_history();
     test_resolution();
     test_stub();
