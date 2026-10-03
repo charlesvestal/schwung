@@ -193,6 +193,13 @@ typedef struct {
 
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
+/* The old synth's fade-out before a swap commits: 20 ms. The bound is in
+ * blocks, for a slot the shim's idle gate is not rendering. */
+#define SYNTH_SWAP_FADE_SAMPLES 882
+#define SYNTH_SWAP_FADE_MAX_BLOCKS 24
+/* The same for one audio FX position: out, swap, in. */
+#define FX_SWAP_FADE_SAMPLES 882
+#define FX_SWAP_FADE_MAX_BLOCKS 24
 #define MAX_ENUM_OPTIONS 128
 /* Cached ui_hierarchy JSON, per position. Named because the buffers it sizes
  * are now reached through a pointer, where sizeof() would answer 8. */
@@ -1221,6 +1228,19 @@ typedef struct chain_instance {
     
     /* Synth load error message */
     char synth_load_error[256];
+    /* A synth swap fading the OLD synth out before the commit
+     * (chain_synth_load.c). Written by the callback only. */
+    int synth_swap_fading;
+    float synth_swap_gain;
+    int synth_swap_frames;
+    int synth_swap_rendered;   /* render ran since the last swap step */
+    /* An audio FX position mid-swap (chain_fx_load.c): phase 1 fades its wet
+     * output to dry before the commit, phase 2 fades the new module in. */
+    int fx_swap_pos;
+    int fx_swap_phase;
+    float fx_swap_gain;
+    int fx_swap_frames;
+    int fx_swap_rendered;
 
     /* STEP CHANCE (chain_chance.c): Elektron-style trig conditions on Move's
      * notes, keyed by note id and matched at playback by pitch + clip phase.
@@ -1369,6 +1389,39 @@ CHAIN_INTERNAL void parse_debug_log(const char *msg);
 CHAIN_INTERNAL void v2_chain_log(chain_instance_t *inst, const char *msg);
 CHAIN_INTERNAL int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name);
 CHAIN_INTERNAL int v2_load_synth(chain_instance_t *inst, const char *module_name);
+CHAIN_INTERNAL int valid_module_name(const char *name);
+/* chain_synth_load.c — the `synth:module` write, synchronously. */
+CHAIN_INTERNAL void chain_synth_set_module(chain_instance_t *inst, const char *val);
+CHAIN_INTERNAL void chain_synth_async_stage(chain_instance_t *inst, const char *module_name);
+CHAIN_INTERNAL int chain_synth_async_swap_step(chain_instance_t *inst, int force);
+CHAIN_INTERNAL void chain_synth_async_retire(void);
+/*
+ * WARM A STAGED MODULE BEFORE THE CALLBACK SEES IT. Some modules defer real
+ * work to their first render: Surge runs its initial patch load inside the
+ * first process call, measured at ~48 ms on the SPI callback right after a
+ * swap (Hera ~32 ms). A staged instance is not live yet — nothing on the
+ * callback can reach it — so the loader renders it a couple of blocks into
+ * scratch first, and the first block the callback asks for is a warm one.
+ * Silence in, output discarded; the instance is handed over (with the
+ * happens-before of the stage's publish) only after this returns.
+ */
+#define CHAIN_WARM_BLOCKS 2
+static inline void chain_warm_render(void (*render)(void *, int16_t *, int), void *instance) {
+    if (!render || !instance) return;
+    int16_t scratch[FRAMES_PER_BLOCK * 2];
+    for (int i = 0; i < CHAIN_WARM_BLOCKS; i++) render(instance, scratch, FRAMES_PER_BLOCK);
+}
+static inline void chain_warm_process(void (*process)(void *, int16_t *, int), void *instance) {
+    if (!process || !instance) return;
+    int16_t scratch[FRAMES_PER_BLOCK * 2];
+    for (int i = 0; i < CHAIN_WARM_BLOCKS; i++) {
+        memset(scratch, 0, sizeof(scratch));
+        process(instance, scratch, FRAMES_PER_BLOCK);
+    }
+}
+/* chain_fx_load.c — one audio FX / MIDI FX position, staged like the synth. */
+CHAIN_INTERNAL int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *fx_name);
+CHAIN_INTERNAL void chain_fx_run_position(chain_instance_t *inst, int i, int16_t *buf, int frames);
 CHAIN_INTERNAL void v2_synth_panic(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_all_audio_fx(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot);

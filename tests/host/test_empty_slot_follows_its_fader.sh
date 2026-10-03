@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 SRC=src/schwung_shim.c
-block=$(awk '/\} else if \(have_move_track\) \{/,/skip_la_rebuild:/' "$SRC")
+block=$(awk '/\} else if \(have_move_track( \&\& shadow_slot_load_parked_slot\(\) != s)?\) \{/,/skip_la_rebuild:/' "$SRC")
 [ -n "$block" ] || { echo "FAIL: the empty-slot passthrough branch is gone; re-pin"; exit 1; }
 echo "$block" | grep -q "shadow_effective_volume(s)" \
   || { echo "FAIL: the empty-slot passthrough ignores the slot volume / mute / solo"; exit 1; }

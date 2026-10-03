@@ -701,6 +701,16 @@ void shadow_process_fade_completions(void);
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value);
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len);
 int shadow_param_publish_response(uint32_t req_id);
+
+/* Slot module loads run on their own thread, off the SPI callback — see
+ * slot_load_job.h. Start it from shim init (never from the callback: a thread
+ * created there inherits SCHED_FIFO 70). busy() is true from the moment a
+ * slot is parked until its request has been answered. */
+void shadow_slot_load_start(void);
+int shadow_slot_load_busy(void);
+/* The slot a parked (non-synth) load holds, or -1: the mixer passes nothing
+ * for it, the slot having been faded out first. */
+int shadow_slot_load_parked_slot(void);
 void shadow_inprocess_handle_param_request(void);
 
 #endif /* SHADOW_CHAIN_MGMT_H */

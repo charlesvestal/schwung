@@ -191,6 +191,14 @@ void shim_worker_post(uint8_t evt);
  * name as context rather than as proof. Pass NULL when the load finishes. */
 void shim_rt_audit_note_module(const char *id);
 
+/* The slot loader thread: runs `run` once per shim_slot_loader_wake(), at
+ * SCHED_OTHER on cores 0-2. Returns 1 when the thread is up. wake() is safe to
+ * call from the SPI callback. shadow_chain_mgmt.c carries WEAK fallbacks for
+ * both (start answers 0, so slot loads stay synchronous) for the same reason
+ * it does for shim_rt_audit_note_module above. See slot_load_job.h. */
+int shim_slot_loader_start(void (*run)(void));
+void shim_slot_loader_wake(void);
+
 /* Hook table for events whose implementations live in schwung_shim.c /
  * shadow_sampler.c (worker can't see their statics). Registered once at
  * shim_spi_init; unset hooks make their events no-ops. */

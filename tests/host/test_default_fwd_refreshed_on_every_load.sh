@@ -30,7 +30,10 @@ echo "$body" | grep -q 'default_forward_channel = fwd;' || fail "refresh must as
 for key in 'synth:module' 'load_file' 'load_patch'; do
     # The branch that tests exactly this key and opens a block ("== 0) {"),
     # not an earlier compound condition that merely mentions it.
-    blk=$(awk -v k="$key" 'index($0, "strcmp(key_copy, \"" k "\") == 0) {") || index($0, "strcmp(key_copy, \"" k "\") == 0 ||") && $0 ~ /load_patch/ {on=1} on {print; n++} n > 40 {exit}' "$SRC")
+    # The branches live in shadow_slot_after_forwarded_write (where the
+    # parameter is `key`), which the param handler and the off-callback slot
+    # load both run -- so one refresh there covers both.
+    blk=$(awk -v k="$key" 'index($0, "strcmp(key, \"" k "\") == 0) {") || index($0, "strcmp(key, \"" k "\") == 0 ||") && $0 ~ /load_patch/ {on=1} on {print; n++} n > 40 {exit}' "$SRC")
     [ -n "$blk" ] || { fail "no param branch for $key"; continue; }
     echo "$blk" | grep -q 'shadow_slot_refresh_default_fwd(slot)' || fail "the $key branch does not refresh the default forward channel"
 done

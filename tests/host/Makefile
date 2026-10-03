@@ -103,6 +103,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_fx_load_gate \
+	$(BUILD_DIR)/test_slot_load_job \
 	$(BUILD_DIR)/test_split_voices_parse \
 	$(BUILD_DIR)/test_voice_send_source \
 	$(BUILD_DIR)/test_me_post_snapshot_fx \
@@ -291,6 +292,9 @@ $(BUILD_DIR)/test_ui_midi_out_ring: test_ui_midi_out_ring.c ../../src/host/ui_mi
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_fx_load_gate: test_fx_load_gate.c ../../src/host/fx_load_gate.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_slot_load_job: test_slot_load_job.c ../../src/host/slot_load_job.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR)

@@ -2213,7 +2213,11 @@ static void shadow_inprocess_render_to_buffer(void) {
         if (shadow_plugin_v2->set_param) {
             int cs;
             char ck[24], cv[MMS_CMD_VAL];
-            for (int k = 0; k < 4 && move_model_sync_pop_cmd(&cs, ck, sizeof ck, cv, sizeof cv); k++) {
+            /* Left queued while a slot is parked for a module load: popping
+             * one for the parked slot would drop it (its instance reads NULL),
+             * and the load is over in a few hundred ms at most. */
+            for (int k = 0; k < 4 && !shadow_slot_load_busy() &&
+                            move_model_sync_pop_cmd(&cs, ck, sizeof ck, cv, sizeof cv); k++) {
                 if (cs >= 0 && cs < SHADOW_CHAIN_INSTANCES && shadow_chain_slots[cs].active &&
                     shadow_chain_slots[cs].instance)
                     shadow_plugin_v2->set_param(shadow_chain_slots[cs].instance, ck, cv);
@@ -3314,8 +3318,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) { shadow_fade_advance(s); shadow_mix_advance(s); }
                 }
-            } else if (have_move_track) {
-                /* Inactive slot: pass Link Audio through at unity level.
+            } else if (have_move_track && shadow_slot_load_parked_slot() != s) {
+                /* (A slot parked for a module load was faded out before it
+                 * was parked — Move's track with it, through the slot's FX —
+                 * so it passes nothing until it fades back in; passing the
+                 * track here would drop it back in DRY mid-fade.)
+                 *
+                 * Inactive slot: pass Link Audio through at unity level.
                  * Master volume is applied after capture at the end.
                  *
                  * STILL A STEM. A slot with no Schwung module loaded is a Move
@@ -11855,6 +11864,7 @@ static void shim_spi_init(void)
         shim_worker_set_hooks(&hooks);
     }
     shim_worker_start();
+    shadow_slot_load_start();   /* slot module loads, off the SPI callback */
     move_model_sync_init(&shadow_control);   /* mute/solo + set alignment from it */
     move_model_start();   /* Move's live song document -- move_model.h */
     snap_worker_start();   /* off-RT remote-snapshot servicer (idle until a browser pulls) */

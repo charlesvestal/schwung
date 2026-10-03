@@ -603,6 +603,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_scene.c src/host/scene_morph.h \
     src/modules/chain/dsp/chain_lanes.c \
     src/modules/chain/dsp/chain_chance.c src/host/step_chance.h \
+    src/modules/chain/dsp/chain_synth_load.c src/modules/chain/dsp/chain_fx_load.c \
     src/host/step_chance_store.h src/host/step_chance_gate.h \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
@@ -638,6 +639,8 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_scene.c \
         src/modules/chain/dsp/chain_lanes.c \
         src/modules/chain/dsp/chain_chance.c \
+        src/modules/chain/dsp/chain_synth_load.c \
+        src/modules/chain/dsp/chain_fx_load.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
         build/modules/chain/lane_serial.o \

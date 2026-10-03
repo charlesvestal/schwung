@@ -63,28 +63,49 @@ architecture and nothing contradicts them. The contract is now stated at the
 top of `src/host/plugin_api_v1.h` and in `docs/MODULES.md`; keep all three in
 sync.
 
-**One qualification — a BUS insert is constructed off the callback.** An audio
-FX loaded into a chain *slot* is created, configured and processed on the
-callback as described. An audio FX loaded into a chain *bus insert position* is
-loaded by the chain's bus worker (`chain_bus.c`, SCHED_OTHER on cores 0–2): its
+**One qualification — modules are LOADED off the callback.** A module's
 `dlopen`, `create_instance`, `destroy_instance` and the `set_param` that
-restores its saved state run **there**, while `process_block`, `on_midi` and
-every live `set_param`/`get_param` still run on the callback. It relaxes
-nothing for a module author — a module cannot tell which of the two it was
-loaded as, and the slot case is the callback — but it has two consequences:
+restores its saved state run on a SCHED_OTHER thread on cores 0–2: the shim's
+**slot loader** for a chain *slot* (`synth:module`, `fxN:module`,
+`midi_fxN:module`, `load_file`, `load_patch`, `clear` — see
+`src/host/slot_load_job.h`), the chain's **bus worker** (`chain_bus.c`) for a
+*bus insert*, and the shim worker for Master FX and send positions.
+`process_block`, `render_block`, `on_midi` and every live `set_param` /
+`get_param` still run on the callback. It relaxes nothing for a module author,
+but it has consequences:
 
-- **A module can be constructed on two threads at once**, on the worker for a
-  bus and on the callback for a slot, when the same FX sits in both.
-  Per-instance state is unaffected; a shared static table, a lazily built
-  wavetable or a non-reentrant library init is not.
-- **`_dl_load_lock` is now a priority inversion.** `dlopen` runs on both threads
-  and glibc serialises them on that lock, which has **no priority inheritance**
-  — so a FIFO-70 load on the callback can wait behind the SCHED_OTHER worker's
-  for as long as anything on cores 0–2 keeps the worker off the CPU. Same shape
-  as the `pthread_join` in `v2_destroy_instance`, on a path with no join in it.
-  Serialising the two (or moving the main chain's loads to the worker as well)
-  is a real design change and is deliberately not attempted; the comment in
-  `v2_destroy_instance` is the record that the inversion exists.
+- **Nothing stops while a module loads.** It used to be the whole device:
+  `load_file` was measured at **432 ms** on the callback (param-slow), i.e.
+  every slot and Move itself stopped for that long — the hiccup heard on every
+  module pick. Now:
+  - **A one-module write is STAGED** — `synth:module`, `fxN:module`,
+    `midi_fxN:module` (`chain_synth_load.c`, `chain_fx_load.c`): the new
+    module is built on the loader while the slot plays on untouched; then ONLY
+    the outgoing module fades — the synth's output, or that one FX position
+    wet -> dry, 20 ms — and is swapped on the callback (pointer stores), a new
+    FX fading in from dry; then the old one is destroyed back on the loader.
+    Nothing else in the slot leaves the signal, so a reverb tail rings across a
+    synth swap and changing fx2 never touches the synth or fx1.
+  - **A whole-patch load PARKS the slot** (`load_file`, `load_patch`,
+    `clear`): it is faded out (its 50 ms slot fade),
+    its chain instance is taken out of `shadow_chain_slots[]` (every chain
+    entry point already treats NULL as silence) and handed to the loader, then
+    put back and faded in. The other slots, the buses and Move play on.
+  Either way the param request is answered only when the load lands, so the
+  client's wait is unchanged.
+- **A module can be constructed on one thread while another instance of it
+  renders on the callback.** Per-instance state is unaffected; a shared static
+  table, a lazily built wavetable or a non-reentrant library init is not. The
+  chain host's own shared scratch (`chain_mod.c`'s metadata refresh) is
+  try-locked for exactly this reason.
+- **A thread created in `create_instance` inherits SCHED_OTHER**, not FIFO 70.
+  An audio-producing worker must set its own policy explicitly — which the rule
+  above already required; inheriting 70 was the bug the RT-thread audit hunted.
+- **`_dl_load_lock` has no priority inheritance**, so any `dlopen`/`dlclose`
+  left on the callback can wait behind a loader. The callback paths that would
+  (fade-completion patch loads, the UI patch-request clear) wait while a slot
+  load is in flight; the chain's `fx:remove` verbs cannot overlap one, because
+  the load holds the param channel.
 
 "There is no control thread" stays the rule to write code against.
 

@@ -88,6 +88,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -DFIXTURE_DIR="\"$work\"" \
   tests/host/test_chain_midi_fx_slot.c src/modules/chain/dsp/chain_midi.c \
   src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_chance.c \
+  src/modules/chain/dsp/chain_fx_load.c \
   -o "$bin" $dl_flag
 
 "$bin"

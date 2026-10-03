@@ -19,6 +19,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 HOST=src/modules/chain/dsp/chain_host.c
+# The synth loader moved to chain_synth_load.c (staged: synth_stage reads the
+# capabilities, synth_install applies them).
+LOADER=src/modules/chain/dsp/chain_synth_load.c
 MGMT=src/host/shadow_chain_mgmt.c
 MGMTH=src/host/shadow_chain_mgmt.h
 SHIM=src/schwung_shim.c
@@ -30,30 +33,32 @@ fail() { echo "FAIL: $1"; exit 1; }
 #    it since loopers needed it; a generator that declares it and is still
 #    parked is the failure this pins.
 awk '
-  /^int v2_load_synth/ {fn=1}
+  /^static void synth_stage\(/ {fn=1}
   fn && /"requires_continuous_processing"/ {found=1}
   fn && /^}/ {exit}
   END {exit found ? 0 : 1}
-' "$HOST" || fail "v2_load_synth never reads capabilities.requires_continuous_processing"
+' "$LOADER" || fail "the synth loader never reads capabilities.requires_continuous_processing"
+grep -q 'inst->synth_requires_continuous = st->requires_continuous;' "$LOADER" \
+  || fail "the staged keep-alive never reaches the instance at commit"
 
 # 2. A line-input consumer gets the keep-alive WITHOUT declaring it. This is
 #    the part that makes the fix general: any module that pulls the jack in has
 #    no wake signal the shim can see, whatever its module.json says.
 awk '
-  /inst->synth_consumes_line_input = 1;/ {branch=1}
-  branch && /inst->synth_requires_continuous = 1;/ {found=1; exit}
-  branch && /^                        \}/ {exit}
+  /st->consumes_line_input = 1;/ {branch=1}
+  branch && /st->requires_continuous = 1;/ {found=1; exit}
+  branch && /^                            \}/ {exit}
   END {exit found ? 0 : 1}
-' "$HOST" || fail "a line-input consumer is not implicitly kept alive"
+' "$LOADER" || fail "a line-input consumer is not implicitly kept alive"
 
 # 3. Reset on unload, so a keep-alive module's flag cannot outlive it and hold
 #    the NEXT module in the slot permanently awake.
 awk '
-  /^void v2_unload_synth/ {fn=1}
+  /^static void synth_detach\(/ {fn=1}
   fn && /inst->synth_requires_continuous = 0;/ {found=1}
   fn && /^}/ {exit}
   END {exit found ? 0 : 1}
-' "$HOST" || fail "the keep-alive flag survives a synth unload"
+' "$LOADER" || fail "the keep-alive flag survives a synth unload"
 
 # 4. The export the shim resolves by dlsym, and the loader that resolves it.
 grep -q 'int chain_synth_requires_continuous(void \*instance)' "$HOST" \
