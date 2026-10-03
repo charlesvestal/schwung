@@ -2366,6 +2366,22 @@
       "asset_name": "move-bitwig-module.tar.gz",
       "min_host_version": "1.0.0",
       "requires": "Bitwig Studio 6 and matching controller scripts: https://github.com/pi43r/move-bitwig/releases/latest/download/move-bitwig-controller-scripts.zip"
+    },
+    {
+      "id": "oktonik",
+      "name": "OKTONIK",
+      "description": "Live harmonic performance: play chords, adaptive melodies and independent bass from Move's pads.",
+      "author": "Skerry Vibe",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "tags": [
+        "chord",
+        "polyphonic"
+      ],
+      "github_repo": "skerryvibe/oktonik",
+      "default_branch": "main",
+      "asset_name": "oktonik-module.tar.gz",
+      "min_host_version": "1.6.2"
     }
   ]
 }
