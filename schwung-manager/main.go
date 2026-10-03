@@ -1098,14 +1098,16 @@ type App struct {
 	channelPref   *ChannelPref
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig    // shared memory for live config sync (nil if not on device)
-	shmParams     *ShmParams    // shared memory for param get/set (nil if not on device); use params(), don't read directly
-	paramsMu      sync.Mutex    // guards the lazy attach of shmParams
-	perfShm       *PerfShm      // /schwung-perf frame budget (nil until the shim creates it)
-	perfMu        sync.Mutex    // guards the lazy attach of perfShm
-	moduleIDs_    moduleIDCache // slot / Master FX identities, refreshed slowly
-	cpuSampler    *cpuSampler   // previous /proc sample, for the CPU page delta
-	upgradeStatus string        // current upgrade step (empty = not upgrading)
+	shm           *ShmConfig      // shared memory for live config sync (nil if not on device)
+	shmParams     *ShmParams      // shared memory for param get/set (nil if not on device); use params(), don't read directly
+	paramsMu      sync.Mutex      // guards the lazy attach of shmParams
+	perfShm       *PerfShm        // /schwung-perf frame budget (nil until the shim creates it)
+	perfMu        sync.Mutex      // guards the lazy attach of perfShm
+	restartMu     sync.Mutex      // guards restartNeeded
+	restartNeeded map[string]bool // modules whose native code an install replaced (#474)
+	moduleIDs_    moduleIDCache   // slot / Master FX identities, refreshed slowly
+	cpuSampler    *cpuSampler     // previous /proc sample, for the CPU page delta
+	upgradeStatus string          // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob
 	downloadMu    sync.Mutex
 }
@@ -1698,11 +1700,18 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 			"id", mod.ID, "err", restoreErr)
 	}
 
-	// Extract using tar command (busybox tar on Move).
+	// Extract into staging, then rename each file into place -- never tar
+	// straight over the live directory, which rewrites a mapped dsp.so at the
+	// same inode (#474; see atomic_install.go).
 	app.logger.Info("extracting module", "id", mod.ID, "dest", categoryDir)
-	cmd := exec.Command("tar", "-xzf", tmpPath, "-C", categoryDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, output)
+	replacedNative, err := extractTarballAtomically(tmpPath, categoryDir, false)
+	if err != nil {
+		return err
+	}
+	if len(replacedNative) > 0 {
+		app.markRestartNeeded(mod.ID)
+		app.logger.Info("module native code replaced; running copy is unaffected until Move restarts",
+			"id", mod.ID, "files", replacedNative)
 	}
 
 	if preserved != nil {
@@ -1936,7 +1945,7 @@ func (app *App) handleModuleInstall(w http.ResponseWriter, r *http.Request) {
 		app.moduleRedirect(w, r, id, "Install+failed:+"+err.Error(), flashError)
 		return
 	}
-	app.moduleRedirect(w, r, id, mod.Name+"+installed+successfully", flashSuccess)
+	app.moduleRedirect(w, r, id, mod.Name+"+installed+successfully"+app.restartSuffix(id), flashSuccess)
 }
 
 func (app *App) handleModuleUninstall(w http.ResponseWriter, r *http.Request) {
@@ -1977,7 +1986,7 @@ func (app *App) handleModuleUpdate(w http.ResponseWriter, r *http.Request) {
 		app.moduleRedirect(w, r, id, "Update+failed:+"+err.Error(), flashError)
 		return
 	}
-	app.moduleRedirect(w, r, id, mod.Name+"+updated+successfully", flashSuccess)
+	app.moduleRedirect(w, r, id, mod.Name+"+updated+successfully"+app.restartSuffix(id), flashSuccess)
 }
 
 func (app *App) handleModuleUpdateAll(w http.ResponseWriter, r *http.Request) {
@@ -2000,6 +2009,9 @@ func (app *App) handleModuleUpdateAll(w http.ResponseWriter, r *http.Request) {
 	if failed > 0 {
 		msg = fmt.Sprintf("Updated+%d+modules,+%d+failed", updated, failed)
 		kind = flashError
+	}
+	if n := app.takeAllRestartNeeded(); n > 0 {
+		msg += fmt.Sprintf("+-+%d+replaced+native+code:+restart+Move+to+run+the+new+versions", n)
 	}
 	http.Redirect(w, r, "/modules?flash="+msg+"&flash_type="+kind, http.StatusSeeOther)
 }
@@ -2222,10 +2234,16 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
 		os.MkdirAll(categoryDir, 0755)
 		destDir := filepath.Join(categoryDir, modEntry.Name())
-		os.RemoveAll(destDir) // Remove old version if exists.
-		if err := os.Rename(moduleDir, destDir); err != nil {
-			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
+		// MERGE into place by rename (#474), never RemoveAll + rename: that
+		// was safe for a mapped dsp.so but deleted every ROM, instrument and
+		// config.json the user had in the module's folder on each reinstall.
+		replacedNative, err := installTreeAtomically(moduleDir, destDir)
+		if err != nil {
+			http.Redirect(w, r, "/modules?flash=Install+failed:+"+err.Error(), http.StatusSeeOther)
 			return
+		}
+		if len(replacedNative) > 0 {
+			app.markRestartNeeded(mj.ID)
 		}
 
 		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
@@ -2242,7 +2260,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		}
 
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
-		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub", http.StatusSeeOther)
+		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub"+app.restartSuffix(mj.ID), http.StatusSeeOther)
 
 	case "tarball":
 		file, header, err := r.FormFile("file")
@@ -2307,10 +2325,14 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
 		os.MkdirAll(categoryDir, 0755)
 		destDir := filepath.Join(categoryDir, modEntry.Name())
-		os.RemoveAll(destDir)
-		if err := os.Rename(moduleDir, destDir); err != nil {
-			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
+		// MERGE by rename (#474) -- see the GitHub branch above.
+		replacedNative, err := installTreeAtomically(moduleDir, destDir)
+		if err != nil {
+			http.Redirect(w, r, "/modules?flash=Install+failed:+"+err.Error(), http.StatusSeeOther)
 			return
+		}
+		if len(replacedNative) > 0 {
+			app.markRestartNeeded(mj.ID)
 		}
 
 		// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
@@ -2327,7 +2349,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
-		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+tarball", http.StatusSeeOther)
+		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+tarball"+app.restartSuffix(mj.ID), http.StatusSeeOther)
 
 	default:
 		http.Redirect(w, r, "/modules?flash=Unknown+install+source", http.StatusSeeOther)
@@ -3415,12 +3437,16 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// re-attempting the mirror (a permanent, self-concealing failure). We
 		// hold it back and place it only AFTER confirming the live shim matches
 		// (below), so a half-applied update stays retryable.
-		extractCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath,
+		//
+		// STAGED, then renamed into place (#474): the host tree carries the
+		// chain dsp.so, the built-in modules and lib/*.so, all mapped in the
+		// running MoveOriginal until the reboot this update ends in. A bulk
+		// `tar -C basePath` rewrote them at their live inodes.
+		if _, err := extractTarballAtomically(tarPath, app.basePath, true,
 			"--strip-components=1", "--exclude=*/bin/schwung-heal",
-			"--exclude=*/host/version.txt")
-		if output, err := extractCmd.CombinedOutput(); err != nil {
+			"--exclude=*/host/version.txt"); err != nil {
 			app.setUpgradeStatus("Extract failed")
-			app.logger.Error("extract failed", "err", err, "output", string(output))
+			app.logger.Error("extract failed", "err", err)
 			return
 		}
 
