@@ -8119,9 +8119,13 @@ function slotFileExpectation(raw) {
     try {
         const parsed = JSON.parse(raw);
         const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
-        const id = (e) => (e && e.module) ? String(e.module) : "";
+        /* The synth names its module `module`; MIDI FX and audio FX entries
+         * name theirs `type` (the autosave writer and chain_patch.c's parser
+         * agree on that). Reading `module` for an FX made every slot with an
+         * audio FX look mismatched. */
+        const id = (e) => !e ? "" : String(e.type || e.module || "");
         return {
-            synth: id(chain && chain.synth),
+            synth: (chain && chain.synth && chain.synth.module) ? String(chain.synth.module) : "",
             midiFx: (chain && Array.isArray(chain.midi_fx)) ? chain.midi_fx.map(id) : [],
             fx: (chain && Array.isArray(chain.audio_fx)) ? chain.audio_fx.map(id) : []
         };

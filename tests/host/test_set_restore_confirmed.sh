@@ -37,10 +37,15 @@ const env = new Function("MAX_MIDI_FX", "MAX_FX", "getSlotParam",
 let params = {};
 const api = env(4, 8, (slot, key) => (key in params ? params[key] : null));
 
-const file = JSON.stringify({ chain: { synth: { module: "minijv" },
-  audio_fx: [null, { module: "freeverb" }], midi_fx: [] } });
+/* The shape autosave WRITES: the synth names its module `module`, an FX entry
+   names its own `type`. A fixture written from assumption instead let the
+   first version read `module` for FX and pass here while every slot with an
+   audio FX failed to confirm on the device. */
+const file = JSON.stringify({ chain: { synth: { module: "minijv", config: {} },
+  audio_fx: [null, { type: "freeverb", params: {}, bypassed: 0 }],
+  midi_fx: [{ type: "arp", params: {} }] } });
 const exp = api.slotFileExpectation(file);
-if (!exp || exp.synth !== "minijv" || exp.fx.join(",") !== ",freeverb")
+if (!exp || exp.synth !== "minijv" || exp.fx.join(",") !== ",freeverb" || exp.midiFx.join(",") !== "arp")
   fail("expectation of a chain file: " + JSON.stringify(exp));
 const empty = api.slotFileExpectation("{}\n");
 if (!empty || empty.synth !== "" || empty.fx.length) fail("a near-empty file is an EMPTY slot");
@@ -48,9 +53,13 @@ if (api.slotFileExpectation(null).synth !== "") fail("a missing file is an EMPTY
 if (api.slotFileExpectation("{ not json, but long enough") !== null)
   fail("an unparseable file must be null -- nothing can be confirmed against it");
 
+if (!/patch\.audio_fx\.push\(\{\s*type: moduleData\.module/.test(src) ||
+    !/patch\.midi_fx\.push\(\{\s*type: moduleData\.module/.test(src))
+  fail("the autosave writer no longer names an FX by `type` -- update slotFileExpectation with it");
+
 /* ---- slotMatchesExpectation ---- */
-const live = (o) => { params = Object.assign({ midi_fx_count: "0", fx_count: "0" }, o); };
-live({ synth_module: "minijv", fx_count: "2", fx1_module: "", fx2_module: "freeverb" });
+const live = (o) => { params = Object.assign({ midi_fx_count: "1", midi_fx1_module: "arp", fx_count: "0" }, o); };
+live({ synth_module: "minijv", midi_fx_count: "1", midi_fx1_module: "arp", fx_count: "2", fx1_module: "", fx2_module: "freeverb" });
 if (api.slotMatchesExpectation(0, exp) !== true) fail("the restored slot must match");
 live({ synth_module: "jp8000", fx_count: "2", fx1_module: "", fx2_module: "freeverb" });
 if (api.slotMatchesExpectation(0, exp) !== false) fail("the OUTGOING synth must not match (the bug)");
