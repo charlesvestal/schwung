@@ -1515,6 +1515,16 @@ Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.
 ### Skipback
 
 Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
+### A set switch CONFIRMS each slot — `docs/SHADOW_UI.md`
+
+- **A restore write that timed out may still be LANDING**, so it is never
+  re-sent on a timeout: since #605 each one holds the param channel for a fade
+  plus the module's create/destroy. Re-sending started a second load of a
+  module still being built, left the OUTGOING set's module in the slot, and
+  autosave then wrote it into the NEW set's file. Every slot is read back
+  against its file; one that is not confirmed is held from autosave while it
+  still carries the outgoing modules (`slotRestoreHolds`).
+
 ### Snapshot / recall — `docs/SHADOW_UI.md`
 
 Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.

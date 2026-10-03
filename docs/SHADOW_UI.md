@@ -1740,6 +1740,41 @@ Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
 
+### A set switch CONFIRMS every slot, and autosave holds one that did not land
+
+Since slot loads moved to the shim's loader thread (#605), a restore write in
+the `SET_CHANGED` handler holds the param channel for a fade plus the module's
+own create/destroy -- hundreds of ms routinely, seconds for some modules. The
+handler still gave each write **1.5 s**, ignored the `clear`'s result, and on a
+`load_file` timeout **sent it again**: a second full load of a module that was
+still being built. On a Move that left **JE-8086 in a slot whose file said
+Mini-JV** (the retried load tore down a still-booting JE, whose destroy waited
+out the boot, and the next JE then hit its one-per-device lock), and the
+periodic autosave wrote JE-8086 into the new set's `slot_N.json` -- **a set
+switch rewrote a saved set**. The same shape left one set's audio FX in
+another set's slot.
+
+Now:
+
+- **Budgets sized for the loader** (10 s clear, 15 s load), and **every slot
+  is READ BACK** against its file (`slotFileExpectation` /
+  `slotMatchesExpectation`): synth, MIDI FX and audio FX by position, with any
+  live position past the file's list required empty.
+- **A retry happens only on a CONFIRMED mismatch**, from a clean slot -- never
+  on a bare timeout, because a timed-out write may be landing as we speak.
+- **A slot that still is not confirmed is held from autosave**
+  (`slotRestorePending` / `slotRestoreHolds`) for as long as it still carries
+  the OUTGOING set's modules, or cannot be read. It is released the moment the
+  slot matches its file (a late load landed) or holds anything else (the user
+  changed it). The guard keys on the failure rather than on every module-change
+  path -- there are too many of those to hook, and missing one would make a
+  slot un-saveable.
+- A drain of the periodic autosave in progress is dropped at the switch, so it
+  cannot continue into the new set's directory.
+
+`tests/host/test_set_restore_confirmed.sh` runs both helpers and the hold
+against a fake param channel.
+
 ### Duplicating a set copies EVERYTHING but an exclude list
 
 A set's Schwung state lives in `set_state/<uuid>/`, and a duplicated set gets a
