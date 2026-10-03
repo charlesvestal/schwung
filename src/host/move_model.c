@@ -62,14 +62,20 @@ static double be_f64(const uint8_t *r) { uint64_t u = be64(r); double d; memcpy(
 #define MM_LANES_MAX     16
 #define MM_POINTS_MAX    65536
 
-int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
+int mm_decode_notes_buf(const uint8_t *raw, size_t len, int format, mm_note_t *out, int max,
                         mm_expr_point_t *pool, int pool_max)
 {
     if (!raw && len) return -1;
+    size_t pre, post;
+    if (format == MM_NOTES_FMT_210) pre = 0, post = 0;
+    else if (format == MM_NOTES_FMT_PROB) pre = 4, post = 0;
+    else if ((format & ~0xFF) == 0x100) pre = 4u * (format & 0xF), post = 4u * ((format >> 4) & 0xF);
+    else return -1;
+    const size_t head = MM_NOTE_HEAD + pre;
     int n = 0, used = 0;
     size_t o = 0;
     while (o < len) {
-        if (len - o < MM_NOTE_HEAD + 8 || n >= max) return -1;
+        if (len - o < head + 8 + post || n >= max) return -1;
         const uint8_t *r = raw + o;
         mm_note_t nt;
         memset(&nt, 0, sizeof nt);
@@ -77,8 +83,23 @@ int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
         nt.start = be_f64(r + 4);
         nt.dur = be_f64(r + 12);
         { uint32_t w = be32(r + 20); float f; memcpy(&f, &w, 4); nt.vel = f; }
+        { uint32_t w = be32(r + 24); float f; memcpy(&f, &w, 4); nt.off_velocity = f; }
+        nt.enabled = r[28];
+        /* PLAUSIBILITY, so a layout we have wrong reads as unknown rather than
+         * as notes: every field of the head has a range Move asserts on save. */
+        if (nt.pitch < 0 || nt.pitch > 127 || r[28] > 1 ||
+            !(nt.vel >= 0.0f && nt.vel <= 127.0f) ||
+            !(nt.off_velocity >= 0.0f && nt.off_velocity <= 127.0f) ||
+            !isfinite(nt.start) || !(nt.dur > 0.0 && isfinite(nt.dur)))
+            return -1;
+        nt.probability = 1.0f;
+        if (format == MM_NOTES_FMT_PROB) {
+            uint32_t w = be32(r + MM_NOTE_HEAD); float f; memcpy(&f, &w, 4);
+            if (!(f >= 0.0f && f <= 1.0f)) return -1;       /* Move asserts the same range */
+            nt.probability = f;
+        }
         nt.pressure_first = -1;
-        size_t p = o + MM_NOTE_HEAD;
+        size_t p = o + head;
         const uint32_t lanes = be32(raw + p);
         if (lanes == 0) {                                   /* a plain note: i64 id */
             nt.id = (int64_t)be64(raw + p);
@@ -119,10 +140,31 @@ int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
             nt.id = (int64_t)be32(raw + p);
             p += 4;
         }
+        if (len - p < post) return -1;
+        p += post;
         out[n++] = nt;
         o = p;
     }
     return n;                                               /* landed exactly on the end */
+}
+
+int mm_detect_note_layout(const uint8_t *raw, size_t len)
+{
+    if (!raw || !len) return -1;                 /* an empty clip says nothing */
+    static mm_note_t scratch[1024];
+    int found = -1, hits = 0;
+    for (int post = 0; post <= 2; post++)
+        for (int pre = 0; pre <= 4; pre++) {
+            int f = MM_NOTES_FMT_UNKNOWN(pre, post);
+            if (post == 0 && pre == 0) f = MM_NOTES_FMT_210;
+            if (mm_decode_notes_buf(raw, len, f, scratch, 1024, NULL, 0) > 0) { found = f; hits++; }
+        }
+    if (hits != 1) return -1;
+    /* 2.1.1's own layout, when that is what fits and its probability reads. */
+    if (found == MM_NOTES_FMT_UNKNOWN(1, 0) &&
+        mm_decode_notes_buf(raw, len, MM_NOTES_FMT_PROB, scratch, 1024, NULL, 0) > 0)
+        return MM_NOTES_FMT_PROB;
+    return found;
 }
 
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)
@@ -644,6 +686,8 @@ static vpset_t g_vp_hist, g_vp_hstore, g_vp_tx;
 static uint64_t g_hist;
 static uint64_t g_song;
 static int g_clock_pinned;
+/* Which note-record layout this firmware writes (MM_NOTES_FMT_*), from resolve. */
+static int g_note_format = MM_NOTES_FMT_210;
 
 static int song_ok(uint64_t s)
 {
@@ -733,6 +777,12 @@ static int resolve_all(void)
     char bid[64] = "";
     read_build_id(bid, sizeof bid);
     g_clock_pinned = (strcmp(bid, KNOWN_BUILD) == 0);
+    /* The note layout is a property of the firmware, not of a build id we
+     * recognise: 2.1.1 added a probability to every note record, and its
+     * MoveOriginal carries the assertion that guards it. Looked up by the
+     * same string search the class registry uses. */
+    g_note_format = find_string_in_image("hasProbability()") ? MM_NOTES_FMT_PROB : MM_NOTES_FMT_210;
+    status("notes: %s layout", g_note_format == MM_NOTES_FMT_PROB ? "2.1.1+ (probability)" : "2.1.0");
     if (resolve_classes()) { status("resolve: flip class registry incomplete (build %s)", bid); return -1; }
     g_vp_song.n        = rtti_vptrs("N7ableton10flip_model5FSongE", g_vp_song.v, MAXVP);
     g_vp_clips.n       = rtti_vptrs("N7ableton10flip_model6FClipsE", g_vp_clips.v, MAXVP);
@@ -1090,7 +1140,25 @@ static int decode_notes(uint64_t vec, mm_note_t *out, int max, mm_expr_point_t *
     static uint8_t raw[MM_NOTES_RAW_MAX];
     size_t len = (size_t)(be[1] - be[0]);
     if (len && RD(be[0], raw, len)) return -1;
-    return mm_decode_notes_buf(raw, len, out, max, pool, pool_max);
+    int n = mm_decode_notes_buf(raw, len, g_note_format, out, max, pool, pool_max);
+    if (n < 0 && len) {
+        /* The firmware marker chose wrong, or Move added a field we have never
+         * seen. Learn the layout from the clip itself -- only one that decodes
+         * it exactly, and uniquely, is taken -- and KEEP it. */
+        const int f = mm_detect_note_layout(raw, len);
+        if (f >= 0 && f != g_note_format) {
+            const int m = mm_decode_notes_buf(raw, len, f, out, max, pool, pool_max);
+            if (m >= 0) {
+                status("notes: layout 0x%x did not decode a %zu-byte clip, 0x%x does -- switched",
+                       g_note_format, len, f);
+                g_note_format = f;
+                return m;
+            }
+        }
+        static int warned;
+        if (!warned++) status("notes: a %zu-byte clip decodes in NO layout (layout 0x%x)", len, g_note_format);
+    }
+    return n;
 }
 
 /* After a published walk: point the probe at the selected track's current
@@ -1106,11 +1174,19 @@ static void edited_clip_update(const move_model_t *m)
     g_probe = g_probe_tab[m->selected_track][cs];
     g_probe_expect = c->content_hash;
     g_probe_valid = 1;
-    if (g_notes_ref[0].clip_id == c->clip_id && g_notes_ref[0].content_hash == c->content_hash) return;
-    memcpy(g_notes[1], g_notes[0], sizeof(mm_note_t) * (size_t)g_nnotes[0]);
-    memcpy(g_press[1], g_press[0], sizeof g_press[0]);
-    g_nnotes[1] = g_nnotes[0];
-    g_notes_ref[1] = g_notes_ref[0];
+    const int same = g_notes_ref[0].clip_id == c->clip_id &&
+                     g_notes_ref[0].content_hash == c->content_hash;
+    /* A FAILED decode is retried: caching it until the clip next changed made
+     * one torn read (or a layout switch) stick for as long as nobody edited. */
+    if (same && g_notes_ref[0].valid) return;
+    static unsigned retry;
+    if (same && (++retry & 15)) return;     /* unreadable: re-look ~1 tick in 16, not every one */
+    if (!same) {                    /* a retry keeps the previous state it had */
+        memcpy(g_notes[1], g_notes[0], sizeof(mm_note_t) * (size_t)g_nnotes[0]);
+        memcpy(g_press[1], g_press[0], sizeof g_press[0]);
+        g_nnotes[1] = g_nnotes[0];
+        g_notes_ref[1] = g_notes_ref[0];
+    }
     int n = decode_notes(g_probe.notes_vec, g_notes[0], MM_NOTES_MAX, g_press[0], MM_PRESS_MAX);
     g_nnotes[0] = n < 0 ? 0 : n;
     g_notes_ref[0].track = m->selected_track;
@@ -1118,6 +1194,7 @@ static void edited_clip_update(const move_model_t *m)
     g_notes_ref[0].clip_id = c->clip_id;
     g_notes_ref[0].content_hash = c->content_hash;
     g_notes_ref[0].valid = n >= 0;
+    g_notes_ref[0].unreadable = n < 0;
 }
 
 int move_model_edited_pressure(int previous, const mm_expr_point_t **pts)

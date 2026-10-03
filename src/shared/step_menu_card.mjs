@@ -33,6 +33,8 @@ export const SM_CELL_OFF = 254;
 export const SM_FIELD_NAMES = ["Chance", "Length", "Velocity"];
 /* The track's slot has no Schwung synth (SM_FLAG_NO_SYNTH). */
 export const SM_FLAG_NO_SYNTH = 0x01;
+/* The clip's notes did not decode (SM_FLAG_UNREADABLE) -- never "No note". */
+export const SM_FLAG_UNREADABLE = 0x02;
 
 /* Chance on a track with no Schwung synth does nothing -- it gates notes into
  * Schwung's instrument, never Move's -- so the card SAYS so rather than
@@ -69,6 +71,7 @@ export function condName(idx) {
 
 /** The focused field's value, as Move would print it. */
 export function fieldValue(state) {
+    if (state.flags & SM_FLAG_UNREADABLE) return "Can't read";
     if (chanceUnavailable(state)) return "Move only";
     if (state.cond === SM_CELL_EMPTY) return "No note";
     /* A chord is a RANGE, as Move prints it ("2.0-16.0"): Move's hold-step

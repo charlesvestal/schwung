@@ -165,14 +165,20 @@ static inline uint32_t mm_clip_state_hash(const mm_clip_t *c)
  * the pad's own note); `pitch_offset` is its per-note PITCH lane at time 0, in
  * semitones -- Move's 16 Pitches mode keeps the pitch there and nowhere else.
  * `pressure_*` locate its PRESSURE lane (aftertouch, 0..127, stored as step
- * pairs) in the point pool the decoder was given; count 0 = none. */
+ * pairs) in the point pool the decoder was given; count 0 = none.
+ * `off_velocity` and `enabled` are in every record; `probability` only from
+ * Move 2.1.1 on (1.0 before it, which is what 2.1.1 stores for a plain note). */
 typedef struct {
     int pitch; double start, dur; float vel; int64_t id;
     double pitch_offset;
     int pressure_first, pressure_count;
+    float off_velocity, probability;
+    int enabled;
 } mm_note_t;
 typedef struct { double time, value; } mm_expr_point_t;   /* time: beats from the note's start */
-typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash; } mm_clip_ref_t;
+/* `unreadable`: the clip's notes were read and decode in NO known layout --
+ * as opposed to `valid` 0 for never looked at. */
+typedef struct { int valid, track, slot; uint64_t clip_id; uint32_t content_hash; int unreadable; } mm_clip_ref_t;
 
 /* The selected track's current clip, decoded from Move's notes blob: its
  * notes NOW (previous = 0) or in its previous content state (1). Returns the
@@ -192,8 +198,31 @@ int mm_pair_consistent(const move_model_t *a, const move_model_t *b);
  * table ("bar", "sixteenth", ...); NULL when unknown. Runtime half only. */
 const char *move_model_quant_name(int v);
 
+/* The two note-record layouts. Move 2.1.1 inserted ONE field, an f32
+ * probability, after the head; nothing else moved. There is no version in the
+ * buffer or the flip schema (no class or member changed), so the layout is
+ * chosen per FIRMWARE: the reader looks for 2.1.1's own `hasProbability()`
+ * assertion in MoveOriginal at resolve time. Decoding with the wrong layout
+ * fails (-1), never yields notes -- a 2.1.1 clip read as 2.1.0 took the
+ * probability's 0x3f800000 for a lane count, which is why every step of the
+ * step menu read "no note" on 2.1.1. */
+#define MM_NOTES_FMT_210  0   /* Move <= 2.1.0 */
+#define MM_NOTES_FMT_PROB 1   /* Move 2.1.1+: f32 probability after the head */
+/* A layout LEARNED from the data (mm_detect_note_layout): `pre` unknown u32
+ * words after the head -- where 2.1.1 put probability -- and `post` after the
+ * id. Their meaning is unknown, so probability reads 1.0. */
+#define MM_NOTES_FMT_UNKNOWN(pre, post) (0x100 | ((pre) & 0xF) | (((post) & 0xF) << 4))
+
+/* Find the one layout in which `raw` decodes, exactly and plausibly, with
+ * pre 0..4 and post 0..2 unknown words. Returns its MM_NOTES_FMT_* (a known
+ * one when it fits), or -1 when none or MORE THAN ONE does: an ambiguous
+ * buffer is refused, never guessed. A clip of one note can be ambiguous;
+ * the next clip with more notes settles it. */
+int mm_detect_note_layout(const uint8_t *raw, size_t len);
+
 /* Decode a MidiClipContent notes buffer. Big-endian, VARIABLE-LENGTH records:
  *   a 29-byte head: i32 pitch, f64 start, f64 dur, f32 vel, f32 offvel, u8 flag
+ *   [MM_NOTES_FMT_PROB only: f32 probability, 0..1]
  *   then EITHER  i64 id                         (first u32 of it is 0: a plain note)
  *   OR           u32 lane_count, lane_count x { i32 type, u32 point_count,
  *                point_count x {f64 time, f64 value} }, u32 id
@@ -205,7 +234,7 @@ const char *move_model_quant_name(int v);
  * landing exactly on the end, more notes than `max`, more pressure points than
  * `pool_max`. Never a partial list: -1 means "this clip's notes are unknown",
  * the same three-answer rule as a param read. */
-int mm_decode_notes_buf(const uint8_t *raw, size_t len, mm_note_t *out, int max,
+int mm_decode_notes_buf(const uint8_t *raw, size_t len, int format, mm_note_t *out, int max,
                         mm_expr_point_t *pool, int pool_max);
 /* The edited clip's pressure points (the pool mm_note_t.pressure_first indexes). */
 int move_model_edited_pressure(int previous, const mm_expr_point_t **pts);
