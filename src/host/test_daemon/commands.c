@@ -16,6 +16,7 @@
 #include "shadow_midi_inject_writer.h"
 
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -469,13 +470,12 @@ static int cmd_set_open_tool(int fd, const char *args) {
  * overtake-targeted calls. master_fx, jack:, chain-slot keys go
  * through with their own prefixes unchanged.
  *
- * Race window with shadow_ui: shadow_ui is the other producer on
- * this SHM. The wait_idle protocol (busy-wait until
- * request_type == 0) serializes both producers — the larger of
- * the two timeouts wins. Tests run with shadow_ui mostly idle
- * (no human interaction), so contention is rare. If a test hits
- * this race and gets TIMEOUT, the daemon returns ERR and the
- * test should retry — see `bus.set_param()` Python helper. */
+ * shadow_ui and schwung-manager are the other producers on this SHM,
+ * and all three follow one protocol: claim with a compare-exchange
+ * that refuses a channel holding an unread answer, and consume your
+ * own answer once it is copied out (testd_param_claim /
+ * testd_param_consume). If a test still gets TIMEOUT, the daemon
+ * returns ERR and the test should retry -- see `bus.set_param()`. */
 
 #define TESTD_PARAM_POLL_USEC      200
 /* Generous timeout: shadow_ui's own default is 100 ms, but it's
@@ -500,34 +500,84 @@ static uint32_t testd_param_next_request_id(void) {
     return g_testd_param_seq;
 }
 
-/* Busy-wait until shadow_param->request_type clears (peer drained the
- * previous request). Returns 1 on success, 0 on timeout.
+/* CLAIM the channel the way shadow_ui and schwung-manager do.
  *
- * Acquire-load on request_type: pairs with the peer's release-store
- * when it clears the slot after processing. Without this, the ARM
- * A55 (weakly-ordered model) can reorder reads of key/value/error
- * before observing request_type==0, producing a spurious match
- * against a half-written response. plain `volatile` (which the
- * shadow_param_t fields carry) prevents compiler reordering but
- * NOT CPU reordering — atomic_load_acquire covers both. */
-static int testd_param_wait_idle(int timeout_ms) {
-    int polls = (timeout_ms * 1000) / TESTD_PARAM_POLL_USEC;
-    if (polls < 1) polls = 1;
-    while (__atomic_load_n(&g_shm.param->request_type, __ATOMIC_ACQUIRE) != 0
-           && polls > 0) {
-        usleep(TESTD_PARAM_POLL_USEC);
-        polls--;
-    }
-    return __atomic_load_n(&g_shm.param->request_type, __ATOMIC_ACQUIRE) == 0;
+ * This used to busy-wait for request_type == 0 and then write
+ * response_ready = 0 while filling in its own request. request_type is
+ * cleared in the same breath as an answer is published, so that zeroed the
+ * OTHER client's answer before it had read it: shadow_ui then waited out its
+ * whole deadline for a reply that no longer existed. It is the defect
+ * shadow_ui.c's shadow_param_claim describes fixing on its side, left
+ * standing here -- and since this daemon drives every on-device test, it
+ * corrupted exactly the runs meant to measure the UI: a set switch under
+ * test lost nearly every restore answer and took ~70 s.
+ *
+ * The channel is free only when request_type == 0 AND response_ready == 0;
+ * one compare-exchange on the 32-bit word holding both takes it. An answer
+ * left unread for SHADOW_PARAM steal-time is presumed abandoned and taken
+ * anyway, as the other clients do. Returns 1 on success, 0 on timeout. */
+_Static_assert(offsetof(shadow_param_t, request_type) == 0, "head word: request_type @0");
+_Static_assert(offsetof(shadow_param_t, response_ready) == 2, "head word: response_ready @2");
+#define TESTD_PARAM_RT_MASK      0x000000FFu
+#define TESTD_PARAM_RR_MASK      0x00FF0000u
+#define TESTD_PARAM_STEAL_AFTER_US 250000ull
+
+static volatile uint32_t *testd_param_head(void) {
+    return (volatile uint32_t *)&g_shm.param->request_type;
 }
+
+static uint64_t testd_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)(ts.tv_nsec / 1000);
+}
+
+/* Across calls, for the same reason as shadow_ui's: measured against the
+ * channel's history, not one attempt's. */
+static uint64_t g_testd_blocked_since_us = 0;
+
+static int testd_param_claim(int timeout_ms) {
+    const uint64_t deadline = testd_now_us() + (uint64_t)timeout_ms * 1000ull;
+    for (;;) {
+        uint32_t w = __atomic_load_n(testd_param_head(), __ATOMIC_ACQUIRE);
+        int idle = (w & TESTD_PARAM_RT_MASK) == 0;
+        int unread = (w & TESTD_PARAM_RR_MASK) != 0;
+        uint64_t now = testd_now_us(), blocked = 0;
+        if (idle && unread) {
+            if (g_testd_blocked_since_us == 0) g_testd_blocked_since_us = now;
+            else blocked = now - g_testd_blocked_since_us;
+        } else {
+            g_testd_blocked_since_us = 0;
+        }
+        if (idle && (!unread || blocked >= TESTD_PARAM_STEAL_AFTER_US)) {
+            uint32_t nw = (w & ~(TESTD_PARAM_RT_MASK | TESTD_PARAM_RR_MASK))
+                        | (uint32_t)SHADOW_PARAM_CLAIMED;
+            if (__atomic_compare_exchange_n(testd_param_head(), &w, nw, 0,
+                                            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                g_testd_blocked_since_us = 0;
+                return 1;
+            }
+            continue;
+        }
+        if (now >= deadline) return 0;
+        usleep(TESTD_PARAM_POLL_USEC);
+    }
+}
+
+/* Done with our answer (or giving up on it): hand the channel back. */
+static void testd_param_consume(void) {
+    __atomic_and_fetch(testd_param_head(), ~TESTD_PARAM_RR_MASK, __ATOMIC_RELEASE);
+}
+
+/* The answer's value, copied out before the channel is handed back. */
+static char g_testd_value[SHADOW_PARAM_VALUE_LEN];
 
 /* Wait for shadow_param->response_ready with matching response_id.
  * Returns:  1 = success,  -1 = peer set error flag,  0 = timeout.
  *
- * Same acquire ordering rationale as wait_idle: load response_ready
- * with acquire so we see the peer's release-store ordering on the
- * other response fields (response_id, error, value) before deciding
- * the response is complete. */
+ * response_ready is loaded with acquire, pairing with the peer's
+ * release-store, so the other response fields (response_id, error,
+ * value) are visible before we decide the response is complete. */
 static int testd_param_wait_response(uint32_t req_id, int timeout_ms) {
     int polls = (timeout_ms * 1000) / TESTD_PARAM_POLL_USEC;
     if (polls < 1) polls = 1;
@@ -558,7 +608,7 @@ static int testd_param_do_set(int fd, const char *key, const char *value, size_t
         return protocol_reply_err(fd, "value too long for param SHM");
     }
 
-    if (!testd_param_wait_idle(TESTD_PARAM_TIMEOUT_MS)) {
+    if (!testd_param_claim(TESTD_PARAM_TIMEOUT_MS)) {
         return protocol_reply_err(fd, "param SHM busy (shadow_ui not draining)");
     }
 
@@ -587,6 +637,7 @@ static int testd_param_do_set(int fd, const char *key, const char *value, size_t
     __atomic_store_n(&g_shm.param->request_type, 1, __ATOMIC_RELEASE);
 
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
+    testd_param_consume();
     if (rc == 0) return protocol_reply_err(fd, "param SET timeout");
     if (rc < 0) return protocol_reply_err(fd, "param SET error from peer");
     return protocol_reply(fd, "OK");
@@ -639,7 +690,7 @@ static int cmd_get_param(int fd, const char *args) {
         return protocol_reply_err(fd, "param SHM not mapped");
     }
 
-    if (!testd_param_wait_idle(TESTD_PARAM_TIMEOUT_MS)) {
+    if (!testd_param_claim(TESTD_PARAM_TIMEOUT_MS)) {
         return protocol_reply_err(fd, "param SHM busy");
     }
 
@@ -660,6 +711,13 @@ static int cmd_get_param(int fd, const char *args) {
     __atomic_store_n(&g_shm.param->request_type, 2, __ATOMIC_RELEASE);
 
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
+    size_t vlen = 0;
+    if (rc > 0) {
+        vlen = strnlen(g_shm.param->value, SHADOW_PARAM_VALUE_LEN - 1);
+        memcpy(g_testd_value, g_shm.param->value, vlen);
+    }
+    g_testd_value[vlen] = '\0';
+    testd_param_consume();
     if (rc == 0) return protocol_reply_err(fd, "param GET timeout");
     if (rc < 0) return protocol_reply_err(fd, "param GET error from peer");
 
@@ -670,13 +728,12 @@ static int cmd_get_param(int fd, const char *args) {
      * i.e. vlen + 4 ≤ TESTD_LINE_MAX, i.e. vlen < TESTD_LINE_MAX - 3.
      * Large blobs like project.json (5-50 KB) overflow this and must
      * use DUMP_PARAM_FILE instead. */
-    size_t vlen = strnlen(g_shm.param->value, SHADOW_PARAM_VALUE_LEN);
     if (vlen + 3 >= TESTD_LINE_MAX) {
         return protocol_reply_err(fd,
             "GET_PARAM: value too large for line protocol (use DUMP_PARAM_FILE)");
     }
     char line[TESTD_LINE_MAX];
-    snprintf(line, sizeof(line), "OK %s", g_shm.param->value);
+    snprintf(line, sizeof(line), "OK %s", g_testd_value);
     return protocol_reply(fd, line);
 }
 
@@ -763,7 +820,7 @@ static int cmd_dump_param_file(int fd, const char *args) {
         return protocol_reply_err(fd, "param SHM not mapped");
     }
 
-    if (!testd_param_wait_idle(TESTD_PARAM_TIMEOUT_MS)) {
+    if (!testd_param_claim(TESTD_PARAM_TIMEOUT_MS)) {
         return protocol_reply_err(fd, "param SHM busy");
     }
     uint32_t req_id = testd_param_next_request_id();
@@ -780,16 +837,22 @@ static int cmd_dump_param_file(int fd, const char *args) {
     __atomic_store_n(&g_shm.param->request_type, 2, __ATOMIC_RELEASE);
 
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
+    size_t vlen = 0;
+    if (rc > 0) {
+        vlen = strnlen(g_shm.param->value, SHADOW_PARAM_VALUE_LEN - 1);
+        memcpy(g_testd_value, g_shm.param->value, vlen);
+    }
+    g_testd_value[vlen] = '\0';
+    testd_param_consume();
     if (rc == 0) return protocol_reply_err(fd, "DUMP_PARAM_FILE: GET timeout");
     if (rc < 0) return protocol_reply_err(fd, "DUMP_PARAM_FILE: peer error");
 
-    size_t vlen = strnlen(g_shm.param->value, SHADOW_PARAM_VALUE_LEN);
     int wfd = open(path, O_WRONLY | O_CREAT | O_TRUNC,
                    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (wfd < 0) {
         return protocol_reply_err(fd, "DUMP_PARAM_FILE: cannot open file for write");
     }
-    ssize_t written = write(wfd, g_shm.param->value, vlen);
+    ssize_t written = write(wfd, g_testd_value, vlen);
     if (written != (ssize_t)vlen) {
         close(wfd);
         return protocol_reply_err(fd, "DUMP_PARAM_FILE: short write");
