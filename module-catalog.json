@@ -2039,6 +2039,18 @@
       "min_host_version": "1.0.0"
     },
     {
+      "id": "elusive-muse",
+      "name": "Elusive Muse",
+      "description": "Click the jog wheel and one of 1,000 original prompts, in the spirit of Oblique Strategies, comes out of pixel static with a few glassy notes. Audio passes through untouched",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "github_repo": "kliegsablaze/elusive-muse",
+      "default_branch": "main",
+      "asset_name": "elusive-muse-module.tar.gz",
+      "min_host_version": "1.6.2"
+    },
+    {
       "id": "maze_seq",
       "name": "Maze",
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
@@ -2341,6 +2353,19 @@
       "default_branch": "main",
       "asset_name": "snake-module.tar.gz",
       "min_host_version": "0.9.18"
+    },
+    {
+      "id": "move-bitwig",
+      "name": "Move Bitwig",
+      "description": "Bitwig Controller: play instruments, sequence notes and drum expressions, browse devices, and launch clips and scenes.",
+      "author": "pi43r",
+      "component_type": "overtake",
+      "subcategory": "controller",
+      "github_repo": "pi43r/move-bitwig",
+      "default_branch": "main",
+      "asset_name": "move-bitwig-module.tar.gz",
+      "min_host_version": "1.0.0",
+      "requires": "Bitwig Studio 6 and matching controller scripts: https://github.com/pi43r/move-bitwig/releases/latest/download/move-bitwig-controller-scripts.zip"
     },
     {
       "id": "oktonik",

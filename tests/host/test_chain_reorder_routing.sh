@@ -43,7 +43,8 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
 # ------------------------------------------------------------------ pin half
 #
 # The test fixture supplies its own v2_unload_audio_fx_slot /
-# v2_unload_midi_fx_slot, because the audio one lives in chain_host.c. A
+# v2_unload_midi_fx_slot. The shipped ones are fx_detach / mfx_detach in
+# chain_fx_load.c (the unload AND the staged commit both run them). A
 # fixture that dropped a position's modulation entries when production did not
 # would make the run half a test of the fixture. So require the shipped
 # unloaders to do the same thing: name their OWN position and clear its
@@ -51,7 +52,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
 # a base back into a plugin that is about to be destroyed is at best wasted and
 # at worst a write through a stale instance pointer).
 while read -r file fn prefix; do
-  body=$(awk "/^(CHAIN_INTERNAL )?void $fn\(/,/^\}/" "$file")
+  body=$(awk "/^(CHAIN_INTERNAL )?(static )?void $fn\(/,/^\}/" "$file")
   [ -n "$body" ] || fail "could not find $fn in $file"
   printf '%s\n' "$body" | command grep -qE 'chain_mod_clear_target_entries\(inst, [a-z_]+, 0\)' \
     || fail "$fn does not clear the modulation entries of the position it unloads \
@@ -64,8 +65,8 @@ its own fixture"
     | command grep -qE "chain_fx_component_id\([a-z_]+, sizeof\([a-z_]+\), \"$prefix\", slot\)|\"$prefix%d\", slot \+ 1" \
     || fail "$fn no longer names its own position as $prefix<slot+1>"
 done <<'EOF'
-src/modules/chain/dsp/chain_host.c v2_unload_audio_fx_slot fx
-src/modules/chain/dsp/chain_midi.c v2_unload_midi_fx_slot midi_fx
+src/modules/chain/dsp/chain_fx_load.c fx_detach fx
+src/modules/chain/dsp/chain_fx_load.c mfx_detach midi_fx
 EOF
 
 # THE PICKER SWAP, which is the other way a module leaves a position and the
@@ -78,13 +79,13 @@ EOF
 while read -r file fn unloader; do
   body=$(awk "/^(CHAIN_INTERNAL )?(static )?int $fn\(/,/^\}/" "$file")
   [ -n "$body" ] || fail "could not find $fn in $file"
-  printf '%s\n' "$body" | command grep -q "$unloader(inst, slot)" \
+  printf '%s\n' "$body" | command grep -q "$unloader(inst, slot" \
     || fail "$fn does not unload the slot before loading into it, so a picker swap \
 leaves the departing module's modulation entries pointing at the position the NEW \
 module now occupies -- it inherits them"
 done <<'EOF'
-src/modules/chain/dsp/chain_host.c v2_load_audio_fx_slot v2_unload_audio_fx_slot
-src/modules/chain/dsp/chain_midi.c v2_load_midi_fx_slot v2_unload_midi_fx_slot
+src/modules/chain/dsp/chain_fx_load.c fx_commit fx_detach
+src/modules/chain/dsp/chain_fx_load.c mfx_commit mfx_detach
 EOF
 
 # --------------------------------------------------------------------------

@@ -79,24 +79,29 @@
  * If you must do work at create time, prefer doing it lazily on the worker and
  * rendering silence until it lands.
  *
- * ONE QUALIFICATION, and it does not weaken any rule above. An audio FX loaded
- * into a chain SLOT is created, configured and processed on the callback, as
- * described. An audio FX loaded into a chain BUS insert position is loaded by
- * the chain's bus worker (SCHED_OTHER, cores 0-2): its dlopen, create_instance,
- * destroy_instance and the set_param that restores its saved state run THERE,
- * while process_block, on_midi and every live set_param/get_param still run on
- * the callback. So:
+ * ONE QUALIFICATION, and it does not weaken any rule above: a module is LOADED
+ * off the callback. Its dlopen, create_instance, destroy_instance and the
+ * set_param that restores its saved state run on a SCHED_OTHER thread on cores
+ * 0-2 — the shim's slot loader for a chain SLOT (a `synth:module`,
+ * `fxN:module`, `midi_fxN:module`, `load_file`, `load_patch` or `clear`
+ * write), the chain's bus worker for a BUS insert. process_block, render_block,
+ * on_midi and every live set_param/get_param still run on the callback. So:
  *
  *   - You still may not do any of the forbidden things above at create time.
- *     You have no way to know which of the two you were loaded as, and the slot
- *     case — the common one — is the callback.
+ *     The live entry points are the callback, and a slow create_instance is a
+ *     module pick that takes that long to be heard.
  *   - Process-global initialisation must be thread-safe. The same module can be
- *     constructed on the worker for a bus and on the callback for a slot AT THE
- *     SAME TIME. Per-instance state is unaffected; a shared static table, a
- *     lazily-built wavetable or a library init that is not reentrant is not.
+ *     constructed on the loader for one slot while another instance of it
+ *     renders on the callback in the next. Per-instance state is unaffected; a
+ *     shared static table, a lazily-built wavetable or a library init that is
+ *     not reentrant is not.
+ *   - A thread you create from create_instance inherits SCHED_OTHER, not the
+ *     callback's SCHED_FIFO 70. If it produces audio, set its policy and
+ *     priority explicitly (pthread_attr_setinheritsched(PTHREAD_EXPLICIT_SCHED)),
+ *     which was always the rule.
  *
- * "There is no control thread" remains the rule to write code against. This is
- * the one place the host does not hold still, and it buys you nothing.
+ * "There is no control thread" remains the rule to write code against. Loading
+ * is the one place the host does not hold still, and it buys you nothing.
  *
  * See docs/REALTIME_SAFETY.md for the measurements behind all of this.
  * ===========================================================================

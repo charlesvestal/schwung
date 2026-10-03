@@ -82,6 +82,11 @@ done
 #    chain_set_clip_pass is step chance's A:B clock: the playing clip's loop
 #    pass, pushed beside the phase -- a NEW export rather than a new argument
 #    to chain_set_clip_phase, whose signature is final (chain_chance.c).
+#    chain_load_stage / chain_load_swap_step / chain_load_retire are a slot's
+#    synth, audio FX or MIDI FX load taken apart (chain_fx_load.c,
+#    chain_synth_load.c): staged on the shim's slot loader, faded and committed
+#    on the callback, retired on the loader -- so changing one module neither
+#    blocks the callback nor stops anything else in the slot.
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -92,6 +97,7 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     chain_take_midi_tick_wake chain_take_lane_edit chain_set_scene_morph \
     chain_set_clip_phase chain_set_clip_deleted chain_set_clip_pass \
+    chain_load_stage chain_load_swap_step chain_load_retire \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then

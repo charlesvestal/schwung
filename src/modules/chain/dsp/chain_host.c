@@ -28,7 +28,7 @@ static const host_api_v1_t *g_host = NULL;
 
 /* Logging helper */
 /* Validate a module/FX name contains no path traversal sequences */
-static int valid_module_name(const char *name) {
+int valid_module_name(const char *name) {
     if (!name || !name[0]) return 0;
     if (strstr(name, "..") != NULL) return 0;
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return 0;
@@ -161,16 +161,15 @@ static void v2_destroy_instance(void *instance) {
      *
      * TWO INVERSIONS SHARE THAT SHAPE, and the join is only the documented one.
      *
-     * 1. dlopen NOW RUNS ON TWO THREADS. bus_load_fx dlopens from the
-     *    SCHED_OTHER worker while v2_load_audio_fx_slot and v2_load_synth still
-     *    dlopen from this callback. glibc serialises both on _dl_load_lock,
-     *    which has no priority inheritance either — so a FIFO-70 load can wait
-     *    behind a SCHED_OTHER one for as long as anything on cores 0-2 keeps
-     *    the worker off the CPU. It is the same hazard as the join, on a path
-     *    with no join in it. Serialising the two (or moving the main chain's
-     *    loads to the worker as well) is a real design change and is
-     *    deliberately not attempted here; this comment is the record that the
-     *    inversion exists.
+     * 1. dlopen RUNS ON SEVERAL THREADS. bus_load_fx dlopens from the
+     *    SCHED_OTHER bus worker, and v2_load_audio_fx_slot / v2_load_synth now
+     *    run on the shim's SCHED_OTHER slot loader (slot_load_job.h) — the
+     *    main chain's loads were moved off the callback. glibc serialises them
+     *    on _dl_load_lock, which has no priority inheritance, so what is left
+     *    of this hazard is a dlopen or dlclose that still happens ON the
+     *    callback: the `fx:remove` verbs' unload, and the shim's fade/patch
+     *    paths, which wait while a slot load is in flight. Same shape as the
+     *    join, on a path with no join in it.
      *
      * 2. create_instance IS NOW CALLED OFF THE CALLBACK for bus FX positions.
      *    plugin_api_v1.h tells module authors every entry point runs on the
@@ -213,61 +212,7 @@ static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
     return 0;  /* No error */
 }
 
-/* V2 unload synth */
-void v2_unload_synth(chain_instance_t *inst) {
-    if (!inst) return;
-    inst->synth_load_error[0] = '\0';
-    chain_mod_clear_target_entries(inst, "synth", 0);
-
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
-        inst->synth_plugin_v2->destroy_instance(inst->synth_instance);
-    }
-
-    if (inst->synth_handle) {
-        dlclose(inst->synth_handle);
-    }
-
-    inst->synth_handle = NULL;
-    inst->synth_plugin_v2 = NULL;
-    inst->synth_instance = NULL;
-    inst->current_synth_module[0] = '\0';
-    inst->synth_param_count = 0;
-    chain_child_keys_load(&inst->synth_child_keys, NULL);
-    inst->mod_param_refresh_ms_synth = 0;
-    inst->synth_default_forward_channel = -1;
-    inst->synth_last_note = -1;
-    inst->synth_bypassed = 0;
-    inst->synth_requires_continuous = 0;
-    memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
-    inst->synth_split_voice_count = 0;
-    /* Cleared with the handle it was resolved against: keeping it would leave a
-     * function pointer into a dlclose'd mapping. */
-    inst->synth_render_split = NULL;
-    chain_reset_voice_bus(inst);
-    /* And the module-owned send levels, by the same rule and through the same
-     * function that reads them: with no plugin it is exactly the clear. */
-    chain_voice_sends_load(inst);
-    /* AND THE ORPHAN COUNTS WITH IT. They are a fact about resolving a bus's
-     * stored ids AGAINST A MODULE, and there is no module now — leaving them
-     * meant "buses:config" reported the departed module's counts, so the bus
-     * list drew a "!" for a mismatch nothing could still be measuring. They are
-     * recomputed for every bus by chain_bus_rebuild_voice_map as soon as a
-     * synth loads. */
-    for (int b = 0; b < SLOT_BUSES; b++) inst->buses[b].orphan_count = 0;
-    /* BUSES SURVIVE A SYNTH SWAP, deliberately. They are keyed to the SLOT:
-     * a bus's name, insert chain and send levels are the user's routing for
-     * this slot, not a property of whichever synth is loaded into it, and
-     * tearing them down here would silently discard that configuration on
-     * every module change — including the reload a preset load performs.
-     *
-     * What does NOT survive is the voice->bus map, and it must not:
-     * chain_reset_voice_bus above puts every voice back on Main, because the
-     * new module's voice list is different and an index left over from the old
-     * one would name the wrong voice. So after a swap the buses are allocated
-     * and idle (bus_mix_active_mask names none of them, nothing is cleared or
-     * mixed per frame) until voices are assigned again. Release happens only
-     * in chain_bus_release_all, from v2_destroy_instance. */
-}
+/* v2_unload_synth / v2_load_synth: chain_synth_load.c (stage / commit / retire). */
 
 /* V2 unload all audio FX */
 void v2_unload_all_audio_fx(chain_instance_t *inst) {
@@ -302,515 +247,8 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
     inst->fx_count = 0;
 }
 
-/* V2 unload a single audio FX slot. Not static: chain_reorder.c removes a
- * position through it, so the dlclose and the modulation-entry clear stay in
- * one place rather than being restated there. */
-void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
-    if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
-    char target_name[16];
-    chain_fx_component_id(target_name, sizeof(target_name), "fx", slot);
-    chain_mod_clear_target_entries(inst, target_name, 0);
-
-    if (inst->fx_is_v2[slot]) {
-        if (inst->fx_plugins_v2[slot] && inst->fx_instances[slot] && inst->fx_plugins_v2[slot]->destroy_instance) {
-            inst->fx_plugins_v2[slot]->destroy_instance(inst->fx_instances[slot]);
-        }
-    }
-
-    if (inst->fx_handles[slot]) {
-        dlclose(inst->fx_handles[slot]);
-    }
-
-    inst->fx_handles[slot] = NULL;
-    inst->fx_plugins_v2[slot] = NULL;
-    inst->fx_instances[slot] = NULL;
-    inst->fx_is_v2[slot] = 0;
-    inst->fx_on_midi[slot] = NULL;
-    inst->fx_param_counts[slot] = 0;
-    inst->mod_param_refresh_ms_fx[slot] = 0;
-    inst->current_fx_modules[slot][0] = '\0';
-    inst->fx_ui_hierarchy[slot][0] = '\0';
-    inst->fx_bypassed[slot] = 0;
-    inst->fx_requires_continuous[slot] = 0;
-}
-
-/* V2 load audio FX into a specific slot */
-static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) {
-    char msg[256];
-    char fx_path[MAX_PATH_LEN];
-    char fx_dir[MAX_PATH_LEN];
-
-    if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return -1;
-    if (fx_name && fx_name[0] && strcmp(fx_name, "none") != 0 && !valid_module_name(fx_name)) {
-        v2_chain_log(inst, "Invalid audio FX name");
-        return -1;
-    }
-
-    /* Unload existing FX in this slot first */
-    v2_unload_audio_fx_slot(inst, slot);
-
-    /* Empty/none means just unload */
-    if (!fx_name || fx_name[0] == '\0' || strcmp(fx_name, "none") == 0) {
-        snprintf(msg, sizeof(msg), "Audio FX slot %d cleared", slot);
-        v2_chain_log(inst, msg);
-        /* Update fx_count if this was the last slot */
-        while (inst->fx_count > 0 && inst->fx_handles[inst->fx_count - 1] == NULL) {
-            inst->fx_count--;
-        }
-        return 0;
-    }
-
-    /* Build path to FX - all audio FX in modules/audio_fx/ */
-    snprintf(fx_path, sizeof(fx_path), "%s/../audio_fx/%s/%s.so",
-             inst->module_dir, fx_name, fx_name);
-    snprintf(fx_dir, sizeof(fx_dir), "%s/../audio_fx/%s", inst->module_dir, fx_name);
-
-    void *handle = dlopen(fx_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        snprintf(msg, sizeof(msg), "dlopen failed for FX %s: %s", fx_name, dlerror());
-        v2_chain_log(inst, msg);
-        return -1;
-    }
-
-    /* V2 API required */
-    audio_fx_init_v2_fn init_v2 = (audio_fx_init_v2_fn)dlsym(handle, AUDIO_FX_INIT_V2_SYMBOL);
-    if (!init_v2) {
-        snprintf(msg, sizeof(msg), "Audio FX %s does not support V2 API (V2 required)", fx_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    audio_fx_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-    if (!api || api->api_version != AUDIO_FX_API_VERSION_2) {
-        snprintf(msg, sizeof(msg), "Audio FX %s V2 API version mismatch", fx_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    void *fx_inst = api->create_instance(fx_dir, NULL);
-    if (!fx_inst) {
-        snprintf(msg, sizeof(msg), "Audio FX %s V2 create_instance failed", fx_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    inst->fx_handles[slot] = handle;
-    inst->fx_plugins_v2[slot] = api;
-    inst->fx_instances[slot] = fx_inst;
-    inst->fx_is_v2[slot] = 1;
-
-    /* Check for optional MIDI handler (e.g. ducker) */
-    {
-        typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
-        inst->fx_on_midi[slot] = (fx_on_midi_fn)dlsym(handle, "move_audio_fx_on_midi");
-    }
-
-    /* Track the loaded module name */
-    strncpy(inst->current_fx_modules[slot], fx_name, MAX_NAME_LEN - 1);
-    inst->current_fx_modules[slot][MAX_NAME_LEN - 1] = '\0';
-
-    /* Parse chain_params from module.json for type info */
-    if (parse_chain_params(fx_dir, inst->fx_params[slot], &inst->fx_param_counts[slot]) < 0) {
-        v2_chain_log(inst, "ERROR: Failed to parse audio FX parameters");
-        api->destroy_instance(fx_inst);
-        dlclose(handle);
-        inst->fx_handles[slot] = NULL;
-        inst->fx_plugins_v2[slot] = NULL;
-        inst->fx_instances[slot] = NULL;
-        inst->fx_is_v2[slot] = 0;
-        inst->fx_on_midi[slot] = NULL;
-        inst->current_fx_modules[slot][0] = '\0';
-        inst->fx_ui_hierarchy[slot][0] = '\0';
-        return -1;
-    }
-    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
-    inst->mod_param_refresh_ms_fx[slot] = 0;
-
-    /* Read capabilities.requires_continuous_processing from module.json — stateful
-     * FX (loopers, modulated delays) opt out of the shim's silence-skip so their
-     * internal time advances even when audio I/O has been silent for >1s. */
-    inst->fx_requires_continuous[slot] = 0;
-    {
-        char mj_path[MAX_PATH_LEN];
-        snprintf(mj_path, sizeof(mj_path), "%s/module.json", fx_dir);
-        FILE *mj = fopen(mj_path, "r");
-        if (mj) {
-            fseek(mj, 0, SEEK_END);
-            long mj_size = ftell(mj);
-            fseek(mj, 0, SEEK_SET);
-            if (mj_size > 0 && mj_size < 65536) {
-                char *mj_buf = malloc(mj_size + 1);
-                if (mj_buf) {
-                    size_t nr = fread(mj_buf, 1, mj_size, mj);
-                    mj_buf[nr] = '\0';
-                    if (json_get_flag_in_section(mj_buf, "capabilities",
-                                                 "requires_continuous_processing"))
-                        inst->fx_requires_continuous[slot] = 1;
-                    free(mj_buf);
-                }
-            }
-            fclose(mj);
-        }
-    }
-
-    /* Update fx_count to include this slot */
-    if (slot >= inst->fx_count) {
-        inst->fx_count = slot + 1;
-    }
-
-    chain_child_keys_load(&inst->fx_child_keys[slot], fx_dir);
-    snprintf(msg, sizeof(msg), "Audio FX v2 loaded: %s (slot %d, %d params)", fx_name, slot, inst->fx_param_counts[slot]);
-    v2_chain_log(inst, msg);
-    return 0;
-}
-
-/* V2 load synth - loads a sound generator module */
-int v2_load_synth(chain_instance_t *inst, const char *module_name) {
-    char msg[256];
-    char synth_path[MAX_PATH_LEN];
-    char module_name_copy[MAX_NAME_LEN];  /* Local copy to avoid pointer invalidation */
-
-    if (!inst) return -1;
-    if (!module_name || !module_name[0]) return -1;
-    if (!valid_module_name(module_name)) {
-        v2_chain_log(inst, "Invalid synth module name");
-        return -1;
-    }
-
-    /* Make a local copy of module_name immediately - the original pointer may
-     * become invalid during file operations (e.g., shared param buffer reuse) */
-    strncpy(module_name_copy, module_name, MAX_NAME_LEN - 1);
-    module_name_copy[MAX_NAME_LEN - 1] = '\0';
-    module_name = module_name_copy;  /* Use local copy from now on */
-
-    /* Build path to synth module - all sound generators in modules/sound_generators/.
-     * For pack entries (e.g. "rnbo-synth-graph-Test"), resolve to the parent module
-     * directory and pass the pack path as config JSON. */
-    char *pack_config = NULL;
-    char pack_config_buf[1024];
-
-    snprintf(synth_path, sizeof(synth_path), "%s/../sound_generators/%s",
-             inst->module_dir, module_name);
-
-    struct stat path_st;
-    if (stat(synth_path, &path_st) != 0 || !S_ISDIR(path_st.st_mode)) {
-        /* Directory not found — resolve as pack entry */
-        char sg_dir[MAX_PATH_LEN];
-        snprintf(sg_dir, sizeof(sg_dir), "%s/../sound_generators", inst->module_dir);
-        DIR *sgd = opendir(sg_dir);
-        if (sgd) {
-            struct dirent *ent;
-            while ((ent = readdir(sgd)) != NULL) {
-                if (ent->d_name[0] == '.') continue;
-                size_t plen = strlen(ent->d_name);
-                if (strncmp(module_name, ent->d_name, plen) == 0 &&
-                    module_name[plen] == '-') {
-                    const char *pack_name = module_name + plen + 1;
-                    char check[MAX_PATH_LEN];
-                    snprintf(check, sizeof(check), "%s/%s/packs/%s/info.json",
-                             sg_dir, ent->d_name, pack_name);
-                    if (stat(check, &path_st) == 0) {
-                        snprintf(synth_path, sizeof(synth_path),
-                                 "%s/%s", sg_dir, ent->d_name);
-                        snprintf(pack_config_buf, sizeof(pack_config_buf),
-                                 "{\"pack\":\"%s/%s/packs/%s\"}",
-                                 sg_dir, ent->d_name, pack_name);
-                        pack_config = pack_config_buf;
-                        snprintf(msg, sizeof(msg), "Resolved pack: %s -> %s",
-                                 module_name, synth_path);
-                        v2_chain_log(inst, msg);
-                        break;
-                    }
-                }
-            }
-            closedir(sgd);
-        }
-    }
-
-    char dsp_path[MAX_PATH_LEN];
-    snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
-
-    inst->synth_load_error[0] = '\0';
-    snprintf(msg, sizeof(msg), "Loading synth: %s", dsp_path);
-    v2_chain_log(inst, msg);
-
-    /* Open shared library */
-    void *handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
-        v2_chain_log(inst, msg);
-        return -1;
-    }
-
-    /*
-     * The module's LOAD BASE, so a crash inside it can be attributed.
-     *
-     * The shim's SIGSEGV handler prints pc and lr, and both are raw runtime
-     * addresses — useless on their own for a dlopen'd .so under ASLR. With the
-     * base in the log, `lr - base` is a file offset you can hand straight to
-     * addr2line and get the function and line that made the call.
-     *
-     * Logged for the SYNTH position specifically because that is where a
-     * module runs the most code at load time (create_instance scans
-     * directories, opens samples, mmaps files), and it is where a crash on
-     * load strands the device in a boot loop: the position is restored at
-     * every boot, so a module that segfaults here takes MoveOriginal down
-     * before the UI can be used to remove it.
-     */
-    {
-        struct link_map *lm = NULL;
-        if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) == 0 && lm) {
-            snprintf(msg, sizeof(msg), "loaded %s base=0x%lx",
-                     module_name, (unsigned long)lm->l_addr);
-            v2_chain_log(inst, msg);
-        }
-    }
-
-    /* Optional per-voice render. Discovered by dlsym exactly as fx_on_midi is,
-     * and for the same reason: NULL is the normal answer for a module that
-     * does not implement it, not an error.
-     *
-     * Held in a LOCAL until the load commits. Several exits below dlclose this
-     * handle and return -1 with the PREVIOUS synth still loaded and running —
-     * writing the pointer here would leave that synth calling into an unmapped
-     * library on the next audio frame.
-     *
-     * THE MODULE CONTRACT, undeclared anywhere else a module author would see
-     * it: whether this synth is called through render_block or through this
-     * symbol is decided PER FRAME, at runtime, by whether the user currently
-     * has any voice assigned to a bus (see bus_mix.h and v2_render_block's
-     * n_active check) — assigning one voice on the shadow UI flips the
-     * module's active render entry point mid-stream, with no reload. Both
-     * paths therefore MUST be state-compatible: same voice allocator, same
-     * envelope/LFO/phase state, or a module that gets this right in one path
-     * and not the other manifests as an intermittent synthesis bug that only
-     * appears once a bus is used, not as a load-time failure.
-     *
-     * This entry point ACCUMULATES into voice_out[] and into main_out
-     * (v2_render_block clears the destinations first) — the opposite of
-     * render_block, which overwrites. It may be called on some frames and
-     * render_block on others for the very same instance. It must never write
-     * more than the `frames` argument's worth of samples into any voice_out[]
-     * entry or into main_out — those pointers alias the shared bus buffers and
-     * the caller's own output, sized to BUS_BUF_SAMPLES (chain_internal.h),
-     * not to n_voices.
-     *
-     * main_out is the slot's main output buffer — where a module puts audio
-     * belonging to NO voice (a drum bus, a mix compressor, a global filter, an
-     * internal send return). It is the SAME pointer an unassigned voice is
-     * handed, so it is usually reachable through voice_out[] too; passing it
-     * explicitly is what makes it reachable when EVERY voice is on a bus and
-     * no entry points at main. A module with no master section ignores it. */
-    void (*render_split_fn)(void *, int16_t *const *, int, int16_t *, int) =
-        (void (*)(void *, int16_t *const *, int, int16_t *, int))
-            dlsym(handle, "move_plugin_render_split");
-
-    /* V2 API required */
-    move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
-    if (!init_v2) {
-        snprintf(msg, sizeof(msg), "Synth %s does not support V2 API (V2 required)", module_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
-    if (!api || api->api_version != MOVE_PLUGIN_API_VERSION_2) {
-        snprintf(msg, sizeof(msg), "Synth %s V2 API version mismatch", module_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    void *synth_inst = api->create_instance(synth_path, pack_config);
-    if (!synth_inst) {
-        snprintf(msg, sizeof(msg), "Synth %s V2 create_instance failed", module_name);
-        v2_chain_log(inst, msg);
-        dlclose(handle);
-        return -1;
-    }
-
-    /* Check UI and parameters JSON buffer size limits */
-    char *temp_buf = (char*)malloc(262144);
-    if (temp_buf) {
-        int cp_len = 0;
-        int ui_len = 0;
-        if (api->get_param) {
-            cp_len = api->get_param(synth_inst, "chain_params", temp_buf, 262144);
-            ui_len = api->get_param(synth_inst, "ui_hierarchy", temp_buf, 262144);
-        }
-        free(temp_buf);
-
-        if (cp_len >= SHADOW_PARAM_VALUE_LEN - 1 || ui_len >= SHADOW_PARAM_VALUE_LEN - 1) {
-            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max %d.", 
-                     module_name, cp_len, ui_len, SHADOW_PARAM_VALUE_LEN - 1);
-            v2_chain_log(inst, msg);
-            snprintf(inst->synth_load_error, sizeof(inst->synth_load_error), "UI buffer overflow");
-            
-            api->destroy_instance(synth_inst);
-            
-            /* Proceed as success with NULL synth_instance so UI loads and displays error */
-            inst->synth_handle = handle;
-            inst->synth_plugin_v2 = api;
-            inst->synth_instance = NULL;
-            inst->synth_render_split = render_split_fn;
-            strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-            
-            parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
-            chain_child_keys_load(&inst->synth_child_keys, synth_path);
-            inst->mod_param_refresh_ms_synth = 0;
-            return 0;
-        }
-    }
-
-    inst->synth_handle = handle;
-    inst->synth_plugin_v2 = api;
-    inst->synth_instance = synth_inst;
-    inst->synth_render_split = render_split_fn;
-    strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-
-    /* Parse chain_params from module.json for type info */
-    if (parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count) < 0) {
-        v2_chain_log(inst, "ERROR: Failed to parse synth parameters");
-        api->destroy_instance(synth_inst);
-        dlclose(handle);
-        inst->synth_handle = NULL;
-        inst->synth_plugin_v2 = NULL;
-        inst->synth_instance = NULL;
-        inst->synth_render_split = NULL;  /* resolved against the handle just closed */
-        inst->current_synth_module[0] = '\0';
-        return -1;
-    }
-    chain_child_keys_load(&inst->synth_child_keys, synth_path);   /* `pad7_transpose` -> `transpose` */
-    inst->mod_param_refresh_ms_synth = 0;
-
-    /* Parse default_forward_channel from capabilities in module.json */
-    inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
-    inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
-    inst->synth_requires_continuous = 0;       /* Default: shim may park it on silence */
-    /* Reset per synth load: a stale note from the previous module would name a
-     * voice in a list that no longer exists. */
-    inst->synth_last_note = -1;
-    inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
-    inst->synth_touch_observe = 0;              /* Default: no direct touch edges */
-
-    /* Reset FIRST, unconditionally: an id from the previous module must never
-     * name a voice in a list that no longer exists — the same rule as
-     * synth_last_note = -1 above. */
-    memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
-    inst->synth_split_voice_count = 0;
-    chain_reset_voice_bus(inst);
-
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
-        char split_buf[4096];
-        split_buf[0] = '\0';
-        int got = inst->synth_plugin_v2->get_param(inst->synth_instance,
-                                                   "split_voices", split_buf, sizeof(split_buf));
-        /* got <= 0 means the key was not served: the module has no split support.
-         * That is a real answer, distinct from a read that did not complete. */
-        if (got > 0) {
-            /* Defensive: nothing NUL-terminates split_buf after the plugin
-             * call. A module writing exactly buf_len bytes with no NUL would
-             * send split_voices_parse's strstr/strchr scan off the end of
-             * the stack frame. */
-            split_buf[sizeof(split_buf) - 1] = '\0';
-            /* This is a direct in-process call with a stack buffer that can
-             * never be NULL, so split_voices_parse can only return a count
-             * here, never SPLIT_VOICES_READ_FAILED — that answer exists for
-             * a caller reading through the SHM param channel, where a
-             * request can genuinely time out or be claimed by someone else. */
-            int n = split_voices_parse(split_buf, inst->synth_split_voice_ids,
-                                       SPLIT_VOICES_MAX, SPLIT_VOICE_ID_LEN);
-            inst->synth_split_voice_count = n;
-        }
-    }
-    /* A voice id resolves against whatever module is loaded NOW, so the derived
-     * map has to be rebuilt here as well as on every assignment change. The
-     * buses' stored ids survive the swap untouched: one that the new module
-     * does not declare becomes an orphan and comes back if the old module
-     * does. */
-    chain_bus_rebuild_voice_map(inst);
-    /* AFTER parse_chain_params above, and it has to be: the range a send level
-     * is mapped from comes out of inst->synth_params, so a load that read the
-     * declaration first would find no metadata and refuse every send. */
-    chain_voice_sends_load(inst);
-    {
-        char json_path[MAX_PATH_LEN];
-        snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
-        FILE *f = fopen(json_path, "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long size = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (size > 0 && size < 65536) {
-                char *json = malloc(size + 1);
-                if (json) {
-                    { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
-                    int fwd_ch = -1;
-                    if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
-                        if (fwd_ch == -2) {
-                            inst->synth_default_forward_channel = -2;  /* Passthrough (for MPE) */
-                            v2_chain_log(inst, "Synth default_forward_channel: passthrough");
-                        } else if (fwd_ch >= 1 && fwd_ch <= 16) {
-                            inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
-                            snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
-                            v2_chain_log(inst, msg);
-                        }
-                    }
-                    /* Parse capabilities to decide if this synth pulls audio in
-                     * from line-in / internal mic (feedback risk on boot). Mirror
-                     * the JS predicate consumesLineInput(): audio_in === true AND
-                     * component_type ∉ {audio_fx, midi_fx}. audio_in is a JSON
-                     * boolean, so json_get_int would mis-parse it (atoi("true")=0)
-                     * — use json_get_bool_in_section. */
-                    {
-                        int audio_in = 0;
-                        if (json_get_bool_in_section(json, "capabilities", "audio_in", &audio_in) == 0
-                            && audio_in) {
-                            char ctype[32] = "";
-                            if (json_get_string_in_section(json, "capabilities", "component_type",
-                                                           ctype, sizeof(ctype)) != 0) {
-                                json_get_string(json, "component_type", ctype, sizeof(ctype));
-                            }
-                            if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
-                                inst->synth_consumes_line_input = 1;
-                                /* And therefore keep-alive: nothing the shim
-                                 * can see would ever wake it. */
-                                inst->synth_requires_continuous = 1;
-                                v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
-                            }
-                        }
-                    }
-                    /* Declared opt-out from the shim's silence-skip, the same
-                     * capability the FX loader reads; chain_internal.h has the
-                     * why, and the implicit line-input case is set above. */
-                    if (json_get_flag_in_section(json, "capabilities",
-                                                 "requires_continuous_processing"))
-                        inst->synth_requires_continuous = 1;
-                    if (inst->synth_requires_continuous)
-                        v2_chain_log(inst, "Synth keep-alive: exempt from silence-skip");
-                    /* Opt-in for raw SysEx, same both-spellings rule as
-                     * the MIDI FX path in chain_midi.c. */
-                    if (json_get_flag_in_section(json, "capabilities", "wants_sysex"))
-                        inst->synth_wants_sysex = 1;
-                    /* Knob 0-7 / jog 9 touch edges, delivered to this synth
-                     * alone as MOVE_MIDI_SOURCE_TOUCH. */
-                    if (json_get_flag_in_section(json, "capabilities", "touch_observe"))
-                        inst->synth_touch_observe = 1;
-                    free(json);
-                }
-            }
-            fclose(f);
-        }
-    }
-
-    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s (%d params)", module_name, inst->synth_param_count);
-    v2_chain_log(inst, msg);
-    return 0;
-}
+/* v2_unload_audio_fx_slot / v2_load_audio_fx_slot: chain_fx_load.c, staged
+ * like the synth so one position can be swapped without touching the rest. */
 
 /* V2 load audio FX */
 int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
@@ -1250,16 +688,9 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
         if (strcmp(subkey, "module") == 0) {
-            v2_synth_panic(inst);
-            v2_unload_synth(inst);
-            smoother_reset(&inst->synth_smoother);  /* Reset smoother on module change */
-            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_synth(inst, val);
-            } else {
-                /* Clearing synth - also clear knob mappings */
-                inst->knob_mapping_count = 0;
-            }
-            inst->dirty = 1;
+            /* Stage, commit and retire in sequence. The shim's slot loader
+             * drives the same three steps apart (chain_synth_load.c). */
+            chain_synth_set_module(inst, val);
         } else {
             lane_on_set_param(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
@@ -2638,6 +2069,25 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         inst->voice_send_mask = 0;
     }
 
+    /* A synth swap in progress: the OLD synth fades out ahead of the commit
+     * (chain_synth_swap_step). Synth only, applied before the FX chain, so a
+     * reverb tail keeps ringing across the swap. Held at 0 once there. */
+    if (inst->synth_swap_fading) {
+        float g = inst->synth_swap_gain;
+        const float step = 1.0f / (float)SYNTH_SWAP_FADE_SAMPLES;
+        for (int i = 0; i < frames; i++) {
+            out_interleaved_lr[2 * i]     = (int16_t)((float)out_interleaved_lr[2 * i] * g);
+            out_interleaved_lr[2 * i + 1] = (int16_t)((float)out_interleaved_lr[2 * i + 1] * g);
+            g -= step;
+            if (g < 0.0f) g = 0.0f;
+        }
+        inst->synth_swap_gain = g;
+        inst->synth_swap_rendered = 1;
+        /* Split voices' bus sends read their own buffers, not this one: stop
+         * them once the fade is down, as synth_bypassed does. */
+        if (g <= 0.0f) { inst->bus_rendered_mask = 0; inst->voice_send_mask = 0; }
+    }
+
     /* In external_fx_mode, output raw synth only — skip inject and FX.
      * The shim reads Link Audio in the same frame as the mailbox,
      * combines with this raw synth, and calls chain_process_fx(). */
@@ -2661,20 +2111,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
      * Always process so FX state advances (delay buffers, reverb tails).
      * If bypassed, save the dry input and restore it after process_block,
      * so audio passes through unchanged but FX internals stay live. */
-    for (int i = 0; i < inst->fx_count; i++) {
-        int bypassed = (i < MAX_AUDIO_FX && inst->fx_bypassed[i]);
-        int16_t fx_dry[FRAMES_PER_BLOCK * 2];
-        if (bypassed) {
-            memcpy(fx_dry, out_interleaved_lr, frames * 2 * sizeof(int16_t));
-        }
-        /* All loaded FX are v2 — v2_load_audio_fx_slot hard-requires it. */
-        if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
-            inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], out_interleaved_lr, frames);
-        }
-        if (bypassed) {
-            memcpy(out_interleaved_lr, fx_dry, frames * 2 * sizeof(int16_t));
-        }
-    }
+    /* One helper for both FX loops: bypass, and a position's swap crossfade. */
+    for (int i = 0; i < inst->fx_count; i++)
+        chain_fx_run_position(inst, i, out_interleaved_lr, frames);
 }
 
 /* A `<comp>:state` read saves the knob, a state WRITE rebases it (chain_scene.c, chain_mod.c). */
@@ -2734,20 +2173,8 @@ void chain_set_external_fx_mode(void *instance, int mode) {
 void chain_process_fx(void *instance, int16_t *buf, int frames) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
-    for (int i = 0; i < inst->fx_count; i++) {
-        int bypassed = (i < MAX_AUDIO_FX && inst->fx_bypassed[i]);
-        int16_t fx_dry[FRAMES_PER_BLOCK * 2];
-        if (bypassed) {
-            memcpy(fx_dry, buf, frames * 2 * sizeof(int16_t));
-        }
-        /* All loaded FX are v2 — v2_load_audio_fx_slot hard-requires it. */
-        if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
-            inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], buf, frames);
-        }
-        if (bypassed) {
-            memcpy(buf, fx_dry, frames * 2 * sizeof(int16_t));
-        }
-    }
+    for (int i = 0; i < inst->fx_count; i++)
+        chain_fx_run_position(inst, i, buf, frames);
 }
 
 /* Exported: 1 if any audio FX slot opted out of the shim's silence-skip via

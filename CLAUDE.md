@@ -463,11 +463,29 @@ infer a control thread because nothing contradicted them. The contract now
 lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
-**One exception now exists, and it is in all three.** A chain **bus** insert is
-`dlopen`ed and `create_instance`d on the bus worker (SCHED_OTHER), not the
-callback — so the same module can be constructed on two threads at once when it
-sits in a slot and a bus, and `_dl_load_lock` becomes a priority inversion with
-no inheritance: a FIFO-70 load on the callback can wait behind the worker's.
+**One exception now exists, and it is in all three: LOADING.** A module's
+`dlopen`, `create_instance`, `destroy_instance` and state-restoring `set_param`
+run on a SCHED_OTHER thread — the bus worker for a **bus** insert, and the
+shim's **slot loader** (`src/host/slot_load_job.h`) for a chain **slot**'s
+`synth:module` / `fxN:module` / `midi_fxN:module` / `load_file` / `load_patch`
+/ `clear`. The slot loads were the HICCUP heard on every module pick: param-slow
+measured `load_file` at **432 ms on the callback**, i.e. the whole device —
+every slot and Move — stopped for that long. Now a **one-module write is
+STAGED** (`synth:module` / `fxN:module` / `midi_fxN:module`;
+`chain_synth_load.c`, `chain_fx_load.c`: built on the loader while the slot
+plays on, ONLY the outgoing module faded — the synth's output, or that FX
+position wet -> dry — swapped on the callback, destroyed back on the loader;
+nothing else in the slot leaves the signal), and a whole-patch load
+(`load_file` / `load_patch` / `clear`) **PARKS** the slot: faded out, its instance pointer taken out of
+`shadow_chain_slots[]` (every chain entry point already answers NULL with
+silence), handed over, put back, faded in. The param request is held unanswered
+until the load lands, so the client's wait is unchanged. Consequences: a module can be constructed while
+another instance of it renders, a thread spawned in `create_instance` inherits
+SCHED_OTHER rather than 70, and any `dlopen`/`dlclose` LEFT on the callback can
+wait on the loader's `_dl_load_lock` (no inheritance) — so the fade/patch paths
+wait while `shadow_slot_load_busy()`. `tests/host/test_slot_load_off_callback.sh`
+pins park-before-post and reinstall-before-answer; `test_chain_synth_swap.sh`
+runs the real stage / fade / commit / retire against fixture synths.
 
 Two consequences worth remembering: `pthread_create` from those entry points
 inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
