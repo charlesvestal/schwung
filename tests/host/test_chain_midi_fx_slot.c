@@ -92,12 +92,16 @@ CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *targe
 CHAIN_INTERNAL void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     (void)inst; (void)idx;
 }
-/* chain_reorder.c reaches the audio-FX unloader on its remove path; this file
- * only drives the MIDI side, and the audio loader lives in the one TU that
- * cannot be compiled natively. */
-CHAIN_INTERNAL void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
-    (void)inst; (void)slot;
+/* The MIDI FX loader lives in chain_fx_load.c now, beside the audio FX one
+ * and the staged-swap dispatch, which reach these. None decides placement. */
+CHAIN_INTERNAL int valid_module_name(const char *name) { return name && name[0] && !strchr(name, '/'); }
+CHAIN_INTERNAL int json_get_flag_in_section(const char *j, const char *s, const char *k) {
+    (void)j; (void)s; (void)k; return 0;
 }
+CHAIN_INTERNAL void smoother_reset(param_smoother_t *sm) { (void)sm; }
+CHAIN_INTERNAL void chain_synth_async_stage(chain_instance_t *inst, const char *m) { (void)inst; (void)m; }
+CHAIN_INTERNAL int chain_synth_async_swap_step(chain_instance_t *inst, int f) { (void)inst; (void)f; return 1; }
+CHAIN_INTERNAL void chain_synth_async_retire(void) { }
 
 /* ------------------------------------------------------------------ harness */
 

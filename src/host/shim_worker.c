@@ -11,6 +11,7 @@
 #include <sched.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <semaphore.h>
 
 #include "shim_worker.h"
 #include "rt_thread_audit.h"
@@ -1249,6 +1250,62 @@ static void *worker_main(void *arg) {
         tick++;
     }
     return NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * The slot loader: a chain slot's module load (see slot_load_job.h).
+ *
+ * Its own thread rather than a step of worker_main, whose 200 ms sleep and
+ * ~1.4 s set scan would sit in front of every module pick. Woken by a
+ * semaphore the SPI callback posts (sem_post is a futex wake: no allocation,
+ * no lock held across it). Same scheduling as worker_main, for the same
+ * reason: created here at shim init, demoted to SCHED_OTHER and pinned off
+ * core 3, so neither the load nor any thread a module spawns from
+ * create_instance inherits the callback's SCHED_FIFO 70.
+ * ------------------------------------------------------------------------- */
+static sem_t slot_loader_sem;
+static void (*slot_loader_run)(void);
+
+static void *slot_loader_main(void *arg) {
+    (void)arg;
+    struct sched_param sp = { .sched_priority = 0 };
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(0, &mask);
+    CPU_SET(1, &mask);
+    CPU_SET(2, &mask);
+    pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
+    pthread_setname_np(pthread_self(), "schwung-load");
+
+    for (;;) {
+        if (sem_wait(&slot_loader_sem) != 0) continue;   /* EINTR */
+        slot_loader_run();
+    }
+    return NULL;
+}
+
+int shim_slot_loader_start(void (*run)(void)) {
+    static volatile int started = 0;
+    if (!run) return 0;
+    if (__sync_lock_test_and_set(&started, 1)) return 1;
+    slot_loader_run = run;
+    if (sem_init(&slot_loader_sem, 0, 0) != 0) {
+        started = 0;
+        return 0;
+    }
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, slot_loader_main, NULL) != 0) {
+        sem_destroy(&slot_loader_sem);
+        started = 0;
+        return 0;
+    }
+    pthread_detach(tid);
+    return 1;
+}
+
+void shim_slot_loader_wake(void) {
+    sem_post(&slot_loader_sem);
 }
 
 void shim_worker_start(void) {

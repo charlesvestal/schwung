@@ -10,14 +10,15 @@
  * THREAD SAFETY. Everything here runs on the SPI audio thread, the same one
  * that calls render_block and on_midi: the shim services parameter requests
  * from shim_pre_transfer (shadow_inprocess_handle_param_request), in the same
- * callback and after shadow_mix_audio. There is no other thread that touches a
- * chain instance. So a permutation cannot interleave with a render — it is
- * atomic from the audio path's point of view for free, with no lock, no shadow
- * copy and no pending-request queue. (The same property is what lets the
- * existing module-load path dlopen() from this thread. That IS a real-time
- * violation — dlopen blocks, allocates and reads files under SCHED_FIFO 90 —
- * but it is pre-existing, and a permutation is strictly cheaper than the reload
- * it replaces.)
+ * callback and after shadow_mix_audio. So a permutation cannot interleave with
+ * a render — it is atomic from the audio path's point of view for free, with
+ * no lock, no shadow copy and no pending-request queue.
+ *
+ * The one other thread that touches a chain instance is the shim's slot loader
+ * (slot_load_job.h), and it cannot meet a permutation: it only ever holds an
+ * instance the callback has PARKED (taken out of shadow_chain_slots[]), and the
+ * load holds the param channel, so no verb reaches this file until the
+ * instance is handed back.
  */
 
 #include "chain_internal.h"
@@ -292,6 +293,9 @@ static int chain_section_resolve(chain_instance_t *inst, int is_midi,
 int chain_reorder_insert(chain_instance_t *inst, int is_midi, int at) {
     chain_section_t s;
     if (!chain_section_resolve(inst, is_midi, &s)) return 0;
+    /* A swap's fade-in names a POSITION (chain_fx_load.c); after a permute
+     * that position holds something else. Land it at full instead. */
+    if (!is_midi) inst->fx_swap_phase = 0;
     int map[CHAIN_PERM_MAX_POS];
     int now = chain_perm_insert(s.arrays, s.n, *s.count, s.cap, at, map);
     if (now < 0) return 0;
@@ -311,6 +315,9 @@ int chain_reorder_insert(chain_instance_t *inst, int is_midi, int at) {
 int chain_reorder_remove(chain_instance_t *inst, int is_midi, int at) {
     chain_section_t s;
     if (!chain_section_resolve(inst, is_midi, &s)) return 0;
+    /* A swap's fade-in names a POSITION (chain_fx_load.c); after a permute
+     * that position holds something else. Land it at full instead. */
+    if (!is_midi) inst->fx_swap_phase = 0;
     if (at < 0 || at >= *s.count) return 0;
 
     /* Destroy the occupant first, through the section's own unloader, so the
@@ -332,6 +339,9 @@ int chain_reorder_remove(chain_instance_t *inst, int is_midi, int at) {
 int chain_reorder_move(chain_instance_t *inst, int is_midi, int from, int to) {
     chain_section_t s;
     if (!chain_section_resolve(inst, is_midi, &s)) return 0;
+    /* A swap's fade-in names a POSITION (chain_fx_load.c); after a permute
+     * that position holds something else. Land it at full instead. */
+    if (!is_midi) inst->fx_swap_phase = 0;
     int map[CHAIN_PERM_MAX_POS];
     int now = chain_perm_move(s.arrays, s.n, *s.count, from, to, map);
     if (now < 0) return 0;

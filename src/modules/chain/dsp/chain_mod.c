@@ -950,12 +950,31 @@ void chain_mod_clear_source(void *ctx, const char *source_id) {
  * parsing straight into inst->synth_params would half-overwrite it.
  *
  * tests/host/test_param_buffers_not_on_stack.sh fails if either goes back.
+ *
+ * NO LONGER ONE THREAD. A slot's module load now runs on the shim's slot
+ * loader (SCHED_OTHER) while the callback keeps rendering the other three
+ * slots, so a load can reach this at the same moment another slot's
+ * modulation does. The buffers are shared by every instance, so they are
+ * guarded by a TRY-lock: the callback must never wait on the loader, and a
+ * refresh that finds the scratch taken simply fails, which every caller
+ * already handles (the metadata lookup misses and is retried after
+ * MOD_PARAM_CACHE_REFRESH_MS).
  */
 static char s_refresh_buf[SHADOW_PARAM_VALUE_LEN];
 static chain_param_info_t s_refresh_parsed[MAX_CHAIN_PARAMS];
+static int s_refresh_busy;
+
+static int chain_mod_refresh_target_param_cache_locked(chain_instance_t *inst, const char *target);
 
 int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     if (!inst || !target) return -1;
+    if (__atomic_exchange_n(&s_refresh_busy, 1, __ATOMIC_ACQUIRE)) return -1;
+    int r = chain_mod_refresh_target_param_cache_locked(inst, target);
+    __atomic_store_n(&s_refresh_busy, 0, __ATOMIC_RELEASE);
+    return r;
+}
+
+static int chain_mod_refresh_target_param_cache_locked(chain_instance_t *inst, const char *target) {
 
     char *buf = s_refresh_buf;
     const size_t buf_size = sizeof(s_refresh_buf);
