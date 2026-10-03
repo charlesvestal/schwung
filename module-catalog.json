@@ -2355,6 +2355,22 @@
       "min_host_version": "0.9.18"
     },
     {
+      "id": "setbfree-organ",
+      "name": "setBfree Tonewheel Organ",
+      "description": "Emulation of the classic Hammond B3 organ, providing rich organ sounds and customizable drawbar settings.",
+      "author": "Robin Gareus, Fredrik Kilander (port: Pascal Dubucq)",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
+      "github_repo": "pdubucq/schwung-setbfree",
+      "default_branch": "main",
+      "asset_name": "setbfree-organ-module.tar.gz",
+      "min_host_version": "1.6.0"
+    },
+    {
       "id": "move-bitwig",
       "name": "Move Bitwig",
       "description": "Bitwig Controller: play instruments, sequence notes and drum expressions, browse devices, and launch clips and scenes.",
