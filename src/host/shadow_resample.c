@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <math.h>
 #include "shadow_resample.h"
+#include "bridge_silence_dither.h"
 #include "shadow_chain_mgmt.h"  /* for shadow_me_post_snapshot_fx_active() */
 
 /* ============================================================================
@@ -445,6 +446,10 @@ void native_resample_bridge_apply(void)
             compensated_snapshot,
             FRAMES_PER_BLOCK * 2
         );
+        /* Never exact silence: Move counts an all-zero input block as a
+         * dropout and logs it 43x a second (bridge_silence_dither.h). */
+        static uint32_t dither_rng = 0x9e3779b9u;
+        bridge_dither_if_silent(compensated_snapshot, FRAMES_PER_BLOCK * 2, &dither_rng);
         memcpy(dst, compensated_snapshot, RESAMPLE_AUDIO_BUFFER_SIZE);
         native_resample_diag_log_apply(mode, native_total_mix_snapshot, dst);
         return;
