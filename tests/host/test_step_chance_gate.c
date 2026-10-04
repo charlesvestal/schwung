@@ -99,6 +99,21 @@ int main(void) {
     assert(split == 0);
     assert(played > 150 && played < 250);
 
+    /* ---- two voices on ONE step with DIFFERENT conditions -----------------
+     * Measured: a hat at 4:4 (pitch 44) and a tom at 1:5 (pitch 43) on the
+     * same step, the tom arriving first. Each must follow its own condition:
+     * 4:4 plays only on pass 3, 1:5 only on pass 0 -- the shared roll is for
+     * notes with the SAME condition. */
+    memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
+    sc_store_set_grp(&st, 0, 10, 43, 3.5, 31, 3.5);     /* 1:5 */
+    sc_store_set_grp(&st, 0, 14, 44, 3.5, 30, 3.5);     /* 4:4 */
+    for (long pass = 0; pass < 10; pass++) {
+        int tom = on(&g, 0, 43, 3.4972, pass), hat = on(&g, 0, 44, 3.4972, pass);
+        off(&g, 0, 43); off(&g, 0, 44);
+        assert(tom == (pass % 5 == 0));
+        assert(hat == (pass % 4 == 3));
+    }
+
     /* ---- unknown phase / no row: deliver, never roll -------------------- */
     memset(&st, 0, sizeof st); memset(&g, 0, sizeof g);
     sc_store_set(&st, 0, 1, 36, 0.0, r12);
