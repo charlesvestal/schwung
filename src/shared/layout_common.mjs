@@ -52,7 +52,7 @@
  */
 import { abbrev4, labelsFor, ENCODERS, RING_MAX, ringAmount } from "./e16_view.mjs";
 import { displayValue } from "./param_pages/render_page_movy.mjs";
-import { detentsPerStep, ENUM_DELTA_DIV } from "./knob_engine.mjs";
+import { isNarrowInt } from "./knob_engine.mjs";
 
 /* A reading stays up this long after the last movement; a navigation reading
  * less, since it confirms where you went and covers what you came to see. */
@@ -71,11 +71,11 @@ export const NAV_KNOBS = "knobs";
 
 /* A parameter that is a CHOICE: an enum, or an int the engine already steps
  * like one. A coarse device steps those by angle, and shows them as a list.
- * EXACTLY the enum gate: a 17..48 int is slowed too (MID_DELTA_DIV) but is
+ * Only the NARROW band: a 17..48 int steps as slowly (MID_DELTA_DIV) but is
  * still a number, and a ±24 transpose is no list. */
 export function isChoice(meta) {
     return !!meta && (meta.type === "enum" || meta.kind === "enum" ||
-        meta.type === "bool" || Array.isArray(meta.options) || detentsPerStep(meta) === ENUM_DELTA_DIV ||
+        meta.type === "bool" || Array.isArray(meta.options) || isNarrowInt(meta) ||
         (meta.type === "int" && meta.max - meta.min === 1));
 }
 
