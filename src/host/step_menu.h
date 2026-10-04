@@ -325,10 +325,26 @@ static inline int sm_drum_cell_pitch(int pad)
     return 36 + row * 4 + col;
 }
 
+/* STRICT scoping, for a track Move's model says is a Drum Rack: only the
+ * selected pad's notes, and none when that pad has no note on the step --
+ * exactly what Move's own step buttons show there. The lenient form below
+ * fell back to the OTHER pads' notes, so holding a step the selected pad was
+ * absent from showed, and edited, a voice nobody had selected (a 1:5 landed
+ * on a tom while the hat was being set, 2026-10-04). An unknown voice keeps
+ * the whole step: blanking it would hide notes on a guess. */
+static inline int sm_scope_voice_strict(const sm_note_t *notes, int *idx, int k, int voice_pitch)
+{
+    if (voice_pitch < 0) return k;
+    int w = 0;
+    for (int i = 0; i < k; i++) if (notes[idx[i]].pitch == voice_pitch) idx[w++] = idx[i];
+    return w;
+}
+
 /* Scope a step's notes to the selected drum voice -- Move's step shows and
  * edits only that voice's note on a drum track. Only when the voice is known
  * AND present on the step; otherwise the whole step (a chord on a melodic
- * track keeps every note). Returns the new count. */
+ * track keeps every note). Returns the new count. Used when the track's type
+ * is UNKNOWN; see sm_scope_voice_strict for a known Drum Rack. */
 static inline int sm_scope_voice(const sm_note_t *notes, int *idx, int k, int voice_pitch)
 {
     if (voice_pitch < 0) return k;

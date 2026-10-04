@@ -44,6 +44,7 @@ typedef struct {
     int      n;
     int      truncated;       /* more notes in the window than SM_PAGE_MAX */
     int      unreadable;      /* invalid BECAUSE the clip's notes did not decode */
+    int      drum_rack;       /* the track's instrument: 1 Drum Rack, 0 not, -1 unknown */
     double   lo, hi;          /* the window the notes were taken from */
     sm_note_t notes[SM_PAGE_MAX];
 } sm_page_t;
@@ -71,6 +72,7 @@ void step_menu_publish_page(const move_model_t *m, const mm_note_t *notes, int n
         if (c->exists && c->scroll >= 0.0) {
             w.valid = 1;
             w.track = ref->track;
+            w.drum_rack = m->track[ref->track].drum_rack;
             w.row = ref->slot;
             w.scroll = c->scroll;
             w.step_beats = m->step_beats;
@@ -156,6 +158,24 @@ static int selected_voice_pitch(void)
     return -1;
 }
 
+/* The voice the step menu scopes to on `pg`'s track, or -1 for "every note".
+ * On a Drum Rack the selected pad is the one Move lights 122 -- LATCHED per
+ * track, because Move clears the old pad the moment another is pressed and
+ * lights the new one only on release (~350 ms with neither, measured). A
+ * melodic track is never scoped: Move lights 122 there too, on every pad
+ * that shares the pitch being played, which is not a selection. */
+static int scope_voice(const sm_page_t *pg)
+{
+    static int latched[MM_TRACKS] = { -1, -1, -1, -1 };
+    const int now = selected_voice_pitch();
+    if (pg->drum_rack == 0) return -1;
+    if (pg->drum_rack == 1 && pg->track >= 0 && pg->track < MM_TRACKS) {
+        if (now >= 0) latched[pg->track] = now;
+        return latched[pg->track];
+    }
+    return now;                                   /* unknown type: as before */
+}
+
 static void *slot_instance(int track)
 {
     if (track < 0 || track >= SHADOW_CHAIN_INSTANCES) return NULL;
@@ -180,7 +200,8 @@ static int button_notes(const sm_page_t *pg, int button, int *idx, int max, int 
 {
     int k = sm_button_notes(pg->notes, pg->n, pg->scroll, pg->step_beats, pg->triplet,
                             pg->clip_len, button, idx, max);
-    return sm_scope_voice(pg->notes, idx, k, voice);
+    return pg->drum_rack == 1 ? sm_scope_voice_strict(pg->notes, idx, k, voice)
+                              : sm_scope_voice(pg->notes, idx, k, voice);
 }
 
 /* A note's condition, asked of the chain. SC_ALWAYS on any failure. */
@@ -202,7 +223,7 @@ static void apply_chance(int dir)
     void *inst = slot_instance(g_pg.track);
     if (!inst || !shadow_plugin_v2->set_param || !slot_has_synth(g_pg.track)) return;
     int idx[16];
-    const int k = button_notes(&g_pg, g_sm.step, idx, 16, selected_voice_pitch());
+    const int k = button_notes(&g_pg, g_sm.step, idx, 16, scope_voice(&g_pg));
     if (k <= 0) return;
     const int cur = note_cond(inst, g_pg.row, g_pg.notes[idx[0]].id);
     const int nxt = sm_step_cond(cur, dir, sc_count());
@@ -344,7 +365,7 @@ void step_menu_frame(shadow_control_t *ctl, uint32_t held_mask, int eligible)
     ctl->step_menu_vel = 0;
     ctl->step_menu_len_c = 0;
     void *inst = g_pg.valid ? slot_instance(g_pg.track) : NULL;
-    const int voice = selected_voice_pitch();
+    const int voice = scope_voice(&g_pg);
     int idx[16];
     for (int b = 0; b < 16; b++) {
         double ph;
