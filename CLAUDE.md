@@ -602,7 +602,9 @@ Now 64 blocks (**186 ms**), with `LINK_AUDIO_IN_CATCHUP_SAMPLES` **derived** fro
 
 ### Link Audio packets arrive OUT OF ORDER, and are put back by sequence number
 
-Link Audio is UDP. The sidecar wrote buffers in ARRIVAL order and ignored
+Move and the sidecar are on the SAME device, so this is not a network: the
+buffers reach the sidecar's callback out of order (most likely threading in
+Link's send/receive path), and the sequence numbers prove it. The sidecar wrote buffers in ARRIVAL order and ignored
 `BufferHandle::Info::count`, so two packets swapped in flight played swapped —
 2.8 ms early, 2.8 ms late, a hard edge at each seam: a click on one Move track,
 only with Move→Schwung on. Found from a Skipback stem (the click block matched
