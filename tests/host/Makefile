@@ -93,6 +93,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_song_abl_mix \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_resample_bridge_mode \
+	$(BUILD_DIR)/test_link_audio_reorder \
 	$(BUILD_DIR)/test_bridge_silence_dither \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_sampler_wav_trim \
@@ -269,6 +270,9 @@ $(BUILD_DIR)/test_resample_bridge_mode: test_resample_bridge_mode.c ../../src/ho
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_bridge_silence_dither: test_bridge_silence_dither.c ../../src/host/bridge_silence_dither.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_link_audio_reorder: test_link_audio_reorder.c ../../src/host/link_audio_reorder.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
