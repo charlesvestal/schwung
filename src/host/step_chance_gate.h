@@ -31,6 +31,7 @@ typedef struct {
     int      last_row;
     long     last_pass;
     double   last_grp;
+    int      last_cond;         /* the decision is per CONDITION too */
     int      last_play;
     uint32_t rng;               /* xorshift32; 0 = unseeded */
     uint32_t matched;           /* note-ons that carried a condition */
@@ -89,13 +90,18 @@ static inline int sc_gate(sc_gate_t *g, const sc_store_t *st, const uint8_t *msg
 
     g->matched++;
     int play;
+    /* One roll per step per pass so a chord rolls whole -- but only among
+     * notes that share a CONDITION. Keyed without it, two drum voices on one
+     * step with different conditions (a hat at 4:4 beside a tom at 1:5)
+     * played whatever the FIRST one decided: the 4:4 hat sounded on pass 0
+     * (hardware, 2026-10-04). */
     if (g->last_valid && g->last_row == row && g->last_pass == pass &&
-        g->last_grp == grp) {
+        g->last_grp == grp && g->last_cond == cond) {
         play = g->last_play;
     } else {
         play = sc_should_play(cond, pass, sc_gate_rand(g));
         g->last_valid = 1; g->last_row = row; g->last_pass = pass;
-        g->last_grp = grp; g->last_play = play;
+        g->last_grp = grp; g->last_cond = cond; g->last_play = play;
     }
     if (!play) { g->dropped[ch][note >> 3] |= bit; g->dropped_n++; }
     return play;
