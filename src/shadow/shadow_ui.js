@@ -17535,7 +17535,7 @@ function getKnobParamsForTarget(slot, target) {
                                 if (!params.find(p => p.key === knob)) {
                                     params.push({ key: knob, label: knob });
                                 }
-                            } else if (knob.key) {
+                            } else if (knob && knob.key) {
                                 if (!params.find(p => p.key === knob.key)) {
                                     params.push({ key: knob.key, label: knob.label || knob.key });
                                 }
@@ -19867,7 +19867,11 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
         /* knobLevelForHierarchy reports the level the mapping ACTUALLY uses —
          * root, or the first child when root declares no knobs. */
         const levelDef = knobLevelForHierarchy(hierarchy);
-        if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
+        /* A null entry is an authored hole -- that knob does nothing -- and
+         * falls through to "no knob mapping" rather than reading .replace off
+         * null below. */
+        if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length
+                && levelDef.knobs[knobIndex] !== null) {
             const key = levelDef.knobs[knobIndex];
             const chainParams = chainTargetChainParams(target, comp.key);
             /*
@@ -19928,7 +19932,10 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
  */
 function buildKnobContextForKnob(knobIndex) {
     /* Hierarchy editor context */
-    if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length) {
+    /* A hole in the row (a sparse grid page, or knobs[] null) is a dead knob,
+     * not a key: hierEditorKnobsFromPage keeps holes on purpose. */
+    if (view === VIEWS.HIERARCHY_EDITOR && knobIndex < hierEditorKnobs.length
+            && hierEditorKnobs[knobIndex]) {
         const key = hierEditorKnobs[knobIndex];
         const fullKey = buildHierarchyParamKey(key);
         const meta = getParamMetadata(key);

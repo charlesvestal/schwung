@@ -1627,7 +1627,7 @@ The hierarchy uses a **levels dictionary** format with named levels:
 |-------|-------------|
 | `name` / `label` | Display name for the level |
 | `params` | Array of parameter items (see below) |
-| `knobs` | Array of parameter keys mapped to physical knobs 1-8 |
+| `knobs` | Array of parameter keys mapped to physical knobs 1-8; a `null` entry leaves that knob empty (see below) |
 | `list_param` / `count_param` / `name_param` | For preset browser levels |
 | `items_param` / `select_param` | For dynamic item selection levels |
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
@@ -1663,6 +1663,30 @@ chain component already gets a "My Presets" and a "Module" page appended
 after its whole jog sequence, for free — declare nothing. See CLAUDE.md,
 "Every component's knob grid ends with two pages it never declared", for why
 that append happens in the planner rather than through this field.
+
+#### `null` in `knobs` — a knob with nothing on it
+
+`knobs` is positional: entry *n* is knob *n+1* (entries 8-15 are knobs 1-8 of the
+level's second page, and so on). A literal `null` keeps that position empty, so
+you can put a group where it belongs instead of where the count happens to land:
+
+```json
+"knobs": ["gain", "pan", null, null, "send1", "send2", "send3"]
+```
+
+puts Volume and Pan on knobs 1-2 and the three sends together on row two
+(knobs 5-7). Without the holes the sends land on knobs 3-5 — two beside Pan, one
+alone underneath.
+
+- The empty knob draws as a gap, does nothing when turned, and is never read.
+- A trailing `null` describes nothing and is dropped.
+- Params from `params[]` that are on no knob still fill the page, **after** your
+  last knob, never into a hole you left.
+- A page with a hole is treated as hand-laid-out: the planner does not move an
+  envelope or other group across the row break on that page (see the
+  one-row rule in `docs/PARAM_PAGES.md`).
+- Only an explicit `null` makes a hole. A key hidden by `visible_if` still closes
+  up as before.
 
 #### Selector keys must not appear in `knobs`
 
