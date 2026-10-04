@@ -74,10 +74,9 @@ export const MIN_STEP_RANGE_FRAC = 0.01;
  *
  * Measured over the fleet, the 9..16 band is 72 params and is ENTIRELY
  * discrete identities -- `midi_ch[1..16]`, `ui_current_pad[1..16]`,
- * `choke_group[0..16]`. The next band up (17..24, 17 params) is
- * `pb_range[0..24]`, `pitch_env_depth[0..24]`: quantities you sweep, where
- * four detents per unit would be an obstacle. So the boundary is evidence,
- * not a round number.
+ * `choke_group[0..16]`. Above it the ranges are crossed end to end, where four
+ * detents per unit would be an obstacle -- but not one per detent either; see
+ * MID_RANGE_MAX. So the boundary is evidence, not a round number.
  *
  * Deliberately NOT a second detent count. ENUM_DELTA_DIV stays 4 and is shared,
  * for the reason the two-way latch pins its constant equal to the trigger`s: an
@@ -86,15 +85,41 @@ export const MIN_STEP_RANGE_FRAC = 0.01;
  *
  * Note this does NOT align with shouldDrawBigNumber`s span of 24, and should
  * not: how a value is DRAWN and how it STEPS are different questions, and the
- * 17..24 band answers them differently on purpose.
+ * 17..48 band answers them differently on purpose.
  */
 export const NARROW_RANGE_MAX = 16;
+
+/**
+ * An int range wider than NARROW_RANGE_MAX but no wider than this steps once
+ * every MID_DELTA_DIV detents.
+ *
+ * The 17..24 band was left at one value per detent, on the argument that
+ * `pb_range` and `pitch_env_depth` are swept rather than chosen. The device
+ * disagreed: Capicola's Pitch[-12..12] crossed half its range in one flick,
+ * reported as "super sensitive". Measured over the fleet, 17..48 is almost
+ * entirely SEMITONES -- transpose[-12..12] and [-24..24], `*_tune`,
+ * `pitch_semi`, `interval_*`, bend ranges -- plus preset, algorithm and step
+ * counts. Every one is a value you land on, one unit at a time, and at one
+ * per detent none of them could be landed on.
+ *
+ * Half the enum gate rather than all of it, because these ARE crossed end to
+ * end: 2 detents puts ±12 at ~4 flicks and ±24 at ~8, where 4 would make a
+ * ±24 transpose a 192-detent trip. Above 48 (0..127 and wider) one per detent
+ * is already slow enough that a value can be read as it goes by.
+ *
+ * Only the narrow band is a CHOICE (isChoice in layout_common.mjs asks for
+ * ENUM_DELTA_DIV exactly); this band is still a number.
+ */
+export const MID_RANGE_MAX = 48;
+export const MID_DELTA_DIV = 2;
 
 /** schwung-movy model/knob-step.ts detentsPerStep, ported. */
 export function detentsPerStep(meta) {
     if (meta.type !== "int" || meta.knobAcceleration === "wide") return 1;
     const range = meta.max - meta.min;
-    return (range >= 2 && range <= NARROW_RANGE_MAX) ? ENUM_DELTA_DIV : 1;
+    if (range >= 2 && range <= NARROW_RANGE_MAX) return ENUM_DELTA_DIV;
+    if (range > NARROW_RANGE_MAX && range <= MID_RANGE_MAX) return MID_DELTA_DIV;
+    return 1;
 }
 
 /** schwung-movy model/knob-step.ts perDetentStep, ported. */
