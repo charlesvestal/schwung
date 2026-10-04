@@ -367,7 +367,7 @@ Promise.all([
    * detent".
    *
    * The BOUNDARY is what is pinned, not the constant: 1..16 selectors gated,
-   * 17..48 half-gated, wider not. Measured over the fleet, 9..16 is entirely discrete
+   * 17..48 gated too, wider not. Measured over the fleet, 9..16 is entirely discrete
    * identities; 17..48 is mostly semitones, crossed end to end but landed on.
    */
   {
@@ -376,13 +376,14 @@ Promise.all([
       fail("a 1..16 selector steps once per detent — one flick crosses all 16");
     if (gated(1, 16) !== gated(0, 4))
       fail("a narrow int and a narrower one step differently — one gate, one feel");
-    /* ...a semitone range is slowed, but by less than a selector: it is still
-     * crossed end to end. Capicola Pitch[-12..12] at one per detent crossed
-     * half its range in a flick ("super sensitive"). */
-    if (gated(-12, 12) !== KE.MID_DELTA_DIV || gated(-24, 24) !== KE.MID_DELTA_DIV)
-      fail("a ±12/±24 semitone int is not on the mid gate — one flick crosses half of it");
-    if (!(KE.MID_DELTA_DIV > 1 && KE.MID_DELTA_DIV < KE.ENUM_DELTA_DIV))
-      fail("the mid gate must sit strictly between one-per-detent and the enum gate");
+    /* ...a semitone range is slowed like a selector. Capicola Pitch[-12..12]
+     * at one per detent crossed half its range in a flick ("super
+     * sensitive"); at two it was "still too hard" to land on a value. */
+    if (gated(-12, 12) !== KE.ENUM_DELTA_DIV || gated(-24, 24) !== KE.ENUM_DELTA_DIV)
+      fail("a ±12/±24 semitone int does not step like a selector — too fast to land on");
+    /* ...but it is still a NUMBER, never a choice list. */
+    if (KE.isNarrowInt({ type: "int", min: -12, max: 12 }) || !KE.isNarrowInt({ type: "int", min: 1, max: 16 }))
+      fail("isNarrowInt drifted from the 2..16 band — a transpose would become a list on EC4");
     if (gated(0, 49) !== 1)
       fail("an int wider than 48 is gated — 0..127 is already slow at one per detent");
     if (gated(0, 136) !== 1)
@@ -455,7 +456,7 @@ Promise.all([
     console.log("  ok  a generic child key borrows the concrete declaration, and follows");
     console.log("  ok  the graphic follows the focused child with no page change");
     console.log("  ok  the picker goes only when the index param really has a cell");
-    console.log("  ok  a 1..16 selector steps like an enum; ±12/±24 at half that");
+    console.log("  ok  a 1..16 selector steps like an enum; ±12/±24 too");
     console.log("  ok  the selector precedes what it selects, and is not where you land");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");

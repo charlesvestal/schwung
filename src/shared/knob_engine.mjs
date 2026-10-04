@@ -102,22 +102,32 @@ export const NARROW_RANGE_MAX = 16;
  * counts. Every one is a value you land on, one unit at a time, and at one
  * per detent none of them could be landed on.
  *
- * Half the enum gate rather than all of it, because these ARE crossed end to
- * end: 2 detents puts ±12 at ~4 flicks and ±24 at ~8, where 4 would make a
- * ±24 transpose a 192-detent trip. Above 48 (0..127 and wider) one per detent
- * is already slow enough that a value can be read as it goes by.
+ * The full enum gate, not half of it. Half (2 detents) shipped first, on the
+ * theory that these are crossed end to end and 4 would make a ±24 transpose a
+ * 192-detent trip; on the device it was "still too hard" to land on a value.
+ * Landing is the job; crossing is what Shift-free fast turns are for. Above 48
+ * (0..127 and wider) one per detent is already slow enough that a value can
+ * be read as it goes by.
  *
- * Only the narrow band is a CHOICE (isChoice in layout_common.mjs asks for
- * ENUM_DELTA_DIV exactly); this band is still a number.
+ * The same NUMBER as the enum gate, but not the same KIND: only the narrow
+ * band is a CHOICE (isNarrowInt, which isChoice in layout_common.mjs asks);
+ * this band is still a number, and a ±24 transpose is no list.
  */
 export const MID_RANGE_MAX = 48;
-export const MID_DELTA_DIV = 2;
+export const MID_DELTA_DIV = ENUM_DELTA_DIV;
+
+/** An int narrow enough to be stepped, and shown, as a choice of N things. */
+export function isNarrowInt(meta) {
+    if (!meta || meta.type !== "int" || meta.knobAcceleration === "wide") return false;
+    const range = meta.max - meta.min;
+    return range >= 2 && range <= NARROW_RANGE_MAX;
+}
 
 /** schwung-movy model/knob-step.ts detentsPerStep, ported. */
 export function detentsPerStep(meta) {
     if (meta.type !== "int" || meta.knobAcceleration === "wide") return 1;
     const range = meta.max - meta.min;
-    if (range >= 2 && range <= NARROW_RANGE_MAX) return ENUM_DELTA_DIV;
+    if (isNarrowInt(meta)) return ENUM_DELTA_DIV;
     if (range > NARROW_RANGE_MAX && range <= MID_RANGE_MAX) return MID_DELTA_DIV;
     return 1;
 }
