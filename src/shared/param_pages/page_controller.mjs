@@ -4002,8 +4002,12 @@ export function createController(io = {}) {
              * extends the gesture, so the clock only runs while the knob is
              * still. Written before the early return for exactly that reason. */
             const last = s.triggerKnobLastMs[key];
+            /* A HELD KNOB NEVER TIMES OUT: the gap is only the backstop for a
+             * missed touch. Held, a slow turn re-fired a TOGGLE straight back
+             * (Radio Garden Play/Pause). Touch-down re-arms; see onKnobTouch. */
+            const held = s.touchOrder.indexOf(slot) >= 0;
             const startsGesture = last === undefined
-                || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
+                || (!held && (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS);
             s.triggerKnobLastMs[key] = t;
             if (!startsGesture) return null;
             /*
@@ -4562,6 +4566,10 @@ export function createController(io = {}) {
         /* The load lives on the gesture, never on the draw. See warmCard. */
         warmCard(slot);
         const key = keyAt(slot);
+        /* A TOUCH BEGINS A TRIGGER GESTURE. Paired with the held-knob latch in
+         * onKnobTurn: a stamp left by an untouched spin, or by a release the
+         * sensor dropped, must not swallow the first detent of this touch. */
+        if (key) delete s.triggerKnobLastMs[key];
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
         /* Whatever the header is about to show is what gets spoken — a routing

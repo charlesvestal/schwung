@@ -178,6 +178,12 @@ typedef struct {
      * ring, drained into the mailbox once per block. May be NULL on hosts
      * that have no external port — always guard. */
     int (*midi_send_external)(const uint8_t *msg, int len);
+
+    /* Wake a slot from the render idle gate. Called after a param SET reaches
+     * the slot's plugin, so a write that starts sound (Play/Pause) is heard on
+     * the next frame rather than the next idle probe (~0.5 s). RT-safe: plain
+     * stores. May be NULL. */
+    void (*wake_slot)(int slot);
 } chain_mgmt_host_t;
 
 /* ============================================================================
