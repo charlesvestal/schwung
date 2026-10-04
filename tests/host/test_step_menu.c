@@ -50,6 +50,9 @@ int main(void) {
     /* jog on Chance: swallowed, direction reported */
     assert(cc(S5, 0, 1, 14, 1) == SM_SWALLOW && cd == 1);
     assert(cc(S5, 0, 1, 14, 127) == SM_SWALLOW && cd == -1);
+    /* A fast spin is one message worth several detents: all of them count. */
+    assert(cc(S5, 0, 1, 14, 3) == SM_SWALLOW && cd == 3);
+    assert(cc(S5, 0, 1, 14, 125) == SM_SWALLOW && cd == -3);
     /* other controls pass (knobs are Move's per-step automation) */
     assert(cc(S5, 0, 1, 71, 1) == SM_PASS);
 

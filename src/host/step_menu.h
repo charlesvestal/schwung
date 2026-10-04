@@ -131,7 +131,7 @@ static inline int sm_jog_dir(uint8_t v)
 
 /* One cable-0 MIDI_IN event. Returns SM_PASS / SM_SWALLOW / SM_REWRITE (then
  * `out` holds the three bytes Move gets instead). `*chance_dir` is set to the
- * jog direction when the Chance field takes a detent, else 0. */
+ * signed number of detents when the Chance field takes a jog message, else 0. */
 static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held, int eligible,
                               uint8_t status, uint8_t d1, uint8_t d2,
                               uint8_t out[3], int *chance_dir, uint64_t now_ms)
@@ -189,7 +189,12 @@ static inline int sm_on_input(sm_state_t *s, uint32_t held_mask, int shift_held,
     if (type == 0xB0 && d1 == SM_CC_JOG) {
         const int dir = sm_jog_dir(d2);
         if (s->field == SM_FIELD_CHANCE) {
-            if (chance_dir) *chance_dir = dir;
+            /* The WHOLE message, not its sign: a fast spin arrives as one CC
+             * worth several detents (d2 = 3 is three), and taking only the
+             * direction moved chance one rung per message -- a fifth of the
+             * turn at speed, so the value lagged the hand and seemed to snap
+             * back. sm_step_cond clamps at both ends. */
+            if (chance_dir) *chance_dir = dir > 0 ? (int)d2 : (dir < 0 ? -(128 - (int)d2) : 0);
             return SM_SWALLOW;
         }
         const int mult = (dir != 0 && dir == s->jog_dir && s->jog_ms)
