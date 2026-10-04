@@ -6594,6 +6594,12 @@ void shadow_inprocess_handle_param_request(void) {
                  * `lanes:plock` directly is confirmed too. */
                 if (strcmp(key_copy, "lanes:plock") == 0)
                     shadow_lanes_plock_confirm(slot);
+                /* A write can START sound -- a radio's Play/Pause -- and the
+                 * idle gate would otherwise hold it back until the next probe
+                 * frame: up to ~0.5 s, random, which reads as a press that did
+                 * not land (and a second press re-pauses). MIDI already wakes
+                 * a slot this way. */
+                if (host.wake_slot) host.wake_slot(slot);
             }
             shadow_param->error = 0;
             shadow_param->result_len = 0;

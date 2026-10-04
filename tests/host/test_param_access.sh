@@ -187,6 +187,35 @@ Promise.all([
   if (writes.length)
     fail("without a release, a detent 50ms later fired -- the latch is gone");
 
+  /*
+   * A HELD KNOB IS ONE GESTURE, however slowly it turns.
+   *
+   * The gap is the backstop for a touch the sensor never saw. Applied to a
+   * knob that IS held, a turn with a pause in it re-fired -- and for a toggle
+   * (the Radio Garden Play/Pause) that is pause-then-resume from one hand,
+   * reported as "works intermittently". Detents a full second apart under one
+   * touch: only the first fires.
+   *
+   * And a TOUCH starts a gesture: 9350 is inside the gap left by 9300, so the
+   * first detent of this touch can only fire because touch-down re-armed it.
+   */
+  writes.length = 0;
+  ctl.onKnobTouch(trigSlot, true);
+  ctl.onKnobTurn(trigSlot, 1, 9350);
+  if (writes.length !== 1)
+    fail("the first detent of a new touch was swallowed by a stale latch");
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 10350);
+  ctl.onKnobTurn(trigSlot, 1, 11350);
+  if (writes.length)
+    fail("a slow turn of a HELD knob re-fired the trigger " + writes.length +
+         " times -- a toggle flips straight back");
+  ctl.onKnobTouch(trigSlot, false);
+  ctl.onKnobTouch(trigSlot, true);
+  ctl.onKnobTurn(trigSlot, 1, 11400);
+  if (writes.length !== 1) fail("let go and grab again did not fire");
+  ctl.onKnobTouch(trigSlot, false);
+
   /* A CLICK is never latched: one press is one gesture, and a shared timer
    * between the two paths is exactly how that regresses. */
   writes.length = 0;
