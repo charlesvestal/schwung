@@ -81,6 +81,12 @@ typedef struct {
     int       color_id;      /* Label.mColorId: Move's palette index for the track */
     int       type;          /* TrackType: 0 master, 1 player, 2 return */
     char      name[32];      /* Label.mName; "" when the user never named it */
+    /* Does the track's instrument contain a Drum Rack (a device whose
+     * mClassId is "drumRack", anywhere in its rack chains)? 1 yes, 0 no,
+     * -1 unknown (an optional class or member did not resolve). Move keeps
+     * WHICH pad is selected out of the document; this only says the track
+     * has pads at all -- what the step menu needs to trust the pad LED. */
+    int       drum_rack;
 } mm_track_t;
 
 typedef struct {

@@ -427,7 +427,8 @@ static int read_build_id(char *out, size_t cap)
 enum {
     C_SONG, C_TRANSPORT, C_PARAMETER, C_TIMESIG, C_TRACKLIST, C_TRACK, C_CLIPS,
     C_PLAYSTATE, C_CLIPSLOT, C_SESSIONCLIP, C_CLIP, C_REGION, C_LOOP, C_MIDICONTENT, C_ABSDEV,
-    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_OUTMIX, C_LABEL, C_COUNT
+    C_MIXPARAMS, C_ENVLIST, C_ENVELOPE, C_AUTOMATION, C_OUTMIX, C_LABEL,
+    C_DEVCHAIN, C_RACKCHAINLIST, C_RACKCHAIN, C_COUNT
 };
 static const char *CLASS_NAMES[C_COUNT] = {
     "live.Song", "live.Transport", "live.Parameter", "live.TimeSignature", "live.TrackList",
@@ -435,10 +436,14 @@ static const char *CLASS_NAMES[C_COUNT] = {
     "live.Clip", "live.ClipRegion", "live.Loop", "live.MidiClipContent", "live.AbstractDevice",
     "live.AudioMixerParameters", "live.ClipEnvelopeList", "live.ClipEnvelope", "live.Automation",
     "live.OutputMixerParameters", "live.Label",
+    "live.DeviceChain", "live.RackChainList", "live.RackChain",
 };
 /* Classes whose absence costs only OPTIONAL fields (move_info.h), never the
  * model: a firmware that renames one must not turn mute follow and lanes off. */
-static int class_optional(int c) { return c == C_LABEL; }
+static int class_optional(int c)
+{
+    return c == C_LABEL || c == C_DEVCHAIN || c == C_RACKCHAINLIST || c == C_RACKCHAIN;
+}
 static uint64_t g_cls[C_COUNT];
 
 /* flip::EnumClass "StepEditorResolution": {vptr, name, enumerators{begin,end}},
@@ -495,7 +500,8 @@ enum {
     O_SONG_OUTDEV, O_OUTMIX_VOLUME, O_TR_METRO,
     /* OPTIONAL from here (O_FIRST_OPTIONAL): unresolved leaves the field unknown */
     O_TR_GROOVE, O_TR_CLOCKSYNC, O_SONG_INMON, O_SONG_GQUANT, O_SONG_ROOT, O_SONG_SCALE,
-    O_TRACK_TYPE, O_TRACK_LABEL, O_LABEL_NAME, O_LABEL_COLOR, O_COUNT
+    O_TRACK_TYPE, O_TRACK_LABEL, O_LABEL_NAME, O_LABEL_COLOR,
+    O_TRACK_DEVCHAIN, O_DC_DEVICES, O_DEV_CLASSID, O_RCL_CHAINS, O_RC_DEVCHAIN, O_COUNT
 };
 #define O_FIRST_OPTIONAL O_TR_GROOVE
 #define O_UNRESOLVED 0xffffffffu
@@ -523,6 +529,8 @@ static moff_t g_off[O_COUNT] = {
     {C_SONG, "mRootNote", 0}, {C_SONG, "mScale", 0},
     {C_TRACK, "mTrackType", 0}, {C_TRACK, "mLabel", 0},
     {C_LABEL, "mName", 0}, {C_LABEL, "mColorId", 0},
+    {C_TRACK, "mDeviceChain", 0}, {C_DEVCHAIN, "mDevices", 0}, {C_ABSDEV, "mClassId", 0},
+    {C_RACKCHAINLIST, "mRackChains", 0}, {C_RACKCHAIN, "mDeviceChain", 0},
 };
 #define OPT(o) (g_off[o].off != O_UNRESOLVED)
 
@@ -682,6 +690,7 @@ static int vp_is(const vpset_t *s, uint64_t vp)
     return 0;
 }
 static vpset_t g_vp_song, g_vp_clips, g_vp_midicontent, g_vp_sessionclip, g_vp_mixparams, g_vp_outmix;
+static vpset_t g_vp_rackchains;   /* live.RackChainList: a rack's chains, among its components */
 static vpset_t g_vp_hist, g_vp_hstore, g_vp_tx;
 static uint64_t g_hist;
 static uint64_t g_song;
@@ -790,6 +799,7 @@ static int resolve_all(void)
     g_vp_midicontent.n = rtti_vptrs("N7ableton10flip_model16FMidiClipContentE", g_vp_midicontent.v, MAXVP);
     g_vp_mixparams.n   = rtti_vptrs("N7ableton10flip_model21FAudioMixerParametersE", g_vp_mixparams.v, MAXVP);
     g_vp_outmix.n      = rtti_vptrs("N7ableton10flip_model22FOutputMixerParametersE", g_vp_outmix.v, MAXVP);
+    g_vp_rackchains.n  = rtti_vptrs("N7ableton10flip_model14FRackChainListE", g_vp_rackchains.v, MAXVP);
     /* The MIXER is mandatory too: the model owning mute/solo while it can
      * read no mixer turns every fallback off and follows nothing. */
     if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n || !g_vp_mixparams.n) {
@@ -892,6 +902,38 @@ static int walk(uint64_t hdr, uint64_t *out, int max)
     guard(hdr + 16);       /* size */
     for (int k = 0; k < n && k < max; k++) guard(out[k] + OBJ_ID);
     return n;
+}
+
+/* Is there a Drum Rack in this device chain, at any rack depth? 1 / 0, -1 on
+ * a failed read. A track's instrument is a rack of racks on Move (the
+ * instrumentRack holds a chain whose first device is the drumRack), so the
+ * walk descends through each rack's RackChainList. Bounded: depth 4, eight
+ * devices and chains per level -- Move's own shape is depth 2. */
+static int devchain_has_drum_rack(uint64_t chain, int depth)
+{
+    if (depth > 4) return 0;
+    uint64_t devs[8];
+    int nd = walk(chain + OFF(O_DC_DEVICES) + V_WORD, devs, 8);
+    if (nd < 0) return -1;
+    for (int d = 0; d < nd && d < 8; d++) {
+        char cid[24];
+        if (f_blob(devs[d] + OFF(O_DEV_CLASSID), cid, sizeof cid)) return -1;
+        if (!strcmp(cid, "drumRack")) return 1;
+        uint64_t comps[8];
+        int nc = walk(devs[d] + OFF(O_DEV_COMPONENTS) + V_WORD, comps, 8);
+        if (nc < 0) return -1;
+        for (int k = 0; k < nc && k < 8; k++) {
+            if (!vp_is(&g_vp_rackchains, guard(comps[k]))) continue;
+            uint64_t chains[8];
+            int nr = walk(comps[k] + OFF(O_RCL_CHAINS) + V_WORD, chains, 8);
+            if (nr < 0) return -1;
+            for (int r = 0; r < nr && r < 8; r++) {
+                int h = devchain_has_drum_rack(chains[r] + OFF(O_RC_DEVCHAIN), depth + 1);
+                if (h) return h;
+            }
+        }
+    }
+    return 0;
 }
 
 /* THE CLIP BEING EDITED, watched every tick. A paste onto an occupied step
@@ -1073,7 +1115,10 @@ static int snapshot(move_model_t *m)
     for (int t = 0; t < nt && t < MM_TRACKS; t++) {
         mm_track_t *T = &m->track[t];
         T->playing_slot = -1;
-        T->color_id = -1; T->type = -1; T->name[0] = 0;
+        T->color_id = -1; T->type = -1; T->name[0] = 0; T->drum_rack = -1;
+        if (g_vp_rackchains.n && OPT(O_TRACK_DEVCHAIN) && OPT(O_DC_DEVICES) && OPT(O_DEV_CLASSID) &&
+            OPT(O_RCL_CHAINS) && OPT(O_RC_DEVCHAIN))
+            T->drum_rack = devchain_has_drum_rack(tracks[t] + OFF(O_TRACK_DEVCHAIN), 0);
         if (OPT(O_TRACK_TYPE) && f_int(tracks[t] + OFF(O_TRACK_TYPE), &T->type)) T->type = -1;
         if (OPT(O_TRACK_LABEL)) {
             uint64_t lb = tracks[t] + OFF(O_TRACK_LABEL);
@@ -1392,9 +1437,9 @@ static void write_json(const move_model_t *m)
         double pos = (T->playing_slot >= 0 && m->clock_valid)
                          ? mm_clip_position(&T->slot[T->playing_slot], T->start_beats, m->song_beats) : -1;
         fprintf(f, "%s{\"selected\":%d,\"muted\":%d,\"soloed\":%d,\"volume\":%.4f,\"pan\":%.4f,\"mode\":%d,"
-                   "\"playing_slot\":%d,\"start_beats\":%.4f,\"clip_pos\":%.4f,\"slots\":[",
-                t ? "," : "", T->selected, T->muted, T->soloed, T->volume, T->pan, T->mode, T->playing_slot,
-                T->start_beats, pos);
+                   "\"drum_rack\":%d,\"playing_slot\":%d,\"start_beats\":%.4f,\"clip_pos\":%.4f,\"slots\":[",
+                t ? "," : "", T->selected, T->muted, T->soloed, T->volume, T->pan, T->mode, T->drum_rack,
+                T->playing_slot, T->start_beats, pos);
         int first = 1;
         for (int s = 0; s < MM_SLOTS; s++) {
             const mm_clip_t *c = &T->slot[s];

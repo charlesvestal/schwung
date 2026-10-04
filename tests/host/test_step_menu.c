@@ -239,6 +239,13 @@ int main(void) {
         k = sm_button_notes(nt, 7, 4.0, 0.25, 0, 16.0, 0, idx, 8);
         assert(sm_scope_voice(nt, idx, k, 37) == 3);   /* voice not on the step: all */
         assert(sm_scope_voice(nt, idx, k, -1) == 3);   /* unknown: all */
+        /* A known Drum Rack: only the selected pad, NEVER the others. */
+        { int j[8]; memcpy(j, idx, sizeof(int) * (size_t)k);
+          assert(sm_scope_voice_strict(nt, j, k, 37) == 0); }     /* pad absent: nothing */
+        { int j[8]; memcpy(j, idx, sizeof(int) * (size_t)k);
+          assert(sm_scope_voice_strict(nt, j, k, 42) == 1 && nt[j[0]].id == 2); }
+        { int j[8]; memcpy(j, idx, sizeof(int) * (size_t)k);
+          assert(sm_scope_voice_strict(nt, j, k, -1) == 3); }     /* unknown pad: all */
     }
     assert(sm_drum_cell_pitch(68) == 36 && sm_drum_cell_pitch(69) == 37);
     assert(sm_drum_cell_pitch(76) == 40 && sm_drum_cell_pitch(95) == 51);
