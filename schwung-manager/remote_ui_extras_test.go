@@ -177,3 +177,40 @@ func TestInvalidateExtraKeysDropsValues(t *testing.T) {
 		t.Errorf("invalidation touched other components: %v", ru.extrasValue)
 	}
 }
+
+// `viz` is not always an object. 9W9 ships `"viz": false` on four params and an
+// object on fourteen; read as a struct, the bool failed the WHOLE array and the
+// Remote UI fetched no values for the module at all — every control at 0.
+func TestParseChainParamsVizNotAnObject(t *testing.T) {
+	params := decl(t, `[
+		{"key":"note_map","type":"enum","options":["Drum Rack (36+)","General MIDI"]},
+		{"key":"bd_c_tune","type":"int","min":0,"max":127},
+		{"key":"bd_c_attack","type":"int","min":0,"max":127,"viz":false},
+		{"key":"bd_c_level","type":"int","min":0,"max":127,"viz":{"kind":"fader"}},
+		{"key":"odd","viz":"knob"},
+		{"key":"grid","viz":{"kind":"custom:roll","extra_keys":["prog"]}}
+	]`)
+	var keys []string
+	for _, p := range params {
+		keys = append(keys, p.Key)
+	}
+	want := []string{"note_map", "bd_c_tune", "bd_c_attack", "bd_c_level", "odd", "grid"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys = %v, want %v", keys, want)
+	}
+	if got := extraKeysOf(params); !reflect.DeepEqual(got, []string{"prog"}) {
+		t.Fatalf("extraKeysOf = %v, want [prog]", got)
+	}
+}
+
+// One entry the struct cannot hold costs that entry, never the declaration.
+func TestParseChainParamsBadEntryIsDropped(t *testing.T) {
+	params := decl(t, `[{"key":"a"},{"key":5},"junk",{"key":"b"}]`)
+	var keys []string
+	for _, p := range params {
+		keys = append(keys, p.Key)
+	}
+	if !reflect.DeepEqual(keys, []string{"a", "b"}) {
+		t.Fatalf("keys = %v, want [a b]", keys)
+	}
+}

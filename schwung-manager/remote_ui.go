@@ -1972,14 +1972,33 @@ type chainParam struct {
 	// its whole progression arrives as the extra key "prog", so the browser
 	// panel drew no chord slots and no add button — with nothing to say why,
 	// because an unfetched key is indistinguishable from an empty one.
-	Viz struct {
-		ExtraKeys      []string `json:"extra_keys"`
-		ExtraKeysCamel []string `json:"extraKeys"`
-	} `json:"viz"`
+	Viz vizDecl `json:"viz"`
 	// An `as_page` canvas param declares its extras on the param itself, not
 	// under viz (page_plan.mjs declaredCanvasExtraKeys). Same cap, same reads.
 	ExtraKeys      []string `json:"extra_keys"`
 	ExtraKeysCamel []string `json:"extraKeys"`
+}
+
+// vizDecl is the part of a param's `viz` the manager reads. `viz` is NOT
+// always an object: `"viz": false` turns a cell's widget off (9W9 and dr32
+// ship it), and as a plain struct field that one bool failed json.Unmarshal
+// for the WHOLE array — the component read as declaring nothing, so the
+// Remote UI fetched no values and every control sat at 0. Anything but an
+// object is "no extras", never an error.
+type vizDecl struct {
+	ExtraKeys      []string `json:"extra_keys"`
+	ExtraKeysCamel []string `json:"extraKeys"`
+}
+
+func (v *vizDecl) UnmarshalJSON(b []byte) error {
+	type plain vizDecl
+	var p plain
+	if json.Unmarshal(b, &p) != nil {
+		*v = vizDecl{}
+		return nil
+	}
+	*v = vizDecl(p)
+	return nil
 }
 
 // maxDeclaredExtraKeys is viz.mjs's MAX_DECLARED_EXTRA_KEYS, applied per
@@ -2085,9 +2104,20 @@ func parseChainParams(raw string, err error) ([]chainParam, bool) {
 	if err != nil || raw == "" {
 		return nil, false
 	}
-	var params []chainParam
-	if json.Unmarshal([]byte(raw), &params) != nil {
+	// Parse the array, then each entry on its own: one entry the struct cannot
+	// hold must cost that entry, not the declaration. A document that is not an
+	// array at all (truncated at the buffer cap) is still not an answer.
+	var entries []json.RawMessage
+	if json.Unmarshal([]byte(raw), &entries) != nil {
 		return nil, false
+	}
+	params := make([]chainParam, 0, len(entries))
+	for _, e := range entries {
+		var p chainParam
+		if json.Unmarshal(e, &p) != nil {
+			continue
+		}
+		params = append(params, p)
 	}
 	return params, true
 }
