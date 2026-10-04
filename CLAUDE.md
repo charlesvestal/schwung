@@ -600,6 +600,20 @@ Now 64 blocks (**186 ms**), with `LINK_AUDIO_IN_CATCHUP_SAMPLES` **derived** fro
 
 **`LINK_AUDIO_IN_SHM_VERSION` must be bumped with any resize** (now 3). The struct grew 32 KB → 128 KB, so a segment left by an older sidecar is not merely stale, it is *too short* for the new mapping — and touching the tail of an undersized mapping is SIGBUS. `magic` and `version` must stay the **first two fields** so the version check itself can be read safely off a short segment. `tests/host/test_link_audio_ring_sizing.sh` pins the margins against the measured numbers, not the constants.
 
+### Link Audio packets arrive OUT OF ORDER, and are put back by sequence number
+
+Link Audio is UDP. The sidecar wrote buffers in ARRIVAL order and ignored
+`BufferHandle::Info::count`, so two packets swapped in flight played swapped —
+2.8 ms early, 2.8 ms late, a hard edge at each seam: a click on one Move track,
+only with Move→Schwung on. Found from a Skipback stem (the click block matched
+the loop shifted −125 samples, its neighbour +125, against three passes).
+`src/host/link_audio_reorder.h` holds ONE packet that arrives one ahead and
+releases both in order; in-order delivery passes straight through (no latency).
+On the measuring network it repaired 5 swaps in 40 s. The sidecar reports
+`order slot=N reordered= lost= late=`, and its continuity probe now runs AFTER
+reordering. Open: at startup the shim's catch-up jumps each track
+independently, which can leave one track ~150 ms behind until it settles.
+
 ### build.sh used to skip the sidecar silently
 
 `libs/link` is a submodule. Uninitialised, `build.sh` printed a warning, **exited 0**, `package.sh` added the sidecar only "if it was built", and `install.sh` only ever *kills* `link-subscriber` — it never installs one. So the copy on the device never changed, and rode through weeks of deploys and a three-host-version bisect of a Link Audio bug as the one component nobody was varying. It is a hard build failure now (`SCHWUNG_ALLOW_NO_LINK_SDK=1` to opt out), CI verifies the binary and the tarball entry rather than warning, and the moral is general: **a build step that can be skipped silently defeats every bisect that follows.**
