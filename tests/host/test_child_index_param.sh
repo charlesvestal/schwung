@@ -367,8 +367,8 @@ Promise.all([
    * detent".
    *
    * The BOUNDARY is what is pinned, not the constant: 1..16 selectors gated,
-   * 0..24 quantities not. Measured over the fleet, 9..16 is entirely discrete
-   * identities and 17..24 is entirely things you sweep.
+   * 17..48 half-gated, wider not. Measured over the fleet, 9..16 is entirely discrete
+   * identities; 17..48 is mostly semitones, crossed end to end but landed on.
    */
   {
     const gated = (min, max) => KE.detentsPerStep({ type: "int", min, max });
@@ -376,10 +376,15 @@ Promise.all([
       fail("a 1..16 selector steps once per detent — one flick crosses all 16");
     if (gated(1, 16) !== gated(0, 4))
       fail("a narrow int and a narrower one step differently — one gate, one feel");
-    /* ...and a sweep must NOT be gated, or it becomes 4x harder to move. */
-    if (gated(0, 24) !== 1)
-      fail("a 0..24 quantity is gated like a selector — pitch bend range and "
-         + "envelope depth are swept, not chosen");
+    /* ...a semitone range is slowed, but by less than a selector: it is still
+     * crossed end to end. Capicola Pitch[-12..12] at one per detent crossed
+     * half its range in a flick ("super sensitive"). */
+    if (gated(-12, 12) !== KE.MID_DELTA_DIV || gated(-24, 24) !== KE.MID_DELTA_DIV)
+      fail("a ±12/±24 semitone int is not on the mid gate — one flick crosses half of it");
+    if (!(KE.MID_DELTA_DIV > 1 && KE.MID_DELTA_DIV < KE.ENUM_DELTA_DIV))
+      fail("the mid gate must sit strictly between one-per-detent and the enum gate");
+    if (gated(0, 49) !== 1)
+      fail("an int wider than 48 is gated — 0..127 is already slow at one per detent");
     if (gated(0, 136) !== 1)
       fail("a wide int is gated — crossing it would take 500+ detents");
     /* The gate is the ENUM gate, shared. Two numbers here would be two feels
@@ -450,7 +455,7 @@ Promise.all([
     console.log("  ok  a generic child key borrows the concrete declaration, and follows");
     console.log("  ok  the graphic follows the focused child with no page change");
     console.log("  ok  the picker goes only when the index param really has a cell");
-    console.log("  ok  a 1..16 selector steps like an enum; a 0..24 sweep does not");
+    console.log("  ok  a 1..16 selector steps like an enum; ±12/±24 at half that");
     console.log("  ok  the selector precedes what it selects, and is not where you land");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
