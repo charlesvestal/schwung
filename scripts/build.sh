@@ -198,7 +198,7 @@ done
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
-    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
+    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c src/host/tts_config.c"
     SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
     SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
     SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
@@ -268,6 +268,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
     src/host/shadow_led_queue.h src/host/shadow_state.h \
     src/host/plugin_api_v1.h src/host/unified_log.h src/host/tts_engine.h \
+    src/host/tts_config.h src/host/tts_config.c \
     src/host/schwung_trace.h \
     src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
