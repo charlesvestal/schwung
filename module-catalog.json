@@ -2382,6 +2382,18 @@
       "default_branch": "main",
       "asset_name": "oktonik-module.tar.gz",
       "min_host_version": "1.6.2"
+    },
+    {
+      "id": "stereoid",
+      "name": "Stereoid",
+      "description": "Stereo widener with four engines: Comb (mono-safe, no lean), Haas (a delayed side with character), Disperse (all-pass and comb, modelled from measurement) and M/S (scales the width a stereo source already has)",
+      "author": "legsmechanical",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "github_repo": "legsmechanical/schwung-stereoid",
+      "default_branch": "main",
+      "asset_name": "stereoid-module.tar.gz",
+      "min_host_version": "1.5.0"
     }
   ]
 }
