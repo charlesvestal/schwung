@@ -198,7 +198,13 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 6, surfaces: 4, system: 3 };
+  /*
+   * Accessibility DECLARES 13 and never shows them all: the seven Eloquence
+   * rows are visible_if the engine is openevv, and Pitch (Hz) is visible_if it
+   * is not. This plan has no visibility hook, so it counts the declaration;
+   * section 4b below plans it the way the screen does, per engine.
+   */
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 13, set_pages: 1, shortcuts: 6, surfaces: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -233,6 +239,57 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     for (const k of (p.keys || [])) {
       if (!k) continue;
       if (meta.getOrGuess(k).guessed) fail(k + " has no declared metadata — the grid would guess it");
+    }
+  }
+}
+
+/* ---- 4b. engine-specific rows follow the engine ------------------------- *
+ *
+ * The visibility hook is the contract io own visible(), which is what the
+ * screen hands the controller (shadow_ui_param_pages.mjs prefers io.visible).
+ * Without it the host default evaluator reads the LIST editor slot, which is
+ * not Global Settings, and a condition it cannot read fails OPEN -- every
+ * engine rows at once, which is how the knob grid shipped visible_if broken.
+ */
+{
+  const EVV_KEYS = ["screen_reader_evv_voice", "screen_reader_evv_gender",
+                    "screen_reader_evv_head", "screen_reader_evv_pitch",
+                    "screen_reader_evv_inflection", "screen_reader_evv_rough",
+                    "screen_reader_evv_breath"];
+  const accessKeysFor = (engine) => {
+    const io = G.createGlobalGridIo({
+      readParam: (k) => (k === "screen_reader_engine" ? engine : "0"),
+      writeParam: () => {},
+    });
+    if (typeof io.visible !== "function") { fail("the Global Settings io has no visible()"); return []; }
+    const pl = planPages({ hierarchy, chainParams, paginate: false, visible: io.visible });
+    const pg = pl.pages.find((q) => q.level === "accessibility" && q.kind === PAGE_KNOBS);
+    return pg ? (pg.keys || []).filter(Boolean) : [];
+  };
+  for (const engine of ["espeak", "flite"]) {
+    const keys = accessKeysFor(engine);
+    if (keys.length !== 6) fail(engine + ": accessibility should show 6 rows, got " + keys.join(", "));
+    for (const k of EVV_KEYS) if (keys.includes(k)) fail(engine + ": Eloquence row " + k + " is showing");
+    if (!keys.includes("screen_reader_pitch")) fail(engine + ": Pitch (Hz) is hidden");
+  }
+  {
+    const keys = accessKeysFor("openevv");
+    if (keys.length !== 12) fail("openevv: accessibility should show 12 rows, got " + keys.join(", "));
+    for (const k of EVV_KEYS) if (!keys.includes(k)) fail("openevv: Eloquence row " + k + " is missing");
+    if (keys.includes("screen_reader_pitch")) fail("openevv: Pitch (Hz) belongs to eSpeak/Flite and is showing");
+  }
+  /* A read that did not complete shows the row rather than hiding a setting. */
+  const nullIo = G.createGlobalGridIo({ readParam: () => null, writeParam: () => {} });
+  if (!nullIo.visible({ param: "screen_reader_engine", equals: "openevv" })) {
+    fail("visible() must fail OPEN on a read that did not complete");
+  }
+  /* Every Voice preset loads six fields, and the table is a full enus set. */
+  if (!Array.isArray(G.EVV_PRESETS) || G.EVV_PRESETS.length !== 8) {
+    fail("EVV_PRESETS must hold the eight enus presets");
+  }
+  for (const f of Object.values(G.EVV_VOICE_FIELDS || {})) {
+    for (const pr of (G.EVV_PRESETS || [])) {
+      if (typeof pr[f] !== "number") fail("preset " + pr.name + " has no " + f);
     }
   }
 }
@@ -320,6 +377,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     screen_reader_enabled: "Screen Reader", screen_reader_engine: "Engine",
     screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
+    screen_reader_evv_voice: "Voice", screen_reader_evv_gender: "Gender",
+    screen_reader_evv_head: "Head Size", screen_reader_evv_pitch: "Base Pitch",
+    screen_reader_evv_inflection: "Inflection", screen_reader_evv_rough: "Roughness",
+    screen_reader_evv_breath: "Breathiness",
     set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
     recall_quantize: "Recall Q",
     /* Shift + volume knob = the scene fader, and Off hands it back to Move. */
@@ -535,6 +596,18 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
   if (G.readGlobalParam({ readParam: () => "flite" }, "screen_reader_engine") !== "1") {
     fail("screen_reader_engine stored \"flite\" must read back as index 1");
   }
+  G.writeGlobalParam(engIo, "screen_reader_engine", 2);
+  if (eng[1] !== "openevv") fail("screen_reader_engine index 2 stores \"openevv\", got " + JSON.stringify(eng[1]));
+  if (G.readGlobalParam({ readParam: () => "openevv" }, "screen_reader_engine") !== "2") {
+    fail("screen_reader_engine stored \"openevv\" must read back as index 2");
+  }
+  /* The Voice enum stores the ECI preset NUMBER, 1..8, never the index. */
+  const vo = [];
+  G.writeGlobalParam({ readParam: () => "1", writeParam: (k, v) => vo.push(v) }, "screen_reader_evv_voice", 0);
+  if (vo[0] !== "1") fail("screen_reader_evv_voice index 0 stores preset 1, got " + JSON.stringify(vo[0]));
+  if (G.readGlobalParam({ readParam: () => "8" }, "screen_reader_evv_voice") !== "7") {
+    fail("screen_reader_evv_voice stored 8 must read back as index 7");
+  }
 
   /* A failed read is not an index. null means the read did not complete and ""
    * means the channel served nothing; turning either into 0 reports "Native"
@@ -578,7 +651,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (7/9/6/1/4/4/3 params, Connect and Help " +
+console.log("PASS: global settings contract — seven levels (7/9/13/1/4/4/3 params, Eloquence rows gated on the engine, Connect and Help " +
             "among them as write-only triggers), ONE section one page and no menu, no " +
             "length limit, every enum listable with matching short_options, " +
             "validator clean, no host global read, every key routed to a backend, the five " +

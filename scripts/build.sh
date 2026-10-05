@@ -64,6 +64,7 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
         -e SCHWUNG_BUILD_TEST_MODULES="${SCHWUNG_BUILD_TEST_MODULES:-}" \
         -e SCHWUNG_ALLOW_NO_LINK_SDK="${SCHWUNG_ALLOW_NO_LINK_SDK:-0}" \
+        -e SCHWUNG_ALLOW_NO_OPENEVV="${SCHWUNG_ALLOW_NO_OPENEVV:-0}" \
         "$IMAGE_NAME"
 
     echo ""
@@ -197,8 +198,10 @@ for size in $TAMZEN_SIZES; do
 done
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
-    echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
-    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
+    echo "Screen reader build: enabled (eSpeak-NG + Flite + openevv, dlopened)"
+    # openevv is DLOPENED (tts_engine_openevv.c), so it adds no -l here and the
+    # shim links the same whether or not libeci.so.1 was built.
+    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c src/host/tts_engine_openevv.c src/host/tts_config.c"
     SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
     SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
     SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
@@ -268,6 +271,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
     src/host/shadow_led_queue.h src/host/shadow_state.h \
     src/host/plugin_api_v1.h src/host/unified_log.h src/host/tts_engine.h \
+    src/host/tts_config.h src/host/tts_openevv_map.h \
     src/host/schwung_trace.h \
     src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
@@ -581,6 +585,54 @@ if [ ! -f ./build/lib/.tts_bundled ]; then
     touch ./build/lib/.tts_bundled
 else
     echo "Skipping TTS bundle (already present)"
+fi
+
+# openevv (Eloquence) -> build/lib/libeci.so.1, dlopened by the shim.
+#
+# OUTSIDE the .tts_bundled skip above, because it is built from a submodule
+# that moves, not copied from a Debian package that does not. Objects go under
+# build/ (BUILD= overrides the Makefile's own), never libs/openevv/build: a
+# native build of the same checkout leaves x86 objects there that make would
+# happily link into an aarch64 library.
+#
+# A missing submodule FAILS the build, for the reason link-subscriber's does:
+# package.sh ships lib/ as it finds it, the shim falls back to eSpeak without a
+# word when the library is absent, and a release without the engine would look
+# identical to one with it. SCHWUNG_ALLOW_NO_OPENEVV=1 is the opt-out.
+OPENEVV_DIR=./libs/openevv
+OPENEVV_OBJ="$(pwd)/build/openevv"
+if [ -f "$OPENEVV_DIR/Makefile" ] && [ -f "$OPENEVV_DIR/include/eci.h" ]; then
+    # safe.directory: inside Docker the checkout belongs to another uid, and a
+    # refused rev-parse would read as "unknown" and rebuild every time.
+    openevv_rev=$(git -c safe.directory='*' -C "$OPENEVV_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+    if [ ! -f ./build/lib/libeci.so.1 ] || [ "$openevv_rev" = "unknown" ] || \
+       [ "$(cat "$OPENEVV_OBJ/.rev" 2>/dev/null)" != "$openevv_rev" ]; then
+        echo "Building openevv (libeci.so.1, compiled rules -- a few minutes the first time)..."
+        mkdir -p "$OPENEVV_OBJ"
+        make -C "$OPENEVV_DIR" -j"$(nproc 2>/dev/null || echo 4)" \
+            BUILD="$OPENEVV_OBJ" CC="${CROSS_PREFIX}gcc" NM="${CROSS_PREFIX}nm" \
+            RULES=c EVVLANG=lang/enus EVVPLAIN=1 so
+        cp -L "$OPENEVV_OBJ/libeci.so.1" ./build/lib/libeci.so.1
+        printf %s "$openevv_rev" > "$OPENEVV_OBJ/.rev"
+    else
+        echo "Skipping openevv (up to date)"
+    fi
+    # MIT for the engine, and IBM's unlicensed language data compiled in with
+    # it -- NOTICE is what says which is which, so both travel with the binary.
+    cp "$OPENEVV_DIR/LICENSE" ./build/licenses/OPENEVV_LICENSE.txt
+    cp "$OPENEVV_DIR/NOTICE" ./build/licenses/OPENEVV_NOTICE.txt
+elif [ "${SCHWUNG_ALLOW_NO_OPENEVV:-0}" = "1" ]; then
+    echo "Warning: openevv submodule absent at $OPENEVV_DIR, skipping libeci.so.1"
+    echo "         (SCHWUNG_ALLOW_NO_OPENEVV=1 -- the Eloquence engine will fall back to eSpeak)"
+    rm -f ./build/lib/libeci.so.1
+else
+    echo "ERROR: openevv submodule absent at $OPENEVV_DIR -- cannot build libeci.so.1." >&2
+    echo "       The shim would fall back to eSpeak in silence, and the tarball would" >&2
+    echo "       ship without the Eloquence engine and look no different." >&2
+    echo "" >&2
+    echo "       Fix:  git submodule update --init libs/openevv" >&2
+    echo "       Or:   SCHWUNG_ALLOW_NO_OPENEVV=1 ./scripts/build.sh" >&2
+    exit 1
 fi
 
 # pcaudio stub (satisfies eSpeak-NG's libpcaudio symbols without pulling in

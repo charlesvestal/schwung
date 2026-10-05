@@ -40,6 +40,7 @@ licence and neither imposes anything on the rest.
 | `lib/libespeak-ng.so.*` | **GPL-3.0-or-later** | Redistributed unmodified |
 | `lib/libflite*.so.*` | BSD-style | Redistributed unmodified |
 | `lib/libsonic.so.*` | Apache-2.0 | Redistributed unmodified |
+| `lib/libeci.so.1` | MIT engine **+ IBM language data, not licensed** | openevv, built from `libs/openevv`; **dlopened**, never linked — see [openevv](#openevv-eloquence) |
 | `bin/curl` | curl licence | Redistributed unmodified |
 | `bin/filebrowser` | Apache-2.0 | Redistributed unmodified |
 
@@ -333,6 +334,48 @@ unmodified under GPL-3.0-or-later.
 
 ---
 
+## openevv (Eloquence)
+
+**Used in:** Text-to-speech for screen-reader accessibility — the third engine
+beside eSpeak NG and Flite (Global Settings → Screen Reader → Engine → Eloquence)
+**Location:** `lib/libeci.so.1`, built from the `libs/openevv` git submodule and
+**loaded with `dlopen`** by `src/host/tts_engine_openevv.c`. The shim has no
+`NEEDED` entry for it, so it does not change the licence the shim is conveyed
+under, and a device without it falls back to eSpeak.
+**Upstream:** https://github.com/Mudb0y/openevv
+
+openevv is two things in one library, and only one of them carries a licence.
+
+**The engine** — the C in openevv's `src`, `rom` and `lib`, a portable
+reimplementation of IBM Embedded ViaVoice / Eloquence behind IBM's ECI
+interface — is MIT:
+
+```
+Copyright (c) 2026 Stanislaw Przedzinkowski
+```
+
+**The language data** compiled into the same library — everything under
+openevv's `lang/`, plus `src/klatt/klatt_tables.c` and
+`src/eci/ssml/eci_xmltok_tables.c` — is **IBM's, transcribed from IBM's
+Embedded ViaVoice objects, and is not licensed by openevv or by Schwung**.
+openevv's own NOTICE says so plainly ("That data is IBM's work, not ours. The
+MIT licence does not cover it and we are in no position to license it to
+anyone."), quotes the SDK's "Licensed Materials - Property of IBM, (C)
+Copyright IBM Corp. 1999, 2004 All Rights Reserved", and records that the rights
+chain runs from Eloquent Technology through SpeechWorks, ScanSoft and Nuance to
+Cerence, and is the subject of pending litigation.
+
+**Schwung makes no licence grant over that data and none should be inferred from
+it shipping in the release tarball.** Whoever redistributes a build containing
+`lib/libeci.so.1` takes on the question openevv's NOTICE describes. A build
+without it is `SCHWUNG_ALLOW_NO_OPENEVV=1 ./scripts/build.sh`; the Eloquence
+option then falls back to eSpeak.
+
+Both openevv files ship beside the binary: `licenses/OPENEVV_LICENSE.txt` (MIT)
+and `licenses/OPENEVV_NOTICE.txt` (which part is whose).
+
+---
+
 ## sonic
 
 **Used in:** Time-stretching and pitch-shifting for eSpeak NG
@@ -492,6 +535,10 @@ mere aggregation on a distribution medium — and impose nothing on anything els
   not by Schwung.
 - `lib/libespeak-ng.so.*` (GPL-3.0-or-later) is redistributed unmodified.
 
+`lib/libeci.so.1` (openevv) is not copyleft and is not linked: the shim
+`dlopen`s it. Its engine is MIT; the IBM language data inside it is **not
+licensed at all** — see [openevv](#openevv-eloquence).
+
 **Requirements met:**
 - ✅ Attribution provided (this file, shipped in the release tarball)
 - ✅ Copyright and license notices retained in every source file
@@ -509,6 +556,7 @@ obligations can be met.
 
 - **Carnegie Mellon University** — Flite speech synthesis library
 - **Reece H. Dunn, Jonathan Duddington and contributors** — eSpeak NG
+- **Stanislaw Przedzinkowski** — openevv, the portable Eloquence engine
 - **Fabrice Bellard & Charlie Gordon** — QuickJS JavaScript engine
 - **Sean Barrett** — stb single-file libraries
 - **Daniel Stenberg** — curl HTTP library

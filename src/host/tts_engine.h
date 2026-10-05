@@ -1,5 +1,5 @@
 /*
- * TTS Engine - Dual-engine dispatcher (eSpeak-NG + Flite)
+ * TTS Engine - dispatcher over eSpeak-NG, Flite and openevv (Eloquence)
  */
 
 #ifndef TTS_ENGINE_H
@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "tts_config.h"   /* tts_evv_voice_t */
 
 /* Initialize TTS engine with target sample rate */
 bool tts_init(int sample_rate);
@@ -51,8 +52,15 @@ float tts_get_speed(void);
 /* Get TTS pitch */
 float tts_get_pitch(void);
 
-/* Switch TTS engine: "espeak" or "flite" */
+/* Switch TTS engine: "espeak", "flite" or "openevv". openevv is dlopened; if
+ * libeci.so.1 is missing the switch is refused and the engine stays put. */
 void tts_set_engine(const char *engine_name);
+
+/* The openevv (Eloquence) voice -- preset plus the six ECI voice params.
+ * Held whichever engine is active; applied by openevv before each utterance.
+ * RT-safe: records and wakes openevv's worker, which persists. */
+void tts_set_evv_voice(const tts_evv_voice_t *voice);
+void tts_get_evv_voice(tts_evv_voice_t *out);
 
 /* Get current TTS engine name */
 const char *tts_get_engine(void);

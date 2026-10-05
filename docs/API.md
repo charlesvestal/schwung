@@ -288,7 +288,10 @@ stay_in_shadow_get() / stay_in_shadow_set(v) / stay_in_shadow_set_shm(v)  // Kee
 
 // TTS / screen reader bindings (shadow_ui only)
 tts_get_enabled() / tts_set_enabled(v)
-tts_get_engine() / tts_set_engine(name)   // "espeak" or "flite"
+tts_get_engine() / tts_set_engine(name)   // "espeak", "flite" or "openevv" (Eloquence)
+tts_get_evv(field) / tts_set_evv(field, v) // openevv voice: "voice" 1-8 (preset),
+                                           // "gender" 0/1, "head" / "pitch" /
+                                           // "inflection" / "rough" / "breath" 0-100
 tts_get_speed() / tts_set_speed(f)        // 0.5–6.0
 tts_get_pitch() / tts_set_pitch(hz)       // 80–180
 tts_get_volume() / tts_set_volume(v)      // 0–100

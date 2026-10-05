@@ -16,19 +16,39 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
   "speed": 1.0,
   "pitch": 110.0,
   "volume": 70,
-  "debounce_ms": 300
+  "evv_voice": 1,
+  "evv_gender": 0,
+  "evv_head": 50,
+  "evv_pitch": 65,
+  "evv_inflection": 30,
+  "evv_rough": 0,
+  "evv_breath": 0
 }
 ```
+
+Every writer goes through `tts_config_save()` (`src/host/tts_config.c`), which
+loads the whole file, changes its own fields and writes the whole file back --
+so a key one engine does not know (the `evv_*` voice, say) survives another
+engine's save.
 
 ### Parameters
 
 | Parameter | Type | Range | Default | Description |
 |-----------|------|-------|---------|-------------|
-| `engine` | string | `espeak` \| `flite` | `espeak` | TTS engine. eSpeak-NG is the default; Flite is bundled when the build includes its runtime. |
+| `engine` | string | `espeak` \| `flite` \| `openevv` | `espeak` | TTS engine. eSpeak-NG is the default; Flite is bundled when the build includes its runtime; `openevv` is Eloquence (dlopened `lib/libeci.so.1`, falls back to eSpeak if it is missing). |
 | `speed` | float | 0.5 – 6.0 | 1.0 | Speech rate (1.0 = normal). Higher = faster. |
 | `pitch` | float | 80.0 – 180.0 | 110.0 | Voice pitch in Hz (lower = deeper). |
 | `volume` | int | 0 – 100 | 70 | TTS output volume percentage. |
-| `debounce_ms` | int | 0 – 1000 | 300 | How long to wait for further updates (e.g. while a knob is moving) before speaking. |
+| `evv_voice` | int | 1 – 8 | 1 | Eloquence preset the six below were last loaded from (Adult Male 1, Adult Female 1, Child 1, Adult Male 2, Adult Male 3, Adult Female 2, Elderly Female 1, Elderly Male 1). |
+| `evv_gender` | int | 0 – 1 | 0 | Eloquence: 0 male, 1 female. |
+| `evv_head` | int | 0 – 100 | 50 | Eloquence head size (vocal tract length). |
+| `evv_pitch` | int | 0 – 100 | 65 | Eloquence pitch baseline. Eloquence ignores `pitch` (Hz). |
+| `evv_inflection` | int | 0 – 100 | 30 | Eloquence pitch fluctuation (how much the pitch moves). |
+| `evv_rough` | int | 0 – 100 | 0 | Eloquence roughness. |
+| `evv_breath` | int | 0 – 100 | 0 | Eloquence breathiness. |
+
+Speak Delay is NOT in this file: it lives in `shadow_config.json` as
+`tts_debounce_ms`.
 
 ### When Changes Take Effect
 
@@ -49,8 +69,12 @@ void tts_set_pitch(float pitch_hz);
 /* Set output volume (0 to 100) */
 void tts_set_volume(int volume);
 
-/* Select engine: "espeak" or "flite" */
+/* Select engine: "espeak", "flite" or "openevv". openevv is dlopened; a
+ * missing libeci.so.1 refuses the switch and the engine stays put. */
 void tts_set_engine(const char *name);
+
+/* The openevv (Eloquence) voice: preset + six ECI voice params. */
+void tts_set_evv_voice(const tts_evv_voice_t *voice);
 
 /* Tune debounce window in ms (0 to 1000) */
 void tts_set_debounce(int ms);
@@ -117,6 +141,32 @@ EOF
 - Missing config file logs debug message but doesn't error
 - Invalid values are ignored (defaults used instead)
 - See `src/host/tts_engine_flite.c:tts_load_config()` for implementation
+
+## Eloquence (openevv) Voice Parameters
+
+openevv is a C rebuild of IBM ViaVoice / Eloquence behind IBM's ECI API
+(`libs/openevv`, built to `lib/libeci.so.1`). The engine code is MIT; the
+language data compiled into it is IBM's and is not licensed -- see
+THIRD_PARTY_LICENSES.md.
+
+- **speed** (shared row) → ECI `eciSpeed` = speed × 50, clamped 0–250, so
+  1.0× is every preset's own rate.
+- **volume** (shared row) → applied at read time, like the other engines; ECI's
+  own volume is held at 100.
+- **evv_voice** → `eciCopyVoice(preset, 0)`, then the six below are set on
+  voice 0 before every utterance.
+- **evv_gender / head / pitch / inflection / rough / breath** →
+  `eciGender`, `eciHeadSize`, `eciPitchBaseline`, `eciPitchFluctuation`,
+  `eciRoughness`, `eciBreathiness`.
+
+Text is converted from UTF-8 to Windows-1252 (what `eciAddText` reads);
+characters 1252 cannot say become spaces. Annotations stay off, so a backtick
+in announced text is spoken, never interpreted.
+
+**No ECI call runs on the SPI callback.** `eciNew` maps a 256 MB arena and
+starts a thread, and a cancel waits ~27 ms for the current message to finish,
+so a worker thread (SCHED_OTHER, cores 0–2) owns the instance and makes every
+call; the RT side only publishes text and settings and reads a lock-free ring.
 
 ## Flite Voice Parameters
 

@@ -143,7 +143,7 @@ fi
 # 12. TTS get_audio runs on the RT mix path: no mutex (priority inversion
 #     with the SCHED_OTHER synth thread) and no save_state/file I/O on the
 #     disable edge.
-for eng in flite espeak; do
+for eng in flite espeak openevv; do
   ga=$(awk "/^int ${eng}_tts_get_audio/,/^}/" "src/host/tts_engine_${eng}.c")
   if grep -q 'pthread_mutex_lock' <<<"$ga"; then
     echo "FAIL: ${eng}_tts_get_audio takes a mutex on the RT mix path" >&2

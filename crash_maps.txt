@@ -1,0 +1,314 @@
+558bae0000-558c155000 r--p 00000000 b3:02 8521                           /opt/move/MoveOriginal
+558c164000-558d7d3000 r-xp 00674000 b3:02 8521                           /opt/move/MoveOriginal
+558d7e2000-558d865000 r--p 01ce2000 b3:02 8521                           /opt/move/MoveOriginal
+558d874000-558d879000 rw-p 01d64000 b3:02 8521                           /opt/move/MoveOriginal
+558d879000-558d89f000 rw-p 00000000 00:00 0 
+55c9c0a000-55d8086000 rw-p 00000000 00:00 0                              [heap]
+7f908c0000-7f908d0000 ---p 00000000 00:00 0 
+7f908d0000-7f910d0000 rw-p 00000000 00:00 0 
+7f910d0000-7f910e0000 ---p 00000000 00:00 0 
+7f910e0000-7f91100000 rw-p 00000000 00:00 0 
+7f91100000-7f91110000 ---p 00000000 00:00 0 
+7f91110000-7f91130000 rw-p 00000000 00:00 0 
+7f91130000-7f91140000 ---p 00000000 00:00 0 
+7f91140000-7f91160000 rw-p 00000000 00:00 0 
+7f91160000-7f91170000 ---p 00000000 00:00 0 
+7f91170000-7fa1970000 rw-p 00000000 00:00 0 
+7fa1970000-7fa1f87000 r-xp 00000000 b3:04 1210942                        /data/UserData/schwung/lib/libeci.so.1
+7fa1f87000-7fa1f9f000 ---p 00617000 b3:04 1210942                        /data/UserData/schwung/lib/libeci.so.1
+7fa1f9f000-7fa1ff0000 r--p 0061f000 b3:04 1210942                        /data/UserData/schwung/lib/libeci.so.1
+7fa1ff0000-7fa1ffd000 rw-p 00670000 b3:04 1210942                        /data/UserData/schwung/lib/libeci.so.1
+7fa1ffd000-7fa202e000 rw-p 00000000 00:00 0 
+7fa2030000-7fa2033000 r-xp 00000000 b3:02 859                            /lib/libnss_mdns4_minimal.so.2
+7fa2033000-7fa2042000 ---p 00003000 b3:02 859                            /lib/libnss_mdns4_minimal.so.2
+7fa2042000-7fa2043000 r--p 00002000 b3:02 859                            /lib/libnss_mdns4_minimal.so.2
+7fa2043000-7fa2044000 rw-p 00003000 b3:02 859                            /lib/libnss_mdns4_minimal.so.2
+7fa2050000-7fa2060000 ---p 00000000 00:00 0 
+7fa2060000-7fa2860000 rw-p 00000000 00:00 0 
+7fa2860000-7fa2883000 r-xp 00000000 b3:04 1210914                        /data/UserData/schwung/modules/chain/dsp.so
+7fa2883000-7fa289f000 ---p 00023000 b3:04 1210914                        /data/UserData/schwung/modules/chain/dsp.so
+7fa289f000-7fa28a0000 r--p 0002f000 b3:04 1210914                        /data/UserData/schwung/modules/chain/dsp.so
+7fa28a0000-7fa28a1000 rw-p 00030000 b3:04 1210914                        /data/UserData/schwung/modules/chain/dsp.so
+7fa28a1000-7fa2a0b000 rw-p 00000000 00:00 0 
+7fa2a0f000-7fa2a1f000 ---p 00000000 00:00 0 
+7fa2a1f000-7fa321f000 rw-p 00000000 00:00 0 
+7fa321f000-7fa322f000 ---p 00000000 00:00 0 
+7fa322f000-7fa3a2f000 rw-p 00000000 00:00 0 
+7fa3a2f000-7fa3a50000 rw-s 00000000 00:05 336                            /dev/shm/schwung-param
+7fa3a50000-7fa3a60000 ---p 00000000 00:00 0 
+7fa3a60000-7fa4260000 rw-p 00000000 00:00 0 
+7fa4260000-7fa4270000 ---p 00000000 00:00 0 
+7fa4270000-7fa4a70000 rw-p 00000000 00:00 0 
+7fa4a70000-7fa4a80000 ---p 00000000 00:00 0 
+7fa4a80000-7fa5280000 rw-p 00000000 00:00 0 
+7fa5280000-7fa5290000 ---p 00000000 00:00 0 
+7fa5290000-7fa5a90000 rw-p 00000000 00:00 0 
+7fa5a90000-7fa5aa0000 ---p 00000000 00:00 0 
+7fa5aa0000-7fa62a0000 rw-p 00000000 00:00 0 
+7fa62a0000-7fa62b0000 ---p 00000000 00:00 0 
+7fa62b0000-7fa6ab0000 rw-p 00000000 00:00 0 
+7fa6ab0000-7fa6ac0000 ---p 00000000 00:00 0 
+7fa6ac0000-7fa72c0000 rw-p 00000000 00:00 0 
+7fa72c0000-7fa72d0000 ---p 00000000 00:00 0 
+7fa72d0000-7fa7ad0000 rw-p 00000000 00:00 0 
+7fa7ad0000-7fa7ae0000 ---p 00000000 00:00 0 
+7fa7ae0000-7fa82e0000 rw-p 00000000 00:00 0 
+7fa82e0000-7fa82f0000 ---p 00000000 00:00 0 
+7fa82f0000-7fa8af0000 rw-p 00000000 00:00 0 
+7fa8af0000-7fa8b00000 ---p 00000000 00:00 0 
+7fa8b00000-7fa9300000 rw-p 00000000 00:00 0 
+7fa9300000-7fa9310000 ---p 00000000 00:00 0 
+7fa9310000-7fa9b10000 rw-p 00000000 00:00 0 
+7fa9b10000-7fa9b20000 ---p 00000000 00:00 0 
+7fa9b20000-7faa320000 rw-p 00000000 00:00 0 
+7faa320000-7faa330000 ---p 00000000 00:00 0 
+7faa330000-7faab30000 rw-p 00000000 00:00 0 
+7faab30000-7faab38000 r-xp 00000000 b3:02 854                            /lib/libnss_compat.so.2
+7faab38000-7faab47000 ---p 00008000 b3:02 854                            /lib/libnss_compat.so.2
+7faab47000-7faab48000 r--p 00007000 b3:02 854                            /lib/libnss_compat.so.2
+7faab48000-7faab49000 rw-p 00008000 b3:02 854                            /lib/libnss_compat.so.2
+7faab57000-7faab80000 rw-s 00000000 00:05 348                            /dev/shm/schwung-link-in
+7faab80000-7faab90000 ---p 00000000 00:00 0 
+7faab90000-7fab390000 rw-p 00000000 00:00 0 
+7fab390000-7fab3a0000 ---p 00000000 00:00 0 
+7fab3a0000-7fabba0000 rw-p 00000000 00:00 0 
+7fabba0000-7fabbb0000 ---p 00000000 00:00 0 
+7fabbb0000-7fac3b0000 rw-p 00000000 00:00 0 
+7fac3b0000-7fac3c0000 ---p 00000000 00:00 0 
+7fac3c0000-7facbc0000 rw-p 00000000 00:00 0 
+7facbc0000-7facbd0000 ---p 00000000 00:00 0 
+7facbd0000-7fad3d0000 rw-p 00000000 00:00 0 
+7fad3d0000-7fad463000 r-xp 00000000 b3:04 1210937                        /data/UserData/schwung/lib/libflite_cmulex.so.1
+7fad463000-7fad47d000 ---p 00093000 b3:04 1210937                        /data/UserData/schwung/lib/libflite_cmulex.so.1
+7fad47d000-7fad480000 r--p 0009d000 b3:04 1210937                        /data/UserData/schwung/lib/libflite_cmulex.so.1
+7fad480000-7fad481000 rw-p 000a0000 b3:04 1210937                        /data/UserData/schwung/lib/libflite_cmulex.so.1
+7fad490000-7fad4ae000 r-xp 00000000 b3:04 1210935                        /data/UserData/schwung/lib/libflite_usenglish.so.1
+7fad4ae000-7fad4b5000 ---p 0001e000 b3:04 1210935                        /data/UserData/schwung/lib/libflite_usenglish.so.1
+7fad4b5000-7fad4c0000 r--p 00025000 b3:04 1210935                        /data/UserData/schwung/lib/libflite_usenglish.so.1
+7fad4c0000-7fad4c1000 rw-p 00030000 b3:04 1210935                        /data/UserData/schwung/lib/libflite_usenglish.so.1
+7fad4c9000-7fad4ca000 ---p 00000000 00:00 0 
+7fad4ca000-7fad4cf000 rw-p 00000000 00:00 0 
+7fad4cf000-7fad4d0000 ---p 00000000 00:00 0 
+7fad4d0000-7fad4d4000 r-xp 00000000 b3:04 1210938                        /data/UserData/schwung/lib/libsonic.so.0
+7fad4d4000-7fad4e3000 ---p 00004000 b3:04 1210938                        /data/UserData/schwung/lib/libsonic.so.0
+7fad4e3000-7fad4e4000 r--p 00003000 b3:04 1210938                        /data/UserData/schwung/lib/libsonic.so.0
+7fad4e4000-7fad4e5000 rw-p 00004000 b3:04 1210938                        /data/UserData/schwung/lib/libsonic.so.0
+7fad4e9000-7fad4ea000 ---p 00000000 00:00 0 
+7fad4ea000-7fad4ef000 rw-p 00000000 00:00 0 
+7fad4ef000-7fad4f0000 ---p 00000000 00:00 0 
+7fad4f0000-7fad4f1000 r-xp 00000000 b3:04 1210936                        /data/UserData/schwung/lib/libpcaudio.so.0
+7fad4f1000-7fad50f000 ---p 00001000 b3:04 1210936                        /data/UserData/schwung/lib/libpcaudio.so.0
+7fad50f000-7fad510000 r--p 0000f000 b3:04 1210936                        /data/UserData/schwung/lib/libpcaudio.so.0
+7fad510000-7fad511000 rw-p 00010000 b3:04 1210936                        /data/UserData/schwung/lib/libpcaudio.so.0
+7fad512000-7fad513000 ---p 00000000 00:00 0 
+7fad513000-7fad518000 rw-p 00000000 00:00 0 
+7fad518000-7fad51a000 ---p 00000000 00:00 0 
+7fad51a000-7fad51f000 rw-p 00000000 00:00 0 
+7fad51f000-7fad520000 ---p 00000000 00:00 0 
+7fad520000-7fad52a000 r-xp 00000000 b3:02 835                            /lib/libcap.so.2.66
+7fad52a000-7fad53a000 ---p 0000a000 b3:02 835                            /lib/libcap.so.2.66
+7fad53a000-7fad53b000 r--p 0000a000 b3:02 835                            /lib/libcap.so.2.66
+7fad53b000-7fad53c000 rw-p 0000b000 b3:02 835                            /lib/libcap.so.2.66
+7fad540000-7fad55c000 r-xp 00000000 b3:02 1615                           /usr/lib/libyaml-0.so.2.0.9
+7fad55c000-7fad56b000 ---p 0001c000 b3:02 1615                           /usr/lib/libyaml-0.so.2.0.9
+7fad56b000-7fad56c000 r--p 0001b000 b3:02 1615                           /usr/lib/libyaml-0.so.2.0.9
+7fad56c000-7fad56d000 rw-p 0001c000 b3:02 1615                           /usr/lib/libyaml-0.so.2.0.9
+7fad570000-7fad571000 r-xp 00000000 b3:02 865                            /lib/librt.so.1
+7fad571000-7fad580000 ---p 00001000 b3:02 865                            /lib/librt.so.1
+7fad580000-7fad581000 r--p 00000000 b3:02 865                            /lib/librt.so.1
+7fad581000-7fad582000 rw-p 00001000 b3:02 865                            /lib/librt.so.1
+7fad585000-7fad590000 rw-s 00000000 00:05 347                            /dev/shm/schwung-pub-audio
+7fad590000-7fad5b5000 r-xp 00000000 b3:02 872                            /lib/libudev.so.1.6.3
+7fad5b5000-7fad5c5000 ---p 00025000 b3:02 872                            /lib/libudev.so.1.6.3
+7fad5c5000-7fad5c6000 r--p 00025000 b3:02 872                            /lib/libudev.so.1.6.3
+7fad5c6000-7fad5c7000 rw-p 00026000 b3:02 872                            /lib/libudev.so.1.6.3
+7fad5c9000-7fad5ca000 ---p 00000000 00:00 0 
+7fad5ca000-7fad5cf000 rw-p 00000000 00:00 0 
+7fad5cf000-7fad5d0000 ---p 00000000 00:00 0 
+7fad5d0000-7fad72d000 r-xp 00000000 b3:04 1210934                        /data/UserData/schwung/lib/libflite_cmu_us_kal.so.1
+7fad72d000-7fad739000 ---p 0015d000 b3:04 1210934                        /data/UserData/schwung/lib/libflite_cmu_us_kal.so.1
+7fad739000-7fad740000 r--p 00169000 b3:04 1210934                        /data/UserData/schwung/lib/libflite_cmu_us_kal.so.1
+7fad740000-7fad741000 rw-p 00170000 b3:04 1210934                        /data/UserData/schwung/lib/libflite_cmu_us_kal.so.1
+7fad742000-7fad743000 ---p 00000000 00:00 0 
+7fad743000-7fad748000 rw-p 00000000 00:00 0 
+7fad748000-7fad74a000 ---p 00000000 00:00 0 
+7fad74a000-7fad74f000 rw-p 00000000 00:00 0 
+7fad74f000-7fad750000 ---p 00000000 00:00 0 
+7fad750000-7fad78a000 r-xp 00000000 b3:04 1210933                        /data/UserData/schwung/lib/libflite.so.1
+7fad78a000-7fad79e000 ---p 0003a000 b3:04 1210933                        /data/UserData/schwung/lib/libflite.so.1
+7fad79e000-7fad7a0000 r--p 0003e000 b3:04 1210933                        /data/UserData/schwung/lib/libflite.so.1
+7fad7a0000-7fad7a1000 rw-p 00040000 b3:04 1210933                        /data/UserData/schwung/lib/libflite.so.1
+7fad7a2000-7fad7a3000 ---p 00000000 00:00 0 
+7fad7a3000-7fad7a8000 rw-p 00000000 00:00 0 
+7fad7a8000-7fad7aa000 ---p 00000000 00:00 0 
+7fad7aa000-7fad7af000 rw-p 00000000 00:00 0 
+7fad7af000-7fad7b0000 ---p 00000000 00:00 0 
+7fad7b0000-7fad82d000 r-xp 00000000 b3:04 1210932                        /data/UserData/schwung/lib/libespeak-ng.so.1
+7fad82d000-7fad83b000 ---p 0007d000 b3:04 1210932                        /data/UserData/schwung/lib/libespeak-ng.so.1
+7fad83b000-7fad840000 r--p 0008b000 b3:04 1210932                        /data/UserData/schwung/lib/libespeak-ng.so.1
+7fad840000-7fad845000 rw-p 00090000 b3:04 1210932                        /data/UserData/schwung/lib/libespeak-ng.so.1
+7fad845000-7fad869000 rw-p 00000000 00:00 0 
+7fad869000-7fad86a000 ---p 00000000 00:00 0 
+7fad86a000-7fad86f000 rw-p 00000000 00:00 0 
+7fad86f000-7fad870000 ---p 00000000 00:00 0 
+7fad870000-7fad965000 r-xp 00000000 b3:02 1588                           /usr/lib/libsystemd.so.0.37.0
+7fad965000-7fad974000 ---p 000f5000 b3:02 1588                           /usr/lib/libsystemd.so.0.37.0
+7fad974000-7fad980000 r--p 000f4000 b3:02 1588                           /usr/lib/libsystemd.so.0.37.0
+7fad980000-7fad982000 rw-p 00100000 b3:02 1588                           /usr/lib/libsystemd.so.0.37.0
+7fad982000-7fad983000 ---p 00000000 00:00 0 
+7fad983000-7fad988000 rw-p 00000000 00:00 0 
+7fad988000-7fad98a000 ---p 00000000 00:00 0 
+7fad98a000-7fad98f000 rw-p 00000000 00:00 0 
+7fad98f000-7fad990000 ---p 00000000 00:00 0 
+7fad990000-7fad9e6000 r-xp 00000000 b3:02 1498                           /usr/lib/libdbus-1.so.3.32.3
+7fad9e6000-7fad9f6000 ---p 00056000 b3:02 1498                           /usr/lib/libdbus-1.so.3.32.3
+7fad9f6000-7fad9f7000 r--p 00056000 b3:02 1498                           /usr/lib/libdbus-1.so.3.32.3
+7fad9f7000-7fad9f8000 rw-p 00057000 b3:02 1498                           /usr/lib/libdbus-1.so.3.32.3
+7fad9f8000-7fad9f9000 rw-p 00000000 00:00 0 
+7fad9f9000-7fad9fa000 ---p 00000000 00:00 0 
+7fad9fa000-7fad9ff000 rw-p 00000000 00:00 0 
+7fad9ff000-7fada00000 ---p 00000000 00:00 0 
+7fada00000-7fadb88000 r-xp 00000000 b3:02 831                            /lib/libc.so.6
+7fadb88000-7fadb98000 ---p 00188000 b3:02 831                            /lib/libc.so.6
+7fadb98000-7fadb9b000 r--p 00188000 b3:02 831                            /lib/libc.so.6
+7fadb9b000-7fadb9e000 rw-p 0018b000 b3:02 831                            /lib/libc.so.6
+7fadb9e000-7fadbaa000 rw-p 00000000 00:00 0 
+7fadbb0000-7fadbb1000 r-xp 00000000 b3:02 863                            /lib/libpthread.so.0
+7fadbb1000-7fadbc0000 ---p 00001000 b3:02 863                            /lib/libpthread.so.0
+7fadbc0000-7fadbc1000 r--p 00000000 b3:02 863                            /lib/libpthread.so.0
+7fadbc1000-7fadbc2000 rw-p 00001000 b3:02 863                            /lib/libpthread.so.0
+7fadbc2000-7fadbc3000 ---p 00000000 00:00 0 
+7fadbc3000-7fadbc8000 rw-p 00000000 00:00 0 
+7fadbc8000-7fadbca000 ---p 00000000 00:00 0 
+7fadbca000-7fadbcf000 rw-p 00000000 00:00 0 
+7fadbcf000-7fadbd0000 ---p 00000000 00:00 0 
+7fadbd0000-7fadbe4000 r-xp 00000000 b3:02 845                            /lib/libgcc_s.so.1
+7fadbe4000-7fadbf3000 ---p 00014000 b3:02 845                            /lib/libgcc_s.so.1
+7fadbf3000-7fadbf4000 r--p 00013000 b3:02 845                            /lib/libgcc_s.so.1
+7fadbf4000-7fadbf5000 rw-p 00014000 b3:02 845                            /lib/libgcc_s.so.1
+7fadbf9000-7fadbfa000 ---p 00000000 00:00 0 
+7fadbfa000-7fadbff000 rw-p 00000000 00:00 0 
+7fadbff000-7fadc00000 ---p 00000000 00:00 0 
+7fadc00000-7fadc87000 r-xp 00000000 b3:02 846                            /lib/libm.so.6
+7fadc87000-7fadc96000 ---p 00087000 b3:02 846                            /lib/libm.so.6
+7fadc96000-7fadc97000 r--p 00086000 b3:02 846                            /lib/libm.so.6
+7fadc97000-7fadc98000 rw-p 00087000 b3:02 846                            /lib/libm.so.6
+7fadc99000-7fadc9a000 ---p 00000000 00:00 0 
+7fadc9a000-7fadc9f000 rw-p 00000000 00:00 0 
+7fadc9f000-7fadca0000 ---p 00000000 00:00 0 
+7fadca0000-7faddbb000 r-xp 00000000 b3:02 1487                           /usr/lib/libc++.so.1.0
+7faddbb000-7faddcb000 ---p 0011b000 b3:02 1487                           /usr/lib/libc++.so.1.0
+7faddcb000-7faddd4000 r--p 0011b000 b3:02 1487                           /usr/lib/libc++.so.1.0
+7faddd4000-7faddd6000 rw-p 00124000 b3:02 1487                           /usr/lib/libc++.so.1.0
+7faddd6000-7fadddd000 rw-p 00000000 00:00 0 
+7fadde0000-7fadde6000 r-xp 00000000 b3:02 1592                           /usr/lib/libubootenv.so.0.3.5
+7fadde6000-7faddf5000 ---p 00006000 b3:02 1592                           /usr/lib/libubootenv.so.0.3.5
+7faddf5000-7faddf6000 r--p 00005000 b3:02 1592                           /usr/lib/libubootenv.so.0.3.5
+7faddf6000-7faddf7000 rw-p 00006000 b3:02 1592                           /usr/lib/libubootenv.so.0.3.5
+7faddf9000-7faddfa000 ---p 00000000 00:00 0 
+7faddfa000-7faddff000 rw-p 00000000 00:00 0 
+7faddff000-7fade00000 ---p 00000000 00:00 0 
+7fade00000-7fade16000 r-xp 00000000 b3:02 879                            /lib/libz.so.1.2.11
+7fade16000-7fade25000 ---p 00016000 b3:02 879                            /lib/libz.so.1.2.11
+7fade25000-7fade26000 r--p 00015000 b3:02 879                            /lib/libz.so.1.2.11
+7fade26000-7fade27000 rw-p 00016000 b3:02 879                            /lib/libz.so.1.2.11
+7fade29000-7fade2a000 ---p 00000000 00:00 0 
+7fade2a000-7fade2f000 rw-p 00000000 00:00 0 
+7fade2f000-7fade30000 ---p 00000000 00:00 0 
+7fade30000-7fade33000 r-xp 00000000 b3:02 1586                           /usr/lib/libswupdate.so.0.1
+7fade33000-7fade42000 ---p 00003000 b3:02 1586                           /usr/lib/libswupdate.so.0.1
+7fade42000-7fade43000 r--p 00002000 b3:02 1586                           /usr/lib/libswupdate.so.0.1
+7fade43000-7fade44000 rw-p 00003000 b3:02 1586                           /usr/lib/libswupdate.so.0.1
+7fade49000-7fade4a000 ---p 00000000 00:00 0 
+7fade4a000-7fade4f000 rw-p 00000000 00:00 0 
+7fade4f000-7fade50000 ---p 00000000 00:00 0 
+7fade50000-7fadf53000 r-xp 00000000 b3:02 1473                           /usr/lib/libasound.so.2.0.0
+7fadf53000-7fadf62000 ---p 00103000 b3:02 1473                           /usr/lib/libasound.so.2.0.0
+7fadf62000-7fadf68000 r--p 00102000 b3:02 1473                           /usr/lib/libasound.so.2.0.0
+7fadf68000-7fadf6a000 rw-p 00108000 b3:02 1473                           /usr/lib/libasound.so.2.0.0
+7fadf70000-7fae007000 r-xp 00000000 b3:02 1581                           /usr/lib/libssl.so.3
+7fae007000-7fae016000 ---p 00097000 b3:02 1581                           /usr/lib/libssl.so.3
+7fae016000-7fae01f000 r--p 00096000 b3:02 1581                           /usr/lib/libssl.so.3
+7fae01f000-7fae024000 rw-p 0009f000 b3:02 1581                           /usr/lib/libssl.so.3
+7fae025000-7fae028000 rw-s 00000000 00:05 346                            /dev/shm/schwung-test-stream-midi-out
+7fae028000-7fae029000 rw-s 00000000 00:05 345                            /dev/shm/schwung-overlay
+7fae029000-7fae02a000 ---p 00000000 00:00 0 
+7fae02a000-7fae02f000 rw-p 00000000 00:00 0 
+7fae02f000-7fae030000 ---p 00000000 00:00 0 
+7fae030000-7fae3e8000 r-xp 00000000 b3:02 1494                           /usr/lib/libcrypto.so.3
+7fae3e8000-7fae3f8000 ---p 003b8000 b3:02 1494                           /usr/lib/libcrypto.so.3
+7fae3f8000-7fae44e000 r--p 003b8000 b3:02 1494                           /usr/lib/libcrypto.so.3
+7fae44e000-7fae451000 rw-p 0040e000 b3:02 1494                           /usr/lib/libcrypto.so.3
+7fae451000-7fae454000 rw-p 00000000 00:00 0 
+7fae454000-7fae457000 rw-s 00000000 00:05 344                            /dev/shm/schwung-screenreader
+7fae457000-7fae458000 rw-s 00000000 00:05 343                            /dev/shm/schwung-ext-midi-remap
+7fae458000-7fae459000 rw-s 00000000 00:05 342                            /dev/shm/schwung-midi-inject-ui
+7fae459000-7fae45a000 ---p 00000000 00:00 0 
+7fae45a000-7fae45f000 rw-p 00000000 00:00 0 
+7fae45f000-7fae460000 ---p 00000000 00:00 0 
+7fae460000-7fae46c000 r--p 00000000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae46c000-7fae47b000 ---p 0000c000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae47b000-7fae48a000 r-xp 0000b000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae48a000-7fae499000 ---p 0002a000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae499000-7fae49a000 r--p 00019000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae49a000-7fae4a9000 ---p 0003a000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae4a9000-7fae4aa000 rw-p 00019000 b3:02 8542                           /usr/lib/libusb-1.0.so
+7fae4aa000-7fae4b0000 rw-s 00000000 00:05 338                            /dev/shm/schwung-web-param-notify
+7fae4b0000-7fae4c0000 r--p 00000000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae4c0000-7fae4cf000 ---p 00010000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae4cf000-7fae4fb000 r-xp 0000f000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae4fb000-7fae50a000 ---p 0004b000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae50a000-7fae50c000 r--p 0003a000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae50c000-7fae51b000 ---p 0005c000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae51b000-7fae51c000 rw-p 0003b000 b3:02 8541                           /usr/lib/libmp3lame.so
+7fae51c000-7fae52c000 rw-p 00000000 00:00 0 
+7fae52c000-7fae52d000 rw-s 00000000 00:05 341                            /dev/shm/schwung-midi-inject
+7fae52d000-7fae530000 rw-s 00000000 00:05 337                            /dev/shm/schwung-web-param-set
+7fae530000-7fae546000 r--p 00000000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae546000-7fae555000 ---p 00016000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae555000-7fae570000 r-xp 00015000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae570000-7fae57f000 ---p 00040000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae57f000-7fae581000 r--p 0002f000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae581000-7fae590000 ---p 00051000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae590000-7fae591000 rw-p 00030000 b3:02 8539                           /usr/lib/libXTCMalloc.so
+7fae591000-7fae740000 rw-p 00000000 00:00 0 
+7fae740000-7fae741000 rw-s 00000000 00:05 340                            /dev/shm/schwung-midi-dsp
+7fae741000-7fae742000 rw-s 00000000 00:05 339                            /dev/shm/schwung-midi-out
+7fae742000-7fae743000 ---p 00000000 00:00 0 
+7fae743000-7fae748000 rw-p 00000000 00:00 0 
+7fae748000-7fae74a000 ---p 00000000 00:00 0 
+7fae74a000-7fae74f000 rw-p 00000000 00:00 0 
+7fae74f000-7fae750000 ---p 00000000 00:00 0 
+7fae750000-7fae772000 r--p 00000000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae772000-7fae781000 ---p 00022000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae781000-7fae7a3000 r-xp 00021000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae7a3000-7fae7b2000 ---p 00053000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae7b2000-7fae7b5000 r--p 00042000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae7b5000-7fae7c4000 ---p 00065000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae7c4000-7fae7c5000 rw-p 00044000 b3:02 8540                           /usr/lib/libXSDBusCpp.so
+7fae7c5000-7fae7c6000 rw-s 00000000 00:05 335                            /dev/shm/schwung-ui
+7fae7c6000-7fae7c7000 rw-s 00000000 00:05 334                            /dev/shm/schwung-control
+7fae7c7000-7fae7c8000 rw-s 00000000 00:05 333                            /dev/shm/schwung-display-live
+7fae7c8000-7fae7d0000 rw-p 00000000 00:00 0 
+7fae7d0000-7fae85a000 r-xp 00000000 b3:02 9336                           /usr/lib/schwung-shim.so
+7fae85a000-7fae86e000 ---p 0008a000 b3:02 9336                           /usr/lib/schwung-shim.so
+7fae86e000-7fae870000 r--p 0008e000 b3:02 9336                           /usr/lib/schwung-shim.so
+7fae870000-7fae873000 rw-p 00090000 b3:02 9336                           /usr/lib/schwung-shim.so
+7fae873000-7faed9a000 rw-p 00000000 00:00 0 
+7faed9a000-7faed9b000 rw-s 00000000 00:05 332                            /dev/shm/schwung-display
+7faed9b000-7faed9c000 rw-s 00000000 00:05 331                            /dev/shm/schwung-ui-midi
+7faed9c000-7faed9d000 rw-s 00000000 00:05 330                            /dev/shm/schwung-midi
+7faed9d000-7faed9e000 rw-s 00000000 00:05 329                            /dev/shm/schwung-movein
+7faed9e000-7faed9f000 rw-s 00000000 00:05 328                            /dev/shm/schwung-audio
+7faed9f000-7faeda3000 rw-p 00000000 00:00 0 
+7faeda3000-7faedcd000 r-xp 00000000 b3:02 826                            /lib/ld-linux-aarch64.so.1
+7faedcd000-7faedce000 rw-s 00000000 00:05 289                            /dev/ablspi0.0
+7faedce000-7faedd6000 rw-p 00000000 00:00 0 
+7faedd6000-7faedd7000 rw-s 00000000 00:05 327                            /dev/shm/schwung-perf
+7faedd7000-7faedd8000 rw-s 00000000 00:05 326                            /dev/shm/schwung_jack
+7faedd8000-7faedda000 rw-p 00000000 00:00 0 
+7faedda000-7faeddc000 r--p 00000000 00:00 0                              [vvar]
+7faeddc000-7faeddd000 r-xp 00000000 00:00 0                              [vdso]
+7faeddd000-7faeddf000 r--p 0002a000 b3:02 826                            /lib/ld-linux-aarch64.so.1
+7faeddf000-7faede1000 rw-p 0002c000 b3:02 826                            /lib/ld-linux-aarch64.so.1
+7ff592b000-7ff5a1b000 rw-p 00000000 00:00 0                              [stack]
