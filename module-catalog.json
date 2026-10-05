@@ -2051,6 +2051,21 @@
       "min_host_version": "1.6.2"
     },
     {
+      "id": "quilt",
+      "name": "Quilt",
+      "description": "Thirty-eight soft instruments, from felt pianos and vibraphones to bowed cello, breathy flute and choir, all synthesised and played with pad pressure",
+      "author": "kliegsablaze",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic"
+      ],
+      "github_repo": "kliegsablaze/quilt",
+      "default_branch": "main",
+      "asset_name": "quilt-module.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "maze_seq",
       "name": "Maze",
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
