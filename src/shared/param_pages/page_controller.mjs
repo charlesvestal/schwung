@@ -1586,7 +1586,7 @@ export function createController(io = {}) {
         if (!s.metaIndex) return true;
         const p = s.pages.find((q) => q && q.kind === PAGE_KNOBS && (q.keys || []).length);
         if (!p) return false;
-        return p.keys.every((k) => s.metaIndex.getOrGuess(k).guessed);
+        return p.keys.every((k) => !k || s.metaIndex.getOrGuess(k).guessed);
     }
 
     /**
@@ -1682,6 +1682,7 @@ export function createController(io = {}) {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return false;
         for (const key of p.keys) {
+            if (!key) continue;   /* an authored hole: getOrGuess throws on null */
             const meta = s.metaIndex.getOrGuess(key);
             if (meta.kind !== KIND_ENUM) continue;
             const o = meta.options;

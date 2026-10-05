@@ -347,6 +347,7 @@ export function validateContract({ id, hierarchy, chainParams, capabilities } = 
     for (const page of pages) {
         if (page.kind !== PAGE_KNOBS) continue;
         for (const k of page.keys) {
+            if (!k) continue;   /* an authored hole (knobs[] null) is no param */
             const meta = index.getOrGuess(k);
             if (meta.guessed) guessed.push(k);
             if (meta.kind === KIND_OPAQUE) opaqueOnKnobs++;

@@ -689,6 +689,12 @@ Three rules keep that from being vandalism:
   to knob 5.
 - **the real detector confirms the result**, and a move that loses a group
   that already drew is rejected.
+- **a page with an authored hole is left alone.** A `null` in `knobs[]` keeps
+  its slot (`knobSlots` in page_plan.mjs) and says the author placed every key
+  by hand; nudging a block across a hole would undo exactly that. The hole
+  itself is the sparse-page case the grid already drew as a gap: `keyAt`,
+  `knobRows` and every renderer skip a null key, and `getOrGuess(null)` THROWS
+  — so a new loop over `page.keys` must skip holes as well.
 
 An earlier version scored by keys covered with no cost bound and did what that
 invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
