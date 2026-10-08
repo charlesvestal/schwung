@@ -2066,6 +2066,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "strut",
+      "name": "Strut",
+      "description": "Sixteen-pad drum synth: each pad blends a struck resonator, a wavetable oscillator and noise or samples, with per-pad modulation, a shared room and DICE to roll new kits",
+      "author": "kliegsablaze",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "sample-based"
+      ],
+      "github_repo": "kliegsablaze/strut",
+      "default_branch": "main",
+      "asset_name": "strut-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
       "id": "maze_seq",
       "name": "Maze",
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
