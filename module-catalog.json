@@ -2425,6 +2425,21 @@
       "default_branch": "main",
       "asset_name": "stereoid-module.tar.gz",
       "min_host_version": "1.5.0"
+    },
+    {
+      "id": "tinyk",
+      "name": "TinyK",
+      "description": "4-voice polyphonic virtual analog synth inspired by the microKORG, with dual layers, arpeggiator and .syx bank loading",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": [
+        "vintage-emulation"
+      ],
+      "github_repo": "fleshinachair/TinyK",
+      "default_branch": "main",
+      "asset_name": "TinyK.tar.gz",
+      "min_host_version": "1.6.3"
     }
   ]
 }
