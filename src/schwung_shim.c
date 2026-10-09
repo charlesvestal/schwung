@@ -6057,6 +6057,7 @@ static void shim_init_subsystems(void)
             .run_command = shim_run_command,
             .global_mmap_addr = &global_mmap_addr,
             .hardware_mmap_addr = &hardware_mmap_addr,
+            .move_tempo = move_model_sync_tempo,
         };
         sampler_init(&sampler_host, &sampler_set_tempo);
     }

@@ -426,6 +426,8 @@ static float db_to_lin(double db)
 
 static atomic_uint g_master_bits;       /* the float, as bits; valid only with g_master_ok */
 static atomic_int  g_master_ok;
+static atomic_uint g_tempo_bits;        /* the float, as bits; valid only with g_tempo_ok */
+static atomic_int  g_tempo_ok;
 static atomic_int  g_selected_pending = -1;
 
 int move_model_sync_master_volume(float *lin)
@@ -433,6 +435,14 @@ int move_model_sync_master_volume(float *lin)
     if (!lin || !atomic_load(&g_master_ok) || !move_model_sync_active()) return 0;
     const unsigned b = atomic_load(&g_master_bits);
     memcpy(lin, &b, sizeof *lin);
+    return 1;
+}
+
+int move_model_sync_tempo(float *bpm)
+{
+    if (!bpm || !atomic_load(&g_tempo_ok) || !move_model_sync_active()) return 0;
+    const unsigned b = atomic_load(&g_tempo_bits);
+    memcpy(bpm, &b, sizeof *bpm);
     return 1;
 }
 
@@ -450,6 +460,19 @@ static void levels_from_model(const move_model_t *now, const move_model_t *prev,
         atomic_store(&g_master_ok, 1);
     } else {
         atomic_store(&g_master_ok, 0);
+    }
+    /* TEMPO, Move's own number -- exact, where the MIDI clock Move emits can
+     * only be measured to the block it lands in (shadow_transport.c). Not
+     * while Move follows an external MIDI clock, or cannot say whether it
+     * does: then the tempo playing is the incoming clock's, which this
+     * parameter is not known to track, and the measured clock answers. */
+    if (now->clock_sync == 0 && isfinite(now->tempo) && now->tempo >= 20.0 && now->tempo <= 999.0) {
+        const float v = (float)now->tempo;
+        unsigned b; memcpy(&b, &v, sizeof b);
+        atomic_store(&g_tempo_bits, b);
+        atomic_store(&g_tempo_ok, 1);
+    } else {
+        atomic_store(&g_tempo_ok, 0);
     }
     if (edge || now->metronome_on != prev->metronome_on)
         shadow_metronome_on = now->metronome_on ? 1 : 0;

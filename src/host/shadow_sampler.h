@@ -178,6 +178,10 @@ typedef struct {
     /* Pointers to shim's mmap addresses (indirect, since they change) */
     uint8_t **global_mmap_addr;
     uint8_t **hardware_mmap_addr;
+    /* Move's tempo from its live model (move_model_sync_tempo): 1 and *bpm
+     * when known, 0 otherwise. RT-safe -- sampler_get_bpm() serves every
+     * module's get_bpm() on the SPI callback. NULL = no model. */
+    int (*move_tempo)(float *bpm);
 } sampler_host_t;
 
 /* ============================================================================
@@ -200,10 +204,6 @@ extern int sampler_fallback_target;
 extern int sampler_clock_received;
 extern int sampler_transport_playing;
 
-extern struct timespec sampler_clock_last_beat;
-extern int sampler_clock_beat_ticks;
-extern float sampler_measured_bpm;
-extern float sampler_last_known_bpm;
 extern int sampler_clock_active;
 extern int sampler_clock_stale_frames;
 

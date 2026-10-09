@@ -298,6 +298,27 @@ it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
 turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
 the address is unattributable under ASLR.
 
+### `get_bpm()` must be STEADY, and for a long time it was not
+
+A tempo-synced delay resizes its line from `get_bpm()` every block, and
+resizing a delay line is a pitch bend — so a value that changes when the tempo
+did not is an audible fault, not a rounding error. While Move played,
+`sampler_get_bpm()` timed each beat on the wall clock, and a tick is only seen
+in the SPI frame it lands in: a steady 120 read **120.19, 119.49, 120.19 …**
+Munchi Delay bent its 1-bar echo up to 11 semitones every beat or two; War
+Bells (Sync) clicked; Tape Echo 2 wobbled — while Move PLAYED only, which is
+why it read as a module bug. Smack, Work and Push'n'Pull had each grown their
+own clock estimator around it.
+
+Now Move's tempo comes from its **live model** (exact) unless Move follows an
+external MIDI clock; otherwise the clock is fitted over a **16-beat window in
+SAMPLE time and HELD** (`shadow_transport.c`): the value moves only when the
+window disagrees by more than it can be wrong, so a steady clock never moves
+it. **Never report a tempo from one tick interval, an EMA of them, or one beat
+on the wall clock** — all three swing on a steady clock. The tests assert "does
+not move", not "is near": near is what the broken one passed
+(`tests/host/test_shadow_transport.sh`, `test_sampler_get_bpm.sh`).
+
 ### JS Host Functions
 
 Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
@@ -2033,8 +2054,9 @@ inline is how this file got to 151 KB.
   `process_vm_readv`, ~1.6% of a core. Selected track, the playing/selected
   clip, region/loop, step-editor page, step grid and the exact launch beat are
   all current to the edit — `Song.abl` is ~10 s stale and has no new clips.
-  It also drives master volume, the metronome, and slot mute / solo / volume
-  (every older inference is the fallback when the model is not live).
+  It also drives master volume, the metronome, slot mute / solo / volume and
+  modules' `get_bpm()` (every older inference is the fallback when the model
+  is not live).
   Only the transport run-flag/beat clock is build-pinned. Read it before
   building anything that needs clip state again.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)

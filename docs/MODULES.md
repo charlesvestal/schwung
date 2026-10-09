@@ -4198,10 +4198,37 @@ typedef struct host_api_v1 {
 } host_api_v1_t;
 ```
 
-**Tempo while stopped:** `get_bpm()` retains the last-playing transport's tempo
-after it stops (so a synced LFO that switches from phase-lock to free-run keeps
-the same rate). It updates from emitted clock, so changing an internal
-sequencer's tempo while it is *stopped* is not reflected until it plays again.
+**`get_bpm()` is steady.** On a steady tempo it returns the same value on every
+call, so it is safe to derive a delay time from it every block. Where it comes
+from, in order:
+
+1. An internal overtake sequencer's clock (e.g. movy) while it runs and Move's
+   transport does not — measured as below.
+2. While Move's transport runs: **Move's own tempo, read from its live model**
+   (`docs/MOVE_MODEL.md`) — exact, the number on Move's screen. If the model is
+   not live, or Move is synced to an external MIDI clock (whose tempo that
+   parameter is not known to follow), Move's clock is **measured over a
+   16-beat window in sample time and held**: the value moves only when the
+   window disagrees with it by more than the window can be wrong (~0.1 % at
+   120 BPM). A step change lands within about a beat.
+3. An internal sequencer's last tempo after it stops (so a synced LFO that
+   switches from phase-lock to free-run keeps the same rate).
+4. While Move is stopped: the set's tempo from the model, followed at once if
+   you change it while stopped; else the last measured clock, the settings
+   file, then 120.
+
+**It used to warble.** Until this was fixed, `get_bpm()` timed each beat of
+Move's clock on the wall clock, which can only see a tick in the SPI frame it
+arrives in — a steady 120 BPM read 120.19, 119.49, 120.19 … A delay that
+resizes its line on each change bends the pitch of everything in it: measured
+as bends of up to 11 semitones every beat or two on Munchi Delay's 1-bar echo,
+clicks on War Bells
+(Sync), a wobble on Tape Echo 2 (Tempo Sync), all only while Move played. A
+module that built its own clock estimator, or a deadband on `get_bpm()`, to
+work around it can keep it; it is no longer needed.
+
+For phase (where in the bar you are), use `get_beat_position()`, never
+accumulated `get_bpm()`.
 
 ## Audio Specifications
 

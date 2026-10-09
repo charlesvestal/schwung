@@ -402,6 +402,36 @@ int main(void)
         fake_pub_age_ms = 0;
     }
 
+    /* ---- TEMPO: Move's own number, for get_bpm() -------------------------
+     * Exact where the measured clock can only be as good as the block a tick
+     * lands in. Withheld while Move follows an external MIDI clock, or cannot
+     * say whether it does: the playing tempo is then the incoming clock's. */
+    {
+        float bpm = -1;
+        move_model_t a3 = doc(60), b3;
+        a3.tempo = 121.5; a3.clock_sync = 0;
+        FIRE(&a3, &h);
+        CHECK(move_model_sync_tempo(&bpm) && bpm == 121.5f);
+        b3 = a3; b3.tempo = 87.25;                          /* followed on a change */
+        FIRE(&b3, &a3);
+        CHECK(move_model_sync_tempo(&bpm) && bpm == 87.25f);
+        a3 = b3; b3.clock_sync = 1;                         /* synced to external clock */
+        FIRE(&b3, &a3);
+        CHECK(!move_model_sync_tempo(&bpm));
+        a3 = b3; b3.clock_sync = 255;                       /* this firmware cannot say */
+        FIRE(&b3, &a3);
+        CHECK(!move_model_sync_tempo(&bpm));
+        a3 = b3; b3.clock_sync = 0; b3.tempo = 0.0;         /* no sane tempo read */
+        FIRE(&b3, &a3);
+        CHECK(!move_model_sync_tempo(&bpm));
+        a3 = b3; b3.tempo = 140.0;
+        FIRE(&b3, &a3);
+        CHECK(move_model_sync_tempo(&bpm) && bpm == 140.0f);
+        fake_pub_age_ms = 5000;                             /* a dead model claims nothing */
+        CHECK(!move_model_sync_tempo(&bpm));
+        fake_pub_age_ms = 0;
+    }
+
     if (fails) { printf("test_move_model_sync: %d FAILED\n", fails); return 1; }
     printf("test_move_model_sync: PASS\n");
     return 0;
