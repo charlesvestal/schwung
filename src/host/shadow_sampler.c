@@ -77,11 +77,8 @@ int sampler_preroll_target_pulses = 0;
 int sampler_preroll_fallback_blocks = 0;
 int sampler_preroll_fallback_target = 0;
 
-/* Tempo detection: MIDI clock BPM measurement */
-struct timespec sampler_clock_last_beat = {0, 0};
-int sampler_clock_beat_ticks = 0;
-float sampler_measured_bpm = 0.0f;
-float sampler_last_known_bpm = 0.0f;
+/* Tempo detection: MIDI clock activity. The TEMPO of that clock is measured
+ * by shadow_transport.c, not here -- see sampler_get_bpm(). */
 int sampler_clock_active = 0;
 int sampler_clock_stale_frames = 0;
 
@@ -604,11 +601,26 @@ static int sampler_read_settings_tempo(void) {
     return bpm;
 }
 
-/* Get best available BPM using fallback chain */
+/* Get best available BPM using fallback chain.
+ *
+ * This is what every module's host->get_bpm() returns, so it must be STEADY
+ * while the tempo is: a tempo-synced delay resizes its line on every change,
+ * and resizing a delay line bends the pitch of what is in it. It used to time
+ * each beat of Move's clock on the wall clock, which can only see a tick in
+ * the SPI frame it arrives in -- 120 BPM read 120.19, 119.49, 120.19 ... and
+ * the catalog's tempo-synced delays warbled every beat or two while Move
+ * played. Both sources below are steady by construction: Move's own number
+ * from its live model, else the clock measured over a window and held
+ * (shadow_transport.c). */
 float sampler_get_bpm(tempo_source_t *source) {
-    /* 0. Internal transport (an overtake sequencer driving the clock).
-     * Cable-0 (Move) clock is already covered by the measured-clock check
-     * below, so only the internal source needs delegation. */
+    /* Move's tempo from its live model: exact, the number on Move's screen.
+     * Absent with no model, or while Move follows an external MIDI clock. */
+    float move_bpm = 0.0f;
+    const int have_move_bpm = s_host.move_tempo && s_host.move_tempo(&move_bpm) &&
+                              move_bpm >= 20.0f && move_bpm <= 999.0f;
+
+    /* 0. Internal transport (an overtake sequencer driving the clock). It is
+     * only the active source while Move's own transport is stopped. */
     if (shadow_transport_source() == TRANSPORT_SRC_INTERNAL) {
         float tbpm = shadow_transport_bpm();
         if (tbpm >= 20.0f) {
@@ -617,10 +629,17 @@ float sampler_get_bpm(tempo_source_t *source) {
         }
     }
 
-    /* 1. Active MIDI clock */
-    if (sampler_clock_active && sampler_measured_bpm >= 20.0f) {
-        if (source) *source = TEMPO_SOURCE_CLOCK;
-        return sampler_measured_bpm;
+    /* 1. Move's transport running: its model tempo, else its clock measured. */
+    if (shadow_transport_source() == TRANSPORT_SRC_MOVE) {
+        if (have_move_bpm) {
+            if (source) *source = TEMPO_SOURCE_CLOCK;
+            return move_bpm;
+        }
+        float tbpm = shadow_transport_bpm();
+        if (tbpm >= 20.0f) {
+            if (source) *source = TEMPO_SOURCE_CLOCK;
+            return tbpm;
+        }
     }
 
     /* 1b. Internal transport's last tempo (movy sequencer stopped). Keep synced
@@ -635,17 +654,23 @@ float sampler_get_bpm(tempo_source_t *source) {
         }
     }
 
-    /* 2. Current Set's tempo */
+    /* 2. Current Set's tempo: Move's model while stopped (a tempo changed with
+     * the transport stopped is followed at once), else the detected value. */
+    if (have_move_bpm) {
+        if (source) *source = TEMPO_SOURCE_SET;
+        return move_bpm;
+    }
     float set_tempo = s_set_tempo_ptr ? *s_set_tempo_ptr : 0.0f;
     if (set_tempo >= 20.0f) {
         if (source) *source = TEMPO_SOURCE_SET;
         return set_tempo;
     }
 
-    /* 3. Last measured clock BPM */
-    if (sampler_last_known_bpm >= 20.0f) {
+    /* 3. Last measured clock BPM (Move's, retained after it stopped) */
+    float last_bpm = shadow_transport_last_bpm();
+    if (last_bpm >= 20.0f) {
         if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
-        return sampler_last_known_bpm;
+        return last_bpm;
     }
 
     /* 4. Settings file tempo */
@@ -1424,24 +1449,7 @@ void sampler_on_clock(uint8_t status) {
         /* MIDI Clock tick */
         sampler_clock_active = 1;
         sampler_clock_stale_frames = 0;
-        sampler_clock_beat_ticks++;
         shadow_transport_pulses++;
-
-        /* Measure BPM every 24 ticks (one beat) */
-        if (sampler_clock_beat_ticks >= 24) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            if (sampler_clock_last_beat.tv_sec > 0) {
-                double elapsed = (now.tv_sec - sampler_clock_last_beat.tv_sec)
-                               + (now.tv_nsec - sampler_clock_last_beat.tv_nsec) / 1e9;
-                if (elapsed > 0.1 && elapsed < 10.0) {
-                    sampler_measured_bpm = 60.0f / (float)elapsed;
-                    sampler_last_known_bpm = sampler_measured_bpm;
-                }
-            }
-            sampler_clock_last_beat = now;
-            sampler_clock_beat_ticks = 0;
-        }
 
         /* Preroll-specific: count pulses for preroll countdown */
         if (sampler_state == SAMPLER_PREROLL) {

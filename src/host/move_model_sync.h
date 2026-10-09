@@ -70,5 +70,10 @@ unsigned move_model_sync_undo_refused(void);
  * model. 0 = not known (no model, or it cannot read the output mixer): the
  * caller keeps its fallback. */
 int      move_model_sync_master_volume(float *lin);
+/* Any thread (RT-safe): Move's tempo in BPM, from the model -- the number on
+ * Move's screen, exact. 0 = not known (no model, or Move follows an external
+ * MIDI clock, or cannot say whether it does): the caller measures the clock
+ * instead. Serves get_bpm() through sampler_get_bpm(). */
+int      move_model_sync_tempo(float *bpm);
 /* SPI thread: the track Move just selected (0..3), once; -1 = no change. */
 int      move_model_sync_take_selected(void);

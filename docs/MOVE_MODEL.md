@@ -614,6 +614,15 @@ when the bytes are rewritten in place. Published from the reader's tick hook
 only when something changed (or the clock moved), and marked `valid` 0 by the
 shim worker when the model stops being read.
 
+**The tempo also serves modules' `get_bpm()`** (`move_model_sync_tempo()` →
+`sampler_get_bpm()`), because it is exact where Move's MIDI clock can only be
+measured to the SPI frame a tick lands in. It is withheld while
+`mIsMidiClockSyncEnabled` is set **or unknown**: the playing tempo is then the
+incoming clock's, and nothing measured yet says `Transport.mTempo` follows it,
+so the measured clock answers instead. Under Link the parameter does move
+(`mm_pair_consistent` in `move_model.h` had to stop comparing it), which is
+the tempo playing.
+
 Found with `tools/move-model/flipcls.py live.Song live.Transport live.Track
 live.Label` and the EnumClass by its name string -- the same way anything else
 here should be added.
