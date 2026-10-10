@@ -1619,7 +1619,7 @@
       "github_repo": "DimaDake/schwung-movy",
       "default_branch": "main",
       "asset_name": "movy-module.tar.gz",
-      "min_host_version": "1.1.0"
+      "min_host_version": "1.6.0"
     },
     {
       "id": "magneto",
