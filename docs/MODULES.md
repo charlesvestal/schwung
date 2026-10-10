@@ -183,6 +183,38 @@ itself, so a staged helper adds convenience, not capability, and a device with
 nothing staged never enters the path. Heal's own duties (the shim and entrypoint
 mirror) run on the same invocation, idempotently.
 
+Keep `bin/` itself ableton-owned. A tool launched while the stack runs as root
+(after a root restart) that creates `bin/` leaves it root-owned, and every
+later ableton launch then fails to stage `bin/heal.new` into it.
+
+#### Shared memory a standalone tool may rely on
+
+With Move stopped there is no shim and no shadow_ui, but two dev surfaces keep
+working if the standalone program speaks their shared memory. Both layouts are
+stable contracts:
+
+- **`/dev/shm/schwung-display-live`** (1024 bytes): the screen in
+  `js_display_pack` format — 8 pages × 128 columns, bit 0 the topmost pixel of
+  each page. `display-server` streams whatever is written there on its live
+  view (port 7681), so a program that copies each packed frame into it is
+  visible in the web viewer and screenshot tools exactly as shadow_ui is.
+- **`/dev/shm/schwung-midi-inject`**: the MIDI inject ring
+  (`shadow_midi_inject_t`, the bounded MPSC queue in
+  `src/host/shadow_midi_inject_writer.h`). The inject tools are producers. A
+  standalone program that drains it with `shadow_midi_inject_peek` /
+  `shadow_midi_inject_pop` and feeds the packets in as hardware input keeps
+  them working. Its creator must `shadow_midi_inject_init` it — zero-fill is
+  not a valid state — and the shim that normally does is not running, so the
+  standalone program initialises it on start (what is there is stale).
+
+Either file may already exist from the stack, owned by whoever ran it. Create
+with mode 0666 (`fchmod` after `shm_open`), so a later run under the other uid
+can open it.
+
+movy's standalone host (`host/display.c` and `host/inject_ring.c` in
+[schwung-movy](https://github.com/DimaDake/schwung-movy)) is a working example
+of both.
+
 ### `forks_processes`
 
 Set `capabilities.forks_processes: true` when your module's DSP runs in
