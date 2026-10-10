@@ -2425,6 +2425,54 @@
       "default_branch": "main",
       "asset_name": "stereoid-module.tar.gz",
       "min_host_version": "1.5.0"
+    },
+    {
+      "id": "clementine-xt",
+      "name": "Clementine-XT",
+      "description": "Ten-voice wavetable synth in the style of the Microwave II/XT: two wavetable oscillators, 13 filter types, 16-slot mod matrix, effects and arpeggiator. Bring your own ROM files.",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": [
+        "has-remote-ui",
+        "needs-assets",
+        "polyphonic"
+      ],
+      "github_repo": "sd88me/schwung-clementineXT",
+      "default_branch": "main",
+      "asset_name": "clementine-xt-module.tar.gz",
+      "min_host_version": "1.6.3",
+      "requires": "Optional: your own Microwave II ROM dump (two 128 KB chip images or one 256 KB image) in /data/UserData/schwung/clementine-xt/ROMS/ for the original waves and the factory sounds. Without it a built-in bank plays on open wave tables."
+    },
+    {
+      "id": "strut",
+      "name": "Strut",
+      "description": "Sixteen-pad drum synth: each pad blends a struck resonator, a wavetable oscillator and noise or samples, with per-pad modulation, a shared room and DICE to roll new kits",
+      "author": "kliegsablaze",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "sample-based"
+      ],
+      "github_repo": "kliegsablaze/strut",
+      "default_branch": "main",
+      "asset_name": "strut-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "tinyk",
+      "name": "TinyK",
+      "description": "4-voice polyphonic virtual analog synth inspired by the microKORG, with dual layers, arpeggiator and .syx bank loading",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": [
+        "vintage-emulation"
+      ],
+      "github_repo": "fleshinachair/TinyK",
+      "default_branch": "main",
+      "asset_name": "TinyK.tar.gz",
+      "min_host_version": "1.6.3"
     }
   ]
 }
