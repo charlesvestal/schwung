@@ -29464,7 +29464,17 @@ globalThis.tick = function() {
                         const tool = toolModules.find(t => t.id === cmd.tool_id);
                         if (tool) {
                             unloadModuleUi();
-                            startInteractiveTool(tool, cmd.file_path);
+                            /* A standalone tool replaces the host, so it has
+                             * no file to open in an interactive session: send
+                             * it down the Tools menu's own launch, which runs
+                             * launch-standalone.sh. Starting it as an
+                             * interactive tool instead loaded a module with
+                             * no ui.js and nothing happened. */
+                            if (toolLaunchKind(tool) === "standalone") {
+                                launchToolConfirmed(tool);
+                            } else {
+                                startInteractiveTool(tool, cmd.file_path);
+                            }
                         } else {
                             /* Fall back to the OVERTAKE list before giving up.
                              * The two live in different scans — component_type
