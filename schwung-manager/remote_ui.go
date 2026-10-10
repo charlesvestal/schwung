@@ -838,11 +838,28 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 				// Read shm once and fan out to all subscribers of this slot.
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
+		} else if paramKey == "module" && isChainComponent(comp) {
+			// A module swap replaces the component outright: its hierarchy,
+			// chain_params and values all belong to the new module. Re-run the
+			// subscribe sequence for every subscriber of the slot, after the
+			// shim's slot loader has had time to land the module.
+			go func() {
+				time.Sleep(moduleSwapSettle)
+				for _, sc := range ru.subscribedClients(slot) {
+					ru.handleSubscribe(ctx, sc, wsMessage{Type: "subscribe", Slot: &slot})
+				}
+			}()
 		} else if isChainComponent(comp) {
 			ru.scheduleComponentRefetch(ctx, slot, comp)
 		}
 	}
 }
+
+// moduleSwapSettle is how long after a "<comp>:module" write the slot is
+// re-described to its subscribers. The write is staged on the shim's slot
+// loader (dlopen + create_instance off the SPI callback), so the answer can
+// arrive before the new module is installed.
+const moduleSwapSettle = 400 * time.Millisecond
 
 // isChainComponent reports whether comp names a slot component we push params
 // for. Master FX keys ("master_fx:fx1:...") split differently and are excluded.
@@ -1438,6 +1455,16 @@ func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg
 	if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_master_fx_param failed", "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
+		return
+	}
+	// A module swap on the master bus: re-describe the bus, as for a slot.
+	if strings.HasSuffix(msg.Key, ":module") {
+		go func() {
+			time.Sleep(moduleSwapSettle)
+			for _, mc := range ru.masterFxSubscribedClients() {
+				ru.handleSubscribeMasterFx(ctx, mc)
+			}
+		}()
 	}
 }
 

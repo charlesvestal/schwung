@@ -116,6 +116,7 @@
     var slotHeaderControlsEl = document.getElementById("slot-header-controls");
     var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
+    var slotLoaderEl = document.getElementById("slot-loader");
     var tabButtons = document.querySelectorAll(".remote-ui-tab");
 
     // ------------------------------------------------------------------
@@ -309,10 +310,15 @@
         for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
             var ck = COMPONENT_KEYS[ci];
             if (s.components[ck].module !== incoming[ck]) {
+                // Everything else cached for the component belonged to the
+                // outgoing module too; keep it and the new module is drawn
+                // with the old one's controls until a refetch lands.
+                s.components[ck] = makeComponent();
                 s.components[ck].module = incoming[ck];
                 delete s.customUI[ck];
             }
         }
+        slotLoaderDone(slot);
         if (slot === activeSlot) renderSlot();
     }
 
@@ -333,6 +339,7 @@
     function handleToolInfo(msg) {
         tool.known = true;
         tool.id = msg.id || "";
+        if (tool.id) slotLoaderDone("tool");
         if (!tool.id) {
             // Tool unloaded — drop its custom UI + cached params.
             tool.customUI = null;
@@ -492,6 +499,7 @@
                 delete masterFx.customUI[ck];
             }
         }
+        slotLoaderDone("master");
         if (activeSlot === "master") renderSlot();
     }
 
@@ -603,6 +611,276 @@
     }
 
     window.switchSlot = switchSlot;
+
+    // ------------------------------------------------------------------
+    // Slot loader: choose the module in each chain position
+    // ------------------------------------------------------------------
+    //
+    // A "<comp>:module" write is what the device's own picker sends; the shim
+    // stages it on its slot loader, so a swap fades the outgoing module rather
+    // than stalling Move. "none" empties the position. The server re-describes
+    // the slot to every subscriber once the module has landed, and the
+    // slot_info that brings ends the pending state here.
+    //
+    // Not done from here: the device picker also clears LFO routings aimed at
+    // the outgoing module and seeds a new synth's default FX. A line-in synth is
+    // refused (device_only) because the device runs the feedback gate first.
+
+    // Signal flow, left to right, as the device's chain editor draws it.
+    var SLOT_LOADER_POSITIONS = [
+        { comp: "midi_fx1", label: "MIDI FX", short: "MI", type: "midi_fx" },
+        { comp: "synth", label: "Synth", short: "SY", type: "sound_generator" },
+        { comp: "fx1", label: "FX 1", short: "F1", type: "audio_fx" },
+        { comp: "fx2", label: "FX 2", short: "F2", type: "audio_fx" }
+    ];
+    var slotModules = null;         // [{id, name, component_type, device_only}] or null until fetched
+    var slotModulesError = "";
+    var slotLoaderPending = {};      // slot -> { comp, timer }
+    var slotLoaderPick = null;       // { where, comp } while a position's picker is open
+    var SLOT_LOADER_TIMEOUT = 8000;
+
+    function fetchSlotModules() {
+        fetch("/api/slot-modules", { cache: "no-store" })
+            .then(function (r) {
+                if (!r.ok) throw new Error("HTTP " + r.status);
+                return r.json();
+            })
+            .then(function (list) {
+                slotModules = list || [];
+                slotModulesError = "";
+                if (typeof activeSlot === "number") renderSlot();
+            })
+            .catch(function (e) {
+                slotModulesError = "Could not list modules (" + e.message + ")";
+                if (typeof activeSlot === "number") renderSlot();
+            });
+    }
+
+    function slotLoaderDone(where) {
+        var p = slotLoaderPending[where];
+        if (!p) return;
+        clearTimeout(p.timer);
+        delete slotLoaderPending[where];
+    }
+
+    // Mark `where` (a slot number, "master" or "tool") as loading until its
+    // info message comes back, then send the write.
+    function startLoad(where, comp, sendFn) {
+        slotLoaderDone(where);
+        slotLoaderPick = null;
+        slotLoaderPending[where] = {
+            comp: comp,
+            timer: setTimeout(function () {
+                delete slotLoaderPending[where];
+                // No answer came back: ask again rather than guess.
+                if (where === activeSlot) { subscribe(where); renderSlot(); }
+            }, SLOT_LOADER_TIMEOUT)
+        };
+        sendFn();
+        renderSlot();
+    }
+
+    function loadSlotModule(slot, comp, moduleId) {
+        startLoad(slot, comp, function () {
+            send({ type: "set_param", slot: slot, key: comp + ":module", value: moduleId || "none" });
+        });
+    }
+
+    // The master bus loads by DSP PATH, not by id (shadow_master_fx_slot_load
+    // takes a .so path), and "" empties a position.
+    function loadMasterFxModule(compKey, moduleId) {
+        var m = moduleId ? findSlotModule(moduleId) : null;
+        startLoad("master", compKey, function () {
+            send({ type: "set_master_fx_param", key: compKey + ":module", value: m ? m.dsp_path : "" });
+        });
+    }
+
+    // An overtake module is opened through the same command file the file
+    // browser's "Open in tool" uses; it takes over the Move's screen and pads.
+    function launchTool(toolId) {
+        startLoad("tool", "tool", function () {
+            fetch("/api/open-in-tool", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file_path: "/data/UserData/", tool_id: toolId })
+            }).catch(function () {});
+        });
+    }
+
+    function findSlotModule(id) {
+        if (!slotModules) return null;
+        for (var i = 0; i < slotModules.length; i++) {
+            if (slotModules[i].id === id) return slotModules[i];
+        }
+        return null;
+    }
+
+    function slotModuleName(id) {
+        if (!id) return "";
+        var m = findSlotModule(id);
+        return m ? m.name : id;
+    }
+
+    // One chain row plus, while a box is selected, its module list.
+    //   cfg.where      slot number, "master" or "tool"
+    //   cfg.title      e.g. "Slot 2", "Master FX"
+    //   cfg.positions  [{ comp, label, type, current }]
+    //   cfg.load(comp, moduleId)
+    //   cfg.arrows     draw the signal-flow arrows between boxes
+    //   cfg.removable  offer "Remove" for a filled position
+    function renderChainLoader(cfg) {
+        if (!slotLoaderEl) return;
+        slotLoaderEl.hidden = false;
+        slotLoaderEl.innerHTML = "";
+        var pending = slotLoaderPending[cfg.where];
+        var pick = slotLoaderPick && slotLoaderPick.where === cfg.where ? slotLoaderPick : null;
+
+        var row = document.createElement("div");
+        row.className = "chain-row";
+        row.setAttribute("role", "group");
+        row.setAttribute("aria-label", cfg.title + " chain");
+        cfg.positions.forEach(function (pos, i) {
+            if (i > 0 && cfg.arrows) {
+                var arrow = document.createElement("span");
+                arrow.className = "chain-arrow";
+                arrow.setAttribute("aria-hidden", "true");
+                arrow.textContent = "›";
+                row.appendChild(arrow);
+            }
+            var id = pos.current || "";
+            var box = document.createElement("button");
+            box.type = "button";
+            box.className = "chain-box" + (pos.accent ? " chain-synth" : "") +
+                (id ? " filled" : " empty") + (pick && pick.comp === pos.comp ? " picking" : "");
+            box.disabled = !!pending || !isConnected;
+            var label = document.createElement("span");
+            label.className = "chain-box-label";
+            label.textContent = pos.label;
+            var name = document.createElement("span");
+            name.className = "chain-box-name";
+            if (pending && pending.comp === pos.comp) {
+                name.innerHTML = '<span class="loading-spinner"></span>';
+            } else {
+                name.textContent = id ? slotModuleName(id) : "+";
+            }
+            box.appendChild(label);
+            box.appendChild(name);
+            box.setAttribute("aria-label", pos.label + ": " + (id ? slotModuleName(id) : "empty") + ". Choose module");
+            box.onclick = function () {
+                slotLoaderPick = (pick && pick.comp === pos.comp) ? null : { where: cfg.where, comp: pos.comp };
+                if (slotLoaderPick && !slotModules) fetchSlotModules();
+                renderSlot();
+            };
+            row.appendChild(box);
+        });
+        slotLoaderEl.appendChild(row);
+
+        if (slotModulesError) {
+            var err = document.createElement("p");
+            err.className = "chain-note";
+            err.textContent = slotModulesError;
+            slotLoaderEl.appendChild(err);
+        }
+        if (cfg.note) {
+            var note = document.createElement("p");
+            note.className = "chain-note";
+            note.textContent = cfg.note;
+            slotLoaderEl.appendChild(note);
+        }
+        if (!pick) return;
+
+        var pos = cfg.positions.filter(function (p) { return p.comp === pick.comp; })[0];
+        if (!pos) return;
+        var current = pos.current || "";
+        var list = document.createElement("div");
+        list.className = "chain-picker";
+        list.setAttribute("role", "listbox");
+        list.setAttribute("aria-label", pos.label + " modules");
+        var title = document.createElement("div");
+        title.className = "chain-picker-title";
+        title.textContent = cfg.title + " · " + pos.label;
+        list.appendChild(title);
+
+        function option(text, id, disabled) {
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "chain-option" + (id && id === current ? " current" : "");
+            b.setAttribute("role", "option");
+            b.setAttribute("aria-selected", id && id === current ? "true" : "false");
+            b.textContent = text;
+            b.disabled = !!disabled;
+            b.onclick = function () {
+                if (id && id === current) { slotLoaderPick = null; renderSlot(); return; }
+                cfg.load(pos.comp, id);
+            };
+            list.appendChild(b);
+        }
+        if (!slotModules) {
+            var wait = document.createElement("div");
+            wait.className = "chain-note";
+            wait.textContent = "Loading module list…";
+            list.appendChild(wait);
+        } else {
+            var n = 0;
+            slotModules.forEach(function (m) {
+                if (m.component_type !== pos.type) return;
+                n++;
+                option(m.name + (m.device_only ? " — load on device" : ""), m.id,
+                       m.device_only && m.id !== current);
+            });
+            if (!n) {
+                var none = document.createElement("div");
+                none.className = "chain-note";
+                none.textContent = "No " + pos.label + " modules installed";
+                list.appendChild(none);
+            }
+            if (current && cfg.removable) option("Remove " + slotModuleName(current), "", false);
+        }
+        slotLoaderEl.appendChild(list);
+    }
+
+    function renderSlotLoader(s) {
+        var slot = activeSlot;
+        renderChainLoader({
+            where: slot,
+            title: "Slot " + (slot + 1),
+            arrows: true,
+            removable: true,
+            positions: SLOT_LOADER_POSITIONS.map(function (p) {
+                return { comp: p.comp, label: p.label, type: p.type, accent: p.comp === "synth",
+                         current: s.components[p.comp].module };
+            }),
+            load: function (comp, id) { loadSlotModule(slot, comp, id); }
+        });
+    }
+
+    function renderMasterFxLoader() {
+        renderChainLoader({
+            where: "master",
+            title: "Master FX",
+            arrows: true,
+            removable: true,
+            positions: MASTER_FX_KEYS.map(function (k, i) {
+                return { comp: k, label: "FX " + (i + 1), type: "audio_fx",
+                         current: masterFx.components[k].module };
+            }),
+            load: function (comp, id) { loadMasterFxModule(comp, id); }
+        });
+    }
+
+    function renderToolLoader() {
+        renderChainLoader({
+            where: "tool",
+            title: "Tool",
+            arrows: false,
+            removable: false,
+            note: tool.id ? "Exit a tool on the Move: Shift + Volume + Jog click." : "",
+            positions: [{ comp: "tool", label: "Tool", type: "overtake", accent: true, current: tool.id || "" }],
+            load: function (comp, id) { if (id) launchTool(id); }
+        });
+    }
+
+    fetchSlotModules();
 
     // Set initial tab button active state from URL hash
     tabButtons.forEach(function (btn) {
@@ -1610,18 +1888,23 @@
         }
         customUIFrames = {};
 
+        if (slotLoaderEl) slotLoaderEl.hidden = true;
+
         if (activeSlot === "master") {
+            renderMasterFxLoader();
             renderMasterFx();
             return;
         }
 
         if (activeSlot === "tool") {
+            renderToolLoader();
             renderTool();
             return;
         }
 
         var s = slots[activeSlot];
         slotTitleEl.textContent = "Slot " + (activeSlot + 1);
+        renderSlotLoader(s);
 
         // Check if any component has data
         var hasAnyData = false;
@@ -1687,7 +1970,7 @@
         if (renderedCount === 0 && !knobSection) {
             var emptyNote = document.createElement("p");
             emptyNote.className = "text-muted";
-            emptyNote.textContent = "No modules loaded in this slot";
+            emptyNote.textContent = "Empty slot \u2014 tap a box above to load a module";
             slotContentEl.appendChild(emptyNote);
         }
 
@@ -2164,7 +2447,7 @@
             note.textContent = tool.id
                 ? ("Loading " + tool.id + "…")
                 : (tool.known
-                    ? "No tool loaded. Open a tool on the Move and it will appear here."
+                    ? "No tool loaded. Tap the box above, or open a tool on the Move."
                     : "Connecting to the Move — checking for a loaded tool…");
             slotContentEl.appendChild(note);
             return;
