@@ -695,15 +695,34 @@
         });
     }
 
-    // An overtake module is opened through the same command file the file
-    // browser's "Open in tool" uses; it takes over the Move's screen and pads.
+    // An overtake module or a tool is opened through the same command file the
+    // file browser's "Open in tool" uses; it takes over the Move's screen.
+    // Only an overtake tool with a DSP reports back over the socket, so the
+    // box does not wait for that: the server's answer is the result.
+    var toolLaunchNote = "";
+
+    function csrfToken() {
+        var m = document.cookie.match(/(?:^| )csrf_token=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : "";
+    }
+
     function launchTool(toolId) {
+        toolLaunchNote = "";
         startLoad("tool", "tool", function () {
             fetch("/api/open-in-tool", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
                 body: JSON.stringify({ file_path: "/data/UserData/", tool_id: toolId })
-            }).catch(function () {});
+            }).then(function (r) {
+                toolLaunchNote = r.ok
+                    ? "Opened " + slotModuleName(toolId) + " on the Move."
+                    : "Could not open " + slotModuleName(toolId) + " (HTTP " + r.status + ").";
+            }).catch(function () {
+                toolLaunchNote = "Could not reach the Move.";
+            }).then(function () {
+                slotLoaderDone("tool");
+                if (activeSlot === "tool") renderSlot();
+            });
         });
     }
 
@@ -823,9 +842,9 @@
         } else {
             var n = 0;
             slotModules.forEach(function (m) {
-                if (m.component_type !== pos.type) return;
+                if ((pos.types || [pos.type]).indexOf(m.component_type) < 0) return;
                 n++;
-                option(m.name + (m.device_only ? " — load on device" : ""), m.id,
+                option(m.name + (m.device_only ? (m.component_type === "tool" ? " — open on device" : " — load on device") : ""), m.id,
                        m.device_only && m.id !== current);
             });
             if (!n) {
@@ -874,8 +893,9 @@
             title: "Tool",
             arrows: false,
             removable: false,
-            note: tool.id ? "Exit a tool on the Move: Shift + Volume + Jog click." : "",
-            positions: [{ comp: "tool", label: "Tool", type: "overtake", accent: true, current: tool.id || "" }],
+            note: [toolLaunchNote, tool.id || toolLaunchNote ? "Exit a tool on the Move: Shift + Volume + Jog click." : ""]
+                .filter(Boolean).join(" "),
+            positions: [{ comp: "tool", label: "Tool", types: ["tool", "overtake"], accent: true, current: tool.id || "" }],
             load: function (comp, id) { if (id) launchTool(id); }
         });
     }

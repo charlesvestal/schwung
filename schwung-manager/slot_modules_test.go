@@ -26,7 +26,11 @@ func TestDiscoverSlotModules(t *testing.T) {
 	writeModuleJSON(t, base, "audio_fx", "freeverb",
 		`{"id":"freeverb","name":"Freeverb","component_type":"audio_fx","capabilities":{"chainable":true}}`)
 	writeModuleJSON(t, base, "tools", "song-mode",
-		`{"id":"song-mode","name":"Song Mode","component_type":"tool","capabilities":{"chainable":true}}`)
+		`{"id":"song-mode","name":"Song Mode","component_type":"tool","tool_config":{"interactive":true,"skip_file_browser":true}}`)
+	writeModuleJSON(t, base, "tools", "wav-player",
+		`{"id":"wav-player","name":"WAV Player","component_type":"tool"}`)
+	writeModuleJSON(t, base, "tools", "dbx",
+		`{"id":"dbx","name":"DBX","component_type":"tool","standalone":true,"tool_config":{"interactive":true,"skip_file_browser":true}}`)
 	writeModuleJSON(t, base, "overtake", "m8",
 		`{"id":"m8","name":"M8","component_type":"overtake"}`)
 	writeModuleJSON(t, base, "sound_generators", "standalone",
@@ -39,6 +43,9 @@ func TestDiscoverSlotModules(t *testing.T) {
 		{ID: "m8", Name: "M8", ComponentType: "overtake"},
 		{ID: "linein", Name: "Line In", ComponentType: "sound_generator", DeviceOnly: true},
 		{ID: "osirus", Name: "Osirus", ComponentType: "sound_generator"},
+		{ID: "dbx", Name: "DBX", ComponentType: "tool", DeviceOnly: true},
+		{ID: "song-mode", Name: "Song Mode", ComponentType: "tool"},
+		{ID: "wav-player", Name: "WAV Player", ComponentType: "tool", DeviceOnly: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d modules %+v, want %d", len(got), got, len(want))
