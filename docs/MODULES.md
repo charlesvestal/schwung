@@ -491,6 +491,33 @@ build/packaging includes them. The main repo's `scripts/build.sh`
 copies `*.{js,mjs,json,sh,py,txt}` from `src/modules/`; module
 repos typically mirror that pattern.
 
+## Loading modules from the Remote UI
+
+The Remote UI page draws the slot's chain as a row of boxes above the knobs
+(MIDI FX › Synth › FX 1 › FX 2), the same shape as the device's chain view.
+Tap a box to pick a module for that position, or remove it. The Master FX tab
+has FX 1–4, and the Tool tab launches a tool. The list comes from
+`GET /api/slot-modules`, which reads `module.json` from disk (not from the
+catalog), so a custom install shows up too.
+
+- A slot position is written as `<comp>:module` (`"none"` clears it), and a
+  Master FX position as `master_fx:fxN:module` with the DSP **path** (`""`
+  clears it).
+- **Module writes take the shadow_param mailbox, never the web-set ring.**
+  The ring forwards to a module that is already loaded and cannot load
+  one, so a pick sent that way was accepted and did nothing. The manager
+  then polls the slot until the new module reads back (up to 20 s; an idle
+  slot can take over 10 s) before it re-describes the slot.
+- A **line-in** sound generator is listed but cannot be picked from a
+  browser. The device runs the speaker-feedback gate before loading one, and
+  a remote write would skip it.
+- The Tool tab uses `POST /api/open-in-tool`, like the file browser's
+  "Open in tool". It needs the `X-CSRF-Token` header. Overtake modules and
+  tools that start straight away (`tool_config.interactive` +
+  `skip_file_browser`, not standalone) are launchable. Tools that open a
+  file browser, a set picker or a standalone binary first are shown as
+  "open on device".
+
 ## Remote UI Custom HTML (web_ui.html)
 
 A module that wants a fully custom browser-based UI ships a
