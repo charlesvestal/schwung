@@ -895,12 +895,16 @@ Delete (CC 119) — the drum-rack trio. `claims_ccs` lists any others by CC
 number; the two combine.
 
 While that module's UI is on screen, a claimed button is delivered to the
-module (a `type: "canvas"` UI receives it in `onMidi`; on the knob grid Undo,
-Copy and Delete drive the instance copy/clear gesture under *Child Selectors*)
-**and withheld from Move firmware**, so a press cannot double-fire into Move's
-own action — hold Copy and tap a pad without also copying the Move clip behind
-the screen. The claim applies on the knob grid, the hierarchy editor, the
-component edit/params screens, and a canvas UI (fullscreen or co-run overlay).
+module (a `type: "canvas"` UI receives it in `onMidi`; a module that draws its
+own screen from `ui_chain.js` receives it in `onMidiMessageInternal`; on the
+knob grid Undo, Copy and Delete drive the instance copy/clear gesture under
+*Child Selectors*) **and withheld from Move firmware**, so a press cannot
+double-fire into Move's own action — hold Copy and tap a pad without also
+copying the Move clip behind the screen. The claim applies on the knob grid,
+the hierarchy editor, a module's own `ui_chain.js` screen, and a canvas UI
+(fullscreen or co-run overlay). The component screen claims nothing when it
+falls back to the plain preset browser, because nothing there would receive
+the button.
 Leave any of those and the buttons return to Move immediately; the shim also
 drops every claim on its own when the shadow display closes, so a shadow UI
 that exits without reconciling cannot strand one.
