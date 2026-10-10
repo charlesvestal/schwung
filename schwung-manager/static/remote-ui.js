@@ -637,7 +637,7 @@
     var slotModulesError = "";
     var slotLoaderPending = {};      // slot -> { comp, timer }
     var slotLoaderPick = null;       // { where, comp } while a position's picker is open
-    var SLOT_LOADER_TIMEOUT = 8000;
+    var SLOT_LOADER_TIMEOUT = 25000;  // server waits up to 20 s for the load
 
     function fetchSlotModules() {
         fetch("/api/slot-modules", { cache: "no-store" })
