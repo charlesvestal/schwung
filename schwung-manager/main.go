@@ -4287,6 +4287,7 @@ func main() {
 
 	// API (JSON).
 	mux.HandleFunc("GET /api/modules", app.handleAPIModules)
+	mux.HandleFunc("GET /api/slot-modules", app.handleAPISlotModules)
 
 	// Clip-state debug (see clip_debug.go).
 	mux.HandleFunc("GET /clip-state", app.handleClipState)
