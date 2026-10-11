@@ -2473,6 +2473,18 @@
       "default_branch": "main",
       "asset_name": "TinyK.tar.gz",
       "min_host_version": "1.6.3"
+    },
+    {
+      "id": "viz",
+      "name": "Viz",
+      "description": "Light shows on grid controllers and on the remote UI, played in time with whatever Move is playing.",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "github_repo": "kliegsablaze/viz",
+      "default_branch": "main",
+      "asset_name": "viz-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
