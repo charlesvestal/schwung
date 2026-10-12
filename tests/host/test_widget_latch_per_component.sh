@@ -103,7 +103,7 @@ const make = new Function(
      module differs per chain -- a slot chain says "fx1_module", an FX bus says
      "master_fx:fx1:name" -- and the grid may be on any of them, so the spelling
      is resolved rather than composed at the call site. */
-  "componentModuleIdKey", "getComponentChainParams",
+  "componentModuleIdKey", "gridComponentChainParams",
   "WIDGET_RETRY_TICKS", "registry", "debugLog",
   preamble + stub + src +
   "; return { tickComponentWidgets, ensureComponentWidgets, latch: () => widgetModuleLoaded };");

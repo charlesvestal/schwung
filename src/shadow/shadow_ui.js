@@ -21512,6 +21512,33 @@ let widgetResolvedSig = "";
 let widgetFailedVisitSig = "";
 
 /*
+ * THE KNOB GRID'S chain_params, FROM WHICHEVER CHAIN IT WAS OPENED ON.
+ *
+ * The grid stores the EDITOR key -- bare for a slot chain ("fx2"), prefixed for
+ * Master FX and the sends ("master_fx:fx2") and for a bus ("bus1:fx2") -- and
+ * getComponentChainParams asks slotChainTarget, whose key rule answers null for
+ * both prefixed forms. tickComponentWidgets handed it the grid's key regardless,
+ * so on any chain but a slot's the read came back `[]`: "not answered yet" to
+ * ensureComponentWidgets, which retried four times a second for as long as the
+ * grid was open and never loaded the module's canvas.js. Its custom: cells drew
+ * built-in dials instead. Seen on the device as the log line
+ * `widgets: id="pushnpull" params=0` repeating, with the module id resolved --
+ * the id is read through componentModuleIdKey, which does know all three.
+ *
+ * hierEditorChainAt is the same resolution for the list editor, from the
+ * editor's state; this is it from a (slot, key) pair, which is all the grid has.
+ */
+function gridComponentChainParams(slot, componentKey) {
+    const busAt = BusModel.parseBusComponentKey(componentKey);
+    if (busAt) {
+        return chainTargetChainParams(busChainTarget(busAt.bus, slot), `fx${busAt.fx + 1}`);
+    }
+    const mfx = masterFxIndexFromComponentKey(componentKey);
+    if (mfx >= 0) return getMasterFxChainParams(mfx);
+    return getComponentChainParams(slot, componentKey);
+}
+
+/*
  * The one-strike disable in widget_registry.mjs must survive a retry.
  *
  * A widget that THREW while drawing is disabled for the session and the page
@@ -21632,7 +21659,7 @@ function tickComponentWidgets() {
     const moduleKey = componentModuleIdKey(comp);
     if (!moduleKey) return;
     const id = getSlotParam(slot, moduleKey) || "";
-    ensureComponentWidgets(id, getComponentChainParams(slot, comp));
+    ensureComponentWidgets(id, gridComponentChainParams(slot, comp));
 
     /*
      * RECORD THE ATTEMPT AGAINST THE WORLD IT LEAVES BEHIND, NOT THE ONE IT
