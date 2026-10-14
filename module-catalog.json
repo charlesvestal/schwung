@@ -2473,6 +2473,22 @@
       "default_branch": "main",
       "asset_name": "TinyK.tar.gz",
       "min_host_version": "1.6.3"
+    },
+    {
+      "id": "tinyvoice",
+      "name": "TinyVoice",
+      "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
+      "author": "fleshinachair",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": [
+        "needs-line-in",
+        "vocal"
+      ],
+      "github_repo": "fleshinachair/TinyVoice",
+      "default_branch": "main",
+      "asset_name": "TinyVoice.tar.gz",
+      "min_host_version": "1.6.3"
     }
   ]
 }
