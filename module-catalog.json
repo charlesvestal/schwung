@@ -2473,6 +2473,19 @@
       "default_branch": "main",
       "asset_name": "TinyK.tar.gz",
       "min_host_version": "1.6.3"
+    },
+    {
+      "id": "model-72",
+      "name": "Model-72",
+      "description": "Circuit-modelled 1970s monosynth from CA-72's model of the Minimoog Model D: three oscillators, the ladder filter and both contours, mono/poly/unison up to 10 voices, stereo, 19 factory presets.",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "mono-bass",
+      "tags": ["polyphonic", "vintage-emulation"],
+      "github_repo": "sd88me/schwung-model72",
+      "default_branch": "main",
+      "asset_name": "model-72-module.tar.gz",
+      "min_host_version": "1.6.3"
     }
   ]
 }
