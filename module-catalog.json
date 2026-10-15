@@ -2474,5 +2474,17 @@
       "asset_name": "TinyK.tar.gz",
       "min_host_version": "1.6.3"
     }
+{
+  "id": "shimmerwash",
+  "name": "Shimwash",
+  "description": "Shoegaze shimmer reverb with two pitch shifters, an 8-line reverb, bloom swell, freeze, and 13 factory presets",
+  "author": "twinpowers",
+  "component_type": "audio_fx",
+  "subcategory": "reverb",
+  "github_repo": "twinpowers/schwung-shimwash",
+  "default_branch": "main",
+  "asset_name": "shimmerwash-module.tar.gz",
+  "min_host_version": "0.12.0"
+}
   ]
 }
