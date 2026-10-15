@@ -2473,6 +2473,69 @@
       "default_branch": "main",
       "asset_name": "TinyK.tar.gz",
       "min_host_version": "1.6.3"
+    },
+    {
+      "id": "tinyvoice",
+      "name": "TinyVoice",
+      "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
+      "author": "fleshinachair",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": ["needs-line-in", "vocal"],
+      "github_repo": "fleshinachair/TinyVoice",
+      "default_branch": "main",
+      "asset_name": "TinyVoice.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
+      "id": "gresil",
+      "name": "Gresil",
+      "description": "Mutable Instruments Beads granular texture synthesizer: up to 32 grains with per-grain randomization, a clock-synced multitap delay mode, 4 tape/digital media, freeze saved with the set, a wavetable synth source & wet-only output filters with limiter",
+      "author": "Emilie Gillet (port: filliformes)",
+      "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
+      "tags": ["granular", "lo-fi", "tape"],
+      "github_repo": "filliformes/gresil-move",
+      "default_branch": "main",
+      "asset_name": "gresil-module.tar.gz",
+      "min_host_version": "1.3.0"
+    },
+    {
+      "id": "model-72",
+      "name": "Model-72",
+      "description": "Circuit-modelled 1970s monosynth from CA-72's model of the Minimoog Model D: three oscillators, the ladder filter and both contours, mono/poly/unison up to 10 voices, stereo, 19 factory presets.",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "mono-bass",
+      "tags": ["polyphonic", "vintage-emulation"],
+      "github_repo": "sd88me/schwung-model72",
+      "default_branch": "main",
+      "asset_name": "model-72-module.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
+      "id": "viz",
+      "name": "Viz",
+      "description": "Light shows on grid controllers and on the remote UI, played in time with whatever Move is playing.",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "github_repo": "kliegsablaze/viz",
+      "default_branch": "main",
+      "asset_name": "viz-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "shimmerwash",
+      "name": "Shimwash",
+      "description": "Shoegaze shimmer reverb with two pitch shifters, an 8-line reverb, bloom swell, freeze, and 13 factory presets",
+      "author": "twinpowers",
+      "component_type": "audio_fx",
+      "subcategory": "reverb",
+      "github_repo": "twinpowers/schwung-shimwash",
+      "default_branch": "main",
+      "asset_name": "shimmerwash-module.tar.gz",
+      "min_host_version": "0.12.0"
     }
   ]
 }
