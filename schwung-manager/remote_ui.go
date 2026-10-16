@@ -244,6 +244,17 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 		}
 		return fmt.Errorf("no shared memory available")
 	}
+	// A module load must take the blocking mailbox. The set ring is drained
+	// by shadow_direct_set_param, which forwards to a module that is already
+	// there; only the shadow_param handler hands "<comp>:module" to the
+	// shim's slot loader (and routes master_fx:fxN:module to the bus loader).
+	// Through the ring the write was accepted and silently did nothing.
+	if isModuleLoadKey(key) {
+		if shm := ru.ensureShm(); shm != nil {
+			return shm.SetParam(slot, key, value)
+		}
+		return fmt.Errorf("no shared memory available")
+	}
 	if ring := ru.ensureSetRing(); ring != nil {
 		return ring.SetParam(slot, key, value)
 	}
@@ -251,6 +262,13 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 		return shm.SetParamFast(slot, key, value)
 	}
 	return fmt.Errorf("no shared memory available")
+}
+
+// isModuleLoadKey reports whether a write replaces a module rather than
+// setting one of its parameters: "synth:module", "fx1:module",
+// "master_fx:fx2:module".
+func isModuleLoadKey(key string) bool {
+	return strings.HasSuffix(key, ":module")
 }
 
 // paramAnswered reports whether err came from an ANSWERED request — the shim
@@ -820,8 +838,13 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 	}
 	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
-		ru.sendError(ctx, c, "set_param failed: "+err.Error())
-		return
+		// A module load can outlast the mailbox wait and still land (the
+		// shim holds the answer until the loader finishes), so a timeout is
+		// not news about the slot: fall through and re-describe it anyway.
+		if !isModuleLoadKey(msg.Key) {
+			ru.sendError(ctx, c, "set_param failed: "+err.Error())
+			return
+		}
 	}
 
 	// After setting a preset-related param, re-read all component params
@@ -838,11 +861,53 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 				// Read shm once and fan out to all subscribers of this slot.
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
+		} else if paramKey == "module" && isChainComponent(comp) {
+			// A module swap replaces the component outright: its hierarchy,
+			// chain_params and values all belong to the new module. Re-run the
+			// subscribe sequence for every subscriber of the slot, after the
+			// shim's slot loader has had time to land the module.
+			want := msg.Value
+			if want == "none" {
+				want = ""
+			}
+			go func() {
+				ru.waitModuleLanded(slot, comp+"_module", want)
+				for _, sc := range ru.subscribedClients(slot) {
+					ru.handleSubscribe(ctx, sc, wsMessage{Type: "subscribe", Slot: &slot})
+				}
+			}()
 		} else if isChainComponent(comp) {
 			ru.scheduleComponentRefetch(ctx, slot, comp)
 		}
 	}
 }
+
+// waitModuleLanded polls a "<comp>_module" read until it names the module
+// that was written (or is empty after a removal), for up to moduleSwapWait.
+// The load is staged on the shim's slot loader and can take seconds; re-
+// describing the slot before it lands shows the old module again.
+func (ru *RemoteUI) waitModuleLanded(slot uint8, readKey, want string) {
+	deadline := time.Now().Add(moduleSwapWait)
+	time.Sleep(moduleSwapSettle)
+	for time.Now().Before(deadline) {
+		if shm := ru.ensureShm(); shm != nil {
+			if got, err := shm.GetParam(slot, readKey); err == nil && got == want {
+				return
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// moduleSwapWait bounds waitModuleLanded; past it the slot is re-described
+// as it stands, so a failed load shows what is really there.
+const moduleSwapWait = 20 * time.Second
+
+// moduleSwapSettle is how long after a "<comp>:module" write the slot is
+// re-described to its subscribers. The write is staged on the shim's slot
+// loader (dlopen + create_instance off the SPI callback), so the answer can
+// arrive before the new module is installed.
+const moduleSwapSettle = 400 * time.Millisecond
 
 // isChainComponent reports whether comp names a slot component we push params
 // for. Master FX keys ("master_fx:fx1:...") split differently and are excluded.
@@ -1437,7 +1502,19 @@ func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg
 	// All master FX params go through slot 0.
 	if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_master_fx_param failed", "key", msg.Key, "err", err)
-		ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
+		if !isModuleLoadKey(msg.Key) {
+			ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
+			return
+		}
+	}
+	// A module swap on the master bus: re-describe the bus, as for a slot.
+	if strings.HasSuffix(msg.Key, ":module") {
+		go func() {
+			time.Sleep(moduleSwapSettle)
+			for _, mc := range ru.masterFxSubscribedClients() {
+				ru.handleSubscribeMasterFx(ctx, mc)
+			}
+		}()
 	}
 }
 
