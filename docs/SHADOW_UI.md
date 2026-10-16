@@ -1046,13 +1046,13 @@ signal. Not covered.
 Same construction problem as the metronome, one layer later: under
 `rebuild_from_la` the DAC mailbox is rebuilt from the four per-track Link Audio
 channels, so Move's own **MoveSpeakerEnhancer** — which sits on its master bus —
-is not in the path, and `speaker_eq_process` in `schwung_shim.c` runs an
+is not in the path, and `speaker_eq_process` (`src/host/speaker_eq.c`) runs an
 emulation of it in its place.
 
 It must never colour headphones, and the jack reading it depends on is the part
 that goes wrong: XMOS can broadcast a transient or uncorrected CC 115 val=0
 ("speaker") while headphones are actually plugged. So the auto logic is biased
-hard toward OFF — a speaker reading is trusted only after `SPK_EQ_STABLE_SEC`
+hard toward OFF — a speaker reading is trusted only after `SPEAKER_EQ_STABLE_SEC`
 of continuity, and the failure it prefers is *less bass on the speaker*, never
 *hollow headphones*.
 

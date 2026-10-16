@@ -1518,7 +1518,7 @@ assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
 
 Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk" warning if speakers active AND no line-in cable. Jog-click proceeds, Back aborts.
 
-Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND `shadow_speaker_active` AND NOT `shadow_line_in_connected`.
+Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND the speaker is active (`speaker_eq.speaker_active`, mirrored to `shadow_control->speaker_active`) AND NOT `shadow_line_in_connected`.
 
 **Continuous feedback guard (bypass-on-risk, auto-clear when safe).** The interactive gate only runs on *user* selection, so a restored line-input slot would activate hot at cold boot (jack state is unknown to the shim there) and feed back. Now there's a continuous guard:
 - **Shim, at boot:** any restored line-input slot is brought up **BYPASSED** (real `synth:bypassed=1` — the visible "B" glyph) with `feedback_hold = 1` as the guard's marker (`shadow_slot_apply_boot_feedback_hold` in `shadow_chain_mgmt.c`, both boot-restore paths). Bypass is set *after* `load_file`, so it survives the per-set mute-state load (which only touches `muted`). Chain host exposes `synth:consumes_line_input` (parsed from `capabilities.audio_in` via the new `json_get_bool_in_section`, since `audio_in` is a JSON boolean) and `synth:bypassed` get/set.
