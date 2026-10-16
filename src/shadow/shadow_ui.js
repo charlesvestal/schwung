@@ -22152,15 +22152,39 @@ function reconcileCcClaim() {
      *
      * So the key is latched only once an answer is in hand; a failed read
      * leaves it alone and the next tick asks again. */
+    /*
+     * A MODULE THAT DRAWS ITS OWN SCREEN is named by the module UI that is
+     * loaded, never by the list editor's pair.
+     *
+     * COMPONENT_EDIT is a claim view, but enterComponentEditFallback sets
+     * selectedSlot / editingComponentKey and loadModuleUi sets
+     * loadedModuleSlot / loadedModuleComponent -- nothing on that path writes
+     * hierEditorSlot. Reading the hierarchy pair here answered "" (no claim:
+     * a ui_chain.js module never got the buttons it declared, they went to
+     * Move) or, after a jump that skipped exitHierarchyEditor, the PREVIOUS
+     * module's claim. caa7f384 taught currentEditFocus() this for Follow
+     * Focus; the read below is its second consumer.
+     *
+     * Only while someone is there to RECEIVE the button: the same test
+     * reconcilePadBlock() and reconcileStepObserve() use for "a module owns
+     * this screen", with onMidiMessageInternal in place of tick because that
+     * is what the COMPONENT_EDIT dispatch calls. The preset-browser fallback is
+     * also COMPONENT_EDIT and handles no claimed CC, so a claim there would
+     * withhold the button from Move and deliver it to nobody.
+     */
+    const ownUi = view === VIEWS.COMPONENT_EDIT &&
+                  loadedModuleUi && loadedModuleUi.onMidiMessageInternal &&
+                  !coRunUiActive();
     let moduleId = "";
-    if (onScreen && onGrid) {
-        const moduleKey = componentModuleIdKey(comp);
+    if (onScreen && (onGrid || ownUi)) {
+        const readSlot = onGrid ? slot : loadedModuleSlot;
+        const moduleKey = componentModuleIdKey(onGrid ? comp : chainComponentId(loadedModuleComponent));
         if (moduleKey) {
-            const raw = getSlotParam(slot, moduleKey);
+            const raw = getSlotParam(readSlot, moduleKey);
             if (raw === null || raw === undefined) return;   /* retry next tick */
             moduleId = raw;
         }
-    } else if (onScreen) {
+    } else if (onScreen && view !== VIEWS.COMPONENT_EDIT) {
         const raw = hierarchyActiveModuleIdRaw();
         if (raw === null || raw === undefined) return;       /* retry next tick */
         moduleId = raw;
