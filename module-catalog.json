@@ -2475,6 +2475,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinypro5",
+      "name": "TinyPro5",
+      "description": "5-voice polyphonic virtual analog synth in the style of the Prophet-5 Rev 2: two oscillators with hard sync, SSM-style filter, Poly-Mod, LFO and drift. Ships a custom 32-preset factory bank and also loads your own .h2p, .syx and .zip banks",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": [
+        "vintage-emulation"
+      ],
+      "github_repo": "fleshinachair/TinyPro5",
+      "default_branch": "main",
+      "asset_name": "TinyPro5.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
