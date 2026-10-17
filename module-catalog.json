@@ -2475,6 +2475,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinypro5",
+      "name": "TinyPro5",
+      "description": "Prophet-5 Rev 2 style 5-voice virtual analog polysynth with SSM-style ladder filter, Poly-Mod, analog drift and Sequential's 200 factory programs",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": [
+        "vintage-emulation"
+      ],
+      "github_repo": "fleshinachair/TinyPro5",
+      "default_branch": "main",
+      "asset_name": "TinyPro5.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
