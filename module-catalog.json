@@ -2536,6 +2536,19 @@
       "default_branch": "main",
       "asset_name": "shimmerwash-module.tar.gz",
       "min_host_version": "0.12.0"
+    },
+    {
+      "id": "tenebrae",
+      "name": "Tenebrae",
+      "description": "Dark, retro macro synth with an edge: snarling basses, drifting pads, screaming leads and long, moving echoes. 8 oscillator models, three-zone drive, chorus, phaser, tempo pump, VHS, tape delay and shimmer reverb. 163 presets",
+      "author": "legsmechanical",
+      "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": ["polyphonic", "tape"],
+      "github_repo": "legsmechanical/schwung-tenebrae",
+      "default_branch": "main",
+      "asset_name": "tenebrae-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
