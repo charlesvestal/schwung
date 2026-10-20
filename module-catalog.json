@@ -2536,6 +2536,19 @@
       "default_branch": "main",
       "asset_name": "shimmerwash-module.tar.gz",
       "min_host_version": "0.12.0"
+    },
+    {
+      "id": "concat",
+      "name": "Concat",
+      "description": "Corpus synthesizer: slices a sample library, maps every slice by timbre (36 descriptors) and plays grain clouds from the nearest slices. Notes, Map and Mosaic (live input) modes, 16 pad clusters, .concat corpus files with live reload, and a web Corpus Builder served from the Move.",
+      "author": "Filliformes",
+      "component_type": "sound_generator",
+      "subcategory": "granular",
+      "tags": ["has-remote-ui", "polyphonic", "sample-based"],
+      "github_repo": "filliformes/concat-move",
+      "default_branch": "main",
+      "asset_name": "concat-module.tar.gz",
+      "min_host_version": "1.3.0"
     }
   ]
 }
