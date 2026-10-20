@@ -1471,16 +1471,16 @@
       "min_host_version": "1.3.0"
     },
     {
-      "id": "davebox",
-      "name": "dAVEBOx",
-      "description": "8-track creative MIDI sequencer with per-clip effects chains, polyrhythmic drum lanes, live recording, and a 24-mod performance mode",
+      "id": "davebox-sa",
+      "name": "dAVEBOx SA",
+      "description": "8-track MIDI sequencer that runs as its own standalone session: Move restarts into dAVEBOx SA, and Schwung comes back untouched when you quit. The successor to dAVEBOx.",
       "author": "legsmechanical",
       "component_type": "tool",
       "subcategory": "sequencer",
-      "github_repo": "legsmechanical/schwung-davebox",
+      "github_repo": "legsmechanical/dbxhost",
       "default_branch": "main",
-      "asset_name": "davebox-module.tar.gz",
-      "min_host_version": "0.9.13"
+      "asset_name": "davebox-sa-module.tar.gz",
+      "min_host_version": "1.7.3"
     },
     {
       "id": "chorddex",
