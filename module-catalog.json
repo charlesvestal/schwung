@@ -2538,15 +2538,15 @@
       "min_host_version": "0.12.0"
     },
     {
-  "id": "dubstarmoonicon",
-  "name": "DubStarMooniCon",
-  "description": "Two-oscillator subharmonic voice: 3-limit dividers, five band-limited waveforms, resonant SVF filter, ADSR with aftertouch release.",
-  "author": "Moongriffin",
-  "component_type": "sound_generator",
-  "github_repo": "elliotmross-max/dubstarmoonicon",
-  "default_branch": "main",
-  "asset_name": "dubstarmoonicon-module.tar.gz",
-  "min_host_version": "0.3.0"
+      "id": "dubstarmoonicon",
+      "name": "DubStarMooniCon",
+      "description": "Two-oscillator subharmonic voice: 3-limit dividers, five band-limited waveforms, resonant SVF filter, ADSR with aftertouch release.",
+      "author": "Moongriffin",
+      "component_type": "sound_generator",
+      "github_repo": "elliotmross-max/dubstarmoonicon",
+      "default_branch": "main",
+      "asset_name": "dubstarmoonicon-module.tar.gz",
+      "min_host_version": "0.3.0"
 }
 ]
 }
