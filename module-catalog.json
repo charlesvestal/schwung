@@ -1471,16 +1471,16 @@
       "min_host_version": "1.3.0"
     },
     {
-      "id": "davebox",
-      "name": "dAVEBOx",
-      "description": "8-track creative MIDI sequencer with per-clip effects chains, polyrhythmic drum lanes, live recording, and a 24-mod performance mode",
+      "id": "davebox-sa",
+      "name": "dAVEBOx SA",
+      "description": "8-track MIDI sequencer that runs as its own standalone session: Move restarts into dAVEBOx SA, and Schwung comes back untouched when you quit. The successor to dAVEBOx.",
       "author": "legsmechanical",
       "component_type": "tool",
       "subcategory": "sequencer",
-      "github_repo": "legsmechanical/schwung-davebox",
+      "github_repo": "legsmechanical/dbxhost",
       "default_branch": "main",
-      "asset_name": "davebox-module.tar.gz",
-      "min_host_version": "0.9.13"
+      "asset_name": "davebox-sa-module.tar.gz",
+      "min_host_version": "1.7.3"
     },
     {
       "id": "chorddex",
@@ -2475,6 +2475,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinypro5",
+      "name": "TinyPro5",
+      "description": "5-voice polyphonic virtual analog synth in the style of the Prophet-5 Rev 2: two oscillators with hard sync, SSM-style filter, Poly-Mod, LFO and drift. Ships a custom 32-preset factory bank and also loads your own .h2p, .syx and .zip banks",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": [
+        "vintage-emulation"
+      ],
+      "github_repo": "fleshinachair/TinyPro5",
+      "default_branch": "main",
+      "asset_name": "TinyPro5.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
@@ -2536,6 +2551,19 @@
       "default_branch": "main",
       "asset_name": "shimmerwash-module.tar.gz",
       "min_host_version": "0.12.0"
+    },
+    {
+      "id": "tenebrae",
+      "name": "Tenebrae",
+      "description": "Dark, retro macro synth with an edge: snarling basses, drifting pads, screaming leads and long, moving echoes. 8 oscillator models, three-zone drive, chorus, phaser, tempo pump, VHS, tape delay and shimmer reverb. 163 presets",
+      "author": "legsmechanical",
+      "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": ["polyphonic", "tape"],
+      "github_repo": "legsmechanical/schwung-tenebrae",
+      "default_branch": "main",
+      "asset_name": "tenebrae-module.tar.gz",
+      "min_host_version": "1.7.3"
     },
     {
       "id": "concat",
