@@ -2577,6 +2577,19 @@
       "default_branch": "main",
       "asset_name": "concat-module.tar.gz",
       "min_host_version": "1.3.0"
+    },
+    {
+      "id": "bloom",
+      "name": "Bloom",
+      "description": "Orchid-style chord instrument. Key-aware major and minor chord pads, strum plate, chord colours and voicings on the wheel, one-button progression ideas, per-step performance (strum, arp, pulse, gate, volume), and Record lays chords and bass onto your Move tracks, locked to Move's clock.",
+      "author": "bondobd",
+      "component_type": "overtake",
+      "subcategory": "sequencer",
+      "tags": ["bass", "chord", "generative", "polyphonic"],
+      "github_repo": "bondobd/schwung-bloom",
+      "default_branch": "main",
+      "asset_name": "bloom-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
