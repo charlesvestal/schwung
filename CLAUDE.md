@@ -1123,6 +1123,11 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   one pasted, silently. And a failed read voids the whole snapshot rather than
   dropping a key, or a pad is copied without its sample and still reported as
   `PASTED`.
+- **A worn encoder reports counts BACKWARDS, in bursts of up to ~14** — check
+  WHICH physical knob before blaming a contract. `knob_direction_filter.mjs` is
+  an opt-in per-knob majority filter (`/data/UserData/schwung/knob_direction_filter`,
+  empty = all, or `1,4`), OFF by default because it swallows a healthy knob's
+  small reversals. Grid input only; Move's own screens see the raw knob.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.

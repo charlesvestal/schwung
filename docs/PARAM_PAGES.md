@@ -711,6 +711,35 @@ coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
 satisfied. A HANG, not a wrong picture, and unreachable until alignment made
 those pages drawable.
 
+### A worn encoder reports BACKWARDS — an opt-in per-knob filter
+
+A dirty or worn encoder does not skip counts, it reports some of them in the
+wrong direction, in bursts. Measured on a real Move (2026-10-22, knob 1, raw
+MIDI_IN via `spi_midi_log_on`, one direction per touch): slow turns 78–83%
+correct with wrong-way runs of up to ~14 counts, fast turns ~97%. Through the
+4-detent enum gate that walks an enum backwards by several options; it was
+first reported as a software bug in `visible_if` enums, because every gating
+enum in the reporting modules sat on knob 1.
+
+`knob_direction_filter.mjs` keeps the last 12 counts per knob and an accepted
+direction; a count against it is held back, the direction flips only when the
+window leans the other way by 6, and a new touch commits only once 8 counts
+agree. On the captured stream: zero backward enum steps, against 7 unfiltered.
+
+**It is OFF by default, deliberately.** It cannot tell a misread burst from a
+deliberate small correction: on a healthy knob every reversal pays ~9 counts,
+and a clean `+4 -12 +12 -12` sweep walks `C D C` instead of
+`C D C B A B C D C B A`. A healthy knob gains nothing and loses fine control.
+
+Enable per device with `/data/UserData/schwung/knob_direction_filter`: empty
+for all knobs, or knob numbers (`1`, `1,4`). Read on each grid entry. It
+filters the Schwung grid's knob input only (`handleParamPagesMidi`) — Move's
+own screens read MIDI_IN directly and still see the raw encoder. A held-back
+count is CONSUMED, never returned unhandled, or the legacy knob handler would
+write it. `tests/host/test_knob_direction_filter.sh` runs the capture
+(`tests/fixtures/knob_jitter_capture.json`) through the real knob engine and
+pins the healthy-knob cost.
+
 ### A turn PEEKS the list; a cell that is already big does not
 
 Turning a divable enum raises its option list over the grid for 1500ms
