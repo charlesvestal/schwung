@@ -472,6 +472,41 @@ a real controller through choosing a child, asserting `state.values` really is
 keyed by templates — if the controller ever files resolved keys, the inversion
 becomes wrong and that half fails.
 
+### Turning a gating enum re-planned on EVERY write, and a plan is ~10 ms on the Move
+
+Reported from the device (lost-and-found `sync`/`routing`, genloss `classic`,
+mood `wet_mode`) as *"enums that gate other cells skip, flicker and snap back;
+plain enums are fine"*. Two findings, only one of them ours:
+
+- **The jumbled VALUES were a worn encoder.** All four keys sit on KNOB 1. The
+  raw MIDI_IN stream (`spi_midi_log_on`) showed knob 1 reversing on 27% of its
+  counts while turned one way; the same param on knob 8 was clean, and a
+  strictly one-direction INJECTED turn came out monotonic at every speed. The
+  controller followed its input faithfully. Check which PHYSICAL knob before
+  suspecting a contract.
+- **The FRAME RATE was ours.** A gating turn took the grid from ~56 fps to
+  25–36. OTLP with temporary per-statement spans put it in `flushReplan`:
+  9.5 ms per tick, 340 ms of every second of the turn. `onKnobTurn` marked a
+  re-plan on **every write** to a condition key, and the 4-detent enum gate
+  makes most writes repeat the value already planned against ("Host Host Host
+  Manual") — 40 passes for 10 changes in a 120-detent sweep. `planPages` costs
+  ~0.17 ms under node and ~50x that under QuickJS on the Move; the 6.7x
+  Mac-to-Move factor is for native DSP and does not transfer to JS.
+
+The controller now stamps the condition-key values each plan was built from
+(`plannedGates`) and `replanIfCondition` owes nothing when a write leaves its
+key where the plan found it. A null stamp (fresh load, mode re-plan) still
+re-plans. Separately, a visibility re-plan reuses the trailing menus the last
+`load()` / `refreshTrailing()` fetched instead of calling `io.trailingMenus()`:
+the host's `componentTrailingMenus()` does a blocking `<prefix>:state` read
+(6–7 ms on lost-and-found) to mark the preset row modified, and nothing a
+`visible_if` flip changes lives in those rows. The preset `*` keeps its own
+once-per-settle refresh (`tickUserPresetStale`).
+
+`tests/host/test_visible_if_replan_no_host_reads.sh` counts planning passes and
+host calls during a real controller turn, with controls that the turn did
+re-plan and that Tempo appeared and disappeared.
+
 ### The grid FOLLOWS the focused voice, and writes no LEDs doing it
 
 A module can declare what its performance surface is — `pad_layout`, and a `note`

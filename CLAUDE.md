@@ -1071,6 +1071,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   (`partlevel`), so asking with `sram_part_2_partlevel` missed every time and
   paid the read anyway — silent, because *a miss still answers correctly, only
   slowly.*
+- **A write that leaves a condition key where the plan found it plans
+  NOTHING** (`plannedGates`). Every write used to re-plan, and the 4-detent
+  enum gate makes most writes repeats: on the Move `planPages` is ~10 ms
+  (QuickJS, ~50x node), so turning a gating enum dropped the grid from ~56 to
+  ~36 fps. A visibility re-plan also reuses the last trailing menus rather than
+  calling `io.trailingMenus()`, whose host side is a blocking `:state` read.
+  The jumbled VALUES in that report were a worn KNOB 1 — ask which physical
+  knob first.
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.

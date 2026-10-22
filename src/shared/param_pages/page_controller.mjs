@@ -767,8 +767,25 @@ export function createController(io = {}) {
      * filter, just evaluated by the host instead of filtered here: the
      * controller does not know what a preset is.
      */
-    const trailingMenus = () =>
-        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
+    let trailingMenusCache = null;
+    const trailingMenus = () => (trailingMenusCache =
+        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []));
+    /*
+     * ...EXCEPT ON A VISIBILITY RE-PLAN, which reuses the last answer.
+     *
+     * The host's answer is not free: shadow_ui's componentTrailingMenus does a
+     * BLOCKING `<prefix>:state` read to mark the preset row modified -- 6-7 ms
+     * on lost-and-found. A gating enum re-plans on every value it writes, so a
+     * turn paid that on most ticks: measured on the device, the JS tick went
+     * from 13.5 ms to 22.7 ms and the grid from 56 fps to 25-33 for the length
+     * of the turn, on exactly the knobs whose page also re-lays-out -- reported
+     * as an enum that "skips, flickers and snaps back". Nothing a visible_if
+     * flip changes lives in these rows (they belong to the component, not to a
+     * param), so the rows load() or refreshTrailing() last fetched still hold.
+     * Every OTHER plan keeps asking. test_visible_if_replan_no_host_reads.sh.
+     */
+    const lastTrailingMenus = () =>
+        (trailingMenusCache !== null ? trailingMenusCache : trailingMenus());
 
     const s = {
         /* Per-controller, and it outlives a page change on purpose — see the
@@ -905,6 +922,11 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* What each condition key held when the plan on screen was built, or
+         * null when that is not known (a fresh load, a mode re-plan). A write
+         * that leaves a key where the plan found it cannot change what is
+         * visible, so it owes nothing -- see replanIfCondition. */
+        plannedGates: null,
         /* A pad press just told us the module's mode may have moved — spend
          * the next rotation stop on the gates rather than waiting for their
          * turn. See vouchLivePress and the gate lane. */
@@ -1406,6 +1428,7 @@ export function createController(io = {}) {
         s.fingerprint = planned.fingerprint;
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
         s.conditionKeys = planned.conditionKeys || new Set();
+        s.plannedGates = null;
         /* A fresh plan with fresh conditionKeys: a debt raised against the
          * OLD ones is paid, and honouring it on the next tick would re-plan
          * this component for a gate that belonged to another. */
@@ -4350,6 +4373,7 @@ export function createController(io = {}) {
          * the one recorded and it re-plans once for nothing. */
         s.plannedMode = s.lastLoadOpts && s.lastLoadOpts.mode;
         s.conditionKeys = planned.conditionKeys || new Set();
+        s.plannedGates = null;
         s.values = Object.create(null);
         s.knobStates = Object.create(null);
         s.cursor = 0;
@@ -4406,7 +4430,33 @@ export function createController(io = {}) {
      */
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
+        /*
+         * ...AND ONLY WHEN THE VALUE MOVED.
+         *
+         * An enum is gated at four detents per option, so most writes in a
+         * turn repeat the value the plan was built from ("Host Host Host
+         * Manual"), and every one of them bought a full planPages pass: 40
+         * passes for 10 changes in a 120-detent sweep. On the Move that is the
+         * whole cost of turning a gating enum -- OTLP measured flushReplan at
+         * 9.5 ms a tick, 340 ms of every second of the turn, the grid down
+         * from ~56 fps to ~36 on exactly the knobs whose page also re-lays
+         * out. Reported as an enum that "skips, flickers and snaps back".
+         *
+         * Compared against s.values because that is what the writer just
+         * cached and what the evaluator reads first. A key the stamp has never
+         * seen (null stamp, or a key absent when the plan ran) still re-plans.
+         * test_visible_if_replan_no_host_reads.sh.
+         */
+        if (s.plannedGates && s.plannedGates.has(key)
+            && s.plannedGates.get(key) === s.values[key]) return;
         s.replanOwed = true;
+    }
+
+    /* Record what the condition keys held for the plan just built. */
+    function stampPlannedGates() {
+        const m = new Map();
+        for (const k of s.conditionKeys) if (k in s.values) m.set(k, s.values[k]);
+        s.plannedGates = m;
     }
 
     /*
@@ -4437,7 +4487,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
-            trailingMenus: trailingMenus(),
+            trailingMenus: lastTrailingMenus(),
             paginate: s.paginate,
         });
         if (planned.pages.length !== oldPages.length ||
@@ -4447,6 +4497,7 @@ export function createController(io = {}) {
             s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
             s.cursor = 0;
         }
+        stampPlannedGates();
     }
 
     /**
