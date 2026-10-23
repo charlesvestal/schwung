@@ -33,8 +33,15 @@ grep -q 'trap "rm -rf \\"$LOCK\\"" EXIT' "$ls" || bad "the lock must be released
 
 # Behaviour: extract the lock block and run it twice against a temp lock dir.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-block=$(sed -n '/^    LOCK=\/tmp\/schwung-standalone.lock$/,/^    trap "rm -rf/p' "$ls" \
-    | sed "s|/tmp/schwung-standalone.lock|$tmp/schwung-standalone.lock|")
+# The lock lives in /dev/shm. /tmp on the Move is the root partition, and a
+# full root partition makes mkdir fail for ableton -- every launch refused.
+grep -q '^    LOCK=/dev/shm/schwung-standalone.lock$' "$ls" \
+    || bad "the launch lock must live in /dev/shm, not on the root partition"
+grep -q 'kill -0 "$owner"' "$ls" \
+    && bad "liveness must come from /proc: kill -0 answers EPERM across uids"
+
+block=$(sed -n '/^    LOCK=\/dev\/shm\/schwung-standalone.lock$/,/^    trap "rm -rf/p' "$ls" \
+    | sed "s|/dev/shm/schwung-standalone.lock|$tmp/schwung-standalone.lock|")
 [ -n "$block" ] || bad "lock block not found"
 cat > "$tmp/run.sh" <<RUN
 log() { echo "\$*"; }
