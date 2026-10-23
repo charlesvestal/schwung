@@ -28,7 +28,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 )
 
 // SlotModule is one entry of the loader's list.
@@ -143,4 +145,57 @@ func (app *App) handleAPISlotModules(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(discoverSlotModules(app.basePath))
+}
+
+// slotModuleKey matches the chain-slot positions this loader writes:
+// "synth:module", "fx<N>:module", "midi_fx<N>:module". masterFxModuleKey
+// matches a master-bus position, which is loaded by dsp PATH.
+var (
+	slotModuleKey     = regexp.MustCompile(`^(synth|fx[0-9]+|midi_fx[0-9]+):module$`)
+	masterFxModuleKey = regexp.MustCompile(`^master_fx:fx[0-9]+:module$`)
+)
+
+// moduleLoadRefusal decides a module write on the SERVER. It returns "" when
+// the write may go to the device, or why it may not.
+//
+// The page greys out what it cannot load, but any client can send the write,
+// and the device's speaker-feedback gate runs in its own picker -- a line-in
+// sound generator loaded from here would skip it. So the rule the loader list
+// already states is enforced here too: the value must be something
+// discoverSlotModules offers for that kind of position, and not DeviceOnly. A
+// master-bus position takes the discovered dsp path and nothing else, which
+// also keeps an arbitrary path from reaching dlopen.
+//
+// Clears ("" / "none") always pass. Keys this loader does not write (a bus
+// insert, a parameter) pass through unchanged.
+func moduleLoadRefusal(base, key, value string) string {
+	isSlot := slotModuleKey.MatchString(key)
+	isMaster := masterFxModuleKey.MatchString(key)
+	if !isSlot && !isMaster {
+		return ""
+	}
+	if value == "" || value == "none" {
+		return ""
+	}
+	want := "audio_fx"
+	if isSlot {
+		switch comp := strings.TrimSuffix(key, ":module"); {
+		case comp == "synth":
+			want = "sound_generator"
+		case strings.HasPrefix(comp, "midi_fx"):
+			want = "midi_fx"
+		}
+	}
+	for _, m := range discoverSlotModules(base) {
+		if m.ComponentType != want {
+			continue
+		}
+		if (isMaster && m.DSPPath == value) || (isSlot && m.ID == value) {
+			if m.DeviceOnly {
+				return m.Name + " can only be loaded on the device"
+			}
+			return ""
+		}
+	}
+	return "not an installed " + want + " module: " + value
 }

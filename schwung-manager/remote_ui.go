@@ -836,6 +836,11 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 		c.toolLastEditAt = now
 		c.mu.Unlock()
 	}
+	if reason := moduleLoadRefusal(ru.basePath, msg.Key, msg.Value); reason != "" {
+		ru.logger.Warn("set_param refused", "slot", slot, "key", msg.Key, "value", msg.Value, "reason", reason)
+		ru.sendError(ctx, c, "set_param refused: "+reason)
+		return
+	}
 	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
 		// A module load can outlast the mailbox wait and still land (the
@@ -1497,6 +1502,11 @@ func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg
 	}
 	if msg.Key == "" {
 		ru.sendError(ctx, c, "set_master_fx_param requires key")
+		return
+	}
+	if reason := moduleLoadRefusal(ru.basePath, msg.Key, msg.Value); reason != "" {
+		ru.logger.Warn("set_master_fx_param refused", "key", msg.Key, "value", msg.Value, "reason", reason)
+		ru.sendError(ctx, c, "set_master_fx_param refused: "+reason)
 		return
 	}
 	// All master FX params go through slot 0.
