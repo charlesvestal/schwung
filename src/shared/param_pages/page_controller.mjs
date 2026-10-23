@@ -40,7 +40,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor, WIDGET_BIGNUM,
-         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
+         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H, BAND_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
@@ -210,15 +210,22 @@ const MENU_LIST_INDICATOR_X = 122;
  * that the six hand-rolled row loops had drifted into, so the knob page drawn as
  * a list inherits it rather than inventing a fifth.
  */
-export function drawPageChromeList(ctx, rect, entries, index, { editMode = false } = {}) {
+export function drawPageChromeList(ctx, rect, entries, index,
+                                   { editMode = false, area = null } = {}) {
+    /* The surface the rows may paint across -- the highlight, the value edge
+     * and the scrollbar. The screen unless a caller embedding the page hands
+     * its own; the indicator keeps its distance from that surface's edge. */
+    const areaX = area && Number.isFinite(area.x) ? area.x : 0;
+    const areaRight = area && area.w > 0 ? areaX + area.w : SCREEN_WIDTH;
     drawMenuList({
         ctx,
         items: entries || [],
         editMode: !!editMode,
         selectedIndex: (index | 0) < 0 ? -1 : (index | 0),
-        listArea: { topY: rect.y, bottomY: rect.y + rect.h },
+        listArea: { topY: rect.y, bottomY: rect.y + rect.h,
+                    leftX: areaX, rightX: areaRight },
         labelX: rect.x,
-        indicatorX: MENU_LIST_INDICATOR_X,
+        indicatorX: areaRight - (SCREEN_WIDTH - MENU_LIST_INDICATOR_X),
         indicatorBottomY: rect.y + rect.h,
         getLabel: (e) => (e && e.name != null ? String(e.name) : ""),
         /* A menu entry carries a value; a section carries a page count, and a
@@ -5607,16 +5614,14 @@ export function createController(io = {}) {
     function drawKnobsAsList(ctx, title, footer, chrome, footerBand) {
         const mp = page();
         chrome(pageLabel(mp));
-        const bottom = bodyBottom(footer);
+        const lf = listFrame(footer);
         const entered = menuEntered();
-        drawPageChromeList(ctx,
-            { x: MENU_LIST_X, y: MENU_LIST_Y, w: MENU_LIST_W, h: bottom - MENU_LIST_Y },
+        drawPageChromeList(ctx, lf.list,
             knobListEntries(mp),
             entered ? knobRowIndex(mp) : -1,
-            { editMode: entered && s.knobEditing });
+            { editMode: entered && s.knobEditing, area: lf.area });
         if (!entered) {
-            drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                         bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+            drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                          MENU_BRACKET_LEN);
         }
         footerBand();
@@ -5640,6 +5645,44 @@ export function createController(io = {}) {
         return Math.min(base, (Number.isFinite(fr.y) ? fr.y : 0) + fr.h);
     }
 
+    /*
+     * WHERE A LIST-SHAPED BODY GOES, on all four sides.
+     *
+     * #652 clamped the bottom; the top, left and width were still the
+     * full-screen constants, so a rect inset from the top or a side had the
+     * list drawn over the caller's own chrome. The rule is the knob grid's
+     * (movyBandLayout): WITH a rect the body is laid out inside it, under
+     * whichever of the header and bank bar are drawn; WITHOUT one every band
+     * keeps the position the vertical rhythm gives it. The constants are kept
+     * as OFFSETS from that origin, so the no-rect case is the old numbers
+     * exactly and the shadow UI -- which passes no rect -- is pixel-identical.
+     */
+    function listFrame(footer) {
+        const fr = s.frameRect;
+        const fullTop = BAND_H.header + BAND_H.bank;
+        const reflow = !!(fr && fr.w > 0 && fr.h > 0);
+        const ax = reflow && Number.isFinite(fr.x) ? fr.x : 0;
+        const aw = reflow ? fr.w : SCREEN_WIDTH;
+        const b = s.frameBands || {};
+        const top = reflow
+            ? (Number.isFinite(fr.y) ? fr.y : 0)
+              + (b.header !== false ? BAND_H.header : 0)
+              + (b.bank !== false ? BAND_H.bank : 0)
+            : fullTop;
+        const bottom = bodyBottom(footer);
+        const frameY = top + (MENU_FRAME_Y - fullTop);
+        const listY = top + (MENU_LIST_Y - fullTop);
+        return {
+            area: { x: ax, w: aw },
+            frame: { x: ax + MENU_FRAME_X, y: frameY,
+                     w: Math.max(0, aw - (SCREEN_WIDTH - MENU_FRAME_W)),
+                     h: bottom - frameY - MENU_FRAME_BOTTOM_INSET },
+            list: { x: ax + MENU_LIST_X, y: listY,
+                    w: Math.max(0, aw - (SCREEN_WIDTH - MENU_LIST_W)),
+                    h: bottom - listY },
+        };
+    }
+
     function render(ctx, { title, rect, footer, bands } = {}) {
         /* The frame this page was drawn into, remembered for renderOverlays.
          * A floating card is centred in it -- on the panel for the full-screen
@@ -5647,6 +5690,7 @@ export function createController(io = {}) {
          * Kept here rather than passed to renderOverlays so an existing caller
          * needs no change. */
         s.frameRect = rect || null;
+        s.frameBands = bands || null;
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -5762,12 +5806,10 @@ export function createController(io = {}) {
                  * bar, same list rect and same five rows as a menu page — the
                  * only difference is what the list holds.
                  */
-                const pbottom = bodyBottom(footer);
+                const lf = listFrame(footer);
                 pageChrome("SECTIONS");
-                drawPageChromeList(ctx,
-                    { x: MENU_LIST_X, y: MENU_LIST_Y,
-                      w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
-                    s.pickerEntries, s.pickerIndex);
+                drawPageChromeList(ctx, lf.list,
+                    s.pickerEntries, s.pickerIndex, { area: lf.area });
                 footerBand();
                 return;
             }
@@ -5777,12 +5819,10 @@ export function createController(io = {}) {
                  * five rows, same rect. Inert it highlights nothing — the page
                  * is something you can go INTO, not something you are in. */
                 pageChrome(mp.name);
-                const ibottom = bodyBottom(footer);
+                const lf = listFrame(footer);
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
-                drawPageChromeList(ctx,
-                    { x: MENU_LIST_X, y: MENU_LIST_Y,
-                      w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                drawPageChromeList(ctx, lf.list,
                     ist.list.length
                         ? ist.list.map((it) => ({
                             name: it.label,
@@ -5791,10 +5831,9 @@ export function createController(io = {}) {
                             value: it.index === ist.current ? "*" : "",
                           }))
                         : [{ name: "(none)", value: "" }],
-                    entered ? ist.cursor : -1);
+                    entered ? ist.cursor : -1, { area: lf.area });
                 if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();
@@ -5807,9 +5846,7 @@ export function createController(io = {}) {
                  * That is the whole point: it used to eject into the list
                  * editor, which looks nothing like this. */
                 pageChrome(mp.name);
-                const pbottom = bodyBottom(footer);
-                const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
-                                w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
+                const prect = listFrame(footer).frame;
                 const pst = presetState(mp) || {};
                 /*
                  * A MODULE-DRAWN BROWSER paints the body itself. It is handed
@@ -5832,8 +5869,7 @@ export function createController(io = {}) {
                 /* Inert: it wears the same brackets a divable cell and an
                  * un-entered menu wear, because it is the same offer. */
                 if (!menuEntered()) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, prect.x, prect.y, prect.w, prect.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();
@@ -5845,7 +5881,7 @@ export function createController(io = {}) {
                  * module's pages rather than as somewhere else. header:false
                  * because that header is already drawn. */
                 pageChrome(mp.name);
-                const bottom = bodyBottom(footer);
+                const lf = listFrame(footer);
                 const entered = menuEntered();
                 /*
                  * ONE list rect for both states. Shrinking it to make room for
@@ -5856,17 +5892,14 @@ export function createController(io = {}) {
                  * (9..53), and the side arms clear the text at x+2 and the
                  * right-aligned values at x+w-2.
                  */
-                const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
-                                   w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
-                drawPageChromeList(ctx, listRect,
+                drawPageChromeList(ctx, lf.list,
                     (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
                     /* Inert: nothing is highlighted, because nothing is selected
                      * yet — the page is something you can go INTO, not something
                      * you are already in. */
-                    entered ? menuIndex(mp) : -1);
+                    entered ? menuIndex(mp) : -1, { area: lf.area });
                 if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();

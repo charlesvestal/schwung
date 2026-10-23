@@ -814,6 +814,25 @@ section picker and the items, preset and menu pages ended at `footer ? RULE_Y :
 63 over its own bottom band. `bodyBottom()` clamps all five to the rect; with no
 rect it answers what it always did. `tests/host/test_door_body_honours_rect.sh`.
 
+**And on the other three sides.** Clamping the bottom left the top, left and
+width at the full-screen constants, so a rect inset from the top or a side
+(TB-3PO passes `{x:0, y:8, w:128, h:49}`) still had the list -- and an entered
+list's selection highlight, which spanned x 0..127 -- drawn over the caller's
+chrome. `listFrame()` lays all five out the way `movyBandLayout` lays out the
+grid: with a rect, inside it and under whichever of the header and bank bar are
+drawn; without one, at the vertical rhythm's own positions. `MENU_LIST_*` and
+`MENU_FRAME_*` survive as OFFSETS from that origin, so the no-rect draw is
+byte-identical to before. The horizontal extent reaches `drawMenuList` as
+`listArea.leftX/rightX` (highlight, divider rules, value edge, scrollbar) and
+defaults to the screen, so no other list in the shadow UI moves.
+`tests/host/test_list_bodies_honour_rect.sh` insets a rect on all four sides and
+fails on any ink outside it, and asserts a full-screen rect draws exactly what no
+rect does.
+
+Not covered: the header and footer BANDS themselves are still drawn at their
+absolute rows when they are wanted inside a rect -- only the knob grid reflows
+them. TB-3PO, the embedder checked, turns all three bands off.
+
 **A module binding the controller from its own `ui_chain.js` owes that second
 call**, and until 2026-09 nothing said so: the draw lived in
 `shadow_ui_param_pages.mjs`, so for every other consumer the controller tracked
