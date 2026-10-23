@@ -5,18 +5,26 @@
 (function () {
     "use strict";
 
+    // The component keys a slot can hold. These are only the STARTING set: a
+    // chain holds up to eight audio FX and eight MIDI FX, and the caps arrive
+    // from the server with each slot_info (fx_cap / midi_fx_cap), so this page
+    // keeps no copy of them. growSlotComponents() adds the rest, to every slot,
+    // the first time a slot_info names them.
     var COMPONENT_KEYS = ["synth", "fx1", "fx2", "midi_fx1"];
     // The order components are DRAWN in, which is signal flow and not the order
     // they are enumerated in. Both render paths read this one list; when they
     // each carried their own, the custom-synth path drew the MIDI FX last.
+    // Grown in place, kept in signal-flow order (componentRank).
     var COMPONENT_ORDER = ["midi_fx1", "synth", "fx1", "fx2"];
     var COMPONENT_LABELS = {
         synth: "Synth",
         fx1: "Audio FX 1",
         fx2: "Audio FX 2",
-        midi_fx1: "MIDI FX"
+        midi_fx1: "MIDI FX 1"
     };
 
+    // Master FX positions, grown to the bus's cap (master_fx_info.cap) the
+    // same way.
     var MASTER_FX_KEYS = ["master_fx:fx1", "master_fx:fx2", "master_fx:fx3", "master_fx:fx4"];
     var MASTER_FX_LABELS = {
         "master_fx:fx1": "Master FX 1",
@@ -29,14 +37,64 @@
         return { hierarchy: null, chainParams: null, params: {}, navStack: ["root"], module: "" };
     }
 
+    // Signal flow: every MIDI FX, then the synth, then every audio FX.
+    function componentRank(k) {
+        var m = /^midi_fx(\d+)$/.exec(k);
+        if (m) return [0, parseInt(m[1], 10)];
+        if (k === "synth") return [1, 0];
+        m = /^fx(\d+)$/.exec(k);
+        if (m) return [2, parseInt(m[1], 10)];
+        return [3, 0];
+    }
+
+    function addSlotComponentKey(k) {
+        if (COMPONENT_KEYS.indexOf(k) >= 0) return;
+        COMPONENT_KEYS.push(k);
+        COMPONENT_ORDER.push(k);
+        COMPONENT_ORDER.sort(function (a, b) {
+            var ra = componentRank(a), rb = componentRank(b);
+            return (ra[0] - rb[0]) || (ra[1] - rb[1]);
+        });
+        var m = /^(midi_)?fx(\d+)$/.exec(k);
+        if (m) COMPONENT_LABELS[k] = (m[1] ? "MIDI FX " : "Audio FX ") + m[2];
+        // Every slot keeps a state object for every key, so no lookup below
+        // has to ask whether one exists.
+        if (typeof slots !== "undefined") {
+            for (var i = 0; i < slots.length; i++) {
+                if (!slots[i].components[k]) slots[i].components[k] = makeComponent();
+            }
+        }
+    }
+
+    function growSlotComponents(fxCap, midiFxCap) {
+        var i;
+        for (i = 1; i <= (fxCap || 0); i++) addSlotComponentKey("fx" + i);
+        for (i = 1; i <= (midiFxCap || 0); i++) addSlotComponentKey("midi_fx" + i);
+    }
+
+    function growMasterFxKeys(cap) {
+        for (var i = MASTER_FX_KEYS.length + 1; i <= (cap || 0); i++) {
+            var k = "master_fx:fx" + i;
+            MASTER_FX_KEYS.push(k);
+            MASTER_FX_LABELS[k] = "Master FX " + i;
+            if (typeof masterFx !== "undefined" && !masterFx.components[k]) {
+                masterFx.components[k] = makeComponent();
+            }
+        }
+    }
+
     function makeSlot() {
+        var components = {};
+        for (var i = 0; i < COMPONENT_KEYS.length; i++) components[COMPONENT_KEYS[i]] = makeComponent();
         return {
-            components: {
-                synth: makeComponent(),
-                fx1: makeComponent(),
-                fx2: makeComponent(),
-                midi_fx1: makeComponent()
-            },
+            components: components,
+            // How many positions of each kind the chain reports (trailing
+            // empties dropped), and how many it can hold. The loader draws the
+            // listed positions plus one '+' while there is room.
+            fxCount: 0,
+            midiFxCount: 0,
+            fxCap: 1,
+            midiFxCap: 1,
             // Track which component sections the user has folded. A key is
             // absent until the header is clicked -- see sectionCollapsed(),
             // which derives the default from whether the component ships a
@@ -59,12 +117,12 @@
 
     // Master FX state.
     var masterFx = {
-        components: {
-            "master_fx:fx1": makeComponent(),
-            "master_fx:fx2": makeComponent(),
-            "master_fx:fx3": makeComponent(),
-            "master_fx:fx4": makeComponent()
-        },
+        components: (function () {
+            var c = {};
+            for (var i = 0; i < MASTER_FX_KEYS.length; i++) c[MASTER_FX_KEYS[i]] = makeComponent();
+            return c;
+        })(),
+        cap: MASTER_FX_KEYS.length,
         collapsed: {},
         // Keyed by component, exactly as a slot's is: two Master FX positions
         // can each ship a panel and must not collide.
@@ -213,6 +271,9 @@
             case "tool_info":
                 handleToolInfo(msg);
                 return;
+            case "error":
+                handleServerError(msg);
+                return;
             default:
                 break;
         }
@@ -297,18 +358,47 @@
         }
     }
 
+    // What a slot_info says each component holds. A section the server could
+    // not read is named in msg.unknown ("synth", "midi_fx", "fx") and is LEFT
+    // OUT of the answer: a read that did not complete is not news about the
+    // slot, and treating it as empty wiped the component's cached hierarchy and
+    // values on one timed-out read. tests/host/test_remote_ui_chain_positions.sh
+    // runs this function.
+    function slotInfoIncoming(msg, keys) {
+        var unknown = msg.unknown || [];
+        var known = function (sec) { return unknown.indexOf(sec) < 0; };
+        var lists = {
+            fx: known("fx") && Array.isArray(msg.fx) ? msg.fx : null,
+            midi_fx: known("midi_fx") && Array.isArray(msg.midi_fx) ? msg.midi_fx : null
+        };
+        var out = {};
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            if (k === "synth") {
+                if (known("synth")) out.synth = msg.synth || "";
+                continue;
+            }
+            var m = /^(midi_fx|fx)(\d+)$/.exec(k);
+            if (!m || !lists[m[1]]) continue;
+            out[k] = lists[m[1]][parseInt(m[2], 10) - 1] || "";
+        }
+        return out;
+    }
+
     function handleSlotInfo(slot, msg) {
         var s = slots[slot];
+        growSlotComponents(msg.fx_cap, msg.midi_fx_cap);
+        if (msg.fx_cap) s.fxCap = msg.fx_cap;
+        if (msg.midi_fx_cap) s.midiFxCap = msg.midi_fx_cap;
+        var unknown = msg.unknown || [];
+        if (unknown.indexOf("fx") < 0 && Array.isArray(msg.fx)) s.fxCount = msg.fx.length;
+        if (unknown.indexOf("midi_fx") < 0 && Array.isArray(msg.midi_fx)) s.midiFxCount = msg.midi_fx.length;
         // A component's custom UI belongs to the module that supplied it, so
         // drop it when that particular component's module changes.
-        var incoming = {
-            synth: msg.synth || "",
-            fx1: msg.fx1 || "",
-            fx2: msg.fx2 || "",
-            midi_fx1: msg.midi_fx1 || ""
-        };
+        var incoming = slotInfoIncoming(msg, COMPONENT_KEYS);
         for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
             var ck = COMPONENT_KEYS[ci];
+            if (!(ck in incoming)) continue;   // not read: keep what we have
             if (s.components[ck].module !== incoming[ck]) {
                 // Everything else cached for the component belonged to the
                 // outgoing module too; keep it and the new module is drawn
@@ -481,16 +571,19 @@
     // ------------------------------------------------------------------
 
     function handleMasterFxInfo(msg) {
-        var incoming = {
-            "master_fx:fx1": msg.fx1 || "",
-            "master_fx:fx2": msg.fx2 || "",
-            "master_fx:fx3": msg.fx3 || "",
-            "master_fx:fx4": msg.fx4 || ""
-        };
+        growMasterFxKeys(msg.cap);
+        if (msg.cap) masterFx.cap = msg.cap;
+        // The bus listing did not complete: keep every position as it is.
+        if (msg.unknown || !Array.isArray(msg.fx)) {
+            slotLoaderDone("master");
+            if (activeSlot === "master") renderSlot();
+            return;
+        }
         for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
             var ck = MASTER_FX_KEYS[i];
-            if (masterFx.components[ck].module !== incoming[ck]) {
-                masterFx.components[ck].module = incoming[ck];
+            var incoming = msg.fx[i] || "";
+            if (masterFx.components[ck].module !== incoming) {
+                masterFx.components[ck].module = incoming;
                 // The panel belonged to the module that just left. Dropping it
                 // here is what makes a REMOVED module lose its iframe: the
                 // server only sends custom_ui for a module that has one, so
@@ -626,13 +719,49 @@
     // the outgoing module and seeds a new synth's default FX. A line-in synth is
     // refused (device_only) because the device runs the feedback gate first.
 
-    // Signal flow, left to right, as the device's chain editor draws it.
-    var SLOT_LOADER_POSITIONS = [
-        { comp: "midi_fx1", label: "MIDI FX", short: "MI", type: "midi_fx" },
-        { comp: "synth", label: "Synth", short: "SY", type: "sound_generator" },
-        { comp: "fx1", label: "FX 1", short: "F1", type: "audio_fx" },
-        { comp: "fx2", label: "FX 2", short: "F2", type: "audio_fx" }
-    ];
+    // Signal flow, left to right, as the device's chain editor draws it: every
+    // position the chain reports, plus ONE empty '+' after each section while
+    // the chain has room -- the device's own '+'. Picking a module there writes
+    // the next position (fx3:module after two FX), which the chain appends.
+    function slotLoaderPositions(s) {
+        var out = [], i;
+        var nm = s.midiFxCount || 0, nf = s.fxCount || 0;
+        var shownMidi = nm < (s.midiFxCap || 1) ? nm + 1 : nm;
+        for (i = 1; i <= shownMidi; i++) {
+            out.push({ comp: "midi_fx" + i, label: shownMidi > 1 ? "MIDI FX " + i : "MIDI FX",
+                       type: "midi_fx" });
+        }
+        out.push({ comp: "synth", label: "Synth", type: "sound_generator" });
+        var shownFx = nf < (s.fxCap || 1) ? nf + 1 : nf;
+        for (i = 1; i <= shownFx; i++) {
+            out.push({ comp: "fx" + i, label: "FX " + i, type: "audio_fx" });
+        }
+        return out;
+    }
+
+    // Master FX positions are fixed and never compacted (removal leaves a
+    // hole), so the row is every position up to the last filled one, plus the
+    // next as a '+'.
+    function masterFxLoaderKeys() {
+        var last = 0;
+        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
+            if (masterFx.components[MASTER_FX_KEYS[i]].module) last = i + 1;
+        }
+        var shown = Math.min(last + 1, masterFx.cap || MASTER_FX_KEYS.length, MASTER_FX_KEYS.length);
+        return MASTER_FX_KEYS.slice(0, Math.max(shown, 1));
+    }
+
+    // The last error the server reported -- a refused pick, or a load that did
+    // not land. Shown under the chain row until the next load starts.
+    var loaderError = "";
+
+    function handleServerError(msg) {
+        loaderError = msg.message || "Error";
+        // Nothing more is coming for a pending box: end every spinner.
+        for (var where in slotLoaderPending) slotLoaderDone(where);
+        renderSlot();
+    }
+
     var slotModules = null;         // [{id, name, component_type, device_only}] or null until fetched
     var slotModulesError = "";
     var slotLoaderPending = {};      // slot -> { comp, timer }
@@ -667,6 +796,7 @@
     // info message comes back, then send the write.
     function startLoad(where, comp, sendFn) {
         slotLoaderDone(where);
+        loaderError = "";
         slotLoaderPick = null;
         slotLoaderPending[where] = {
             comp: comp,
@@ -800,6 +930,13 @@
             err.textContent = slotModulesError;
             slotLoaderEl.appendChild(err);
         }
+        if (loaderError) {
+            var lerr = document.createElement("p");
+            lerr.className = "chain-note chain-error";
+            lerr.setAttribute("role", "alert");
+            lerr.textContent = loaderError;
+            slotLoaderEl.appendChild(lerr);
+        }
         if (cfg.note) {
             var note = document.createElement("p");
             note.className = "chain-note";
@@ -865,7 +1002,7 @@
             title: "Slot " + (slot + 1),
             arrows: true,
             removable: true,
-            positions: SLOT_LOADER_POSITIONS.map(function (p) {
+            positions: slotLoaderPositions(s).map(function (p) {
                 return { comp: p.comp, label: p.label, type: p.type, accent: p.comp === "synth",
                          current: s.components[p.comp].module };
             }),
@@ -879,7 +1016,7 @@
             title: "Master FX",
             arrows: true,
             removable: true,
-            positions: MASTER_FX_KEYS.map(function (k, i) {
+            positions: masterFxLoaderKeys().map(function (k, i) {
                 return { comp: k, label: "FX " + (i + 1), type: "audio_fx",
                          current: masterFx.components[k].module };
             }),

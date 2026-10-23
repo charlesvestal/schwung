@@ -526,20 +526,45 @@ repos typically mirror that pattern.
 ## Loading modules from the Remote UI
 
 The Remote UI page draws the slot's chain as a row of boxes above the knobs
-(MIDI FX › Synth › FX 1 › FX 2), the same shape as the device's chain view.
-Tap a box to pick a module for that position, or remove it. The Master FX tab
-has FX 1–4, and the Tool tab launches a tool. The list comes from
+(MIDI FX › Synth › FX 1 › FX 2 …), the same shape as the device's chain view:
+**every position the chain reports, plus one empty `+` after each section**
+while it has room, as the device draws its own `+`. Tap a box to pick a module
+for that position, or remove it; picking on a `+` writes the next position
+(`fx3:module` after two FX), which the chain appends. A slot holds up to eight
+audio FX and eight MIDI FX (`MAX_AUDIO_FX` / `MAX_MIDI_FX`). The Master FX tab
+shows its positions up to the last one filled plus a `+`, up to all eight
+(`MASTER_FX_SLOTS`), and the Tool tab launches a tool. The list comes from
 `GET /api/slot-modules`, which reads `module.json` from disk (not from the
 catalog), so a custom install shows up too.
 
 - A slot position is written as `<comp>:module` (`"none"` clears it), and a
   Master FX position as `master_fx:fxN:module` with the DSP **path** (`""`
   clears it).
+- **What a slot holds is ASKED, not probed.** The manager reads the chain's
+  `synth_module`, `midi_fx_count` and `fx_count`, then only the positions those
+  counts name — an empty slot is three reads — and the master bus is ONE read,
+  `master_fx:modules`. `slot_info` carries `fx` / `midi_fx` lists and the caps
+  (`fx_cap`, `midi_fx_cap`); `master_fx_info` carries the positional `fx` list
+  and `cap`. The old `fx1`/`fx2`/`midi_fx1` and `fx1`…`fx4` fields are still
+  sent. The Go caps live once in `schwung-manager/remote_ui_chain.go` and a Go
+  test parses the C headers so they cannot drift.
+- **A read that did not complete is not an empty position.** A section the
+  manager could not read is named in `slot_info.unknown` (`"synth"`,
+  `"midi_fx"`, `"fx"`) and a master listing that failed sends
+  `master_fx_info.unknown: true`; the page keeps what it had for those rather
+  than resetting the component and losing its cached controls.
 - **Module writes take the shadow_param mailbox, never the web-set ring.**
   The ring forwards to a module that is already loaded and cannot load
-  one, so a pick sent that way was accepted and did nothing. The manager
-  then polls the slot until the new module reads back (up to 20 s; an idle
-  slot can take over 10 s) before it re-describes the slot.
+  one, so a pick sent that way was accepted and did nothing.
+- **The manager waits for the load to END, and says when it failed.** A slot
+  load's answer is held by the shim until its loader has finished, so once the
+  write is answered a position that does not read back the module failed (a
+  failed FX leaves its position empty); the synth's `load_error` is checked
+  too. A Master FX write is only ACCEPTED, so the manager follows
+  `master_fx:fxN:is_loading` until it clears and `load_error` to tell a failure
+  from a load still arriving. Either way the cap is 20 s, the wait stops if the
+  requesting browser disconnects, and a load that did not land is reported to
+  that browser as an error the page shows under the chain row.
 - A **line-in** sound generator is listed but cannot be picked from a
   browser. The device runs the speaker-feedback gate before loading one, and
   a remote write would skip it.
@@ -560,7 +585,8 @@ is loaded in a shadow slot. The iframe replaces the auto-generated
 knob/slider UI for that component.
 
 **Any chain component can supply one** — the synth, an audio FX
-(`fx1`/`fx2`), or a MIDI FX (`midi_fx1`). Where it appears differs:
+(`fx1` … `fx8`), or a MIDI FX (`midi_fx1` … `midi_fx8`). Where it appears
+differs:
 
 - A **synth** panel takes over the slot view, with the other
   components' sections rendered below it.
@@ -575,7 +601,7 @@ parameters stay reachable whatever its panel does.
 A **Master FX** position works the same way as an audio FX: the panel
 renders inside that position's own section, with its own pop-out, and
 the Master FX tab has its own Interface toggle. The component there is
-`master_fx:fx1` … `master_fx:fx4`, so a panel that builds its keys from
+`master_fx:fx1` … `master_fx:fx8`, so a panel that builds its keys from
 `schwungRemote.component` needs no change to work on the master bus —
 one that hardcodes `fx1:` will address a chain slot instead.
 
@@ -656,7 +682,7 @@ Include the bundled helper to get a Promise-based wrapper:
 | `setParam(key, value)` | iframe → device | Goes through the WebSocket `set_param` path. Value is coerced to a string. |
 | `getHierarchy()` | local cache | Returns the parsed `ui_hierarchy` object for **your** component (or `null` if the module didn't expose one). |
 | `getChainParams()` | local cache | Returns the parsed `chain_params` array for **your** component (or `null`). |
-| `component` | property | The chain component this page drives — `"synth"`, `"fx1"`, `"fx2"`, `"midi_fx1"`. Use it to build parameter keys. |
+| `component` | property | The chain component this page drives — `"synth"`, `"fx1"` … `"fx8"`, `"midi_fx1"` … `"midi_fx8"`, or `"master_fx:fxN"`. Use it to build parameter keys. |
 
 **Param keys are component-prefixed.** Use `"synth:cutoff"`, not
 `"cutoff"` — and build the prefix from `schwungRemote.component`
@@ -723,7 +749,8 @@ That means:
   opens; the lead position opens; the rest fold) and records only what the
   user clicked — the right default depends on the `custom_ui` message, which
   arrives after the slot state is built. Both render paths draw components in
-  one order, signal flow: `midi_fx1, synth, fx1, fx2`.
+  one order, signal flow: every MIDI FX, the synth, every audio FX
+  (`midi_fx1, midi_fx2, …, synth, fx1, fx2, …`).
 - **`viz.extra_keys` reach the browser.** A widget may name a value that owns
   no cell of its own (see `docs/PARAM_PAGES.md`), and a panel driven by one is
   blind without it. Every path that completes an initial value send fetches
