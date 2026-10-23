@@ -1114,8 +1114,9 @@ export function headerTitle() {
      * read the My Presets page already pays for.
      *
      * A synthesised contract (Slot Settings, Master FX/Global Settings) or a
-     * Master FX component never has a record for its key, so this answers
-     * null there and falls through unaffected.
+     * send position never has a record for its key, so this answers null
+     * there and falls through unaffected. A Master FX position CAN have one
+     * (it has a My Presets page), and shows it here the same way.
      *
      * A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain

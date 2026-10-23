@@ -1660,7 +1660,9 @@ inside `ui_hierarchy` itself.
 
 **You never need this to get User Presets / Module actions.** Every loaded
 chain component already gets a "My Presets" and a "Module" page appended
-after its whole jog sequence, for free — declare nothing. See CLAUDE.md,
+after its whole jog sequence, for free — declare nothing. Loaded as a Master FX
+module, it gets "My Presets" (no "Module" page); the same `state` round trip
+serves both, so a module needs nothing extra for either. See CLAUDE.md,
 "Every component's knob grid ends with two pages it never declared", for why
 that append happens in the planner rather than through this field.
 

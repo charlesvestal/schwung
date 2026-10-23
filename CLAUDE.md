@@ -1651,8 +1651,12 @@ pages the PLANNER appends to the end of every component's knob grid.
 - The trailing pages are appended **after the whole walk**, never injected into a
   level: 11 of 95 fleet modules publish no `levels` at all and minijv has no
   `root`, so there is no level an injection could target.
-- Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
-  helper, so a new call site cannot silently opt it in.
+- Scope is the 4 chain slots' real components **and the 8 Master FX positions**
+  (issue #305) — Master FX gets **My Presets only** (no Module page), through the
+  same code, decided in one helper (`componentParamPagesIo`). Send positions and
+  bus inserts stay excluded. The master record persists as `user_preset`
+  **after `state`** in `master_fx_N.json` (the shim's boot parser takes the first
+  `"state"`). See docs/SHADOW_UI.md.
 - **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
   thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
   replaced, so the help list wore a bar and the help text wore arrows on the same
