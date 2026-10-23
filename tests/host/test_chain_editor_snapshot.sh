@@ -290,6 +290,10 @@ const CHAIN_DRAW_DEPS = [
      drawChainEdit stopped carrying two copies of the same literal. A free
      identifier under the lift, same as every other dep here. */
   "movyPrimitives",
+  /* The Delete ("X") footer and the Delete+JogClick footer notice. REAL
+     deleteHintsFor from the chrome; the held flag and the notice text are
+     per case. */
+  "isDeleteHeld", "deleteHintsFor", "chainFooterNoticeText",
 ];
 const mkChainDraw = lift("drawChainEdit", CHAIN_DRAW_DEPS);
 
@@ -311,7 +315,9 @@ function renderChain(c) {
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
     drawChainEditorBands,
-    () => ({ fillRect: g.fill_rect, print: g.print, textWidth: g.text_width, setPixel: g.set_pixel }));
+    () => ({ fillRect: g.fill_rect, print: g.print, textWidth: g.text_width, setPixel: g.set_pixel }),
+    () => !!c.del, CHROME.deleteHintsFor,
+    (ed) => (ed === "slot" ? (c.notice || "") : ""));
   draw();
   clearGlobals();
   return fb;
@@ -388,6 +394,8 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
      one spelling of a gesture, drawn by both screens. REAL, not a stub -- a
      stub would baseline a footer nobody draws. */
   "shiftHintsFor", "CHAIN_HINTS_AT_REST",
+  /* ...and the Delete ("X") footer helper, REAL for the same reason. */
+  "deleteHintsFor",
   /* The knob card, 4b. A module IMPORT in shadow_ui_master_fx.mjs, so it is a
      free identifier under the lift and MUST be a dependency: leave it out and
      the card block throws, and the tempting fix -- a typeof guard -- would make
@@ -457,6 +465,8 @@ function renderMaster(c) {
     fxBusReturn: (i) => ((c.busReturns || {})[i] || 0),
     ensureMasterFxConfigFresh: () => {},
     isShiftHeld: () => !!c.shift,
+    isDeleteHeld: () => !!c.del,
+    chainFooterNoticeText: (ed) => (ed === "master" ? (c.notice || "") : ""),
     chainLfoTargetMap: mLfoMap,
     chainComponentBypassed: mBypassed,
     masterShowingNamePreview: false, masterConfirmingOverwrite: false,
@@ -494,7 +504,7 @@ function renderMaster(c) {
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
     boom("drawMasterFxModuleSelect"), drawChainEditorBands, CHROME_SHIFT_HINTS,
-    CHROME_REST_HINTS, FX_BUS_HINTS, drawKnobCard);
+    CHROME_REST_HINTS, CHROME.deleteHintsFor, FX_BUS_HINTS, drawKnobCard);
   draw();
   clearGlobals();
   return fb;
@@ -873,7 +883,8 @@ const addChain = (id, o) => {
   if (sel === undefined || (o.selKey !== null && sel < 0))
     fail("case " + id + " names a component that does not exist: " + o.selKey);
   chainCases.push({ id, state, sel, shift: !!o.shift, card: o.card || null,
-                    patchName: o.patchName, dirty: !!o.dirty });
+                    patchName: o.patchName, dirty: !!o.dirty,
+                    del: !!o.del, notice: o.notice || "" });
 };
 
 const SHORT = { fx: ["freeverb", "cloudseed"] };
@@ -915,6 +926,21 @@ addChain("chain/len2/shift",  Object.assign({ selKey: "fx1", shift: true }, SHOR
 addChain("chain/len5/shift",  Object.assign({ selKey: "fx4", shift: true }, FIVE));
 addChain("chain/full/shift",  Object.assign({ selKey: "fx8", shift: true }, FULL));
 addChain("chain/len0/shift",  { fx: [], selKey: "synth", shift: true });
+
+/* --- Delete ("X") held: the footer names the click (CLK DELETE) -----------
+ * On a loaded position the click removes it; on the `+` Delete+click is a
+ * plain click, so that case is declared SAME_ON_PURPOSE with its resting
+ * twin. */
+addChain("chain/len2/delete",        Object.assign({ selKey: "fx1", del: true }, SHORT));
+addChain("chain/len2/delete-synth",  Object.assign({ selKey: "synth", del: true }, SHORT));
+addChain("chain/len5/delete-add-fx", Object.assign({ selKey: "add_fx", del: true }, FIVE));
+/* --- the Delete+JogClick confirmation, in the FOOTER ROW only -------------
+ * The twin is the same chain without the notice; everything above the footer
+ * band must be byte-identical between the two (checked below). */
+addChain("chain/len2/removed-notice", Object.assign({ selKey: "fx1",
+  notice: "Removed CloudSeed" }, SHORT));
+addChain("chain/len2/removed-notice-long", Object.assign({ selKey: "fx1",
+  notice: "Removed A Very Long Module Display Name That Cannot Fit" }, SHORT));
 
 /* --- marks: bypass B, LFO tildes, and both at once ---------------------- */
 addChain("chain/len2/bypassed", Object.assign({ selKey: "fx2",
@@ -1035,6 +1061,7 @@ const addMaster = (id, o) => {
                      busSummaries: o.busSummaries || {},
                      busReturns: o.busReturns || {},
                      card: o.card || null, shift: !!o.shift,
+                     del: !!o.del, notice: o.notice || "",
                      presetName: o.presetName || "",
                      /* Which FX bus. Absent means the master bus, so every case
                         written before the sends existed keeps its meaning. */
@@ -1169,6 +1196,12 @@ addMaster("master/len2/shift",        { modules: M2, sel: "fx1", shift: true });
 addMaster("master/len5/shift",        { modules: M5, sel: "fx3", shift: true });
 addMaster("master/len8/shift",        { modules: M8, sel: "fx8", shift: true });
 addMaster("master/len0/shift",        { modules: [], sel: "add_fx", shift: true });
+/* Delete ("X") held, and the Delete+JogClick confirmation -- the same pair of
+   states the slot editor has, from the same chrome. */
+addMaster("master/len2/delete",         { modules: M2, sel: "fx1", del: true });
+addMaster("master/len0/delete",         { modules: [], sel: "add_fx", del: true });
+addMaster("master/len2/removed-notice", { modules: M2, sel: "fx1",
+  notice: "Removed CloudSeed" });
 
 /* --- the pickers, one payload per PAIR ----------------------------------- *
  *
@@ -1882,6 +1915,30 @@ run(busSendsCases, renderBusSends, "settings");
 run(settingsListCases.filter((c) => c.screen === "chain"), renderSettingsList, "list");
 run(settingsListCases.filter((c) => c.screen === "slots"), renderSettingsList, "footedlist");
 
+/*
+ * THE NOTICE COVERS NOTHING. The Delete+JogClick confirmation exists to say
+ * what just happened while the user LOOKS AT the chain it happened to, so it
+ * may only change the footer band: every row above MOVY_RULE_Y must match the
+ * twin without a notice, byte for byte, and the footer itself must differ
+ * (otherwise the notice was not drawn at all).
+ */
+for (const [withN, without] of [["chain/len2/removed-notice", "chain/len2/sel-fx1"],
+                                ["chain/len2/removed-notice-long", "chain/len2/sel-fx1"],
+                                ["master/len2/removed-notice", "master/len2/sel-fx1"]]) {
+  const a = current[withN], b = current[without];
+  if (!a || !b) { fail("notice pair " + withN + " / " + without + " is missing"); continue; }
+  const W = a.fb.width;
+  let above = 0, below = 0;
+  for (let y = 0; y < a.fb.height; y++)
+    for (let x = 0; x < W; x++)
+      if (a.fb.pixels[y * W + x] !== b.fb.pixels[y * W + x]) {
+        if (y < MOVY_RULE_Y) above++; else below++;
+      }
+  if (above) fail(withN + " changed " + above + " pixels ABOVE the footer row -- " +
+                  "the confirmation must not cover the screen");
+  if (!below) fail(withN + " drew the same footer as " + without + " -- no notice shown");
+}
+
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
 
@@ -1918,7 +1975,11 @@ if (process.env.DUMP_CASE) {
    footer rule is that an action Shift does not change keeps its place, so the
    two renders are supposed to match, and that is worth pinning rather than
    working around by pointing the case at a different cell. */
-const SAME_ON_PURPOSE = [["master/len0/sel-add-fx", "master/len0/shift"],
+const SAME_ON_PURPOSE = [
+  /* Delete+click on the `+` IS a plain click too, so the footer does not
+     change -- the same rule, and the same reason to pin it, as Shift. */
+  ["master/len0/sel-add-fx", "master/len0/shift", "master/len0/delete"],
+  ["chain/len5/sel-add-fx", "chain/len5/delete-add-fx"],
   /* A splittable synth draws the chain editor EXACTLY as an unsplittable one
      does -- there is no bus affordance on this screen at all. Both pairs are
      the claim those cases exist to make, so matching is the PASS, not a
@@ -1996,6 +2057,12 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# parameters, on its own pages (src/host/voice_send_source.h). The bus pages",
     "# rendering byte for byte as they did is the point: the audio machinery and",
     "# the bus half of the screen were not supposed to change, and did not.",
+    "#",
+    "# DELETE (\"X\") + JOG CLICK ADDED eight cases and moved NONE: the footer",
+    "# while Delete is held (CLK DELETE on a loaded position, the resting footer",
+    "# on the `+`, declared in SAME_ON_PURPOSE) and the footer-row confirmation a",
+    "# removal raises. The notice cases are also checked against their twins to",
+    "# change nothing above the footer row.",
     "#",
     "# A mismatch names which case moved, and the runner prints the render.",
     "#",

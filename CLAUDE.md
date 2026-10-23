@@ -1462,6 +1462,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
+- **Delete ("X", CC 119) + Jog Click** on a focused, populated chain/MFX module — remove it directly, through the exact same call the "Remove Module" menu row / picker "None" pick already use (`applyChainComponentPick` / `removeMasterFxComponent`), never a new removal path. `hostDeleteHeld` is tracked unconditionally, same shape as Mute's modifier; **the shim must forward CC 119** (`forward_to_shadow`) or the flag never goes true. While Delete is held the footer reads `JOG SEL / CLK DELETE` on a loaded position (`deleteHintsFor`); a removal leaves a 1.5 s `REMOVED <NAME>` pill in the footer row only, dismissed early by a jog turn or any button press (`createFooterNotice` / `footerNoticeDismissedBy` in `chain_editor_chrome.mjs`; see `docs/SHADOW_UI.md`).
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 - **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 
