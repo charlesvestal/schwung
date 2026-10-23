@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // A module's web_ui.html is not a page about the module, it is a page about
@@ -39,30 +41,38 @@ type paramGetter func(slot uint8, key string) (string, error)
 
 const webUIChainSlots = 4
 
-var webUIComponentLabels = map[string]string{
-	"synth":    "Synth",
-	"fx1":      "FX 1",
-	"fx2":      "FX 2",
-	"midi_fx1": "MIDI FX",
+// webUIComponentLabel is "Synth", "FX 3", "MIDI FX 1".
+func webUIComponentLabel(comp string) string {
+	switch {
+	case comp == "synth":
+		return "Synth"
+	case strings.HasPrefix(comp, "midi_fx"):
+		return "MIDI FX " + strings.TrimPrefix(comp, "midi_fx")
+	case strings.HasPrefix(comp, "fx"):
+		return "FX " + strings.TrimPrefix(comp, "fx")
+	}
+	return comp
 }
 
-// webUISearchScope says which positions a module of this component_type can
-// occupy, so a synth's page costs 4 reads rather than 21. Each read is a
-// round-trip through the param channel and a busy one blocks up to its
-// timeout, so reading positions a module cannot be in is not free. An
-// unknown or empty type searches everything.
-func webUISearchScope(componentType string) (comps []string, masterFx, tool bool) {
+// webUISearchScope says which sections of a slot a module of this
+// component_type can occupy ("synth", "fx", "midi_fx"), so a synth's page
+// costs 4 reads rather than a walk of every chain. Each read is a round-trip
+// through the param channel and a busy one blocks up to its timeout, so
+// reading positions a module cannot be in is not free. An unknown or empty
+// type searches everything. The FX sections are walked by their counts, so
+// every position that exists is searched and none that does not is read.
+func webUISearchScope(componentType string) (sections []string, masterFx, tool bool) {
 	switch componentType {
 	case "sound_generator":
 		return []string{"synth"}, false, false
 	case "audio_fx":
-		return []string{"fx1", "fx2"}, true, false
+		return []string{"fx"}, true, false
 	case "midi_fx":
-		return []string{"midi_fx1"}, false, false
+		return []string{"midi_fx"}, false, false
 	case "tool", "overtake":
 		return nil, false, true
 	}
-	return componentPrefixes, true, true
+	return []string{"synth", "midi_fx", "fx"}, true, true
 }
 
 // findModuleWebUILinks lists every place moduleID is loaded, each with the
@@ -73,7 +83,7 @@ func findModuleWebUILinks(get paramGetter, moduleID, componentType, baseURL stri
 	if get == nil {
 		return unknown
 	}
-	comps, masterFx, tool := webUISearchScope(componentType)
+	sections, masterFx, tool := webUISearchScope(componentType)
 	out := WebUILinks{Present: true}
 
 	// read answers (value, ok). ok=false is a read that did not complete, and
@@ -91,30 +101,49 @@ func findModuleWebUILinks(get paramGetter, moduleID, componentType, baseURL stri
 	}
 
 	for slot := uint8(0); slot < webUIChainSlots; slot++ {
-		for _, comp := range comps {
-			v, ok := read(slot, comp+"_module")
-			if !ok {
-				return unknown
+		for _, sec := range sections {
+			var comps, mods []string
+			if sec == "synth" {
+				v, ok := readSlotParam(get, slot, "synth_module")
+				if !ok {
+					return unknown
+				}
+				comps, mods = []string{"synth"}, []string{v}
+			} else {
+				maxN := chainMaxAudioFx
+				if sec == "midi_fx" {
+					maxN = chainMaxMidiFx
+				}
+				list, ok := readSlotSection(get, slot, sec, maxN)
+				if !ok {
+					return unknown
+				}
+				for i, v := range list {
+					comps = append(comps, sec+strconv.Itoa(i+1))
+					mods = append(mods, v)
+				}
 			}
-			if v != moduleID {
-				continue
+			for i, comp := range comps {
+				if mods[i] != moduleID {
+					continue
+				}
+				link(fmt.Sprintf("Track %d %s", slot+1, webUIComponentLabel(comp)),
+					"component="+url.QueryEscape(comp)+
+						"&schwungStandalone=1&slot="+fmt.Sprint(slot))
 			}
-			link(fmt.Sprintf("Track %d %s", slot+1, webUIComponentLabels[comp]),
-				"component="+url.QueryEscape(comp)+
-					"&schwungStandalone=1&slot="+fmt.Sprint(slot))
 		}
 	}
 	if masterFx {
-		for i, fx := range masterFxSlots {
-			v, ok := read(0, "master_fx:"+fx+":module")
-			if !ok {
-				return unknown
-			}
-			if masterFxModuleID(v) != moduleID {
+		m := readMasterFxChain(get)
+		if !m.Known {
+			return unknown
+		}
+		for i, id := range m.Modules {
+			if id != moduleID {
 				continue
 			}
 			link(fmt.Sprintf("Master FX %d", i+1),
-				"component="+url.QueryEscape("master_fx:"+fx)+
+				"component="+url.QueryEscape(masterFxComp(i+1))+
 					"&schwungStandalone=1&master_fx=1")
 		}
 	}
