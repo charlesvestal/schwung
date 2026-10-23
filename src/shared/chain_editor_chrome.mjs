@@ -30,9 +30,11 @@
  * by pixel (tests/host/test_chain_editor_snapshot.sh).
  */
 
-import { drawHeader, drawFooter, RULE_Y as MOVY_RULE_Y }
+import { drawHeader, drawFooter, RULE_Y as MOVY_RULE_Y, FOOTER_Y, FOOTER_H, HINT_PAD }
     from "./param_pages/render_page_movy.mjs";
-import { fitText } from "./param_pages/render_page.mjs";
+import { fitText, notchCorners } from "./param_pages/render_page.mjs";
+import { fontPrint4x5, fontWidth4x5, FONT4_HEIGHT, FONT4_MEASURE }
+    from "./param_pages/font4x5.mjs";
 /* The list rect the knob grid`s own menu pages use, AND the row renderer that
  * fills it. Imported rather than restated: the two pickers below must occupy
  * the SAME rectangle and draw the SAME rows, and a second copy of
@@ -142,6 +144,125 @@ export function shiftHintsFor(comp) {
     return CHAIN_HINTS_AT_REST;
 }
 
+/*
+ * What Delete ("X", CC 119) offers on the focused chain cell -- the same job
+ * shiftHintsFor does for Shift, under the same rule: an action Delete does not
+ * change keeps its PLACE.
+ *
+ * Delete+click removes the device on a position that HOLDS one: a `module` or
+ * the `synth` (both editors gate the removal on a loaded module, and only a
+ * loaded position is ever emitted as either kind). Everywhere else -- the `+`,
+ * the patch/preset node, Settings -- Delete+click is exactly a plain click, so
+ * the footer is exactly the resting one, because nothing HAS changed.
+ *
+ * The jog is unchanged, so JOG SEL keeps slot 0 and DELETE takes the slot OPEN
+ * occupies at rest. "DELETE" rather than "DEL": it is the word on the button
+ * the user is holding. The cost is BACK: JOG SEL / CLK DELETE / BACK EXIT
+ * measures 135px against the 128px bar (BACK BUS on an FX bus, 134px), and
+ * drawFooter pins BACK and drops the MIDDLE pair when three do not fit -- which
+ * would silently hide the very hint this exists to show. So BACK is dropped
+ * here, deliberately, as the Shift footer on a module already does. (With
+ * "DEL" all three pairs would fit, at 121px.)
+ */
+export const DELETE_CLICK_VERB = "DELETE";
+
+export function deleteHintsFor(comp) {
+    const kind = comp && comp.kind;
+    if (kind === "module" || kind === "synth")
+        return [CHAIN_HINTS_AT_REST[0], ["CLK", DELETE_CLICK_VERB]];
+    return CHAIN_HINTS_AT_REST;
+}
+
+/*
+ * THE FOOTER NOTICE: a short confirmation ("REMOVED CLOUDSEED") drawn IN THE
+ * FOOTER ROW, in place of the hint pills, after an action the screen does not
+ * otherwise show happening -- Delete+click removes a box, and the row simply
+ * closes the gap, which reads as nothing at all if you were not watching it.
+ *
+ * In the footer row and nowhere else, on purpose: it must not cover what is
+ * behind it, because what is behind it -- the chain without the device -- is
+ * the thing the user wants to check. So it is not a modal and not an overlay
+ * card; the rows above RULE_Y draw exactly as they would without it.
+ *
+ * It goes away on its own after FOOTER_NOTICE_MS, and EARLIER on the next jog
+ * turn or button press (footerNoticeDismissedBy), so it never stands between
+ * the user and the hints for the next thing they do.
+ */
+export const FOOTER_NOTICE_MS = 1500;
+
+/*
+ * The notice's state, owned by the CALLER (this module keeps none of its own,
+ * like every renderer here). `now` is injected so the expiry is testable without
+ * a clock. `editor` scopes a notice to the screen that raised it, so a notice
+ * from the slot chain is never drawn under Master FX's boxes or vice versa.
+ *
+ * Expiry is resolved on READ: textFor() is the draw path asking, and the frame
+ * that finds the notice expired is the frame that draws the hints again. The
+ * shadow UI redraws every REDRAW_INTERVAL ticks whether or not anything set
+ * needsRedraw, so no timer is needed for the expiry to reach the screen.
+ */
+export function createFooterNotice(opts = {}) {
+    const now = opts.now || (() => Date.now());
+    const ms = opts.ms || FOOTER_NOTICE_MS;
+    let cur = null;   /* { editor, text, until } */
+    return {
+        show(editor, text) { cur = { editor, text: String(text || ""), until: now() + ms }; },
+        /* Returns whether anything was cleared, so the caller redraws only
+         * when the screen actually changes. */
+        clear() { const had = cur !== null; cur = null; return had; },
+        active() {
+            if (cur && now() >= cur.until) cur = null;
+            return cur !== null;
+        },
+        textFor(editor) {
+            if (!this.active()) return "";
+            return cur.editor === editor ? cur.text : "";
+        },
+    };
+}
+
+/*
+ * Which input dismisses the notice early: a jog turn or any button PRESS.
+ *
+ *  - CC with a non-zero value: every button press (Back, Menu, Shift, Delete,
+ *    the jog click, tracks...), the jog turn (CC 14) and the knob turns. A
+ *    button RELEASE (value 0) does not dismiss: letting go of Delete after the
+ *    click must not throw away the confirmation that click just raised.
+ *  - Note-on at 10 and above: the step buttons (16-31) and the pads.
+ *  - NOT notes 0-9: those are the capacitive TOUCH sensors on the knobs and
+ *    the jog. A finger resting on the jog after the click is not a request
+ *    for the footer back.
+ */
+export function footerNoticeDismissedBy(status, d1, d2) {
+    const type = status & 0xF0;
+    if (type === 0xB0) return d2 > 0;
+    if (type === 0x90) return d2 > 0 && d1 >= 10;
+    return false;
+}
+
+/*
+ * The notice itself: one centred pill in the footer row, the same geometry as
+ * a hint pill (inverted, corners notched, in the 4x5 face) so it reads as part
+ * of the footer rather than as something laid over the screen. Fitted by
+ * MEASURING, and cut rather than squeezed: the device clips silently.
+ */
+export function drawFooterNotice(ctx, text) {
+    const maxText = SCREEN_WIDTH - 2 - HINT_PAD * 2;
+    const t = fitText(FONT4_MEASURE, String(text == null ? "" : text).toUpperCase(), maxText);
+    if (!t) return;
+    const tw = fontWidth4x5(t);
+    const pw = tw + HINT_PAD * 2, ph = FONT4_HEIGHT + 2;
+    const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
+    const x = Math.floor((SCREEN_WIDTH - pw) / 2);
+    ctx.fillRect(x, ty - 1, pw, ph, 1);
+    notchCorners(ctx, x, ty - 1, pw, ph);
+    fontPrint4x5(ctx, x + HINT_PAD, ty, t, 0);
+}
+
+/*
+ * @param o.notice  optional: a footer notice to draw INSTEAD of the hints
+ *                  (see drawFooterNotice). Only the footer row changes.
+ */
 export function drawChainEditorBands(ctx, o) {
     drawHeader(ctx, o.headerLeft, o.headerRight, false);
 
@@ -151,7 +272,8 @@ export function drawChainEditorBands(ctx, o) {
     const info = truncateText(o.info == null ? "" : String(o.info), INFO_MAX_CHARS);
     ctx.print(centreX(ctx, info), INFO_Y, info, 1);
 
-    drawFooter(ctx, o.hints);
+    if (o.notice) drawFooterNotice(ctx, o.notice);
+    else drawFooter(ctx, o.hints);
 }
 
 /**

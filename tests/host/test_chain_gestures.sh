@@ -511,16 +511,20 @@ const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
    so both are pulled out and evaluated the same way. Since 4a-3 the two screens
    share their chrome, and the rule that keeps them converged is that anything
    asserted about one is asserted about the other. */
-function hintsFrom(text, what, at, extraNames, extraValues) {
+function bandsFrom(text, what, at, extraNames, extraValues) {
   const call = text.indexOf("drawChainEditorBands(", at);
   if (at < 0 || call < 0) { fail(what + " no longer draws a footer"); return null; }
   const stmt = text.slice(call, text.indexOf("\n    });", call) + 7);
   let got;
   try {
     new Function(...extraNames, "drawChainEditorBands", stmt)(
-      ...extraValues, (c, o) => { got = o.hints; });
+      ...extraValues, (c, o) => { got = o; });
   } catch (e) { fail(what + " footer would not evaluate: " + e.message); return null; }
   return got;
+}
+function hintsFrom(...args) {
+  const o = bandsFrom(...args);
+  return o ? o.hints : null;
 }
 function fits(what, hints) {
   if (!hints) return;
@@ -537,16 +541,27 @@ const REST_HINTS = [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]];
 const shiftMaker = lift("shiftHintsFor", ["CHAIN_HINTS_AT_REST"], chrome);
 if (!shiftMaker) fail("shiftHintsFor is gone from the shared chrome");
 const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
+/* And the Delete ("X") hints beside them, lifted the same way: Delete+click
+   removes the focused device, so the footer must say so while it is held. */
+const deleteMaker = lift("deleteHintsFor", ["CHAIN_HINTS_AT_REST", "DELETE_CLICK_VERB"], chrome);
+if (!deleteMaker) fail("deleteHintsFor is gone from the shared chrome");
+const deleteHintsFor = deleteMaker ? deleteMaker(REST_HINTS, "DELETE") : (() => []);
 
 /* --- the slot chain editor: bound to the modifier ------------------------ */
 {
   const at = src.indexOf("function drawChainEdit(");
   /* shiftHintsFor is lifted too, and the CELL is a parameter now: Shift
      offers different things depending on what the focused position holds. */
-  const shown = (shift, comp) => hintsFrom(src, "drawChainEdit", at,
-    ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine",
-     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST"],
-    [() => shift, {}, "", "", "", "", shiftHintsFor, comp, REST_HINTS]);
+  const NAMES = ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine",
+     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST",
+     "isDeleteHeld", "deleteHintsFor", "chainFooterNoticeText"];
+  const values = (shift, comp, del, notice) =>
+    [() => shift, {}, "", "", "", "", shiftHintsFor, comp, REST_HINTS,
+     () => !!del, deleteHintsFor, (ed) => (notice && notice[ed]) || ""];
+  const shown = (shift, comp, del = false) => hintsFrom(src, "drawChainEdit", at,
+    NAMES, values(shift, comp, del));
+  const bands = (comp, del, notice) => bandsFrom(src, "drawChainEdit", at,
+    NAMES, values(false, comp, del, notice));
 
   /* The kinds chain_model actually emits. An empty position is the `add` box,
      NOT a module with a null module -- that combination never exists, and
@@ -619,6 +634,42 @@ const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
     fail("Shift on the chain node offers a component gesture: [" + flat(heldChain) + "]");
   if (flat(heldChain) !== flat(rest))
     fail("Shift on the chain node reads [" + flat(heldChain) + "], not the resting footer");
+
+  /* ---- Delete ("X") held: the footer names what the click will do ------
+   *
+   * Delete+click removes a LOADED device (a module, or the synth). JOG is
+   * unchanged and keeps slot 0; DELETE takes OPEN`s slot. BACK goes, because
+   * three pairs with DELETE do not fit and drawFooter would otherwise drop
+   * the MIDDLE pair -- the one this exists to show. */
+  const delFull = shown(false, FULL, true);
+  if (flat(delFull) !== "JOG SEL / CLK DELETE")
+    fail("Delete on a populated cell reads [" + flat(delFull) + "]");
+  fits("with Delete held on a populated cell", delFull);
+  const delSynth = shown(false, SYNTH, true);
+  if (flat(delSynth) !== "JOG SEL / CLK DELETE")
+    fail("Delete on the synth reads [" + flat(delSynth) + "]");
+  if (slotOf(delFull, "DELETE") !== slotOf(rest, "OPEN"))
+    fail("DELETE is not in the slot OPEN occupies at rest");
+  if (slotOf(delFull, "SEL") !== slotOf(rest, "SEL"))
+    fail("SEL moved when Delete went down -- an unchanged action must keep its place");
+  /* On the `+` and the chain node Delete+click IS a plain click, so the
+     footer is the resting one, unchanged. */
+  for (const [name, c] of [["the +", EMPTY], ["the chain node", CHAIN]]) {
+    const d = shown(false, c, true);
+    if (flat(d) !== flat(rest))
+      fail("Delete on " + name + " reads [" + flat(d) + "] but changes nothing there");
+  }
+  /* Shift is dispatched before Delete is ever looked at, so with both held
+     the footer must be the Shift one. */
+  if (flat(shown(true, FULL, true)) !== flat(heldFull))
+    fail("with Shift AND Delete held the footer is not the Shift footer");
+  /* The notice is the slot editor`s own, scoped by editor name. */
+  const withNotice = bands(FULL, false, { slot: "Removed CloudSeed" });
+  if (!withNotice || withNotice.notice !== "Removed CloudSeed")
+    fail("drawChainEdit does not hand its own footer notice to the bands");
+  const otherNotice = bands(FULL, false, { master: "Removed CloudSeed" });
+  if (!otherNotice || otherNotice.notice)
+    fail("drawChainEdit drew a notice raised by the OTHER editor");
 }
 
 /* --- Master FX: the SAME footer, bound to the same modifier --------------
@@ -635,14 +686,20 @@ const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
 {
   const mfx = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
   const at = mfx.indexOf("export function drawMasterFx(");
-  const shown = (shift, comp) => hintsFrom(mfx, "drawMasterFx", at,
-    ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine",
-     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST", "fxBus", "fxBusHints"],
+  const MNAMES = ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine",
+     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST", "fxBus", "fxBusHints",
+     "isDeleteHeld", "deleteHintsFor", "chainFooterNoticeText"];
+  const mvalues = (shift, comp, del, notice) =>
     [() => shift, {}, "", "", "", shiftHintsFor, comp, REST_HINTS,
      () => ({ short: "MFX", label: "Master FX", hasPresets: true }),
      /* The REAL rewriter, lifted from the same file, not a stub: what is under
         test is which word Back gets, so a stub would be testing the stub. */
-     lift("fxBusHints", ["FX_BUS_BACK_LABEL"], mfx)("BUS")]);
+     lift("fxBusHints", ["FX_BUS_BACK_LABEL"], mfx)("BUS"),
+     () => !!del, deleteHintsFor, (ed) => (notice && notice[ed]) || ""];
+  const shown = (shift, comp, del = false) => hintsFrom(mfx, "drawMasterFx", at,
+    MNAMES, mvalues(shift, comp, del));
+  const mbands = (comp, notice) => bandsFrom(mfx, "drawMasterFx", at,
+    MNAMES, mvalues(false, comp, false, notice));
   const FULL2 = { kind: "module", module: "cloudseed" };
   const EMPTY2 = { kind: "add", section: "fx", label: "+" };
   const rest = shown(false, FULL2);
@@ -663,6 +720,19 @@ const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
          "nothing there, so it must read exactly like the resting footer");
   fits("on Master FX with Shift held", heldFull2);
   fits("on Master FX with Shift held, empty", heldEmpty2);
+  /* Delete: the SAME words as the slot chain, from the same helper. */
+  const delFull2 = shown(false, FULL2, true);
+  if (flat(delFull2) !== "JOG SEL / CLK DELETE")
+    fail("Delete on a populated Master FX cell reads [" + flat(delFull2) + "]");
+  fits("on Master FX with Delete held", delFull2);
+  if (flat(shown(false, EMPTY2, true)) !== flat(rest))
+    fail("Delete on the Master FX + changes the footer, but changes nothing there");
+  const mn = mbands(FULL2, { master: "Removed CloudSeed" });
+  if (!mn || mn.notice !== "Removed CloudSeed")
+    fail("drawMasterFx does not hand its own footer notice to the bands");
+  const mo = mbands(FULL2, { slot: "Removed CloudSeed" });
+  if (!mo || mo.notice)
+    fail("drawMasterFx drew a notice raised by the slot editor");
 }
 
 if (failures) process.exit(1);
