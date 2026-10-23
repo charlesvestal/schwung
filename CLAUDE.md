@@ -298,26 +298,15 @@ it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
 turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
 the address is unattributable under ASLR.
 
-### `get_bpm()` must be STEADY, and for a long time it was not
+### `get_bpm()` must be STEADY -- `docs/MODULES.md`
 
-A tempo-synced delay resizes its line from `get_bpm()` every block, and
-resizing a delay line is a pitch bend — so a value that changes when the tempo
-did not is an audible fault, not a rounding error. While Move played,
-`sampler_get_bpm()` timed each beat on the wall clock, and a tick is only seen
-in the SPI frame it lands in: a steady 120 read **120.19, 119.49, 120.19 …**
-Munchi Delay bent its 1-bar echo up to 11 semitones every beat or two; War
-Bells (Sync) clicked; Tape Echo 2 wobbled — while Move PLAYED only, which is
-why it read as a module bug. Smack, Work and Push'n'Pull had each grown their
-own clock estimator around it.
-
-Now Move's tempo comes from its **live model** (exact) unless Move follows an
-external MIDI clock; otherwise the clock is fitted over a **16-beat window in
-SAMPLE time and HELD** (`shadow_transport.c`): the value moves only when the
-window disagrees by more than it can be wrong, so a steady clock never moves
-it. **Never report a tempo from one tick interval, an EMA of them, or one beat
-on the wall clock** — all three swing on a steady clock. The tests assert "does
-not move", not "is near": near is what the broken one passed
-(`tests/host/test_shadow_transport.sh`, `test_sampler_get_bpm.sh`).
+A tempo-synced delay resizes its line from `get_bpm()` every block, so a value
+that moves when the tempo did not is a pitch bend. It used to time each beat on
+the wall clock (a steady 120 read 120.19, 119.49 ...). Now it is Move's tempo
+from the live model, else a clock **fitted over 16 beats in sample time and
+held**. **Never report a tempo from one tick interval, an EMA, or one beat on
+the wall clock**; the tests assert "does not move", not "is near"
+(`test_shadow_transport.sh`, `test_sampler_get_bpm.sh`).
 
 ### JS Host Functions
 

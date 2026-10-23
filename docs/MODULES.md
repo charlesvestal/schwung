@@ -4301,7 +4301,9 @@ from, in order:
    window disagrees with it by more than the window can be wrong (~0.1 % at
    120 BPM). A step change lands within about a beat.
 3. An internal sequencer's last tempo after it stops (so a synced LFO that
-   switches from phase-lock to free-run keeps the same rate).
+   switches from phase-lock to free-run keeps the same rate). That tempo comes
+   from the clock it emitted, so changing the sequencer's tempo while it is
+   *stopped* is not seen until it plays again.
 4. While Move is stopped: the set's tempo from the model, followed at once if
    you change it while stopped; else the last measured clock, the settings
    file, then 120.
@@ -4310,7 +4312,8 @@ from, in order:
 Move's clock on the wall clock, which can only see a tick in the SPI frame it
 arrives in — a steady 120 BPM read 120.19, 119.49, 120.19 … A delay that
 resizes its line on each change bends the pitch of everything in it: measured
-as bends of up to 11 semitones every beat or two on Munchi Delay's 1-bar echo,
+as bends of up to 548 cents (about 5½ semitones) every beat or two on Munchi
+Delay's 1-bar echo, against a fixed-tempo render,
 clicks on War Bells
 (Sync), a wobble on Tape Echo 2 (Tempo Sync), all only while Move played. A
 module that built its own clock estimator, or a deadband on `get_bpm()`, to
