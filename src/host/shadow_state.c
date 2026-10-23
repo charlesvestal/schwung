@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <pwd.h>
 #include "shadow_state.h"
+#include "json_span.h"
 
 /* ============================================================================
  * Host callbacks (set by state_init)
@@ -67,14 +68,10 @@ void shadow_save_state(void)
                 char *patches_start = strstr(json, "\"patches\":");
                 if (patches_start) {
                     char *arr_start = strchr(patches_start, '[');
-                    if (arr_start) {
-                        int depth = 1;
-                        char *arr_end = arr_start + 1;
-                        while (*arr_end && depth > 0) {
-                            if (*arr_end == '[') depth++;
-                            else if (*arr_end == ']') depth--;
-                            arr_end++;
-                        }
+                    /* String-aware: a ']' in a patch name is text. An
+                     * unterminated array is dropped, not copied half-way. */
+                    const char *arr_end = arr_start ? json_span_end(arr_start) : NULL;
+                    if (arr_end) {
                         int len = arr_end - arr_start;
                         if (len < (int)sizeof(patches_buf) - 1) {
                             strncpy(patches_buf, arr_start, len);
@@ -121,14 +118,9 @@ void shadow_save_state(void)
                 char *mfc = strstr(json, "\"master_fx_chain\":");
                 if (mfc) {
                     char *obj_start = strchr(mfc, '{');
-                    if (obj_start) {
-                        int depth = 1;
-                        char *obj_end = obj_start + 1;
-                        while (*obj_end && depth > 0) {
-                            if (*obj_end == '{') depth++;
-                            else if (*obj_end == '}') depth--;
-                            obj_end++;
-                        }
+                    /* String-aware: a '}' in a preset name is text. */
+                    const char *obj_end = obj_start ? json_span_end(obj_start) : NULL;
+                    if (obj_end) {
                         int len = obj_end - obj_start;
                         if (len < (int)sizeof(master_fx_chain_buf) - 1) {
                             strncpy(master_fx_chain_buf, obj_start, len);

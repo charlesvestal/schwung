@@ -233,8 +233,8 @@ const sState = saver.indexOf("stateFile.state = stateObj;");
 const sUp = saver.indexOf("stateFile.user_preset = userPreset;");
 if (sState < 0 || sUp < 0 || sUp < sState) fail("master_fx_N.json must write user_preset AFTER state");
 const cState = saver.indexOf("slotConfig.state = stateObj;");
-const cUp = saver.indexOf("slotConfig.user_preset = userPreset;");
-if (cState < 0 || cUp < 0 || cUp < cState) fail("config.master_fx_chain must write user_preset AFTER state");
+if (saver.indexOf("slotConfig.user_preset") >= 0)
+    fail("config.master_fx_chain must NOT carry user_preset -- it is read back from master_fx_N.json only, and the shim copies master_fx_chain");
 console.log("  ok  every master reshape/swap/clear/adopt/boot/set-change site updates the record; persisted after state");
 
 /* ---- maybeReturnToMasterComponentGrid, lifted and run ----------------- */

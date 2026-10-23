@@ -15485,10 +15485,13 @@ function saveMasterFxChainConfigOnMaster() {
                 }
             }
 
-            /* Which User Preset this position is on -- AFTER `state`, always
-             * (see masterUserPresetField). */
+            /* Which User Preset this position is on. Persisted in
+             * master_fx_N.json only (below), which is the one place it is read
+             * back from (boot and set change). NOT in master_fx_chain: the
+             * shim copies that object into shadow_config.json, and a
+             * user-typed name there only adds size and risk to a copy nobody
+             * reads it from. */
             const userPreset = masterUserPresetField(slotIdx, stateObj);
-            if (userPreset) slotConfig.user_preset = userPreset;
 
             config.master_fx_chain[key] = slotConfig;
 

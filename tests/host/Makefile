@@ -70,6 +70,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_ui_midi_ring_order \
 	$(BUILD_DIR)/test_master_filter \
 	$(BUILD_DIR)/test_speaker_eq \
+	$(BUILD_DIR)/test_json_span \
 	$(BUILD_DIR)/test_midi_in_compact \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
@@ -194,6 +195,9 @@ $(BUILD_DIR)/test_master_filter: test_master_filter.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_speaker_eq: test_speaker_eq.c ../../src/host/speaker_eq.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_json_span: test_json_span.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
