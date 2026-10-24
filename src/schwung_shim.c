@@ -6131,6 +6131,19 @@ void midi_monitor()
         unsigned char midi_1 = *(byte + 2);
         unsigned char midi_2 = *(byte + 3);
 
+        /* MOVE'S OWN CONTROLS ONLY. Everything below tracks the state of a
+         * physical control -- Shift, Delete, the volume touch, held pads and
+         * held STEPS -- and every one of them arrives on cable 0. This scan
+         * had no cable test, so a sequencer on USB-A (cable 2) playing notes
+         * 16-31 set bits in `shadow_steps_held_mask`: one sounding note was
+         * "exactly one step held", and turning a knob under the shadow UI
+         * became a p-lock -- written into the clip if there was one, a
+         * "Not locked" box if not, with Record off either way. Notes 68-99
+         * drove the pad counter the same way, and an external CC 49 held
+         * Shift. Every post-transfer scan already filters to cable 0; this
+         * was the one that did not. */
+        if (cable != 0x00) continue;
+
         if (code_index_number == 2 || code_index_number == 1 || (cable == 0xf && code_index_number == 0xb && midi_0 == 176))
         {
             continue;
