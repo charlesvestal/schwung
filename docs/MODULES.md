@@ -895,11 +895,9 @@ globalThis.chain_ui = {
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
 
-The framework captures module callbacks and restores the parent globals after
-UI-only loading, including failed loads. Omitted callbacks remain absent from
-the child; they do not inherit the parent handler. In the shadow UI, component
-editors leave external MIDI with the host CC/surface router. Active tools receive
-external MIDI through their captured handler until hidden, exited or suspended.
+UI-only loads restore parent callbacks; omitted child callbacks do not inherit
+host handlers. Shadow component editors leave external MIDI with the host;
+active tools receive it until hidden, exited or suspended.
 
 **Your knobs on an external surface (`ui_pages`).** A module that draws its
 own screen often refuses `ui_hierarchy` on purpose, because serving one stops

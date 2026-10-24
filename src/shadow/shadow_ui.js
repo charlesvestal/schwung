@@ -1,6 +1,6 @@
 import * as os from 'os';
 import * as std from 'std';
-import { loadUiModule, withUiGlobals } from '/data/UserData/schwung/shared/ui_module_load.mjs';
+import { loadUiModule } from '/data/UserData/schwung/shared/ui_module_load.mjs';
 
 /* Import unified logger */
 import { log as unifiedLog, installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
@@ -22642,15 +22642,30 @@ function resolveCanvasScriptPath(meta) {
 function loadCardDrawer(scriptPath, exportRef) {
     if (!scriptPath || !exportRef) return null;
     if (typeof shadow_load_ui_module !== "function") return null;
-    try {
-        return withUiGlobals(() => {
-            if (!shadow_load_ui_module(scriptPath)) return null;
-            const fn = globalThis[exportRef];
-            return typeof fn === "function" ? fn : null;
-        }, [exportRef]);
-    } catch (e) {
-        return null;
+
+    const NAMES = ["init", "tick", "onMidiMessageInternal", "onMidiMessageExternal",
+                   exportRef];
+    const had = {}, saved = {};
+    for (const n of NAMES) {
+        had[n] = Object.prototype.hasOwnProperty.call(globalThis, n);
+        saved[n] = globalThis[n];
     }
+
+    let out = null;
+    try {
+        if (shadow_load_ui_module(scriptPath)) {
+            const fn = globalThis[exportRef];
+            if (typeof fn === "function") out = fn;
+        }
+    } catch (e) {
+        out = null;
+    } finally {
+        for (const n of NAMES) {
+            if (had[n]) globalThis[n] = saved[n];
+            else { try { delete globalThis[n]; } catch (e) {} }
+        }
+    }
+    return out;
 }
 
 function resolveCardScriptPath(slot, component, scriptRef) {
@@ -22917,21 +22932,45 @@ function loadCanvasOverlayScript(scriptPath, overlayRef) {
     if (!scriptPath || typeof shadow_load_ui_module !== "function") {
         return { overlay: null, error: "canvas script unavailable" };
     }
+
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedMidiInternal = globalThis.onMidiMessageInternal;
+    const savedMidiExternal = globalThis.onMidiMessageExternal;
+    const hadCanvasOverlay = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlay");
+    const hadCanvasOverlays = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlays");
+    const savedCanvasOverlay = globalThis.canvas_overlay;
+    const savedCanvasOverlays = globalThis.canvas_overlays;
+
+    let ok = false;
+    let loadError = "";
     try {
-        return withUiGlobals(() => {
-            if (!shadow_load_ui_module(scriptPath)) {
-                return { overlay: null, error: "failed to load canvas script" };
-            }
-            const resolved = resolveOverlayFromGlobals(
-                overlayRef, [globalThis.canvas_overlay],
-                "canvas script missing globalThis.canvas_overlay"
-            );
-            if (!resolved.overlay) return { overlay: null, error: resolved.error || "canvas script missing overlay object" };
-            return { overlay: resolved.overlay, error: "" };
-        }, ["canvas_overlay", "canvas_overlays"]);
+        ok = shadow_load_ui_module(scriptPath);
     } catch (e) {
-        return { overlay: null, error: String(e) };
+        ok = false;
+        loadError = String(e);
     }
+
+    const resolved = resolveOverlayFromGlobals(
+        overlayRef,
+        [globalThis.canvas_overlay],
+        "canvas script missing globalThis.canvas_overlay"
+    );
+
+    globalThis.init = savedInit;
+    globalThis.tick = savedTick;
+    globalThis.onMidiMessageInternal = savedMidiInternal;
+    globalThis.onMidiMessageExternal = savedMidiExternal;
+
+    if (hadCanvasOverlay) globalThis.canvas_overlay = savedCanvasOverlay;
+    else delete globalThis.canvas_overlay;
+
+    if (hadCanvasOverlays) globalThis.canvas_overlays = savedCanvasOverlays;
+    else delete globalThis.canvas_overlays;
+
+    if (!ok) return { overlay: null, error: loadError || "failed to load canvas script" };
+    if (!resolved.overlay) return { overlay: null, error: resolved.error || "canvas script missing overlay object" };
+    return { overlay: resolved.overlay, error: "" };
 }
 
 /* THE HOOKS THAT RUN ON THE DRAW PATH, WHERE A READ IS NOT AFFORDABLE.

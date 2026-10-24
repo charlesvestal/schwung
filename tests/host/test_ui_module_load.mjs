@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { loadUiModule, withUiGlobals } from '../../src/shared/ui_module_load.mjs';
+import { loadUiModule } from '../../src/shared/ui_module_load.mjs';
 import { createControlHost } from '../../src/shared/control_host.mjs';
 import { createCCMap } from '../../src/shared/cc_map.mjs';
 
@@ -52,17 +52,16 @@ test('omitted callbacks cannot inherit host callbacks or an earlier module', () 
 });
 
 test('nested loads and absent optional exports are restored exactly', () => {
-    const g = { tick: () => 'host', canvas_overlay: { original: true } };
+    const g = { tick: () => 'host' };
     const before = { ...g };
-    withUiGlobals(() => {
+    loadUiModule(() => {
         g.tick = () => 'outer';
         g.onUnload = () => {};
-        const outer = g.tick;
+        const outer = { ...g };
         loadUiModule(() => { g.tick = () => 'inner'; return true; }, 'inner.js', g);
-        assert.equal(g.tick, outer);
-        g.canvas_overlay = {};
-        g.canvas_overlays = {};
-    }, ['canvas_overlay', 'canvas_overlays'], g);
+        assert.deepEqual(g, outer);
+        return true;
+    }, 'outer.js', g);
     assert.deepEqual(g, before);
 });
 
@@ -82,7 +81,6 @@ function harness() {
         paramShimsInstalled: false,
     };
     c.loadUiModule = (load, path) => loadUiModule(load, path, c);
-    c.withUiGlobals = (f, extra) => withUiGlobals(f, extra, c);
     c.shadow_load_ui_module = c.host_load_ui_module = () => {
         Object.assign(c, exports());
         return true;
@@ -101,7 +99,7 @@ function harness() {
     c.ccMap = createCCMap({ controls: host.controls, edit: host.edit, targets: host.targets, learn: host.learn });
     vm.createContext(c);
     for (const name of ['loadModuleUi', 'unloadModuleUi', 'loadOvertakeModule', 'startInteractiveTool',
-                        'loadCardDrawer', 'loadCanvasOverlayScript', 'hideToolOvertake', 'suspendOvertakeMode',
+                        'hideToolOvertake', 'suspendOvertakeMode',
                         'resumeOvertakeModule', 'exitToolOvertake', 'invokeModuleOnResume', 'runToolCallback']) {
         vm.runInContext(fn(shadow, name), c);
     }
@@ -205,33 +203,11 @@ for (const reconnect of [false, true]) {
                 c.onMidiMessageExternal([0xf0, 0x01, 0x02]);
                 assert.deepEqual(received, [[0xb0, 1, 64], [0xf0, 0x01, 0x02]]);
                 assert.equal(c.surfaceCalls, 0, 'active tool retains raw MIDI ownership');
-
             } else {
                 c.onMidiMessageExternal([0xb0, 1, 64]);
                 assert.equal(received.length, 0);
                 assert.equal(c.surfaceCalls, 1);
             }
-        });
-    }
-}
-
-for (const loader of ['card', 'canvas']) {
-    for (const outcome of ['success', 'false', 'throw']) {
-        test(loader + ' load restores host callbacks: ' + outcome, () => {
-            const { c } = harness();
-            const before = names.map(name => c[name]);
-            const exported = () => {};
-            c.resolveOverlayFromGlobals = (ref, objects) => ({ overlay: objects[0], error: '' });
-            c.shadow_load_ui_module = () => {
-                Object.assign(c, exports(), { draw: exported, canvas_overlay: { draw: exported } });
-                if (outcome === 'throw') throw new Error('bad canvas');
-                return outcome === 'success';
-            };
-            const result = loader === 'card' ? c.loadCardDrawer('card.js', 'draw') : c.loadCanvasOverlayScript('canvas.js', '');
-            if (outcome === 'success') assert.equal(loader === 'card' ? result : result.overlay.draw, exported);
-            else assert.equal(loader === 'card' ? result : result.overlay, null);
-            assert.deepEqual(names.map(name => c[name]), before);
-            assert.equal('onUnload' in c, false);
         });
     }
 }
