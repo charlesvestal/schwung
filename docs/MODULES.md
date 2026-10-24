@@ -2981,6 +2981,34 @@ Without this the only way to get a fact to a widget was to give it a knob —
 which is how a module ended up shipping a read-only cell that existed purely to
 carry a number to the cell beside it.
 
+**An extra key may be live.** The rotation visits each key once per pass, a few
+times a second, which is fine for a name or a ratio and a slideshow for a meter
+or a playhead. Declare the extra key `"live": true` in its `chain_params` entry
+(see the next section) and it is also read every tick, like a live cell key:
+
+```json
+{ "key": "peak", "type": "float", "min": 0, "max": 1, "access": "read", "live": true }
+```
+
+Serve `<key>:effective` (the plain key is the fallback). The widget finds the
+fresh value in `values`. The rotation still visits the key as well, so it costs
+one rotation stop and counts against the cap of four, and its plain read is the
+base in `baseValues` once it has come round.
+
+A live extra key shares the one-live-read-per-tick budget
+(`MOD_FAST_READS_PER_TICK`) with every other live key on the page and takes
+turns with them: with N live keys each is read once every N ticks, not every
+tick. Declare only what animates. An extra key that is not live reads on the
+rotation only, and a host that predates this treats `live` on an extra key as a
+plain extra.
+
+`live` applies to a widget's `viz.extra_keys`; a canvas page's own `extra_keys`
+read on the rotation (a key that is also a widget extra on the same page is
+live). A live key makes the page's graphics see base and effective values
+separately, so a fader widget on the same page draws its base marks (a sample
+widget is handed them too) even though its own value is not modulated. A custom
+widget is only affected if it reads `baseValues`.
+
 ##### A parameter the module drives itself
 
 A knob is not always the only thing moving a parameter. A synth that sweeps its
@@ -2996,7 +3024,8 @@ left.
 asked for `<key>:effective` **every tick**, rather than on the value rotation,
 and graphics are handed base-merged-with-effective. The rotation comes round
 about four times a second on an eight-knob page, and an animation drawn from
-that is a slideshow — the per-tick refresh is the entire point.
+that is a slideshow — the per-tick refresh is the entire point. This also works
+for a widget's `extra_keys`, which have no cell: see the previous section.
 
 Serve `<key>:effective` from your `get_param`, and `<key>:base` too if you want
 to save the host a fallback read. `values` stays the BASE everywhere a value is

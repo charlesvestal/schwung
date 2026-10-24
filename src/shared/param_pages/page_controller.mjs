@@ -5530,11 +5530,31 @@ export function createController(io = {}) {
         if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }
     }
 
+    /*
+     * A widget's EXTRA key the module declared live: a value with no cell that
+     * the picture needs and that moves on its own (a meter, a playhead).
+     * It is refreshed every tick like a live cell key. On the value rotation
+     * (about one stop in twelve, so a few times a second) it would be a
+     * slideshow, and the rotation stays what reads it when it is not live.
+     */
+    function liveExtraKeys(p) {
+        if (!vizEnabled || !s.metaIndex) return [];
+        const out = [];
+        for (const k of vizExtraKeys()) {
+            if (!k || p.keys.indexOf(k) >= 0) continue;   /* a cell key is moving()'s job */
+            const m = s.metaIndex.getOrGuess(k);
+            if (m && m.live === true) out.push(k);
+        }
+        return out;
+    }
+
     function refreshModulatedValues(p) {
         const modKeys = [];
         for (const k of p.keys) {
             if (k && moving(k)) modKeys.push(k);
         }
+        const liveExtras = liveExtraKeys(p);
+        for (const k of liveExtras) modKeys.push(k);
         if (!modKeys.length) {
             /* Nothing modulated: drop stale dots rather than leave them frozen
              * on the arc after a routing is removed. */
@@ -5563,7 +5583,7 @@ export function createController(io = {}) {
         s.modCursor = (s.modCursor + n) % modKeys.length;
         /* A key that stopped being modulated keeps no dot. */
         for (const k in s.modValues) {
-            if (!moving(k)) delete s.modValues[k];
+            if (!moving(k) && liveExtras.indexOf(k) < 0) delete s.modValues[k];
         }
     }
 
