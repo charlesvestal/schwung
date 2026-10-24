@@ -1347,6 +1347,10 @@ The synthesised contracts (Global Settings, Slot Settings, Master FX Settings), 
 component load gate, and the input-dispatch order. Read it before editing
 `src/shadow/shadow_ui.js` or its `.mjs` siblings.
 
+- **UI loads borrow callback globals and restore them in `finally`.** Use
+  `shared/ui_module_load.mjs` for components, tools, cards and canvases. The
+  shadow host routes external MIDI to the active tool; a closed editor must
+  never leave CC Learn bypassed. See `docs/SHADOW_UI.md`.
 - **Whatever is drawn LAST must be fed FIRST.** The draw path is a switch with the
   overlays painted after it; the input path is a run of early-outs *before* it. The
   two orders are the reverse of each other, and nothing at either site says so.

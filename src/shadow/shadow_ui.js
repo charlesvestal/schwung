@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as std from 'std';
+import { loadUiModule, withUiGlobals } from '/data/UserData/schwung/shared/ui_module_load.mjs';
 
 /* Import unified logger */
 import { log as unifiedLog, installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
@@ -7361,9 +7362,6 @@ function loadModuleUi(slot, componentKey, moduleId) {
         return false;
     }
 
-    /* Clear any previous chain_ui */
-    globalThis.chain_ui = null;
-
     /* Set up param shims before loading */
     setupModuleParamShims(slot, componentKey);
 
@@ -7374,38 +7372,18 @@ function loadModuleUi(slot, componentKey, moduleId) {
         return false;
     }
 
-    /* Save current globals before loading - module may overwrite them */
-    const savedInit = globalThis.init;
-    const savedTick = globalThis.tick;
-    const savedMidi = globalThis.onMidiMessageInternal;
-
-    const ok = shadow_load_ui_module(uiPath);
-    if (!ok) {
+    let loaded;
+    try {
+        loaded = loadUiModule(shadow_load_ui_module, uiPath);
+    } catch (e) {
+        debugLog("loadModuleUi: " + e);
+    }
+    if (!loaded) {
         moduleUiLoadError = true;
         clearModuleParamShims();
-        /* Restore globals in case partial load modified them */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
         return false;
     }
-
-    /* Check if module used chain_ui pattern (preferred) */
-    if (globalThis.chain_ui) {
-        loadedModuleUi = globalThis.chain_ui;
-    } else {
-        /* Module used standard globals - wrap them in chain_ui object */
-        loadedModuleUi = {
-            init: (globalThis.init !== savedInit) ? globalThis.init : null,
-            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
-        };
-
-        /* Restore shadow UI's globals */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
-    }
+    loadedModuleUi = loaded.chainUi || loaded.callbacks;
 
     /* Verify we got something useful */
     if (!loadedModuleUi || (!loadedModuleUi.tick && !loadedModuleUi.init && !loadedModuleUi.onMidiMessageInternal)) {
@@ -9694,11 +9672,6 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         const wantLedQueue = !skipOvertake && !(moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear);
         if (wantLedQueue) activateLedQueue();
 
-        /* Save current globals before loading - module may overwrite them */
-        const savedInit = globalThis.init;
-        const savedTick = globalThis.tick;
-        const savedMidi = globalThis.onMidiMessageInternal;
-
         overtakeModulePath = moduleInfo.uiPath;
         overtakeModuleId = moduleInfo.id || "";
         setView(VIEWS.OVERTAKE_MODULE);
@@ -9805,8 +9778,10 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
         debugLog("loadOvertakeModule: loading " + moduleInfo.uiPath);
+        let loaded;
         if (typeof shadow_load_ui_module === "function") {
-            const result = shadow_load_ui_module(moduleInfo.uiPath);
+            loaded = loadUiModule(shadow_load_ui_module, moduleInfo.uiPath);
+            const result = !!loaded;
             debugLog("loadOvertakeModule: shadow_load_ui_module returned " + result);
             if (!result) {
                 deactivateLedQueue();
@@ -9828,24 +9803,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             return false;
         }
 
-        /* Step 5: Capture the module's callbacks */
-        overtakeModuleCallbacks = {
-            init: (globalThis.init !== savedInit) ? globalThis.init : null,
-            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
-            onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
-            /* onResume(): optional. Called once each time the module is
-             * resumed from suspend (init() is NOT re-run). See
-             * invokeModuleOnResume for the module-facing contract. */
-            onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
-        };
-
-        /* Restore shadow UI's globals */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
-        if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
-        if (typeof globalThis.onResume === "function") delete globalThis.onResume;
+        /* Keep tool callbacks off globalThis; the host routes external MIDI
+         * to this active owner, just as it routes internal MIDI and tick. */
+        overtakeModuleCallbacks = loaded.callbacks;
 
         debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                  " tick:" + !!overtakeModuleCallbacks.tick +
@@ -14480,11 +14440,6 @@ function startInteractiveTool(toolModule, filePath) {
             setView(VIEWS.OVERTAKE_MODULE);
             needsRedraw = true;
 
-            /* Save current globals before loading - module may overwrite them */
-            const savedInit = globalThis.init;
-            const savedTick = globalThis.tick;
-            const savedMidi = globalThis.onMidiMessageInternal;
-
             /* Reinstall shims before loading the ES module.
              * QuickJS resolves bare global identifiers at compile time,
              * so they must exist on globalThis when shadow_load_ui_module
@@ -14536,8 +14491,14 @@ function startInteractiveTool(toolModule, filePath) {
             };
             globalThis.host_tool_file_path = filePath || "";
 
+            let loaded;
             if (typeof shadow_load_ui_module === "function") {
-                const result = shadow_load_ui_module(uiPath);
+                try {
+                    loaded = loadUiModule(shadow_load_ui_module, uiPath);
+                } catch (e) {
+                    debugLog("startInteractiveTool reconnect: " + e);
+                }
+                const result = !!loaded;
                 debugLog("startInteractiveTool reconnect: shadow_load_ui_module returned " + result);
                 if (!result) {
                     debugLog("startInteractiveTool reconnect: failed to load UI");
@@ -14558,22 +14519,7 @@ function startInteractiveTool(toolModule, filePath) {
                 return;
             }
 
-            /* Capture callbacks (same keys as loadOvertakeModule) */
-            overtakeModuleCallbacks = {
-                init: (globalThis.init !== savedInit) ? globalThis.init : null,
-                tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-                onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
-                onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
-                /* onResume(): optional. Called once each time the module is
-                 * resumed from suspend (init() is NOT re-run). See
-                 * invokeModuleOnResume for the module-facing contract. */
-                onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
-            };
-            globalThis.init = savedInit;
-            globalThis.tick = savedTick;
-            globalThis.onMidiMessageInternal = savedMidi;
-            if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
-            if (typeof globalThis.onResume === "function") delete globalThis.onResume;
+            overtakeModuleCallbacks = loaded.callbacks;
             debugLog("startInteractiveTool reconnect: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                      " tick:" + !!overtakeModuleCallbacks.tick +
                      " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
@@ -22696,30 +22642,15 @@ function resolveCanvasScriptPath(meta) {
 function loadCardDrawer(scriptPath, exportRef) {
     if (!scriptPath || !exportRef) return null;
     if (typeof shadow_load_ui_module !== "function") return null;
-
-    const NAMES = ["init", "tick", "onMidiMessageInternal", "onMidiMessageExternal",
-                   exportRef];
-    const had = {}, saved = {};
-    for (const n of NAMES) {
-        had[n] = Object.prototype.hasOwnProperty.call(globalThis, n);
-        saved[n] = globalThis[n];
-    }
-
-    let out = null;
     try {
-        if (shadow_load_ui_module(scriptPath)) {
+        return withUiGlobals(() => {
+            if (!shadow_load_ui_module(scriptPath)) return null;
             const fn = globalThis[exportRef];
-            if (typeof fn === "function") out = fn;
-        }
+            return typeof fn === "function" ? fn : null;
+        }, [exportRef]);
     } catch (e) {
-        out = null;
-    } finally {
-        for (const n of NAMES) {
-            if (had[n]) globalThis[n] = saved[n];
-            else { try { delete globalThis[n]; } catch (e) {} }
-        }
+        return null;
     }
-    return out;
 }
 
 function resolveCardScriptPath(slot, component, scriptRef) {
@@ -22986,45 +22917,21 @@ function loadCanvasOverlayScript(scriptPath, overlayRef) {
     if (!scriptPath || typeof shadow_load_ui_module !== "function") {
         return { overlay: null, error: "canvas script unavailable" };
     }
-
-    const savedInit = globalThis.init;
-    const savedTick = globalThis.tick;
-    const savedMidiInternal = globalThis.onMidiMessageInternal;
-    const savedMidiExternal = globalThis.onMidiMessageExternal;
-    const hadCanvasOverlay = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlay");
-    const hadCanvasOverlays = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlays");
-    const savedCanvasOverlay = globalThis.canvas_overlay;
-    const savedCanvasOverlays = globalThis.canvas_overlays;
-
-    let ok = false;
-    let loadError = "";
     try {
-        ok = shadow_load_ui_module(scriptPath);
+        return withUiGlobals(() => {
+            if (!shadow_load_ui_module(scriptPath)) {
+                return { overlay: null, error: "failed to load canvas script" };
+            }
+            const resolved = resolveOverlayFromGlobals(
+                overlayRef, [globalThis.canvas_overlay],
+                "canvas script missing globalThis.canvas_overlay"
+            );
+            if (!resolved.overlay) return { overlay: null, error: resolved.error || "canvas script missing overlay object" };
+            return { overlay: resolved.overlay, error: "" };
+        }, ["canvas_overlay", "canvas_overlays"]);
     } catch (e) {
-        ok = false;
-        loadError = String(e);
+        return { overlay: null, error: String(e) };
     }
-
-    const resolved = resolveOverlayFromGlobals(
-        overlayRef,
-        [globalThis.canvas_overlay],
-        "canvas script missing globalThis.canvas_overlay"
-    );
-
-    globalThis.init = savedInit;
-    globalThis.tick = savedTick;
-    globalThis.onMidiMessageInternal = savedMidiInternal;
-    globalThis.onMidiMessageExternal = savedMidiExternal;
-
-    if (hadCanvasOverlay) globalThis.canvas_overlay = savedCanvasOverlay;
-    else delete globalThis.canvas_overlay;
-
-    if (hadCanvasOverlays) globalThis.canvas_overlays = savedCanvasOverlays;
-    else delete globalThis.canvas_overlays;
-
-    if (!ok) return { overlay: null, error: loadError || "failed to load canvas script" };
-    if (!resolved.overlay) return { overlay: null, error: resolved.error || "canvas script missing overlay object" };
-    return { overlay: resolved.overlay, error: "" };
 }
 
 /* THE HOOKS THAT RUN ON THE DRAW PATH, WHERE A READ IS NOT AFFORDABLE.
@@ -31478,8 +31385,20 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
-    /* BEFORE the canvas dispatch, and unconditional: SysEx arrives as a run of
-     * 1-3 byte fragments, so a branch that could skip one fragment would leave
+    /* Tools own raw external MIDI while active. Hide/exit/suspend clears this
+     * callback object; resume restores it. Never leave a module's handler on
+     * globalThis, where it would bypass CC Learn after returning to a synth. */
+    const onExternal = overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageExternal;
+    if (onExternal) {
+        try {
+            runToolCallback(() => onExternal(data));
+        } catch (e) {
+            debugLog("OVERTAKE onMidiMessageExternal exception: " + e);
+        }
+        return;
+    }
+    /* Host-owned MIDI reaches the surface BEFORE canvas dispatch. SysEx arrives
+     * as 1-3 byte fragments, so a branch that skipped one fragment would leave
      * the assembler holding half a message and splice the next one onto it. */
     externalSurfaceMidi(data);
     /* The CC map, never for a message the active surface claims (its own

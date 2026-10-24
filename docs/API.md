@@ -329,6 +329,13 @@ midpoint algorithm produces a closed ring that a difference-of-fills does not.
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
+
+Both UI-only loaders evaluate into the shared `globalThis`; callers must preserve
+the host callbacks even when loading fails. Framework loaders use
+`shared/ui_module_load.mjs` to capture module exports and restore the host in
+`finally`. In the shadow UI, external MIDI is dispatched to an active tool
+through its captured callback, rather than by replacing the host handler.
+
 `host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
 
 ### Trailing pages for a module-owned param grid

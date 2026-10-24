@@ -10,6 +10,30 @@ trailing pages, and Master FX persistence.
 The tri-state read rule these all depend on — **a param read has THREE answers,
 not two** — stays in `CLAUDE.md`, because it is cited from everywhere.
 
+### UI loads preserve the host's callbacks
+
+UI scripts evaluate in the host's `globalThis`. `loadUiModule()` in
+`src/shared/ui_module_load.mjs` captures their callbacks and restores the host's
+`init`, `tick`, both MIDI handlers, lifecycle hooks and `chain_ui` in `finally`.
+This applies to both callback-global and `chain_ui` modules, including partial
+loads that return false or throw. Missing callbacks are null, rather than copies
+of the parent's handlers. Card and canvas loaders use the same `withUiGlobals()`
+guard for their additional exports.
+
+The shadow host owns `onMidiMessageExternal` throughout the session. An active
+tool's captured handler receives raw MIDI through `runToolCallback()`, preserving
+its DSP parameter bindings during co-run. Clearing the active callbacks on hide,
+exit or suspend immediately returns MIDI to the host; resume restores the tool's
+captured handler. Component editors do not replace the host's surface/CC Learn
+router. The standalone Chain UI retains its own component/source dispatch.
+
+Previously, a component UI exporting `onMidiMessageExternal` could leave CC Learn
+waiting after the editor closed. Several other loaders restored globals only on
+success, and tool handlers remained installed after their owner was hidden.
+`tests/host/test_ui_module_load.sh` exercises the production loaders and dispatch,
+including Learn/save/control after visiting a component and tool ownership across
+hide, exit, suspend and resume.
+
 ### Whatever is drawn LAST must be fed FIRST
 
 `onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
