@@ -2590,6 +2590,19 @@
       "default_branch": "main",
       "asset_name": "bloom-module.tar.gz",
       "min_host_version": "1.7.3"
+    },
+    {
+      "id": "chord-display",
+      "name": "Chord Display",
+      "description": "Shows the chord you play, or a clip plays, on any track, with its roman numeral in the Set's key. Reads any MIDI channel.",
+      "author": "Nipheon",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": ["chord"],
+      "github_repo": "Nipheon/schwung-chord-display",
+      "default_branch": "main",
+      "asset_name": "chord-display-module.tar.gz",
+      "min_host_version": "1.6.2"
     }
   ]
 }
