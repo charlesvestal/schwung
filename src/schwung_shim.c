@@ -10514,10 +10514,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs)
                  * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass
-                 * - CC 119 (delete, the "X" button) — modifier for Delete+JogClick
-                 *   device removal. Without this forward shadow_ui never sees the
-                 *   press, hostDeleteHeld stays false and the gesture does nothing.
-                 *   Forward only: the press still reaches Move, balanced with its release.
                  * - any CC the module on screen has CLAIMED (capabilities.claims_ccs
                  *   / claims_edit_ccs), by the latch the firmware filter above set
                  *   on its press -- so a claimed press drives the module and
@@ -10525,7 +10521,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  *   Move unchanged. */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
-                                         d1 == 88 || d1 == CC_DELETE ||
+                                         d1 == 88 ||
                                          (d1 < 128 && claim_press_blocked[d1]));
 
                 /* The jog is the step menu's while it is open -- over the

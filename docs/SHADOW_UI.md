@@ -974,14 +974,25 @@ snapshot). Shift is asked first because Shift+click is dispatched before
 place of the hints (`drawChainEditorBands`' `notice`), so the chain the user is
 checking stays fully visible -- the snapshot test asserts that a notice case
 matches its twin byte for byte above `RULE_Y`. It lasts `FOOTER_NOTICE_MS`
-(1.5 s) and is dismissed earlier by a jog turn or any button / step / pad
-press (`footerNoticeDismissedBy`, run in the MIDI handler AHEAD of the
+(1.5 s) and is dismissed earlier by a jog turn, a Delete press or any button /
+step / pad press (`footerNoticeDismissedBy`, run in the MIDI handler AHEAD of the
 jog-click dispatch so the click that raises a notice does not clear it); a
 button release and a capacitive touch (notes 0-9) do not dismiss it. Expiry
 needs no timer: the shadow UI redraws every `REDRAW_INTERVAL` ticks, and the
 draw path resolves the expiry on read. The notice is scoped to the editor that
 raised it (`"slot"` / `"master"`). Tests: `test_delete_footer_notice.sh`,
 `test_chain_gestures.sh`, `test_chain_editor_snapshot.sh`.
+
+**Delete's held state is the shim's byte, not CC 119.** The removal, the
+footer and the notice all ask `isDeleteHeld()`, which reads
+`shadow_get_delete_held()` (`shadow_control_t.delete_held`, the byte the knob
+grid's "Delete + a knob" gesture reads). The shim updates it in every mode and
+does not forward an unclaimed CC 119 to the shadow UI, so nothing in the JS
+can be left believing Delete is down after it was released with the UI hidden.
+A Delete press, which never reaches the MIDI handler, dismisses the notice
+through `observeDeleteHeld()` (every tick, and at the top of the MIDI handler
+so the edge is consumed before a jog click in the same frame raises a notice).
+Test: `test_delete_jogclick_remove.sh`.
 
 ### The metronome is missing by CONSTRUCTION, and detection is one exact string
 

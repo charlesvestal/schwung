@@ -132,8 +132,8 @@ function render(cap, selected, opts = {}) {
     get MASTER_FX_CHAIN_COMPONENTS() { return decls.masterFxChainComponents(); },
     ensureMasterFxConfigFresh: () => {},
     isShiftHeld: () => !!opts.shift,
-    /* The Delete footer and the Delete+JogClick notice: JS-side state, no IPC,
-       so neither may move the read budget below. */
+    /* The Delete footer and the Delete+JogClick notice: a control-SHM byte and
+       a JS-side text, no IPC, so neither may move the read budget below. */
     isDeleteHeld: () => !!opts.del,
     chainFooterNoticeText: () => "",
     MASTER_FX_OPTIONS: [],

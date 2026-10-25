@@ -224,10 +224,12 @@ export function createFooterNotice(opts = {}) {
 /*
  * Which input dismisses the notice early: a jog turn or any button PRESS.
  *
- *  - CC with a non-zero value: every button press (Back, Menu, Shift, Delete,
- *    the jog click, tracks...), the jog turn (CC 14) and the knob turns. A
- *    button RELEASE (value 0) does not dismiss: letting go of Delete after the
- *    click must not throw away the confirmation that click just raised.
+ *  - CC with a non-zero value: every button press (Back, Menu, Shift, the jog
+ *    click, tracks...), the jog turn (CC 14) and the knob turns. A button
+ *    RELEASE (value 0) does not dismiss: letting go of Delete after the click
+ *    must not throw away the confirmation that click just raised. (An
+ *    unclaimed Delete never reaches the MIDI handler at all; the shadow UI
+ *    dismisses on its press from the shim's held byte instead.)
  *  - Note-on at 10 and above: the step buttons (16-31) and the pads.
  *  - NOT notes 0-9: those are the capacitive TOUCH sensors on the knobs and
  *    the jog. A finger resting on the jog after the click is not a request

@@ -49,9 +49,10 @@ function harness(source=after){
     tickParamPages:()=>log.ticks.push(['page',c.view]),
     endComponentWidgetVisit:()=>log.ticks.push(['end',c.view]),
     decodeDelta:n=>n<64?n:n-128,
-    // The Delete+JogClick footer notice the handler dismisses on input
-    // (test_delete_footer_notice.sh owns its behaviour); nothing is showing here.
-    footerNoticeDismissedBy:()=>false,chainFooterNotice:{clear:()=>false},
+    // The Delete+JogClick footer notice the handler dismisses on input, and the
+    // Delete byte it follows (test_delete_footer_notice.sh and
+    // test_delete_jogclick_remove.sh own their behaviour); nothing is showing here.
+    footerNoticeDismissedBy:()=>false,chainFooterNotice:{clear:()=>false},observeDeleteHeld:()=>{},
   };
   // Controller boundary is a fake parameter store; MIDI decoding and page
   // dispatch below are the REAL upstream functions, not a replacement router.

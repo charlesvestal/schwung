@@ -5,8 +5,9 @@ cd "$(dirname "$0")/../.."
 # Delete ("X") + Jog Click, the VISIBLE half: what the footer says while Delete
 # is held, and the short confirmation a removal leaves in the footer row.
 #
-# The gesture itself (which removal path runs, the shim forwarding CC 119) is
-# pinned by test_delete_jogclick_remove.sh. The pixels of the two footers are in
+# The gesture itself (which removal path runs, Delete read from the shim's
+# delete_held byte, the Delete press dismissing a notice) is pinned by
+# test_delete_jogclick_remove.sh. The pixels of the two footers are in
 # the chain-editor baseline (chain/len2/delete, chain/len2/removed-notice,
 # master/len2/delete, ...), which also checks that a notice changes nothing
 # above the footer row. The footer wiring of both editors is evaluated in
@@ -20,8 +21,8 @@ cd "$(dirname "$0")/../.."
 #   3. the Delete footer fits and keeps the resting footer's places;
 #   4. shadow_ui.js wires it in the right ORDER: the dismissal runs ahead of
 #      the jog-click dispatch (or the click that raises a notice would be the
-#      input that clears it), a Delete press/release redraws, and both removal
-#      branches raise the notice for their own editor.
+#      input that clears it), the Delete byte is followed ahead of both, and
+#      both removal branches raise the notice for their own editor.
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
@@ -66,10 +67,10 @@ const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
     ["a jog turn back (CC 14 127)", [0xB0, 14, 127], true],
     ["a jog click press (CC 3)",    [0xB0, 3, 127],  true],
     ["a Back press (CC 51)",        [0xB0, 51, 127], true],
-    ["a Delete press (CC 119)",     [0xB0, 119, 127], true],
+    ["a claimed Delete press (CC 119)", [0xB0, 119, 127], true],
     ["a step press (note 16)",      [0x90, 16, 100], true],
     ["a pad press (note 68)",       [0x90, 68, 100], true],
-    ["the Delete RELEASE (CC 119 0)", [0xB0, 119, 0], false],
+    ["a claimed Delete RELEASE (CC 119 0)", [0xB0, 119, 0], false],
     ["a jog click RELEASE (CC 3 0)", [0xB0, 3, 0],   false],
     ["a jog TOUCH (note 9)",        [0x90, 9, 127],  false],
     ["a knob TOUCH (note 0)",       [0x90, 0, 127],  false],
@@ -127,24 +128,27 @@ const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
 /* ---- 4. the wiring in shadow_ui.js ------------------------------------- */
 {
   const src = readFileSync("src/shadow/shadow_ui.js", "utf8");
-  const track = src.indexOf("hostDeleteHeld = (d2 > 0);");
+  /* Delete is not tracked from CC 119 (the shim does not forward it): the
+     MIDI handler follows the shim byte, ahead of the dismissal. */
+  const midi = src.indexOf("globalThis.onMidiMessageInternal = function(data) {");
+  const track = src.indexOf("observeDeleteHeld();", midi);
   const dismiss = src.indexOf("footerNoticeDismissedBy(status, d1, d2) && chainFooterNotice.clear()");
   /* EVERY jog-click dispatch -- the ordinary one and the co-run one -- must
      come after the dismissal, so the earliest is what is compared. */
   /* The FIRST jog-click dispatch in the file: there are two (the ordinary
      one and the co-run one), and both must come after the dismissal. */
   const click = src.indexOf("view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0)");
-  if (track < 0) fail("CC 119 is no longer tracked");
+  if (track < 0) fail("the MIDI handler no longer follows the Delete byte");
   if (dismiss < 0) fail("the MIDI handler never dismisses the footer notice");
   if (click < 0) fail("could not find the jog-click dispatch");
   if (dismiss >= 0 && click >= 0 && dismiss > click)
     fail("the notice is dismissed AFTER the jog-click dispatch -- the click that raises it would clear it");
   if (track >= 0 && dismiss >= 0 && dismiss < track)
-    fail("the dismissal runs before CC 119 is tracked");
-  const trackBlock = src.slice(track, dismiss);
-  if (!/hostDeleteHeld !== wasHeld\) needsRedraw = true/.test(trackBlock))
+    fail("the dismissal runs before the Delete byte is followed");
+  const observe = src.match(/^function observeDeleteHeld\(\) \{[^]*?^\}/m);
+  if (!observe || !/needsRedraw = true/.test(observe[0]))
     fail("a Delete press/release does not redraw, so the footer would lag the button");
-  ok("the dismissal runs after CC 119 is tracked and ahead of the jog-click dispatch");
+  ok("the dismissal runs after the Delete byte is followed and ahead of the jog-click dispatch");
 
   const chainBranch = src.slice(src.indexOf("Delete(\"X\")+JogClick: remove a populated module directly"));
   const cb = chainBranch.slice(0, chainBranch.indexOf("break;"));
