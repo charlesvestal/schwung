@@ -630,6 +630,52 @@ Promise.all([
         fail("an empty answer was stored as a value");
     }
 
+    /* ---- an authored HOLE (knobs[] null) is a dead knob ------------------
+     *
+     * The planner keeps the hole; everything after it here has to treat that
+     * slot as nothing: no read, no write on a turn, a null cell, a draw and a
+     * list layout that do not trip over it -- and the knob after the hole
+     * still drives its own key, not its neighbour.
+     */
+    {
+      const f = (key) => ({ key, name: key, type: "float", min: 0, max: 1 });
+      const contract = {
+        "synth:chain_params": JSON.stringify(["gain", "pan", "s1", "s2", "s3"].map(f)),
+        "synth:ui_hierarchy": JSON.stringify({ levels: { root: { label: "Mix",
+            knobs: ["gain", "pan", null, null, "s1", "s2", "s3"] } } }),
+      };
+      const values = { "synth:gain": "0.5", "synth:pan": "0.5", "synth:s1": "0.5",
+                       "synth:s2": "0.5", "synth:s3": "0.5" };
+      const reads = [], writes = [];
+      const ctl = C.createController({
+        getParam: (k) => { reads.push(k); return k in contract ? contract[k] : (k in values ? values[k] : ""); },
+        setParam: (k, v) => { writes.push([k, v]); values[k] = String(v); },
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 40; i++) ctl.tick();
+
+      if (ctl.keyAt(2) !== null || ctl.keyAt(3) !== null) fail("holes: knobs 3-4 should carry no key");
+      if (ctl.keyAt(4) !== "s1") fail("holes: knob 5 should be s1, got " + ctl.keyAt(4));
+      if (reads.some((k) => /null|undefined/.test(k))) fail("holes: a hole was read: " + reads.find((k) => /null|undefined/.test(k)));
+
+      ctl.onKnobTurn(2, 1); ctl.onKnobTouch(2, false);
+      for (let i = 0; i < 4; i++) ctl.tick();
+      if (writes.length) fail("holes: turning a hole wrote " + JSON.stringify(writes));
+
+      ctl.onKnobTouch(4, true); ctl.onKnobTurn(4, 1); ctl.onKnobTouch(4, false);
+      for (let i = 0; i < 4; i++) ctl.tick();
+      if (!writes.some(([k]) => k === "synth:s1")) fail("holes: knob 5 did not write s1: " + JSON.stringify(writes));
+      if (writes.some(([k]) => k !== "synth:s1")) fail("holes: knob 5 wrote a neighbour: " + JSON.stringify(writes));
+
+      const vm = ctl.describePage();
+      if (vm.cells.length !== 7 || vm.cells[2] !== null || vm.cells[3] !== null || !vm.cells[4])
+        fail("holes: view model cells should be null at the holes, got " + JSON.stringify(vm.cells.map((c) => c && c.key)));
+      const ctx = { fillRect: () => {}, print: () => {}, textWidth: () => 0, drawLine: () => {}, setPixel: () => {} };
+      ctl.render(ctx, { title: "T" });
+      ctl.setLayout(C.LAYOUT_LIST);
+      ctl.render(ctx, { title: "T" });
+    }
+
     /* ---- an UNHELD turn-claim has to expire ------------------------------
      *
      * A claim made by touch is released by the note-off. A claim made by a

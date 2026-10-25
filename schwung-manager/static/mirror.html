@@ -75,6 +75,7 @@
   <button id="mute" type="button" title="Hear the device here. Recordings always include its sound.">Unmute</button>
   <button id="png" type="button">Save PNG</button>
   <button id="rec" type="button">Record</button>
+  <button id="fingerbtn" type="button" title="Show a finger on every control as it is touched, pressed or turned">Fingers</button>
   <button id="logbtn" type="button">Log</button>
 </div>
 <canvas id="hero" width="128" height="64" title="Tap for fullscreen"></canvas>
@@ -182,6 +183,7 @@ function connect() {
   clearTimeout(retryTimer); retryTimer = 0;
   if (es) { es.close(); es = null; }
   setStatus('connecting…');
+  inputSeeded = false;
   lastEvent = Date.now();
   connects++;
   const src = new EventSource('/stream-auto?v=2' + (audioOn ? '&audio=1' : ''));
@@ -222,6 +224,7 @@ function connect() {
     later(() => {
       surf = u; surfView = new DataView(u.buffer);
       curFrame = p.frame || curFrame;
+      trackInput(performance.now());
       dirty = true; renderLog();
     });
   });
@@ -484,8 +487,176 @@ function drawDevice(ctx, now) {
   for (const [name, cc, dx, dy] of NAV)
     roundButton(ctx, nx + dx * 26, ny + dy * 14, 11, ccColor(cc, true, now), !!ccVal(cc), name);
 
+  if (fingersOn) drawFingers(ctx, now);
   ctx.restore();
 }
+
+/* ---------------- fingers ----------------
+ * For video: a translucent fingertip on every control as it is touched or
+ * pressed, solid while held and fading over FINGER_FADE_MS once let go, so a
+ * viewer sees exactly what the hands did. A knob or wheel that TURNS also
+ * shows a curved arrow for the direction; a wheel CLICK shows a dot under the
+ * finger and a ring that spreads from it, so a push never reads as a rest.
+ *
+ * Presses come from two places. The held state says a control is down now.
+ * The event ring says one WAS pressed, which is what catches a tap that began
+ * and ended between two snapshots. Turns are not in the ring (see
+ * surface_live_shm.h), so they are read off the encoder positions. */
+const FINGER_FADE_MS = 500, CLICK_RING_MS = 350;
+const FINGER_W = 34, FINGER_H = 78, FINGER_TIP = 20;   /* tip centre below the shape's top */
+let fingersOn = true;
+try { if (localStorage.getItem('mirror.fingers') === '0') fingersOn = false; } catch (_) {}
+
+/* Where each control is: 'n<note>' / 'c<cc>' -> [cx, cy]. Knob touches are
+ * notes 0-7, volume 8, the wheel 9; the wheel's click is CC 3. */
+const SPOT = {};
+const ENC_SPOT = [];                                  /* per encoder: [cx, cy, r] */
+(function () {
+  const wx = P + COL_L / 2, wy = (rowCy(0) + rowCy(1)) / 2;
+  for (let i = 0; i < 8; i++) ENC_SPOT[i] = [padCx(i), TOP_Y + TOP_H / 2, 15];
+  ENC_SPOT[8] = [FUNC_X + COL_F * 0.75, TOP_Y + TOP_H / 2, 19];
+  ENC_SPOT[9] = [wx, wy, 32];
+  for (let i = 0; i < 10; i++) SPOT['n' + i] = ENC_SPOT[i];
+  SPOT.c3 = ENC_SPOT[9];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) SPOT['n' + (68 + (3 - r) * 8 + c)] = [padCx(c), rowCy(r)];
+  const stepPitch = PAD_W / 16;
+  for (let i = 0; i < 16; i++) SPOT['n' + (16 + i)] = [PAD_X + stepPitch * (i + 0.5), STEP_Y];
+  for (let i = 0; i < FUNCS.length; i++)
+    SPOT['c' + FUNCS[i][1]] = [FUNC_X + COL_F * (i % 2 ? 0.75 : 0.25), rowCy(Math.floor(i / 2))];
+  for (const [, cc, dx, dy] of NAV) SPOT['c' + cc] = [FUNC_X + COL_F / 2 + dx * 26, STEP_Y + 4 + dy * 14];
+  SPOT.c51 = [wx - 22, rowCy(2)]; SPOT.c50 = [wx + 22, rowCy(2)];
+  SPOT.c85 = [wx - 22, STEP_Y];   SPOT.c86 = [wx + 22, STEP_Y];
+  for (let r = 0; r < 4; r++) SPOT['c' + (43 - r)] = [P + COL_L + GAP + COL_T / 2, rowCy(r)];
+})();
+const SPOT_KEYS = Object.keys(SPOT);
+const keyDown = k => k[0] === 'n' ? noteDown(+k.slice(1)) : ccVal(+k.slice(1));
+
+const seenAt = {};            /* key -> when it was last known down or pressed */
+const isHeld = {};            /* key -> down in the latest snapshot */
+const turns = [];             /* per encoder: { at, dir } */
+let clickAt = -1e9;           /* the wheel click's last press */
+let inputSeeded = false, lastEvCount = 0;
+const lastEnc = new Array(10).fill(0);
+
+function trackInput(now) {
+  if (!surfView) return;
+  const count = surfView.getUint32(OFF.evCount, true);
+  if (!inputSeeded) {         /* a fresh connection: history is not a press */
+    inputSeeded = true; lastEvCount = count;
+    for (let i = 0; i < 10; i++) lastEnc[i] = encPos(i);
+  }
+  const fresh = Math.min(N_EVENTS, (count - lastEvCount) >>> 0);
+  for (let k = 0; k < fresh; k++) {
+    const o = OFF.events + ((count - 1 - k) % N_EVENTS) * 8;
+    const t = surf[o + 4] & 0xF0, d1 = surf[o + 5], d2 = surf[o + 6];
+    if (!d2 || (t !== 0x90 && t !== 0xB0)) continue;
+    const key = (t === 0x90 ? 'n' : 'c') + d1;
+    if (!SPOT[key]) continue;
+    seenAt[key] = now;
+    if (key === 'c3') clickAt = now;       /* a press event is a press, held before or not */
+  }
+  lastEvCount = count;
+  for (const key of SPOT_KEYS) {
+    const down = !!keyDown(key);
+    if (down && key === 'c3' && !isHeld.c3) clickAt = now;
+    /* Snapshots only arrive on a change, so a long hold has no recent one:
+     * the fade starts at the snapshot that reports the release. */
+    if (down || isHeld[key]) seenAt[key] = now;
+    isHeld[key] = down;
+  }
+  for (let i = 0; i < 10; i++) {
+    const pos = encPos(i), d = ((pos - lastEnc[i] + 32768) & 0xFFFF) - 32768;
+    if (d) { turns[i] = { at: now, dir: d > 0 ? 1 : -1 }; seenAt['n' + i] = now; }
+    lastEnc[i] = pos;
+  }
+}
+
+const fadeOf = (at, now, ms) => at === undefined ? 0 : Math.max(0, 1 - (now - at) / ms);
+
+/* The fingertip: an oval that trails off downward, as if reaching in from
+ * below. A black edge keeps it visible on a white or brightly lit control;
+ * both fill and edge fade out along the tail. */
+function fingertip(ctx, cx, cy, alpha) {
+  const w = FINGER_W / 2, top = cy - FINGER_TIP, bot = top + FINGER_H;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.moveTo(cx - w, top + FINGER_TIP);
+  ctx.ellipse(cx, top + FINGER_TIP, w, FINGER_TIP, 0, Math.PI, 2 * Math.PI);
+  ctx.lineTo(cx + w, bot - 12); ctx.arcTo(cx + w, bot, cx + w - 12, bot, 12);
+  ctx.lineTo(cx - w + 12, bot); ctx.arcTo(cx - w, bot, cx - w, bot - 12, 12);
+  ctx.closePath();
+  const fill = ctx.createLinearGradient(0, top, 0, bot);
+  fill.addColorStop(0, 'rgba(255,255,255,0.74)'); fill.addColorStop(0.45, 'rgba(255,255,255,0.64)');
+  fill.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = fill; ctx.fill();
+  const edge = ctx.createLinearGradient(0, top, 0, bot);
+  edge.addColorStop(0, 'rgba(0,0,0,1)'); edge.addColorStop(0.45, 'rgba(0,0,0,1)'); edge.addColorStop(0.95, 'rgba(0,0,0,0)');
+  ctx.lineWidth = 2; ctx.strokeStyle = edge; ctx.stroke();
+  ctx.restore();
+}
+
+/* A quarter-circle arrow round an encoder, over its top: clockwise or not. */
+function turnArrow(ctx, cx, cy, r, dir, alpha) {
+  const R = r + 13, a0 = -Math.PI / 2 - dir * 0.95, a1 = -Math.PI / 2 + dir * 0.75;
+  const hx = cx + Math.cos(a1) * R, hy = cy + Math.sin(a1) * R, ta = a1 + dir * Math.PI / 2;
+  ctx.save();
+  ctx.globalAlpha = alpha; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const [color, extra] of [['#000', 3], ['#fff', 0]]) {
+    ctx.strokeStyle = ctx.fillStyle = color;
+    ctx.lineWidth = 3 + extra;
+    ctx.beginPath(); ctx.arc(cx, cy, R, a0, a1, dir < 0); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(hx + Math.cos(ta) * 9, hy + Math.sin(ta) * 9);
+    ctx.lineTo(hx + Math.cos(ta + 2.4) * 7, hy + Math.sin(ta + 2.4) * 7);
+    ctx.lineTo(hx + Math.cos(ta - 2.4) * 7, hy + Math.sin(ta - 2.4) * 7);
+    ctx.closePath(); ctx.fill(); if (extra) ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawFingers(ctx, now) {
+  for (let i = 0; i < 10; i++) {
+    const t = turns[i], a = t ? fadeOf(t.at, now, FINGER_FADE_MS) : 0;
+    if (a > 0) { animating = true; turnArrow(ctx, ENC_SPOT[i][0], ENC_SPOT[i][1], ENC_SPOT[i][2], t.dir, a); }
+  }
+  /* The wheel's touch and click share a spot: one finger, the stronger of the two. */
+  const drawn = {};
+  for (const key of SPOT_KEYS) {
+    const a = isHeld[key] ? 1 : fadeOf(seenAt[key], now, FINGER_FADE_MS);
+    if (a <= 0) continue;
+    if (a < 1) animating = true;
+    const id = key === 'c3' ? 'n9' : key;
+    drawn[id] = Math.max(drawn[id] || 0, a);
+  }
+  for (const id in drawn) fingertip(ctx, SPOT[id][0], SPOT[id][1], drawn[id]);
+
+  const [wx, wy] = ENC_SPOT[9];
+  const dot = isHeld.c3 ? 1 : fadeOf(seenAt.c3, now, FINGER_FADE_MS);
+  if (dot > 0) {
+    ctx.save(); ctx.globalAlpha = dot;
+    ctx.beginPath(); ctx.arc(wx, wy, 8, 0, 7);
+    ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#000'; ctx.stroke();
+    ctx.restore();
+  }
+  const ring = (now - clickAt) / CLICK_RING_MS;
+  if (ring >= 0 && ring < 1) {
+    animating = true;
+    ctx.save(); ctx.globalAlpha = 1 - ring;
+    ctx.beginPath(); ctx.arc(wx, wy, 8 + ring * 30, 0, 7);
+    ctx.lineWidth = 5; ctx.strokeStyle = '#000'; ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.restore();
+  }
+}
+const fingerBtn = document.getElementById('fingerbtn');
+fingerBtn.classList.toggle('on', fingersOn);
+fingerBtn.addEventListener('click', () => {
+  fingersOn = !fingersOn; dirty = true;
+  fingerBtn.classList.toggle('on', fingersOn);
+  try { localStorage.setItem('mirror.fingers', fingersOn ? '1' : '0'); } catch (_) {}
+});
+
 
 /* ---------------- the press log ---------------- */
 const CC_NAMES = { 3: 'Jog click', 40: 'Track 4', 41: 'Track 3', 42: 'Track 2', 43: 'Track 1',

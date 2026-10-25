@@ -298,6 +298,16 @@ it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
 turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
 the address is unattributable under ASLR.
 
+### `get_bpm()` must be STEADY -- `docs/MODULES.md`
+
+A tempo-synced delay resizes its line from `get_bpm()` every block, so a value
+that moves when the tempo did not is a pitch bend. It used to time each beat on
+the wall clock (a steady 120 read 120.19, 119.49 ...). Now it is Move's tempo
+from the live model, else a clock **fitted over 16 beats in sample time and
+held**. **Never report a tempo from one tick interval, an EMA, or one beat on
+the wall clock**; the tests assert "does not move", not "is near"
+(`test_shadow_transport.sh`, `test_sampler_get_bpm.sh`).
+
 ### JS Host Functions
 
 Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
@@ -1071,6 +1081,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   (`partlevel`), so asking with `sram_part_2_partlevel` missed every time and
   paid the read anyway — silent, because *a miss still answers correctly, only
   slowly.*
+- **A write that leaves a condition key where the plan found it plans
+  NOTHING** (`plannedGates`). Every write used to re-plan, and the 4-detent
+  enum gate makes most writes repeats: on the Move `planPages` is ~10 ms
+  (QuickJS, ~50x node), so turning a gating enum dropped the grid from ~56 to
+  ~36 fps. A visibility re-plan also reuses the last trailing menus rather than
+  calling `io.trailingMenus()`, whose host side is a blocking `:state` read.
+  The jumbled VALUES in that report were a worn KNOB 1 — ask which physical
+  knob first.
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
@@ -1123,6 +1141,11 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   one pasted, silently. And a failed read voids the whole snapshot rather than
   dropping a key, or a pad is copied without its sample and still reported as
   `PASTED`.
+- **A worn encoder reports counts BACKWARDS, in bursts of up to ~14** — check
+  WHICH physical knob before blaming a contract. `knob_direction_filter.mjs` is
+  an opt-in per-knob majority filter (`/data/UserData/schwung/knob_direction_filter`,
+  empty = all, or `1,4`), OFF by default because it swallows a healthy knob's
+  small reversals. Grid input only; Move's own screens see the raw knob.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
@@ -1519,7 +1542,7 @@ assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
 
 Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk" warning if speakers active AND no line-in cable. Jog-click proceeds, Back aborts.
 
-Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND `shadow_speaker_active` AND NOT `shadow_line_in_connected`.
+Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND the speaker is active (`speaker_eq.speaker_active`, mirrored to `shadow_control->speaker_active`) AND NOT `shadow_line_in_connected`.
 
 **Continuous feedback guard (bypass-on-risk, auto-clear when safe).** The interactive gate only runs on *user* selection, so a restored line-input slot would activate hot at cold boot (jack state is unknown to the shim there) and feed back. Now there's a continuous guard:
 - **Shim, at boot:** any restored line-input slot is brought up **BYPASSED** (real `synth:bypassed=1` — the visible "B" glyph) with `feedback_hold = 1` as the guard's marker (`shadow_slot_apply_boot_feedback_hold` in `shadow_chain_mgmt.c`, both boot-restore paths). Bypass is set *after* `load_file`, so it survives the per-set mute-state load (which only touches `muted`). Chain host exposes `synth:consumes_line_input` (parsed from `capabilities.audio_in` via the new `json_get_bool_in_section`, since `audio_in` is a JSON boolean) and `synth:bypassed` get/set.
@@ -1652,8 +1675,12 @@ pages the PLANNER appends to the end of every component's knob grid.
 - The trailing pages are appended **after the whole walk**, never injected into a
   level: 11 of 95 fleet modules publish no `levels` at all and minijv has no
   `root`, so there is no level an injection could target.
-- Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
-  helper, so a new call site cannot silently opt it in.
+- Scope is the 4 chain slots' real components **and the 8 Master FX positions**
+  (issue #305) — Master FX gets **My Presets only** (no Module page), through the
+  same code, decided in one helper (`componentParamPagesIo`). Send positions and
+  bus inserts stay excluded. The master record persists as `user_preset`
+  **after `state`** in `master_fx_N.json` (the shim's boot parser takes the first
+  `"state"`). See docs/SHADOW_UI.md.
 - **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
   thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
   replaced, so the help list wore a bar and the help text wore arrows on the same
@@ -2034,8 +2061,9 @@ inline is how this file got to 151 KB.
   `process_vm_readv`, ~1.6% of a core. Selected track, the playing/selected
   clip, region/loop, step-editor page, step grid and the exact launch beat are
   all current to the edit — `Song.abl` is ~10 s stale and has no new clips.
-  It also drives master volume, the metronome, and slot mute / solo / volume
-  (every older inference is the fallback when the model is not live).
+  It also drives master volume, the metronome, slot mute / solo / volume and
+  modules' `get_bpm()` (every older inference is the fallback when the model
+  is not live).
   Only the transport run-flag/beat clock is build-pinned. Read it before
   building anything that needs clip state again.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)

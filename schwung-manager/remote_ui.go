@@ -81,6 +81,11 @@ type RemoteUI struct {
 	extrasLast  map[string]time.Time
 	extrasBusy  map[string]bool
 	extrasValue map[string]string
+
+	// slotLoaded is the last listing's loaded components per slot (guarded by
+	// mu), so the extras heartbeat walks the positions that exist without a
+	// listing read of its own. Written by every slot walk.
+	slotLoaded map[uint8][]string
 }
 
 // ruClient represents a single WebSocket connection.
@@ -152,21 +157,37 @@ type wsChainParams struct {
 	Data      json.RawMessage `json:"data"`
 }
 
+// wsSlotInfo describes what a slot holds. FX / MidiFX list every position
+// the chain reports (fx1..N), up to FXCap / MidiFXCap, so the page can offer
+// the next empty one. A section named in Unknown ("synth", "midi_fx", "fx")
+// was not read this time: the page keeps what it has rather than reading the
+// absence as "empty". FX1/FX2/MidiFX1 are the original fixed fields.
 type wsSlotInfo struct {
-	Type    string `json:"type"`
-	Slot    uint8  `json:"slot"`
-	Synth   string `json:"synth"`
-	FX1     string `json:"fx1"`
-	FX2     string `json:"fx2"`
-	MidiFX1 string `json:"midi_fx1"`
+	Type      string   `json:"type"`
+	Slot      uint8    `json:"slot"`
+	Synth     string   `json:"synth"`
+	FX1       string   `json:"fx1"`
+	FX2       string   `json:"fx2"`
+	MidiFX1   string   `json:"midi_fx1"`
+	FX        []string `json:"fx"`
+	MidiFX    []string `json:"midi_fx"`
+	FXCap     int      `json:"fx_cap"`
+	MidiFXCap int      `json:"midi_fx_cap"`
+	Unknown   []string `json:"unknown,omitempty"`
 }
 
+// wsMasterFxInfo describes the master bus: FX is positional (entry i is
+// master_fx:fx(i+1)), Cap long. Unknown means the listing did not complete
+// and FX is absent -- keep what you have. FX1..FX4 are the original fields.
 type wsMasterFxInfo struct {
-	Type string `json:"type"`
-	FX1  string `json:"fx1"`
-	FX2  string `json:"fx2"`
-	FX3  string `json:"fx3"`
-	FX4  string `json:"fx4"`
+	Type    string   `json:"type"`
+	FX1     string   `json:"fx1"`
+	FX2     string   `json:"fx2"`
+	FX3     string   `json:"fx3"`
+	FX4     string   `json:"fx4"`
+	FX      []string `json:"fx"`
+	Cap     int      `json:"cap"`
+	Unknown bool     `json:"unknown,omitempty"`
 }
 
 type wsParamUpdate struct {
@@ -193,12 +214,6 @@ type wsError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 }
-
-// componentPrefixes lists all component types in a shadow slot.
-var componentPrefixes = []string{"synth", "fx1", "fx2", "midi_fx1"}
-
-// masterFxSlots lists the 4 master FX slot identifiers.
-var masterFxSlots = []string{"fx1", "fx2", "fx3", "fx4"}
 
 // NewRemoteUI creates a RemoteUI. setRing may be nil (lazy connect on first
 // use); the param handle always comes from app.params() (see ensureShm), never
@@ -244,6 +259,17 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 		}
 		return fmt.Errorf("no shared memory available")
 	}
+	// A module load must take the blocking mailbox. The set ring is drained
+	// by shadow_direct_set_param, which forwards to a module that is already
+	// there; only the shadow_param handler hands "<comp>:module" to the
+	// shim's slot loader (and routes master_fx:fxN:module to the bus loader).
+	// Through the ring the write was accepted and silently did nothing.
+	if isModuleLoadKey(key) {
+		if shm := ru.ensureShm(); shm != nil {
+			return shm.SetParam(slot, key, value)
+		}
+		return fmt.Errorf("no shared memory available")
+	}
 	if ring := ru.ensureSetRing(); ring != nil {
 		return ring.SetParam(slot, key, value)
 	}
@@ -251,6 +277,13 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 		return shm.SetParamFast(slot, key, value)
 	}
 	return fmt.Errorf("no shared memory available")
+}
+
+// isModuleLoadKey reports whether a write replaces a module rather than
+// setting one of its parameters: "synth:module", "fx1:module",
+// "master_fx:fx2:module".
+func isModuleLoadKey(key string) bool {
+	return strings.HasSuffix(key, ":module")
 }
 
 // paramAnswered reports whether err came from an ANSWERED request — the shim
@@ -379,11 +412,10 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 
 		activeSlots, _ := ru.activeSlotsAndMasterFx()
 		for _, slot := range activeSlots {
-			for _, comp := range componentPrefixes {
-				modID, _, err := shm.TryGetParam(slot, comp+"_module")
-				if err != nil || modID == "" {
-					continue
-				}
+			// One listing walk names the loaded positions; nothing is read for
+			// a position that does not exist.
+			ch := ru.walkSlot(ru.tryGet(), slot)
+			for _, comp := range ch.loaded() {
 				// Read shm once and fan out to all subscribers of this slot.
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}
@@ -403,6 +435,55 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// blockingGet reads through the blocking mailbox path.
+func (ru *RemoteUI) blockingGet() paramGetter {
+	return func(slot uint8, key string) (string, error) {
+		shm := ru.ensureShm()
+		if shm == nil {
+			return "", fmt.Errorf("no shared memory available")
+		}
+		return shm.GetParam(slot, key)
+	}
+}
+
+// tryGet reads without waiting for the manager's own mutex: a background poll
+// must never queue behind a user's write. A skipped read is NOT an answer.
+func (ru *RemoteUI) tryGet() paramGetter {
+	return func(slot uint8, key string) (string, error) {
+		shm := ru.ensureShm()
+		if shm == nil {
+			return "", fmt.Errorf("no shared memory available")
+		}
+		v, ok, err := shm.TryGetParam(slot, key)
+		if !ok {
+			return "", fmt.Errorf("param channel busy (manager mutex held)")
+		}
+		return v, err
+	}
+}
+
+// walkSlot reads a slot's listing and records which components are loaded.
+// A walk with an unread section keeps the previous record.
+func (ru *RemoteUI) walkSlot(get paramGetter, slot uint8) slotChain {
+	ch := readSlotChain(get, slot)
+	ru.mu.Lock()
+	if ru.slotLoaded == nil {
+		ru.slotLoaded = make(map[uint8][]string)
+	}
+	if _, seen := ru.slotLoaded[slot]; !seen || len(ch.unknownSections()) == 0 {
+		ru.slotLoaded[slot] = ch.loaded()
+	}
+	ru.mu.Unlock()
+	return ch
+}
+
+// loadedSlotComps is the last complete listing's loaded components for a slot.
+func (ru *RemoteUI) loadedSlotComps(slot uint8) []string {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
+	return append([]string(nil), ru.slotLoaded[slot]...)
 }
 
 // ServeHTTP upgrades the request to a WebSocket and handles messages.
@@ -495,8 +576,9 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		return
 	}
 
-	// Send slot info (which components are loaded).
-	ru.sendSlotInfo(ctx, c, slot)
+	// Send slot info (which components are loaded). The one listing it reads
+	// is what every step below works from -- a position is never re-read.
+	ch := ru.sendSlotInfo(ctx, c, slot)
 
 	// Give the synth priority: send its custom_ui (if any) AND its hierarchy +
 	// chain_params BEFORE the (potentially multi-second) sendSlotSettings retry
@@ -504,7 +586,7 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// chain_params) then has its metadata on the first request and renders
 	// immediately instead of polling for it; embedded-layout UIs just start
 	// loading sooner. The iframe seeds values from the parent cache on subscribe.
-	if synthID, err := ru.shm.GetParam(slot, "synth_module"); err == nil && synthID != "" {
+	if synthID, known := ch.moduleOf("synth"); known && synthID != "" {
 		if url := ru.findModuleWebUI(synthID); url != "" {
 			ru.sendCustomUI(ctx, c, slot, "synth", url)
 		}
@@ -519,12 +601,8 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 
 	// Send hierarchy and chain_params for the remaining components, plus initial
 	// param values for every component (synth metadata already sent above).
-	for _, comp := range componentPrefixes {
-		moduleKey := comp + "_module"
-		modID, err := ru.shm.GetParam(slot, moduleKey)
-		if err != nil || modID == "" {
-			continue
-		}
+	for _, comp := range ch.loaded() {
+		modID, _ := ch.moduleOf(comp)
 		if comp != "synth" {
 			// An audio/MIDI FX may ship its own web_ui.html too; the client
 			// renders it inside that component's section.
@@ -818,10 +896,23 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 		c.toolLastEditAt = now
 		c.mu.Unlock()
 	}
+	if reason := moduleLoadRefusal(ru.basePath, msg.Key, msg.Value); reason != "" {
+		ru.logger.Warn("set_param refused", "slot", slot, "key", msg.Key, "value", msg.Value, "reason", reason)
+		ru.sendError(ctx, c, "set_param refused: "+reason)
+		return
+	}
+	writeAnswered := true
 	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
-		ru.sendError(ctx, c, "set_param failed: "+err.Error())
-		return
+		// A module load can outlast the mailbox wait and still land (the
+		// shim holds the answer until the loader finishes), so a timeout is
+		// not news about the slot: fall through and re-describe it anyway.
+		// A REFUSAL is: the shim answered, and nothing is coming.
+		if !isModuleLoadKey(msg.Key) || paramSetRefused(err) {
+			ru.sendError(ctx, c, "set_param failed: "+err.Error())
+			return
+		}
+		writeAnswered = false
 	}
 
 	// After setting a preset-related param, re-read all component params
@@ -838,22 +929,54 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 				// Read shm once and fan out to all subscribers of this slot.
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
+		} else if paramKey == "module" && isChainComponent(comp) {
+			// A module swap replaces the component outright: its hierarchy,
+			// chain_params and values all belong to the new module. Re-run the
+			// subscribe sequence for every subscriber of the slot once the load
+			// has ENDED -- landed, failed, or the cap -- and tell the client
+			// that asked when it did not land. One goroutine per request,
+			// bounded by the cap, and it stops if that client goes away (the
+			// poller then catches the change for everyone else).
+			want := msg.Value
+			if want == "none" {
+				want = ""
+			}
+			go func() {
+				r := waitSlotLoad(ctx, ru.blockingGet(), slot, comp, want, writeAnswered, defaultLoadWait)
+				if r.Outcome == loadCancelled {
+					return
+				}
+				if r.Outcome != loadLanded {
+					ru.logger.Warn("remote UI module load did not land", "slot", slot, "comp", comp,
+						"module", want, "outcome", r.Outcome, "detail", r.Detail)
+					ru.sendError(ctx, c, loadFailureMessage(slotPositionLabel(slot, comp), want, r))
+				}
+				for _, sc := range ru.subscribedClients(slot) {
+					ru.handleSubscribe(ctx, sc, wsMessage{Type: "subscribe", Slot: &slot})
+				}
+			}()
 		} else if isChainComponent(comp) {
 			ru.scheduleComponentRefetch(ctx, slot, comp)
 		}
 	}
 }
 
-// isChainComponent reports whether comp names a slot component we push params
-// for. Master FX keys ("master_fx:fx1:...") split differently and are excluded.
-func isChainComponent(comp string) bool {
-	for _, c := range componentPrefixes {
-		if c == comp {
-			return true
-		}
-	}
-	return false
+// paramSetRefused reports an ANSWERED write error: the shim replied that it
+// would not take the write, as opposed to a timeout, after which it may still
+// land.
+func paramSetRefused(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "param set error")
 }
+
+// moduleSwapWait bounds a module-load wait (waitSlotLoad / waitMasterFxLoad);
+// past it the position is re-described as it stands.
+const moduleSwapWait = 20 * time.Second
+
+// moduleSwapSettle is how long after a "<comp>:module" write the slot is
+// re-described to its subscribers. The write is staged on the shim's slot
+// loader (dlopen + create_instance off the SPI callback), so the answer can
+// arrive before the new module is installed.
+const moduleSwapSettle = 400 * time.Millisecond
 
 // refetchDebounce is how long after the LAST write of a gesture the component's
 // params are re-read. Long enough that a knob drag produces one re-read at the
@@ -908,13 +1031,9 @@ func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsM
 		return
 	}
 	slot := ru.slotFromMsg(msg)
-	ru.sendSlotInfo(ctx, c, slot)
-	for _, comp := range componentPrefixes {
-		moduleKey := comp + "_module"
-		modID, err := ru.shm.GetParam(slot, moduleKey)
-		if err != nil || modID == "" {
-			continue
-		}
+	ch := ru.sendSlotInfo(ctx, c, slot)
+	for _, comp := range ch.loaded() {
+		modID, _ := ch.moduleOf(comp)
 		// Any component may ship a web_ui.html, not just the synth: an audio
 		// FX gets its panel rendered inside its own section (the client keys
 		// custom UIs by component). findModuleWebUI already searches audio_fx
@@ -938,18 +1057,16 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 		return
 	}
 
-	// Send master FX info (which modules are loaded).
-	ru.sendMasterFxInfo(ctx, c)
+	// Send master FX info (which modules are loaded) -- one listing read,
+	// which the loop below works from.
+	mfx := ru.sendMasterFxInfo(ctx, c)
 
-	// Send hierarchy and chain_params for each loaded master FX slot.
-	for _, fxSlot := range masterFxSlots {
-		moduleKey := "master_fx:" + fxSlot + ":module"
-		modID, err := ru.shm.GetParam(0, moduleKey)
-		if err != nil || modID == "" {
+	// Send hierarchy and chain_params for each loaded master FX position.
+	for i, modID := range mfx.Modules {
+		if modID == "" {
 			continue
 		}
-		compName := "master_fx:" + fxSlot
-		modID = masterFxModuleID(modID)
+		compName := masterFxComp(i + 1)
 		// A Master FX position is an ordinary audio FX module in a different
 		// place, so it may ship a web_ui.html exactly as it does in a chain
 		// slot — findModuleWebUI already searches audio_fx. Only this send was
@@ -1434,10 +1551,41 @@ func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg
 		ru.sendError(ctx, c, "set_master_fx_param requires key")
 		return
 	}
+	if reason := moduleLoadRefusal(ru.basePath, msg.Key, msg.Value); reason != "" {
+		ru.logger.Warn("set_master_fx_param refused", "key", msg.Key, "value", msg.Value, "reason", reason)
+		ru.sendError(ctx, c, "set_master_fx_param refused: "+reason)
+		return
+	}
 	// All master FX params go through slot 0.
+	writeAnswered := true
 	if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_master_fx_param failed", "key", msg.Key, "err", err)
-		ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
+		if !isModuleLoadKey(msg.Key) || paramSetRefused(err) {
+			ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
+			return
+		}
+		writeAnswered = false
+	}
+	// A module swap on the master bus: wait for the shim's loader to END the
+	// load (is_loading / load_error), then re-describe the bus, as for a slot.
+	if strings.HasSuffix(msg.Key, ":module") {
+		comp := strings.TrimSuffix(msg.Key, ":module")
+		want := msg.Value
+		go func() {
+			r := waitMasterFxLoad(ctx, ru.blockingGet(), comp, want, writeAnswered, defaultLoadWait)
+			if r.Outcome == loadCancelled {
+				return
+			}
+			if r.Outcome != loadLanded {
+				ru.logger.Warn("remote UI master FX load did not land", "comp", comp,
+					"module", want, "outcome", r.Outcome)
+				where := "Master FX " + strings.TrimPrefix(comp, "master_fx:fx")
+				ru.sendError(ctx, c, loadFailureMessage(where, masterFxModuleID(want), r))
+			}
+			for _, mc := range ru.masterFxSubscribedClients() {
+				ru.handleSubscribeMasterFx(ctx, mc)
+			}
+		}()
 	}
 }
 
@@ -1453,22 +1601,13 @@ func (ru *RemoteUI) slotFromMsg(msg wsMessage) uint8 {
 // Outbound helpers
 // ---------------------------------------------------------------------------
 
-func (ru *RemoteUI) sendSlotInfo(ctx context.Context, c *ruClient, slot uint8) {
-	info := wsSlotInfo{Type: "slot_info", Slot: slot}
-	for _, comp := range componentPrefixes {
-		modID, _ := ru.shm.GetParam(slot, comp+"_module")
-		switch comp {
-		case "synth":
-			info.Synth = modID
-		case "fx1":
-			info.FX1 = modID
-		case "fx2":
-			info.FX2 = modID
-		case "midi_fx1":
-			info.MidiFX1 = modID
-		}
-	}
-	ru.writeJSON(ctx, c, info)
+// sendSlotInfo walks the slot's listing once, tells the client, and returns
+// the listing so the caller works from the same answer. A read that did not
+// complete is sent as Unknown, never as an empty position.
+func (ru *RemoteUI) sendSlotInfo(ctx context.Context, c *ruClient, slot uint8) slotChain {
+	ch := ru.walkSlot(ru.blockingGet(), slot)
+	ru.writeJSON(ctx, c, slotInfoFrom(slot, ch))
+	return ch
 }
 
 // masterFxModuleID turns what the shim stores for a Master FX position into a
@@ -1491,24 +1630,12 @@ func masterFxModuleID(v string) string {
 	return filepath.Base(filepath.Dir(v))
 }
 
-func (ru *RemoteUI) sendMasterFxInfo(ctx context.Context, c *ruClient) {
-	info := wsMasterFxInfo{Type: "master_fx_info"}
-	for _, fxSlot := range masterFxSlots {
-		moduleKey := "master_fx:" + fxSlot + ":module"
-		raw, _ := ru.shm.GetParam(0, moduleKey)
-		modID := masterFxModuleID(raw)
-		switch fxSlot {
-		case "fx1":
-			info.FX1 = modID
-		case "fx2":
-			info.FX2 = modID
-		case "fx3":
-			info.FX3 = modID
-		case "fx4":
-			info.FX4 = modID
-		}
-	}
-	ru.writeJSON(ctx, c, info)
+// sendMasterFxInfo reads the master bus listing (one read), tells the
+// client, and returns it.
+func (ru *RemoteUI) sendMasterFxInfo(ctx context.Context, c *ruClient) masterFxChain {
+	m := readMasterFxChain(ru.blockingGet())
+	ru.writeJSON(ctx, c, masterFxInfoFrom(m))
+	return m
 }
 
 func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8, component string) {
@@ -2368,7 +2495,7 @@ func (ru *RemoteUI) extrasHeartbeatLoop(ctx context.Context) {
 			if len(subs) == 0 {
 				continue // nobody is looking: never touch the param channel
 			}
-			for _, comp := range componentPrefixes {
+			for _, comp := range ru.loadedSlotComps(slot) {
 				if len(ru.declaredExtraKeys(slot, comp)) == 0 {
 					continue
 				}
@@ -2385,34 +2512,61 @@ func (ru *RemoteUI) extrasHeartbeatLoop(ctx context.Context) {
 // Param value updates come via the notify ring — NO per-param polling here,
 // which was starving shadow_ui.js of the shared param channel.
 func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) {
-	for _, comp := range componentPrefixes {
-		// Check if this component is loaded (1 shm read per component).
-		modID, ok, err := ru.shm.TryGetParam(slot, comp+"_module")
-		if !ok || err != nil {
-			continue // mutex busy or shm error — skip this tick, don't change state
-		}
+	// One listing walk: synth_module, the two counts, and only the positions
+	// they name. A section that was not read keeps its cached state.
+	ch := ru.walkSlot(ru.tryGet(), slot)
 
-		// Detect module change (loaded/unloaded/swapped).
+	// Every component the listing names plus every one cached -- a position
+	// that has gone (a removed last FX) is a change too.
+	comps := []string{"synth"}
+	for i := range ch.MidiFX {
+		comps = append(comps, "midi_fx"+strconv.Itoa(i+1))
+	}
+	for i := range ch.FX {
+		comps = append(comps, "fx"+strconv.Itoa(i+1))
+	}
+	for comp := range cache.modules {
+		if !containsString(comps, comp) {
+			comps = append(comps, comp)
+		}
+	}
+
+	var changed []string
+	for _, comp := range comps {
+		modID, known := ch.moduleOf(comp)
+		if !known {
+			continue // not read this tick — don't change state
+		}
 		if prev, ok := cache.modules[comp]; !ok || prev != modID {
 			cache.modules[comp] = modID
 			// A different module declares different extra keys — the one event
 			// that can make the cached list wrong.
 			ru.invalidateExtraKeys(slot, comp)
-			ru.broadcastSlotInfo(ctx, slot)
-			if modID != "" {
-				if url := ru.findModuleWebUI(modID); url != "" {
-					ru.broadcastCustomUI(ctx, slot, comp, url)
-				}
-				ru.broadcastHierarchy(ctx, slot, comp)
-				ru.broadcastChainParams(ctx, slot, comp)
+			changed = append(changed, comp)
+		}
+	}
+	if len(changed) > 0 {
+		// Built from the listing just read: no second walk per client.
+		info := slotInfoFrom(slot, ch)
+		for _, c := range ru.subscribedClients(slot) {
+			ru.writeJSON(ctx, c, info)
+		}
+		for _, comp := range changed {
+			modID := cache.modules[comp]
+			if modID == "" {
+				delete(cache.hierarchies, comp)
+				continue
 			}
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.broadcastCustomUI(ctx, slot, comp, url)
+			}
+			ru.broadcastHierarchy(ctx, slot, comp)
+			ru.broadcastChainParams(ctx, slot, comp)
 		}
+	}
 
-		if modID == "" {
-			continue
-		}
-
-		// Detect hierarchy changes (dynamic modules like JV-880).
+	// Detect hierarchy changes (dynamic modules like JV-880).
+	for _, comp := range ch.loaded() {
 		hierJSON, ok, _ := ru.shm.TryGetParam(slot, comp+":ui_hierarchy")
 		if ok && hierJSON != "" {
 			if prev, exists := cache.hierarchies[comp]; !exists || prev != hierJSON {
@@ -2420,13 +2574,6 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 				ru.broadcastHierarchy(ctx, slot, comp)
 			}
 		}
-	}
-}
-
-// broadcastSlotInfo sends slot_info to all subscribers of a slot.
-func (ru *RemoteUI) broadcastSlotInfo(ctx context.Context, slot uint8) {
-	for _, c := range ru.subscribedClients(slot) {
-		ru.sendSlotInfo(ctx, c, slot)
 	}
 }
 
@@ -2452,57 +2599,59 @@ func (ru *RemoteUI) broadcastChainParams(ctx context.Context, slot uint8, compon
 }
 
 // pollMasterFx checks for module/hierarchy changes only (no per-param polling).
+// The bus listing is ONE read (master_fx:modules); a failed one changes
+// nothing this tick.
 func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
-	for _, fxSlot := range masterFxSlots {
-		compName := "master_fx:" + fxSlot
-		moduleKey := "master_fx:" + fxSlot + ":module"
+	m := readMasterFxChain(ru.tryGet())
+	if !m.Known {
+		// Mutex busy or a transient shm read error (e.g. shadow_param timeout
+		// under load). Without this guard an unread bus is mistaken for an
+		// empty one and we broadcast "no effects loaded", then restore it the
+		// next tick (visible flicker). Skip tick.
+		return
+	}
 
-		modID, ok, err := ru.shm.TryGetParam(0, moduleKey)
-		if !ok || err != nil {
-			// Mutex busy or a transient shm read error (e.g. shadow_param
-			// timeout under load). TryGetParam returns ("", true, err) in the
-			// error case — without this guard an empty modID is mistaken for a
-			// module unload and we broadcast "no effects loaded", then restore
-			// it the next tick (visible flicker). Mirrors pollSlot. Skip tick.
-			continue
-		}
-
-		// Detect module change.
-		if prev, exists := cache.modules[fxSlot]; !exists || prev != modID {
-			cache.modules[fxSlot] = modID
-			ru.broadcastMasterFxInfo(ctx)
-			if modID != "" {
-				// Swapping the module swaps its panel. Sent BEFORE the
-				// hierarchy so a position that gains a custom UI does not
-				// paint generated rows first and replace them a moment later;
-				// a position that loses one is handled client-side, which
-				// clears the panel on the master_fx_info above.
-				if url := ru.findModuleWebUI(masterFxModuleID(modID)); url != "" {
-					ru.broadcastMasterFxCustomUI(ctx, compName, url)
-				}
-				ru.broadcastMasterFxHierarchy(ctx, compName)
-				ru.broadcastMasterFxChainParams(ctx, compName)
-			}
-		}
-
-		if modID == "" {
-			continue
-		}
-
-		// Detect hierarchy changes.
-		hierJSON, ok, _ := ru.shm.TryGetParam(0, compName+":ui_hierarchy")
-		if ok && hierJSON != "" {
-			if prev, exists := cache.hierarchies[fxSlot]; !exists || prev != hierJSON {
-				cache.hierarchies[fxSlot] = hierJSON
-				ru.broadcastMasterFxHierarchy(ctx, compName)
-			}
+	var changed []string
+	for i, modID := range m.Modules {
+		compName := masterFxComp(i + 1)
+		if prev, exists := cache.modules[compName]; !exists || prev != modID {
+			cache.modules[compName] = modID
+			changed = append(changed, compName)
 		}
 	}
-}
+	if len(changed) > 0 {
+		info := masterFxInfoFrom(m)
+		for _, c := range ru.masterFxSubscribedClients() {
+			ru.writeJSON(ctx, c, info)
+		}
+		for _, compName := range changed {
+			modID := cache.modules[compName]
+			if modID == "" {
+				delete(cache.hierarchies, compName)
+				continue
+			}
+			// Swapping the module swaps its panel. Sent BEFORE the hierarchy
+			// so a position that gains a custom UI does not paint generated
+			// rows first and replace them a moment later; a position that
+			// loses one is handled client-side, which clears the panel on the
+			// master_fx_info above.
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.broadcastMasterFxCustomUI(ctx, compName, url)
+			}
+			ru.broadcastMasterFxHierarchy(ctx, compName)
+			ru.broadcastMasterFxChainParams(ctx, compName)
+		}
+	}
 
-func (ru *RemoteUI) broadcastMasterFxInfo(ctx context.Context) {
-	for _, c := range ru.masterFxSubscribedClients() {
-		ru.sendMasterFxInfo(ctx, c)
+	// Detect hierarchy changes.
+	for _, compName := range m.loaded() {
+		hierJSON, ok, _ := ru.shm.TryGetParam(0, compName+":ui_hierarchy")
+		if ok && hierJSON != "" {
+			if prev, exists := cache.hierarchies[compName]; !exists || prev != hierJSON {
+				cache.hierarchies[compName] = hierJSON
+				ru.broadcastMasterFxHierarchy(ctx, compName)
+			}
+		}
 	}
 }
 

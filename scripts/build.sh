@@ -250,6 +250,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/step_menu.c src/host/step_menu.h src/host/step_menu_glue.h src/host/step_chance.h \
     src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/move_info.c src/host/move_info.h src/host/move_info_pub.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
+    src/host/speaker_eq.c src/host/speaker_eq.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
     src/host/shadow_overtake_midi.c src/host/shadow_overtake_midi.h \
@@ -307,6 +308,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/undo_timeline.c \
         src/host/shadow_state.c \
         src/host/shadow_xmos_audio.c \
+        src/host/speaker_eq.c \
         src/host/usbc_out_gate.c \
         src/host/shadow_midi.c \
         src/host/shadow_midi_filter.c \

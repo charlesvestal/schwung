@@ -97,12 +97,16 @@ function masterTarget(cfg, onInvalidate) {
      lift has to say which. Master, here. */
   const t = new Function("parseChainId", "MASTER_FX_SLOTS", "masterFxChainComponents",
     "masterFxChainConfig", "setMasterFxChainConfig", "invalidateMasterFxConfig", "fxBus",
+    "remapMasterUserPresetRecords",
     src.slice(at, end + 4) + "\nreturn MASTER_CHAIN_TARGET;")(
     parseChainId, 8,
     () => chainEditorComponents(held.cfg, { hasSynth: false, hasMidiFx: false }),
     () => held.cfg, (c) => { held.cfg = c; },
     () => { if (onInvalidate) onInvalidate(); },
-    () => ({ id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:", send: -1, hasLfos: true, hasPresets: true, busLevelKeys: [] }));
+    () => ({ id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:", send: -1, hasLfos: true, hasPresets: true, busLevelKeys: [] }),
+    /* onReshape: the User Preset records follow the verb (issue #305) --
+       recorded, and pinned by test_master_fx_user_presets.sh. */
+    (op) => { held.reshaped = (held.reshaped || []).concat([op]); });
   t.__held = held;
   return t;
 }

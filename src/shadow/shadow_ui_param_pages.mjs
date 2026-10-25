@@ -42,6 +42,8 @@ export { LAYOUT_LIST };
  * grid does, from the same number. Two hand-written 500s would drift. */
 export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput, isHardwarePadPress } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
+import { createKnobDirectionFilter, parseKnobFilterConfig, KNOB_FILTER_FLAG_PATH }
+    from '/data/UserData/schwung/shared/param_pages/knob_direction_filter.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_MOVY, normalizedOf }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
@@ -288,7 +290,28 @@ export function paramPagesLayout() {
  *   it (Global Settings); it is called instead of setView on Back.
  *   Omitted means the slot-chain defaults.
  */
+/*
+ * A worn encoder reports some of its counts BACKWARDS, in bursts -- measured
+ * on a real Move's knob 1 at 27% while turned one way. knob_direction_filter
+ * holds those back, at the price of lag on a deliberate reversal, so it is OFF
+ * unless this device asks: the file KNOB_FILTER_FLAG_PATH, empty for every
+ * knob or listing knob numbers ("1"). Re-read on each entry to the grid, so
+ * creating or deleting it takes effect the next time the grid opens.
+ */
+const knobFilter = createKnobDirectionFilter();
+let knobFilterCfg = parseKnobFilterConfig(null);
+function loadKnobFilterConfig() {
+    let text = null;
+    try {
+        if (typeof host_file_exists === 'function' && host_file_exists(KNOB_FILTER_FLAG_PATH)) {
+            text = (typeof host_read_file === 'function' ? host_read_file(KNOB_FILTER_FLAG_PATH) : "") || "";
+        }
+    } catch (e) { text = null; }
+    knobFilterCfg = parseKnobFilterConfig(text);
+}
+
 export function enterParamPages(slot, component, prefix, restorePageName, io, chrome, restoreOpts) {
+    loadKnobFilterConfig();
     currentSlot = slot;
     currentComponent = component;
     currentPrefix = prefix || component;
@@ -1114,8 +1137,9 @@ export function headerTitle() {
      * read the My Presets page already pays for.
      *
      * A synthesised contract (Slot Settings, Master FX/Global Settings) or a
-     * Master FX component never has a record for its key, so this answers
-     * null there and falls through unaffected.
+     * send position never has a record for its key, so this answers null
+     * there and falls through unaffected. A Master FX position CAN have one
+     * (it has a My Presets page), and shows it here the same way.
      *
      * A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
@@ -1335,6 +1359,15 @@ export function handleParamPagesMidi(data) {
             + ` t=${Date.now()}`
             + ` sincePrev=${gap < 0 ? 'n/a' : gap + 'ms'}`
             + ` held=[${st.touchOrder.join(',')}]`);
+    }
+
+    /* A new touch is a new gesture for the direction filter; a held-back count
+     * is CONSUMED, never passed on -- falling through would hand it to the
+     * legacy knob handler, a second writer. */
+    if (knobFilterCfg.enabled) {
+        if (intent.type === 'touch' && intent.down) knobFilter.reset(intent.slot);
+        if (intent.type === 'knob' && knobFilterCfg.knobs.has(intent.slot)
+            && !knobFilter.accept(intent.slot, intent.direction)) return true;
     }
 
     /* reveal:false — this host drives reveal from the polled shift state in

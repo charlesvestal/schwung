@@ -944,3 +944,85 @@
     color: var(--text);
     font-size: 0.85rem;
 }
+
+/* ---- Slot loader: the chain row, after the device's chain editor ---- */
+.slot-loader { margin-bottom: var(--space-lg); }
+.slot-loader[hidden] { display: none; }
+.chain-row {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+}
+.chain-arrow {
+    flex: 0 0 auto;
+    align-self: center;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+}
+.chain-box {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 64px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 4px;
+    border: 1.5px solid var(--text-muted);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+.chain-box.empty { border-style: dashed; color: var(--text-muted); }
+.chain-box.filled { background: var(--bg-card); }
+.chain-box.chain-synth.filled { border-color: var(--accent); }
+.chain-box.picking { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chain-box:disabled { opacity: 0.6; cursor: default; }
+.chain-box-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.chain-box-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chain-box.empty .chain-box-name { font-size: 1.4rem; font-weight: 400; line-height: 1; }
+.chain-picker {
+    margin-top: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+    overflow: hidden;
+}
+.chain-picker-title {
+    padding: var(--space-sm) var(--space-md);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+.chain-option {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 var(--space-md);
+    text-align: left;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+.chain-option:last-child { border-bottom: 0; }
+.chain-option.current { color: var(--accent); font-weight: 600; }
+.chain-option.current::after { content: " \2713"; }
+.chain-option:disabled { color: var(--text-muted); cursor: default; }
+.chain-note { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--text-muted); }

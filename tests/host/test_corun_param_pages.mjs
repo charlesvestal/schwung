@@ -41,6 +41,7 @@ function harness(source=after){
     paramPagesActive:()=>c.active,
     isHardwarePadPress:d=>(d[0]&240)===144&&d[1]>=68&&d[1]<=99&&d[2]>0,
     _midiCount:0,_midiWindowStart:0,_knobTurnCount:0,controllerIo:null,currentChrome:null,currentSlot:1,
+    knobFilterCfg:{enabled:false,knobs:new Set()},knobFilter:{accept:()=>true,reset(){}},
     shiftIsHeld:()=>c.hostShiftHeld,isLoggingEnabled:()=>false,traced:(_n,f)=>f(),
     exitParamPages:()=>{c.active=false;},
     ctx:{VIEWS,setView:v=>{c.view=v;},isMuteHeld:()=>c.hostMuteHeld},

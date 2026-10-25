@@ -44,5 +44,11 @@ body=$(awk '/^function launchToolConfirmed\(/{f=1} f{print} f&&/^}/{exit}' src/s
 if printf '%s\n' "$body" | grep -q 'tool\.tool_config\.\(set_picker\|interactive\|skip_file_browser\)'; then
     echo "FAIL: launchToolConfirmed restates the dispatch order instead of asking toolLaunchKind" >&2; fail=1
 fi
+# open_tool_cmd (the web UI's and test harnesses' way in) must launch a
+# standalone tool the way the Tools menu does, not as an interactive session.
+otc=$(awk '/open_tool_cmd: opening/{f=1} f{print} /not found as tool or/{exit}' src/shadow/shadow_ui.js)
+if ! printf '%s\n' "$otc" | grep -q 'toolLaunchKind(tool) === "standalone"'; then
+    echo "FAIL: open_tool_cmd does not route a standalone tool through launchToolConfirmed" >&2; fail=1
+fi
 [ $fail -eq 0 ] && echo "PASS: tool launch standalone"
 exit $fail

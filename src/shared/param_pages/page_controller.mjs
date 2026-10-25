@@ -40,7 +40,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor, WIDGET_BIGNUM,
-         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
+         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H, BAND_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH, MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
@@ -210,15 +210,22 @@ const MENU_LIST_INDICATOR_X = 122;
  * that the six hand-rolled row loops had drifted into, so the knob page drawn as
  * a list inherits it rather than inventing a fifth.
  */
-export function drawPageChromeList(ctx, rect, entries, index, { editMode = false } = {}) {
+export function drawPageChromeList(ctx, rect, entries, index,
+                                   { editMode = false, area = null } = {}) {
+    /* The surface the rows may paint across -- the highlight, the value edge
+     * and the scrollbar. The screen unless a caller embedding the page hands
+     * its own; the indicator keeps its distance from that surface's edge. */
+    const areaX = area && Number.isFinite(area.x) ? area.x : 0;
+    const areaRight = area && area.w > 0 ? areaX + area.w : SCREEN_WIDTH;
     drawMenuList({
         ctx,
         items: entries || [],
         editMode: !!editMode,
         selectedIndex: (index | 0) < 0 ? -1 : (index | 0),
-        listArea: { topY: rect.y, bottomY: rect.y + rect.h },
+        listArea: { topY: rect.y, bottomY: rect.y + rect.h,
+                    leftX: areaX, rightX: areaRight },
         labelX: rect.x,
-        indicatorX: MENU_LIST_INDICATOR_X,
+        indicatorX: areaRight - (SCREEN_WIDTH - MENU_LIST_INDICATOR_X),
         indicatorBottomY: rect.y + rect.h,
         getLabel: (e) => (e && e.name != null ? String(e.name) : ""),
         /* A menu entry carries a value; a section carries a page count, and a
@@ -767,8 +774,25 @@ export function createController(io = {}) {
      * filter, just evaluated by the host instead of filtered here: the
      * controller does not know what a preset is.
      */
-    const trailingMenus = () =>
-        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
+    let trailingMenusCache = null;
+    const trailingMenus = () => (trailingMenusCache =
+        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []));
+    /*
+     * ...EXCEPT ON A VISIBILITY RE-PLAN, which reuses the last answer.
+     *
+     * The host's answer is not free: shadow_ui's componentTrailingMenus does a
+     * BLOCKING `<prefix>:state` read to mark the preset row modified -- 6-7 ms
+     * on lost-and-found. A gating enum re-plans on every value it writes, so a
+     * turn paid that on most ticks: measured on the device, the JS tick went
+     * from 13.5 ms to 22.7 ms and the grid from 56 fps to 25-33 for the length
+     * of the turn, on exactly the knobs whose page also re-lays-out -- reported
+     * as an enum that "skips, flickers and snaps back". Nothing a visible_if
+     * flip changes lives in these rows (they belong to the component, not to a
+     * param), so the rows load() or refreshTrailing() last fetched still hold.
+     * Every OTHER plan keeps asking. test_visible_if_replan_no_host_reads.sh.
+     */
+    const lastTrailingMenus = () =>
+        (trailingMenusCache !== null ? trailingMenusCache : trailingMenus());
 
     const s = {
         /* Per-controller, and it outlives a page change on purpose — see the
@@ -905,6 +929,11 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* What each condition key held when the plan on screen was built, or
+         * null when that is not known (a fresh load, a mode re-plan). A write
+         * that leaves a key where the plan found it cannot change what is
+         * visible, so it owes nothing -- see replanIfCondition. */
+        plannedGates: null,
         /* A pad press just told us the module's mode may have moved — spend
          * the next rotation stop on the gates rather than waiting for their
          * turn. See vouchLivePress and the gate lane. */
@@ -1406,6 +1435,7 @@ export function createController(io = {}) {
         s.fingerprint = planned.fingerprint;
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
         s.conditionKeys = planned.conditionKeys || new Set();
+        s.plannedGates = null;
         /* A fresh plan with fresh conditionKeys: a debt raised against the
          * OLD ones is paid, and honouring it on the next tick would re-plan
          * this component for a gate that belonged to another. */
@@ -1586,7 +1616,7 @@ export function createController(io = {}) {
         if (!s.metaIndex) return true;
         const p = s.pages.find((q) => q && q.kind === PAGE_KNOBS && (q.keys || []).length);
         if (!p) return false;
-        return p.keys.every((k) => s.metaIndex.getOrGuess(k).guessed);
+        return p.keys.every((k) => !k || s.metaIndex.getOrGuess(k).guessed);
     }
 
     /**
@@ -1682,6 +1712,7 @@ export function createController(io = {}) {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return false;
         for (const key of p.keys) {
+            if (!key) continue;   /* an authored hole: getOrGuess throws on null */
             const meta = s.metaIndex.getOrGuess(key);
             if (meta.kind !== KIND_ENUM) continue;
             const o = meta.options;
@@ -4350,6 +4381,7 @@ export function createController(io = {}) {
          * the one recorded and it re-plans once for nothing. */
         s.plannedMode = s.lastLoadOpts && s.lastLoadOpts.mode;
         s.conditionKeys = planned.conditionKeys || new Set();
+        s.plannedGates = null;
         s.values = Object.create(null);
         s.knobStates = Object.create(null);
         s.cursor = 0;
@@ -4406,7 +4438,33 @@ export function createController(io = {}) {
      */
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
+        /*
+         * ...AND ONLY WHEN THE VALUE MOVED.
+         *
+         * An enum is gated at four detents per option, so most writes in a
+         * turn repeat the value the plan was built from ("Host Host Host
+         * Manual"), and every one of them bought a full planPages pass: 40
+         * passes for 10 changes in a 120-detent sweep. On the Move that is the
+         * whole cost of turning a gating enum -- OTLP measured flushReplan at
+         * 9.5 ms a tick, 340 ms of every second of the turn, the grid down
+         * from ~56 fps to ~36 on exactly the knobs whose page also re-lays
+         * out. Reported as an enum that "skips, flickers and snaps back".
+         *
+         * Compared against s.values because that is what the writer just
+         * cached and what the evaluator reads first. A key the stamp has never
+         * seen (null stamp, or a key absent when the plan ran) still re-plans.
+         * test_visible_if_replan_no_host_reads.sh.
+         */
+        if (s.plannedGates && s.plannedGates.has(key)
+            && s.plannedGates.get(key) === s.values[key]) return;
         s.replanOwed = true;
+    }
+
+    /* Record what the condition keys held for the plan just built. */
+    function stampPlannedGates() {
+        const m = new Map();
+        for (const k of s.conditionKeys) if (k in s.values) m.set(k, s.values[k]);
+        s.plannedGates = m;
     }
 
     /*
@@ -4437,7 +4495,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
-            trailingMenus: trailingMenus(),
+            trailingMenus: lastTrailingMenus(),
             paginate: s.paginate,
         });
         if (planned.pages.length !== oldPages.length ||
@@ -4447,6 +4505,7 @@ export function createController(io = {}) {
             s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
             s.cursor = 0;
         }
+        stampPlannedGates();
     }
 
     /**
@@ -5556,19 +5615,73 @@ export function createController(io = {}) {
     function drawKnobsAsList(ctx, title, footer, chrome, footerBand) {
         const mp = page();
         chrome(pageLabel(mp));
-        const bottom = footer ? RULE_Y : 64;
+        const lf = listFrame(footer);
         const entered = menuEntered();
-        drawPageChromeList(ctx,
-            { x: MENU_LIST_X, y: MENU_LIST_Y, w: MENU_LIST_W, h: bottom - MENU_LIST_Y },
+        drawPageChromeList(ctx, lf.list,
             knobListEntries(mp),
             entered ? knobRowIndex(mp) : -1,
-            { editMode: entered && s.knobEditing });
+            { editMode: entered && s.knobEditing, area: lf.area });
         if (!entered) {
-            drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                         bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+            drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                          MENU_BRACKET_LEN);
         }
         footerBand();
+    }
+
+    /*
+     * Where a list-shaped body ends -- the knob list, the section picker and
+     * the items, preset and menu pages.
+     *
+     * Above the footer rule when there is a footer, and NEVER BELOW THE
+     * CALLER'S RECT. Only the knob grid used to read `rect`; these five sized
+     * themselves from the footer alone, so a tool that keeps its own bottom
+     * band (and says so with `rect` plus `bands.footer: false`) had a preset
+     * browser drawn straight over it, down to row 63. Without a rect nothing
+     * changes, which is every full-screen caller.
+     */
+    function bodyBottom(footer) {
+        const base = footer ? RULE_Y : 64;
+        const fr = s.frameRect;
+        if (!fr || !(fr.h > 0)) return base;
+        return Math.min(base, (Number.isFinite(fr.y) ? fr.y : 0) + fr.h);
+    }
+
+    /*
+     * WHERE A LIST-SHAPED BODY GOES, on all four sides.
+     *
+     * #652 clamped the bottom; the top, left and width were still the
+     * full-screen constants, so a rect inset from the top or a side had the
+     * list drawn over the caller's own chrome. The rule is the knob grid's
+     * (movyBandLayout): WITH a rect the body is laid out inside it, under
+     * whichever of the header and bank bar are drawn; WITHOUT one every band
+     * keeps the position the vertical rhythm gives it. The constants are kept
+     * as OFFSETS from that origin, so the no-rect case is the old numbers
+     * exactly and the shadow UI -- which passes no rect -- is pixel-identical.
+     */
+    function listFrame(footer) {
+        const fr = s.frameRect;
+        const fullTop = BAND_H.header + BAND_H.bank;
+        const reflow = !!(fr && fr.w > 0 && fr.h > 0);
+        const ax = reflow && Number.isFinite(fr.x) ? fr.x : 0;
+        const aw = reflow ? fr.w : SCREEN_WIDTH;
+        const b = s.frameBands || {};
+        const top = reflow
+            ? (Number.isFinite(fr.y) ? fr.y : 0)
+              + (b.header !== false ? BAND_H.header : 0)
+              + (b.bank !== false ? BAND_H.bank : 0)
+            : fullTop;
+        const bottom = bodyBottom(footer);
+        const frameY = top + (MENU_FRAME_Y - fullTop);
+        const listY = top + (MENU_LIST_Y - fullTop);
+        return {
+            area: { x: ax, w: aw },
+            frame: { x: ax + MENU_FRAME_X, y: frameY,
+                     w: Math.max(0, aw - (SCREEN_WIDTH - MENU_FRAME_W)),
+                     h: bottom - frameY - MENU_FRAME_BOTTOM_INSET },
+            list: { x: ax + MENU_LIST_X, y: listY,
+                    w: Math.max(0, aw - (SCREEN_WIDTH - MENU_LIST_W)),
+                    h: bottom - listY },
+        };
     }
 
     function render(ctx, { title, rect, footer, bands } = {}) {
@@ -5578,6 +5691,7 @@ export function createController(io = {}) {
          * Kept here rather than passed to renderOverlays so an existing caller
          * needs no change. */
         s.frameRect = rect || null;
+        s.frameBands = bands || null;
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -5693,12 +5807,10 @@ export function createController(io = {}) {
                  * bar, same list rect and same five rows as a menu page — the
                  * only difference is what the list holds.
                  */
-                const pbottom = footer ? RULE_Y : 64;
+                const lf = listFrame(footer);
                 pageChrome("SECTIONS");
-                drawPageChromeList(ctx,
-                    { x: MENU_LIST_X, y: MENU_LIST_Y,
-                      w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
-                    s.pickerEntries, s.pickerIndex);
+                drawPageChromeList(ctx, lf.list,
+                    s.pickerEntries, s.pickerIndex, { area: lf.area });
                 footerBand();
                 return;
             }
@@ -5708,12 +5820,10 @@ export function createController(io = {}) {
                  * five rows, same rect. Inert it highlights nothing — the page
                  * is something you can go INTO, not something you are in. */
                 pageChrome(mp.name);
-                const ibottom = footer ? RULE_Y : 64;
+                const lf = listFrame(footer);
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
-                drawPageChromeList(ctx,
-                    { x: MENU_LIST_X, y: MENU_LIST_Y,
-                      w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                drawPageChromeList(ctx, lf.list,
                     ist.list.length
                         ? ist.list.map((it) => ({
                             name: it.label,
@@ -5722,10 +5832,9 @@ export function createController(io = {}) {
                             value: it.index === ist.current ? "*" : "",
                           }))
                         : [{ name: "(none)", value: "" }],
-                    entered ? ist.cursor : -1);
+                    entered ? ist.cursor : -1, { area: lf.area });
                 if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();
@@ -5738,9 +5847,7 @@ export function createController(io = {}) {
                  * That is the whole point: it used to eject into the list
                  * editor, which looks nothing like this. */
                 pageChrome(mp.name);
-                const pbottom = footer ? RULE_Y : 64;
-                const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
-                                w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
+                const prect = listFrame(footer).frame;
                 const pst = presetState(mp) || {};
                 /*
                  * A MODULE-DRAWN BROWSER paints the body itself. It is handed
@@ -5763,8 +5870,7 @@ export function createController(io = {}) {
                 /* Inert: it wears the same brackets a divable cell and an
                  * un-entered menu wear, because it is the same offer. */
                 if (!menuEntered()) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, prect.x, prect.y, prect.w, prect.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();
@@ -5776,7 +5882,7 @@ export function createController(io = {}) {
                  * module's pages rather than as somewhere else. header:false
                  * because that header is already drawn. */
                 pageChrome(mp.name);
-                const bottom = footer ? RULE_Y : 64;
+                const lf = listFrame(footer);
                 const entered = menuEntered();
                 /*
                  * ONE list rect for both states. Shrinking it to make room for
@@ -5787,17 +5893,14 @@ export function createController(io = {}) {
                  * (9..53), and the side arms clear the text at x+2 and the
                  * right-aligned values at x+w-2.
                  */
-                const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
-                                   w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
-                drawPageChromeList(ctx, listRect,
+                drawPageChromeList(ctx, lf.list,
                     (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
                     /* Inert: nothing is highlighted, because nothing is selected
                      * yet — the page is something you can go INTO, not something
                      * you are already in. */
-                    entered ? menuIndex(mp) : -1);
+                    entered ? menuIndex(mp) : -1, { area: lf.area });
                 if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                    drawBrackets(ctx, lf.frame.x, lf.frame.y, lf.frame.w, lf.frame.h,
                                  MENU_BRACKET_LEN);
                 }
                 footerBand();

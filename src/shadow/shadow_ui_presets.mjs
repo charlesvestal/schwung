@@ -86,6 +86,51 @@ let presetPrefix = "synth";   /* DSP param prefix: synth | fx1..fx4 | midi_fx1 *
 let presets = [];             /* [{ name, file }] sorted by name */
 let selectedPreset = 0;       /* index into `presets` */
 
+/*
+ * WHERE the component lives, and WHERE every exit goes — set on each entry.
+ *
+ * `presetSlot` is the IPC slot the component is addressed at. For a chain
+ * slot's component it is the instrument slot, and equal to ctx.selectedSlot
+ * (entry focuses it, as it always has). For a MASTER FX position it is IPC
+ * slot 0 by convention — which is NOT instrument slot 1, so a Master FX flow
+ * must never write ctx.selectedSlot or move the focused slot: doing so would
+ * re-aim Move's track buttons, the knob overlay and the next autosave at slot
+ * 1 for the sake of a preset list. Every read/apply in this file goes through
+ * presetSlot rather than ctx.selectedSlot for that reason.
+ *
+ * `presetReturnView` is the view every exit (pick, Back, delete confirm) lands
+ * on. null means VIEWS.CHAIN_EDIT, the slot chain's convergence point (see
+ * maybeReturnToComponentGrid); a Master FX flow passes VIEWS.MASTER_FX, whose
+ * reconciler is maybeReturnToMasterComponentGrid.
+ */
+let presetSlot = 0;
+let presetReturnView = null;
+let presetReturnLabel = "Chain Editor";
+
+/*
+ * Apply an entry's target options. `opts` (all optional):
+ *   returnView   view the exits land on (default VIEWS.CHAIN_EDIT)
+ *   returnLabel  what Back announces (default "Chain Editor")
+ *   focusSlot    false = leave ctx.selectedSlot / the focused slot alone
+ *   audition     false = never audition, whatever the global switch says
+ *   label        header label (default: the component's "<prefix>:name")
+ */
+function applyPresetTarget(slot, opts) {
+    const o = opts || {};
+    presetSlot = slot;
+    presetReturnView = o.returnView || null;
+    presetReturnLabel = o.returnLabel || "Chain Editor";
+    if (o.focusSlot !== false) {
+        ctx.selectedSlot = slot;
+        ctx.updateFocusedSlot(slot);
+    }
+    return o;
+}
+
+function presetExitView() {
+    return presetReturnView || ctx.VIEWS.CHAIN_EDIT;
+}
+
 /* VIEWS.PRESET_DETAIL now has exactly one reason to exist: the delete
  * confirmation raised directly by enterPresetDeleteConfirm (the grid's
  * Delete action). There is no more Load/Delete choice screen to select
@@ -351,7 +396,7 @@ function applyPreset(slot, entry) {
  * the list no longer carries a save affordance of its own (see Back for the
  * actual revert). */
 function applyPreviewForRow(rowIndex) {
-    const slot = ctx.selectedSlot;
+    const slot = presetSlot;
     const str = readPresetStateString(presets[rowIndex], false);
     if (str != null) {
         applyStateBlob(slot, str);
@@ -377,7 +422,7 @@ export function isPresetPreviewActive() {
 function revertToOriginal() {
     pendingPreviewIndex = PREVIEW_NONE;
     if (previewEnabled && previewActive && originalState != null) {
-        applyStateBlob(ctx.selectedSlot, originalState);
+        applyStateBlob(presetSlot, originalState);
     }
     previewActive = false;
     lastPreviewedIndex = -1;
@@ -409,22 +454,27 @@ function doDeletePreset(entry) {
      * not disturb it. That comparison is the host's (it owns the record); this
      * only reports what happened. */
     if (typeof ctx.onPresetDeleted === "function") {
-        ctx.onPresetDeleted(ctx.selectedSlot, presetPrefix, entry.name);
+        ctx.onPresetDeleted(presetSlot, presetPrefix, entry.name);
     }
 }
 
 /* ---- Enter -------------------------------------------------------------- */
 
-export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
-    const { setView, updateFocusedSlot, getSlotParam, VIEWS } = ctx;
-    ctx.selectedSlot = slotIndex;
-    updateFocusedSlot(slotIndex);
+/*
+ * `opts` — see applyPresetTarget. Omitted is the slot chain, exactly as before;
+ * a Master FX position passes { returnView: VIEWS.MASTER_FX, focusSlot: false,
+ * audition: false, label } (see masterPresetFlowOptions in shadow_ui.js).
+ */
+export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, opts) {
+    const { setView, getSlotParam, VIEWS } = ctx;
+    const o = applyPresetTarget(slotIndex, opts);
 
-    /* Component-scoped: synth or any FX / MIDI-FX slot. The DSP prefix selects
-     * which component's :state we snapshot; moduleId keys the presets folder. */
+    /* Component-scoped: synth or any FX / MIDI-FX slot, or a Master FX
+     * position ("master_fx:fxN"). The DSP prefix selects which component's
+     * :state we snapshot; moduleId keys the presets folder. */
     presetPrefix = prefix || "synth";
     presetModule = moduleId || "";
-    presetModuleLabel = getSlotParam(slotIndex, presetPrefix + ":name") || presetModule || "Module";
+    presetModuleLabel = o.label || getSlotParam(slotIndex, presetPrefix + ":name") || presetModule || "Module";
 
     loadPresetList();
     selectedPreset = 0;
@@ -441,7 +491,13 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
      * than it used to be, now that it is a page at the end of every component
      * rather than an indented row inside a picker. Default is off.
      *
-     * Off does not disable the list, only the audition: Load still loads. */
+     * Off does not disable the list, only the audition: Load still loads.
+     *
+     * A caller may also refuse audition outright (opts.audition === false).
+     * Master FX does, for now: an audition there is applied to the whole mix,
+     * and the master autosave (saveMasterFxChainConfig) has no equivalent of
+     * the slot autosave's isPresetPreviewActive guard, so an uncommitted
+     * audition could be persisted into master_fx_N.json. */
     originalState = null;
     previewEnabled = false;
     previewActive = false;
@@ -451,7 +507,8 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
      * jog (or the initial highlight, if it is ever flushed) is a real change
      * rather than a no-op match. */
     lastPreviewedIndex = -1;
-    const auditionOn = typeof ctx.auditionEnabled === "function" ? !!ctx.auditionEnabled() : false;
+    const auditionOn = (o.audition !== false) &&
+        (typeof ctx.auditionEnabled === "function" ? !!ctx.auditionEnabled() : false);
     if (presetModule && auditionOn) {
         const cur = ctx.getSlotStateWithRetry(slotIndex, presetPrefix + ":state");
         if (cur) {
@@ -538,14 +595,18 @@ export function overwriteUserPreset(slot, prefix, moduleId, name) {
  * notifies ctx.onPresetSaved once the write lands, which is what updates the
  * grid's record and refreshes the trailing page.
  */
-export function enterPresetSaveAs(slot, componentKey, moduleId, prefix) {
+export function enterPresetSaveAs(slot, componentKey, moduleId, prefix, opts) {
     if (!moduleId) {
         announce("No module in this slot");
         return;
     }
+    /* Never navigates (the keyboard is an overlay on the grid), so only the
+     * label is taken from opts -- the slot/focus/return target is left as the
+     * last navigating entry set it, and nothing here reads it. */
+    const o = opts || {};
     presetPrefix = prefix || "synth";
     presetModule = moduleId;
-    presetModuleLabel = ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
+    presetModuleLabel = o.label || ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
     loadPresetList();
     openTextEntry({
         title: "",
@@ -567,8 +628,8 @@ export function enterPresetSaveAs(slot, componentKey, moduleId, prefix) {
  * delete path, one confirmation. Confirming or backing out falls through to
  * the existing handlers unchanged.
  */
-export function enterPresetDeleteConfirm(slot, componentKey, moduleId, prefix, name) {
-    const { setView, updateFocusedSlot, VIEWS } = ctx;
+export function enterPresetDeleteConfirm(slot, componentKey, moduleId, prefix, name, opts) {
+    const { setView, VIEWS } = ctx;
     presetPrefix = prefix || "synth";
     presetModule = moduleId || "";
     loadPresetList();
@@ -579,9 +640,8 @@ export function enterPresetDeleteConfirm(slot, componentKey, moduleId, prefix, n
         announce("Preset not found");
         return;
     }
-    presetModuleLabel = ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
-    ctx.selectedSlot = slot;
-    updateFocusedSlot(slot);
+    const o = applyPresetTarget(slot, opts);
+    presetModuleLabel = o.label || ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
     selectedPreset = idx;
     confirmingDelete = true;
     confirmIndex = 0;
@@ -706,25 +766,27 @@ export function handlePresetsSelect() {
      * screen. Reported from hardware: "loading a preset shouldnt show
      * load/delete, it should just load it (delete is on the main menu)".
      */
-    const { setView, VIEWS } = ctx;
+    const { setView } = ctx;
     const entry = presets[selectedPreset];
-    if (applyPreset(ctx.selectedSlot, entry)) {
+    if (applyPreset(presetSlot, entry)) {
         previewActive = false;
         pendingPreviewIndex = PREVIEW_NONE;
         announce(`Loaded ${entry.name}`);
-        /* CHAIN_EDIT is the convergence point every hand-off from the grid's
-         * My Presets page returns through — maybeReturnToComponentGrid (in
-         * shadow_ui.js) is what routes the arrival back onto that page
+        /* CHAIN_EDIT is the convergence point every hand-off from a slot
+         * grid's My Presets page returns through — maybeReturnToComponentGrid
+         * (in shadow_ui.js) is what routes the arrival back onto that page
          * specifically, and falls through to the plain chain editor when the
-         * position no longer holds a module to show. */
-        setView(VIEWS.CHAIN_EDIT);
+         * position no longer holds a module to show. A Master FX flow
+         * converges on VIEWS.MASTER_FX instead (presetExitView), and
+         * maybeReturnToMasterComponentGrid does the same job there. */
+        setView(presetExitView());
     }
     ctx.needsRedraw = true;
 }
 
 export function handlePresetDetailSelect() {
     /* Only the delete confirm remains here — see drawPresetDetail's note. */
-    const { setView, VIEWS } = ctx;
+    const { setView } = ctx;
     const entry = presets[selectedPreset];
 
     if (confirmIndex === 1) {
@@ -740,12 +802,13 @@ export function handlePresetDetailSelect() {
          * from the grid's My Presets page now, and that page is where the
          * result belongs. Reported from hardware: "after deleting i get to a
          * menu of [save current] not the preset (none) page".
+         * (presetExitView: CHAIN_EDIT for a slot, MASTER_FX for Master FX.)
          */
-        setView(VIEWS.CHAIN_EDIT);
+        setView(presetExitView());
         announce("Preset deleted");
     } else {
         confirmingDelete = false;
-        setView(VIEWS.CHAIN_EDIT);
+        setView(presetExitView());
     }
     ctx.needsRedraw = true;
 }
@@ -753,24 +816,25 @@ export function handlePresetDetailSelect() {
 /* ---- Back --------------------------------------------------------------- */
 
 export function handlePresetsBack() {
-    const { setView, VIEWS } = ctx;
+    const { setView } = ctx;
     /* Entered from the grid's My Presets page; Back cancels the whole flow —
      * revert any active audition to the original sound — and exits through
      * the chain editor (maybeReturnToComponentGrid routes it back to the
-     * page it came from). */
+     * page it came from), or the Master FX editor for a Master FX position
+     * (maybeReturnToMasterComponentGrid). */
     revertToOriginal();
-    setView(VIEWS.CHAIN_EDIT);
-    announce("Chain Editor");
+    setView(presetExitView());
+    announce(presetReturnLabel);
     ctx.needsRedraw = true;
 }
 
 export function handlePresetDetailBack() {
     /* The only screen behind this one now is the delete confirm — cancel it
-     * outright, straight back to the chain editor. There is no Load/Delete
-     * choice screen to fall back into any more. */
-    const { setView, VIEWS } = ctx;
+     * outright, straight back to where the flow came from. There is no
+     * Load/Delete choice screen to fall back into any more. */
+    const { setView } = ctx;
     confirmingDelete = false;
-    setView(VIEWS.CHAIN_EDIT);
-    announce("Chain Editor");
+    setView(presetExitView());
+    announce(presetReturnLabel);
     ctx.needsRedraw = true;
 }

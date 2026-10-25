@@ -144,7 +144,7 @@ ssh_test_root() {
   if [ "${password_mode:-false}" = true ]; then
     sshpass -f "$root_pw_file" ssh $ssh_port_opt -o ConnectTimeout=5 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "$root_user@$hostname" true 2>&1
   else
-    ssh $ssh_identity_opt -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" true 2>&1
+    ssh ${ssh_port_opt:-} $ssh_identity_opt -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "${root_user:-root}@${hostname:-move.local}" true 2>&1
   fi
 }
 
@@ -277,7 +277,7 @@ ssh_remove_known_host() {
 
 ssh_fix_permissions() {
   echo "Updating /data/authorized_keys permissions..."
-  ssh $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" "chmod 644 /data/authorized_keys"
+  ssh ${ssh_port_opt:-} $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "${root_user:-root}@${hostname:-move.local}" "chmod 644 /data/authorized_keys"
 }
 
 ssh_wizard() {
@@ -801,6 +801,44 @@ else
   fi
 fi
 
+# Most install steps run as root. Root reads keys from /data/authorized_keys
+# (written by http://move.local/development/ssh), not from ableton's
+# ~/.ssh/authorized_keys, so the two can drift apart (e.g. after rotating a
+# key). Check root up front so that case gets a clear error instead of a
+# misleading failure deep in the install.
+root_ok=false
+root_check=""
+for _attempt in 1 2 3; do
+  if root_check=$(ssh_test_root); then
+    root_ok=true
+    break
+  fi
+  # Auth failures won't fix themselves; only retry transport blips (flaky mDNS).
+  if echo "$root_check" | grep -qi "Permission denied"; then
+    break
+  fi
+  if [ "$_attempt" -lt 3 ]; then
+    qecho "  Connection retry $_attempt/3..."
+    sleep 2
+  fi
+done
+if [ "$root_ok" = false ]; then
+  echo
+  echo "SSH as '$username' works, but SSH as '$root_user' failed."
+  echo "  Detail: $root_check"
+  echo
+  if [ "$password_mode" = true ]; then
+    echo "The installer needs root access. Check the password given with --root-password"
+    echo "(or --password, if no separate root password was given)."
+  else
+    echo "The installer needs root access. Root uses the keys in /data/authorized_keys,"
+    echo "which is separate from ableton's ~/.ssh/authorized_keys."
+    echo "Add your current public key at http://move.local/development/ssh, then run"
+    echo "this script again."
+  fi
+  fail "SSH as $root_user failed"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Module management subcommands (early exit)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1250,13 +1288,29 @@ ssh_root_with_retry "rm -rf /var/volatile/tmp/_MEI* 2>/dev/null || true; rm -f /
 
 
 # Safety: check root partition has enough free space (< 10MB free = danger zone)
-root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
+# A failed SSH read must not be treated as 0KB free: that reports a full disk
+# when the real problem is the connection. Retries cover flaky mDNS.
+read_root_avail() {
+  local root_avail _try
+  for _try in 1 2 3; do
+    root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || true)
+    case "$root_avail" in
+      ''|*[!0-9]*) ;;
+      *) echo "$root_avail"; return 0 ;;
+    esac
+    if [ "$_try" -lt 3 ]; then
+      sleep 2
+    fi
+  done
+  return 1
+}
+root_avail=$(read_root_avail) || fail "Could not read free space on the root partition (SSH as $root_user failed)"
 if [ "$root_avail" -lt 10240 ] 2>/dev/null; then
   echo
   echo "Warning: Root partition has less than 10MB free (${root_avail}KB available)"
   echo "Cleaning up any stale backup files..."
-  $ssh_root "rm -f /opt/move/Move.bak /opt/move/Move.shim /opt/move/Move.orig 2>/dev/null || true"
-  root_avail=$($ssh_root "df / | tail -1 | awk '{print \$4}'" 2>/dev/null || echo "0")
+  $ssh_root "rm -f /opt/move/Move.bak /opt/move/Move.shim /opt/move/Move.orig 2>/dev/null || true" || true
+  root_avail=$(read_root_avail) || fail "Could not read free space on the root partition (SSH as $root_user failed)"
   if [ "$root_avail" -lt 1024 ] 2>/dev/null; then
     fail "Root partition critically low (${root_avail}KB free). Cannot safely proceed."
   fi

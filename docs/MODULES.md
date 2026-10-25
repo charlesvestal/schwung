@@ -183,6 +183,38 @@ itself, so a staged helper adds convenience, not capability, and a device with
 nothing staged never enters the path. Heal's own duties (the shim and entrypoint
 mirror) run on the same invocation, idempotently.
 
+Keep `bin/` itself ableton-owned. A tool launched while the stack runs as root
+(after a root restart) that creates `bin/` leaves it root-owned, and every
+later ableton launch then fails to stage `bin/heal.new` into it.
+
+#### Shared memory a standalone tool may rely on
+
+With Move stopped there is no shim and no shadow_ui, but two dev surfaces keep
+working if the standalone program speaks their shared memory. Both layouts are
+stable contracts:
+
+- **`/dev/shm/schwung-display-live`** (1024 bytes): the screen in
+  `js_display_pack` format — 8 pages × 128 columns, bit 0 the topmost pixel of
+  each page. `display-server` streams whatever is written there on its live
+  view (port 7681), so a program that copies each packed frame into it is
+  visible in the web viewer and screenshot tools exactly as shadow_ui is.
+- **`/dev/shm/schwung-midi-inject`**: the MIDI inject ring
+  (`shadow_midi_inject_t`, the bounded MPSC queue in
+  `src/host/shadow_midi_inject_writer.h`). The inject tools are producers. A
+  standalone program that drains it with `shadow_midi_inject_peek` /
+  `shadow_midi_inject_pop` and feeds the packets in as hardware input keeps
+  them working. Its creator must `shadow_midi_inject_init` it — zero-fill is
+  not a valid state — and the shim that normally does is not running, so the
+  standalone program initialises it on start (what is there is stale).
+
+Either file may already exist from the stack, owned by whoever ran it. Create
+with mode 0666 (`fchmod` after `shm_open`), so a later run under the other uid
+can open it.
+
+movy's standalone host (`host/display.c` and `host/inject_ring.c` in
+[schwung-movy](https://github.com/DimaDake/schwung-movy)) is a working example
+of both.
+
 ### `forks_processes`
 
 Set `capabilities.forks_processes: true` when your module's DSP runs in
@@ -491,6 +523,58 @@ build/packaging includes them. The main repo's `scripts/build.sh`
 copies `*.{js,mjs,json,sh,py,txt}` from `src/modules/`; module
 repos typically mirror that pattern.
 
+## Loading modules from the Remote UI
+
+The Remote UI page draws the slot's chain as a row of boxes above the knobs
+(MIDI FX › Synth › FX 1 › FX 2 …), the same shape as the device's chain view:
+**every position the chain reports, plus one empty `+` after each section**
+while it has room, as the device draws its own `+`. Tap a box to pick a module
+for that position, or remove it; picking on a `+` writes the next position
+(`fx3:module` after two FX), which the chain appends. A slot holds up to eight
+audio FX and eight MIDI FX (`MAX_AUDIO_FX` / `MAX_MIDI_FX`). The Master FX tab
+shows its positions up to the last one filled plus a `+`, up to all eight
+(`MASTER_FX_SLOTS`), and the Tool tab launches a tool. The list comes from
+`GET /api/slot-modules`, which reads `module.json` from disk (not from the
+catalog), so a custom install shows up too.
+
+- A slot position is written as `<comp>:module` (`"none"` clears it), and a
+  Master FX position as `master_fx:fxN:module` with the DSP **path** (`""`
+  clears it).
+- **What a slot holds is ASKED, not probed.** The manager reads the chain's
+  `synth_module`, `midi_fx_count` and `fx_count`, then only the positions those
+  counts name — an empty slot is three reads — and the master bus is ONE read,
+  `master_fx:modules`. `slot_info` carries `fx` / `midi_fx` lists and the caps
+  (`fx_cap`, `midi_fx_cap`); `master_fx_info` carries the positional `fx` list
+  and `cap`. The old `fx1`/`fx2`/`midi_fx1` and `fx1`…`fx4` fields are still
+  sent. The Go caps live once in `schwung-manager/remote_ui_chain.go` and a Go
+  test parses the C headers so they cannot drift.
+- **A read that did not complete is not an empty position.** A section the
+  manager could not read is named in `slot_info.unknown` (`"synth"`,
+  `"midi_fx"`, `"fx"`) and a master listing that failed sends
+  `master_fx_info.unknown: true`; the page keeps what it had for those rather
+  than resetting the component and losing its cached controls.
+- **Module writes take the shadow_param mailbox, never the web-set ring.**
+  The ring forwards to a module that is already loaded and cannot load
+  one, so a pick sent that way was accepted and did nothing.
+- **The manager waits for the load to END, and says when it failed.** A slot
+  load's answer is held by the shim until its loader has finished, so once the
+  write is answered a position that does not read back the module failed (a
+  failed FX leaves its position empty); the synth's `load_error` is checked
+  too. A Master FX write is only ACCEPTED, so the manager follows
+  `master_fx:fxN:is_loading` until it clears and `load_error` to tell a failure
+  from a load still arriving. Either way the cap is 20 s, the wait stops if the
+  requesting browser disconnects, and a load that did not land is reported to
+  that browser as an error the page shows under the chain row.
+- A **line-in** sound generator is listed but cannot be picked from a
+  browser. The device runs the speaker-feedback gate before loading one, and
+  a remote write would skip it.
+- The Tool tab uses `POST /api/open-in-tool`, like the file browser's
+  "Open in tool". It needs the `X-CSRF-Token` header. Overtake modules and
+  tools that start straight away (`tool_config.interactive` +
+  `skip_file_browser`, not standalone) are launchable. Tools that open a
+  file browser, a set picker or a standalone binary first are shown as
+  "open on device".
+
 ## Remote UI Custom HTML (web_ui.html)
 
 A module that wants a fully custom browser-based UI ships a
@@ -501,7 +585,8 @@ is loaded in a shadow slot. The iframe replaces the auto-generated
 knob/slider UI for that component.
 
 **Any chain component can supply one** — the synth, an audio FX
-(`fx1`/`fx2`), or a MIDI FX (`midi_fx1`). Where it appears differs:
+(`fx1` … `fx8`), or a MIDI FX (`midi_fx1` … `midi_fx8`). Where it appears
+differs:
 
 - A **synth** panel takes over the slot view, with the other
   components' sections rendered below it.
@@ -516,7 +601,7 @@ parameters stay reachable whatever its panel does.
 A **Master FX** position works the same way as an audio FX: the panel
 renders inside that position's own section, with its own pop-out, and
 the Master FX tab has its own Interface toggle. The component there is
-`master_fx:fx1` … `master_fx:fx4`, so a panel that builds its keys from
+`master_fx:fx1` … `master_fx:fx8`, so a panel that builds its keys from
 `schwungRemote.component` needs no change to work on the master bus —
 one that hardcodes `fx1:` will address a chain slot instead.
 
@@ -597,7 +682,7 @@ Include the bundled helper to get a Promise-based wrapper:
 | `setParam(key, value)` | iframe → device | Goes through the WebSocket `set_param` path. Value is coerced to a string. |
 | `getHierarchy()` | local cache | Returns the parsed `ui_hierarchy` object for **your** component (or `null` if the module didn't expose one). |
 | `getChainParams()` | local cache | Returns the parsed `chain_params` array for **your** component (or `null`). |
-| `component` | property | The chain component this page drives — `"synth"`, `"fx1"`, `"fx2"`, `"midi_fx1"`. Use it to build parameter keys. |
+| `component` | property | The chain component this page drives — `"synth"`, `"fx1"` … `"fx8"`, `"midi_fx1"` … `"midi_fx8"`, or `"master_fx:fxN"`. Use it to build parameter keys. |
 
 **Param keys are component-prefixed.** Use `"synth:cutoff"`, not
 `"cutoff"` — and build the prefix from `schwungRemote.component`
@@ -664,7 +749,8 @@ That means:
   opens; the lead position opens; the rest fold) and records only what the
   user clicked — the right default depends on the `custom_ui` message, which
   arrives after the slot state is built. Both render paths draw components in
-  one order, signal flow: `midi_fx1, synth, fx1, fx2`.
+  one order, signal flow: every MIDI FX, the synth, every audio FX
+  (`midi_fx1, midi_fx2, …, synth, fx1, fx2, …`).
 - **`viz.extra_keys` reach the browser.** A widget may name a value that owns
   no cell of its own (see `docs/PARAM_PAGES.md`), and a panel driven by one is
   blind without it. Every path that completes an initial value send fetches
@@ -895,12 +981,16 @@ Delete (CC 119) — the drum-rack trio. `claims_ccs` lists any others by CC
 number; the two combine.
 
 While that module's UI is on screen, a claimed button is delivered to the
-module (a `type: "canvas"` UI receives it in `onMidi`; on the knob grid Undo,
-Copy and Delete drive the instance copy/clear gesture under *Child Selectors*)
-**and withheld from Move firmware**, so a press cannot double-fire into Move's
-own action — hold Copy and tap a pad without also copying the Move clip behind
-the screen. The claim applies on the knob grid, the hierarchy editor, the
-component edit/params screens, and a canvas UI (fullscreen or co-run overlay).
+module (a `type: "canvas"` UI receives it in `onMidi`; a module that draws its
+own screen from `ui_chain.js` receives it in `onMidiMessageInternal`; on the
+knob grid Undo, Copy and Delete drive the instance copy/clear gesture under
+*Child Selectors*) **and withheld from Move firmware**, so a press cannot
+double-fire into Move's own action — hold Copy and tap a pad without also
+copying the Move clip behind the screen. The claim applies on the knob grid,
+the hierarchy editor, a module's own `ui_chain.js` screen, and a canvas UI
+(fullscreen or co-run overlay). The component screen claims nothing when it
+falls back to the plain preset browser, because nothing there would receive
+the button.
 Leave any of those and the buttons return to Move immediately; the shim also
 drops every claim on its own when the shadow display closes, so a shadow UI
 that exits without reconciling cannot strand one.
@@ -1627,7 +1717,7 @@ The hierarchy uses a **levels dictionary** format with named levels:
 |-------|-------------|
 | `name` / `label` | Display name for the level |
 | `params` | Array of parameter items (see below) |
-| `knobs` | Array of parameter keys mapped to physical knobs 1-8 |
+| `knobs` | Array of parameter keys mapped to physical knobs 1-8; a `null` entry leaves that knob empty (see below) |
 | `list_param` / `count_param` / `name_param` | For preset browser levels |
 | `items_param` / `select_param` | For dynamic item selection levels |
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
@@ -1660,9 +1750,35 @@ inside `ui_hierarchy` itself.
 
 **You never need this to get User Presets / Module actions.** Every loaded
 chain component already gets a "My Presets" and a "Module" page appended
-after its whole jog sequence, for free — declare nothing. See CLAUDE.md,
+after its whole jog sequence, for free — declare nothing. Loaded as a Master FX
+module, it gets "My Presets" (no "Module" page); the same `state` round trip
+serves both, so a module needs nothing extra for either. See CLAUDE.md,
 "Every component's knob grid ends with two pages it never declared", for why
 that append happens in the planner rather than through this field.
+
+#### `null` in `knobs` — a knob with nothing on it
+
+`knobs` is positional: entry *n* is knob *n+1* (entries 8-15 are knobs 1-8 of the
+level's second page, and so on). A literal `null` keeps that position empty, so
+you can put a group where it belongs instead of where the count happens to land:
+
+```json
+"knobs": ["gain", "pan", null, null, "send1", "send2", "send3"]
+```
+
+puts Volume and Pan on knobs 1-2 and the three sends together on row two
+(knobs 5-7). Without the holes the sends land on knobs 3-5 — two beside Pan, one
+alone underneath.
+
+- The empty knob draws as a gap, does nothing when turned, and is never read.
+- A trailing `null` describes nothing and is dropped.
+- Params from `params[]` that are on no knob still fill the page, **after** your
+  last knob, never into a hole you left.
+- A page with a hole is treated as hand-laid-out: the planner does not move an
+  envelope or other group across the row break on that page (see the
+  one-row rule in `docs/PARAM_PAGES.md`).
+- Only an explicit `null` makes a hole. A key hidden by `visible_if` still closes
+  up as before.
 
 #### Selector keys must not appear in `knobs`
 
@@ -4198,10 +4314,40 @@ typedef struct host_api_v1 {
 } host_api_v1_t;
 ```
 
-**Tempo while stopped:** `get_bpm()` retains the last-playing transport's tempo
-after it stops (so a synced LFO that switches from phase-lock to free-run keeps
-the same rate). It updates from emitted clock, so changing an internal
-sequencer's tempo while it is *stopped* is not reflected until it plays again.
+**`get_bpm()` is steady.** On a steady tempo it returns the same value on every
+call, so it is safe to derive a delay time from it every block. Where it comes
+from, in order:
+
+1. An internal overtake sequencer's clock (e.g. movy) while it runs and Move's
+   transport does not — measured as below.
+2. While Move's transport runs: **Move's own tempo, read from its live model**
+   (`docs/MOVE_MODEL.md`) — exact, the number on Move's screen. If the model is
+   not live, or Move is synced to an external MIDI clock (whose tempo that
+   parameter is not known to follow), Move's clock is **measured over a
+   16-beat window in sample time and held**: the value moves only when the
+   window disagrees with it by more than the window can be wrong (~0.1 % at
+   120 BPM). A step change lands within about a beat.
+3. An internal sequencer's last tempo after it stops (so a synced LFO that
+   switches from phase-lock to free-run keeps the same rate). That tempo comes
+   from the clock it emitted, so changing the sequencer's tempo while it is
+   *stopped* is not seen until it plays again.
+4. While Move is stopped: the set's tempo from the model, followed at once if
+   you change it while stopped; else the last measured clock, the settings
+   file, then 120.
+
+**It used to warble.** Until this was fixed, `get_bpm()` timed each beat of
+Move's clock on the wall clock, which can only see a tick in the SPI frame it
+arrives in — a steady 120 BPM read 120.19, 119.49, 120.19 … A delay that
+resizes its line on each change bends the pitch of everything in it: measured
+as bends of up to 548 cents (about 5½ semitones) every beat or two on Munchi
+Delay's 1-bar echo, against a fixed-tempo render,
+clicks on War Bells
+(Sync), a wobble on Tape Echo 2 (Tempo Sync), all only while Move played. A
+module that built its own clock estimator, or a deadband on `get_bpm()`, to
+work around it can keep it; it is no longer needed.
+
+For phase (where in the bar you are), use `get_beat_position()`, never
+accumulated `get_bpm()`.
 
 ## Audio Specifications
 
