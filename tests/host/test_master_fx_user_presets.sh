@@ -22,6 +22,9 @@ cd "$(dirname "$0")/../.."
 # Lifted and RUN where there is a decision in it (a grep can pass over code
 # that does nothing); structural only where the site sits inside a function too
 # large to lift (the master saver, boot restore, the set-change loop).
+#
+# The helpers are the FX-BUS ones (fxBus*, bus index 0 for the master): the
+# send half lives in test_send_fx_user_presets.sh.
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
@@ -194,7 +197,7 @@ if (!H.getUserPresetRecord(0, "master_fx:fx1") || H.getUserPresetRecord(0, "mast
     fail("removing fx1 must move fx2s record to fx1 and leave fx2 empty, got " + JSON.stringify(H.currentUserPresets));
 if (H.getUserPresetRecord(0, "fx1").name !== "SLOT1") fail("a master remap must not touch instrument slot 1s 0:fx1 record");
 if ("0:master_fx:fx2" in H.cache()) fail("a remap must drop the cached live blobs it re-keys");
-H.setBus(1);   /* Send A on screen */
+H.setBus(1);   /* Send A on screen: the reshape re-keys Send A, never the master */
 H.remapMasterUserPresetRecords({ kind: "insert", section: "fx", index: 0 });
 if (H.getUserPresetRecord(0, "master_fx:fx1").name !== "B") fail("a SEND reshape must not touch the master records");
 H.setBus(0);
@@ -222,8 +225,8 @@ const body = (name) => grab(name);
 const has = (name, needle, why) => { if (!body(name).includes(needle)) fail(name + " must " + why + " (" + needle + ")"); };
 has("writeChainShape", "target.onReshape(op)", "hand every shape verb to the target");
 if (!/onReshape: \(op\) => \{ remapFxBusUserPresetRecords\(op\); \}/.test(src.match(/^const MASTER_CHAIN_TARGET = \{[^]*?^\};/m)[0]))
-    fail("MASTER_CHAIN_TARGET.onReshape must re-key the master records");
-has("applyMasterFxModuleSelection", "clearFxBusUserPresetRecord(0, comp.index)", "clear the record when a module is replaced");
+    fail("MASTER_CHAIN_TARGET.onReshape must re-key the records of the bus on screen");
+has("applyMasterFxModuleSelection", "clearFxBusUserPresetRecord(currentFxBusIndex, comp.index)", "clear the record when a module is replaced");
 has("clearMasterFxOnMaster", "clearFxBusUserPresetRecord(0, i)", "clear every master record");
 has("loadMasterPreset", "clearFxBusUserPresetRecord(0, i)", "clear records when a whole-chain preset loads");
 has("adoptMasterFxShimModule", "clearFxBusUserPresetRecord(", "clear the record when another client changed the module");
@@ -252,13 +255,14 @@ const run = (state) => {
         .replace(/\bfxBusComponentGridReturnKey\b/g, "s.key")
         .replace(/\bfxBusComponentGridReturnModule\b/g, "s.mod")
         .replace(/\bcomponentGridReturnEnter\b/g, "s.enter")
+        .replace(/\bcurrentFxBusIndex\b/g, "(s.master ? 0 : 1)")
         .replace(/\bview\b/g, "s.view")
         .replace(/\bneedsRedraw\b/g, "s.redraw");
     const fn = new Function("s", "log", [
         "const VIEWS = { MASTER_FX: \"mfx\", PRESETS: \"presets\", PRESET_DETAIL: \"detail\" };",
         "const MASTER_CHAIN_TARGET = { slot: 0 };",
         "function isTextEntryActive() { return s.textEntry; }",
-        "function fxBusIsMaster() { return s.master; }",
+        "function fxBusOfComponentKey(k) { return k.startsWith(\"master_fx:\") ? 0 : 1; }",
         "function fxBusComponentModuleId() { return s.moduleNow; }",
         "function getComponentParamPrefix(k) { return k; }",
         "function componentParamPagesIo(slot, k) { return { io: slot + \":\" + k }; }",
@@ -289,7 +293,7 @@ t = run({ master: false });
 if (t.fired || t.s.flag !== false) fail("must not fire while a send bus is on screen");
 t = run({ flag: false });
 if (t.fired || t.log.entered.length) fail("no flag, no return");
-console.log("  ok  maybeReturnToFxBusComponentGrid: fires on MASTER_FX, holds on the preset screens/keyboard, drops elsewhere/emptied/swapped/send");
+console.log("  ok  maybeReturnToFxBusComponentGrid (master key): fires on MASTER_FX, holds on the preset screens/keyboard, drops elsewhere/emptied/swapped/send on screen");
 
 /* ---- polled before the draw, beside the other reconcilers ------------- */
 const pollAt = src.indexOf("if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();");

@@ -555,9 +555,9 @@ user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
 `userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
 `headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
 the read the My Presets page already pays for, and it answers `null`
-harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
-send position, none of which populate a record for their key. A Master FX
-position does, and shows its `*` the same way.
+harmlessly for a synthesised contract (Slot/Master FX/Global Settings),
+none of which populate a record for their key. An FX-bus position (Master
+FX, Send A, Send B) does, and shows its `*` the same way.
 
 **They are appended by the PLANNER, after the whole walk — not injected into
 a level's hierarchy — because injection cannot work for this fleet.** A
@@ -580,34 +580,44 @@ pages at all when `unresolved`, so the append only ever lands on a resolved
 plan — the same rule as "a plan is a statement about what a module declares",
 under "A param read has THREE answers" in `CLAUDE.md`.
 
-**Scope: the 4 chain slots' real components, and Master FX positions.** A
-slot component gets "My Presets" + "Module". A **Master FX position**
-(`master_fx:fxN`, issue #305) gets **"My Presets" only**, through the
-same `componentTrailingMenus` / `runComponentActionFromGrid` / preset flow —
-they branch on `isMasterBusComponentKey` for three things: the module id comes
-from the master mirror (`masterComponentModuleId`), the preset flow is entered
-with `masterPresetFlowOptions` (IPC slot 0 without touching the focused slot,
-no audition, every exit to `VIEWS.MASTER_FX`), and the hand-off returns
-through `maybeReturnToMasterComponentGrid` instead of
-`maybeReturnToComponentGrid`. No "Module" page there: its rows are slot-chain
-shaped and the Master FX editor has its own Shift+Click picker. The record is
-`currentUserPresets["0:master_fx:fxN"]` (the prefixed key is its own DSP
-prefix, so it cannot collide with slot 1's `0:fxN`); it follows a reshaped chain
+**Scope: the 4 chain slots' real components, and every FX-bus position.** A
+slot component gets "My Presets" + "Module". An **FX-bus position** — Master
+FX (`master_fx:fxN`, issue #305), Send A (`send1:fxN`) or Send B
+(`send2:fxN`), one `FX_BUSES` code path and one editor (`VIEWS.MASTER_FX`) —
+gets **"My Presets" only**, through the same `componentTrailingMenus` /
+`runComponentActionFromGrid` / preset flow. They branch on
+`isFxBusComponentKey` for three things: the module id comes from that bus's
+mirror (`fxBusComponentModuleId`), the preset flow is entered with
+`fxBusPresetFlowOptions` (IPC slot 0 without touching the focused slot, no
+audition, every exit to `VIEWS.MASTER_FX`, Back announcing the bus), and the
+hand-off returns through `maybeReturnToFxBusComponentGrid` (only while the bus
+the key names is on screen) instead of `maybeReturnToComponentGrid`. No
+"Module" page there: its rows are slot-chain shaped and the bus editor has its
+own Shift+Click picker. Everything bus-specific is ONE set of `fxBus*` helpers
+taking a bus index into `FX_BUSES`, not a copy per bus. The record is
+`currentUserPresets["0:<prefix>fxN"]` (`0:master_fx:fx2`, `0:send1:fx2`: the
+prefixed key is its own DSP prefix, so neither collides with the other nor
+with slot 1's `0:fxN`); it follows a reshaped chain of the bus on screen
 (`MASTER_CHAIN_TARGET.onReshape`, called by `writeChainShape`), is cleared on a
-swap / Clear / whole-chain preset / adopted module, and persists as
-`user_preset` in `master_fx_N.json` and `shadow_config.json`'s
-`master_fx_chain` — **always written AFTER `state`**, because the shim's boot
-parser (`master_fx_saved_state.h`) takes the first `"state"` it finds. Reloaded
-at boot (`loadMasterFxChainFromConfigOnMaster`) and on a set change.
-**Send positions** (`sendN:fxM`) and **bus inserts** stay excluded: the sends
-persist no `user_preset` yet. Slot Settings and Master FX Settings are excluded
+swap / Clear / whole-chain preset / adopted module, and an FX-bus record
+carries the module it was made on so the send saver drops it when the shim
+reports another module (or none) there (`fxBusRecordOrphaned`). It persists as
+`user_preset` in `master_fx_N.json` and in `send_fx_<send>_<i>.json` —
+**always written AFTER `state`**, because the shim's boot parser
+(`fx_boot_restore_one` / `master_fx_saved_state.h`, shared by both families)
+takes the first `"state"` it finds. Reloaded at boot
+(`loadMasterFxChainFromConfigOnMaster`, `syncSendUserPresetRecordsFromFiles`)
+and on a set change (`loadSendFxChainConfigForSet` for the sends). No shim
+change was needed: `send<N>:fx<M>:state` is read and written exactly like the
+master's. **Bus inserts** stay excluded. Slot Settings and Master FX Settings are excluded
 because they are settings, not modules: no module id to key a preset folder on,
 nothing to swap. The decision lives in ONE helper, `componentParamPagesIo` in
 `src/shadow/shadow_ui.js`, called from every component `enterParamPages` site.
 Grid view only — the list view (`param_view = 0`) is a separate code path with
 no pages to jog through and keeps its existing Shift+Click route. Pinned by
-`tests/host/test_trailing_pages_wiring.sh` and
-`tests/host/test_master_fx_user_presets.sh`.
+`tests/host/test_trailing_pages_wiring.sh`,
+`tests/host/test_master_fx_user_presets.sh` and
+`tests/host/test_send_fx_user_presets.sh`.
 
 **The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
 list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as

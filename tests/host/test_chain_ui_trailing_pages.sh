@@ -76,7 +76,7 @@ const env = {
     },
     scanForToolModules: () => [],
     toolModules: [],
-    isMasterBusComponentKey: (k) => String(k).startsWith("master_fx:"),
+    isFxBusComponentKey: (k) => /^(master_fx|send[12]):fx[1-8]$/.test(String(k)),
 };
 
 const names = Object.keys(env);
@@ -111,9 +111,10 @@ const a = calls.find((c) => c[0] === "action");
 if (a[1] !== 2 || a[2] !== "synth")
     throw new Error("action not bound to the slot/component: " + JSON.stringify(a));
 
-/* A module-owned UI on a MASTER FX position gets NO trailing pages (for now): its
- * preset flow returns through the HOST grid (maybeReturnToFxBusComponentGrid),
- * which a module drawing its own pages cannot answer. */
+/* A module-owned UI on an FX-BUS position (Master FX, Send A, Send B) gets NO
+ * trailing pages: its preset flow returns through the HOST grid
+ * (maybeReturnToFxBusComponentGrid), which a module drawing its own pages
+ * cannot answer. */
 calls.length = 0;
 const masterSetup = new Function(...names, lift("setupModuleParamShims") +
                                  "\nsetupModuleParamShims(0, 'master_fx:fx2');\nreturn 'ran';");
@@ -122,6 +123,13 @@ if (JSON.stringify(g.shadow_component_trailing_menus()) !== "[]")
     throw new Error("a Master FX module UI must get no trailing pages");
 if (g.shadow_component_run_action("up_load") !== false || calls.length !== 0)
     throw new Error("a Master FX module UI must not reach runComponentActionFromGrid");
+const sendSetup = new Function(...names, lift("setupModuleParamShims") +
+                               "\nsetupModuleParamShims(0, 'send2:fx1');\nreturn 'ran';");
+if (sendSetup(...names.map((n) => env[n])) !== "ran") throw new Error("send setup did not execute");
+if (JSON.stringify(g.shadow_component_trailing_menus()) !== "[]")
+    throw new Error("a Send FX module UI must get no trailing pages either");
+if (g.shadow_component_run_action("up_load") !== false || calls.length !== 0)
+    throw new Error("a Send FX module UI must not reach runComponentActionFromGrid");
 
 /* And they must not outlive the module that owned them. */
 const clear = new Function(...names, lift("clearModuleParamShims") +
@@ -189,9 +197,10 @@ const run = (startView, action) => {
         let helpNavStack = [], helpDetailScrollState = null, needsRedraw = false;
         let moduleListsCorrupt = false;
         function debugLog() {}
-        /* The Master FX branch (test_master_fx_user_presets.sh covers it):
-           a slot key is never a master key. */
-        function isMasterBusComponentKey() { return false; }
+        /* The FX-bus branch (test_master_fx_user_presets.sh and
+           test_send_fx_user_presets.sh cover it): a slot key is never an
+           FX-bus key. */
+        function isFxBusComponentKey() { return false; }
         function fxBusComponentModuleId() { return ""; }
         function fxBusPresetFlowOptions() { return {}; }
         const FX_BUS_COMPONENT_ACTIONS = new Set();
