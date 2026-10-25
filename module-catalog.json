@@ -2558,12 +2558,13 @@
       "description": "Two-oscillator subharmonic voice: 3-limit dividers, five band-limited waveforms, resonant SVF filter, ADSR with aftertouch release.",
       "author": "Moongriffin",
       "component_type": "sound_generator",
+      "subcategory": "polysynth",
       "github_repo": "elliotmross-max/dubstarmoonicon",
       "default_branch": "main",
       "asset_name": "dubstarmoonicon-module.tar.gz",
       "min_host_version": "0.3.0"
-}
-]
+    },
+    {
       "id": "tenebrae",
       "name": "Tenebrae",
       "description": "Dark, retro macro synth with an edge: snarling basses, drifting pads, screaming leads and long, moving echoes. 8 oscillator models, three-zone drive, chorus, phaser, tempo pump, VHS, tape delay and shimmer reverb. 163 presets",
