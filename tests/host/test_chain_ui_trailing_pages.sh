@@ -112,7 +112,7 @@ if (a[1] !== 2 || a[2] !== "synth")
     throw new Error("action not bound to the slot/component: " + JSON.stringify(a));
 
 /* A module-owned UI on a MASTER FX position gets NO trailing pages (for now): its
- * preset flow returns through the HOST grid (maybeReturnToMasterComponentGrid),
+ * preset flow returns through the HOST grid (maybeReturnToFxBusComponentGrid),
  * which a module drawing its own pages cannot answer. */
 calls.length = 0;
 const masterSetup = new Function(...names, lift("setupModuleParamShims") +
@@ -192,10 +192,10 @@ const run = (startView, action) => {
         /* The Master FX branch (test_master_fx_user_presets.sh covers it):
            a slot key is never a master key. */
         function isMasterBusComponentKey() { return false; }
-        function masterComponentModuleId() { return ""; }
-        function masterPresetFlowOptions() { return {}; }
-        const MASTER_COMPONENT_ACTIONS = new Set();
-        let masterComponentModalFromGrid = false, masterComponentGridReturnKey = "", masterComponentGridReturnModule = "";
+        function fxBusComponentModuleId() { return ""; }
+        function fxBusPresetFlowOptions() { return {}; }
+        const FX_BUS_COMPONENT_ACTIONS = new Set();
+        let fxBusComponentModalFromGrid = false, fxBusComponentGridReturnKey = "", fxBusComponentGridReturnModule = "";
         const chainConfigs = { 1: { synth: { module: "9w9" } } };
         function createEmptyChainConfig() { return {}; }
         function getChainComponentModule(cfg, k) { return cfg && cfg[k]; }

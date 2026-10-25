@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 #   1. the preset flow, entered with the master target, addresses IPC slot 0
 #      WITHOUT touching ctx.selectedSlot or the focused slot, never auditions,
 #      and every exit lands on VIEWS.MASTER_FX (the slot default is unchanged);
-#   2. maybeReturnToMasterComponentGrid fires/holds/drops correctly, and is
+#   2. maybeReturnToFxBusComponentGrid fires/holds/drops correctly, and is
 #      polled;
 #   3. the per-position record follows a reshaped chain (remove / insert /
 #      move), is cleared on swap / clear / whole-chain preset / adopt, and is
@@ -171,11 +171,15 @@ const harness = new Function([
     "const userPresetKey = (slot, prefix) => `${slot}:${prefix}`;",
     "let userPresetLiveBlobCache = Object.create(null);",
     grab("getUserPresetRecord"), grab("setUserPresetRecord"), grab("entryUserPreset"),
-    grab("masterFxComponentKey"), grab("masterUserPresetPrefix"), grab("remapPositionRecords"),
-    grab("remapMasterUserPresetRecords"), grab("clearMasterUserPresetRecord"),
-    grab("syncMasterUserPresetRecord"), grab("masterUserPresetField"),
+    grab("masterFxComponentKey"), grab("fxBusUserPresetPrefix"), grab("remapPositionRecords"),
+    grab("remapFxBusUserPresetRecords"), grab("clearFxBusUserPresetRecord"),
+    grab("syncFxBusUserPresetRecord"), grab("fxBusUserPresetField"),
     "return { currentUserPresets, cache: () => userPresetLiveBlobCache, setBus: (i) => { currentFxBusIndex = i; },",
-    "  remapMasterUserPresetRecords, clearMasterUserPresetRecord, syncMasterUserPresetRecord, masterUserPresetField,",
+    /* The helpers take a bus index; the master is bus 0. */
+    "  remapMasterUserPresetRecords: (op) => remapFxBusUserPresetRecords(op),",
+    "  clearMasterUserPresetRecord: (i) => clearFxBusUserPresetRecord(0, i),",
+    "  syncMasterUserPresetRecord: (i, e) => syncFxBusUserPresetRecord(0, i, e),",
+    "  masterUserPresetField: (i, st) => fxBusUserPresetField(0, i, st),",
     "  getUserPresetRecord, setUserPresetRecord };",
 ].join("\n"))();
 const H = harness;
@@ -217,14 +221,14 @@ console.log("  ok  master record helpers: remap re-keys only master positions on
 const body = (name) => grab(name);
 const has = (name, needle, why) => { if (!body(name).includes(needle)) fail(name + " must " + why + " (" + needle + ")"); };
 has("writeChainShape", "target.onReshape(op)", "hand every shape verb to the target");
-if (!/onReshape: \(op\) => \{ remapMasterUserPresetRecords\(op\); \}/.test(src.match(/^const MASTER_CHAIN_TARGET = \{[^]*?^\};/m)[0]))
+if (!/onReshape: \(op\) => \{ remapFxBusUserPresetRecords\(op\); \}/.test(src.match(/^const MASTER_CHAIN_TARGET = \{[^]*?^\};/m)[0]))
     fail("MASTER_CHAIN_TARGET.onReshape must re-key the master records");
-has("applyMasterFxModuleSelection", "clearMasterUserPresetRecord(comp.index)", "clear the record when a module is replaced");
-has("clearMasterFxOnMaster", "clearMasterUserPresetRecord(i)", "clear every master record");
-has("loadMasterPreset", "clearMasterUserPresetRecord(i)", "clear records when a whole-chain preset loads");
-has("adoptMasterFxShimModule", "clearMasterUserPresetRecord(", "clear the record when another client changed the module");
-has("loadMasterFxChainFromConfigOnMaster", "syncMasterUserPresetRecord(i, stateFile)", "reload records at boot");
-if (!/syncMasterUserPresetRecord\(mfxi, mfxDspPath \? mfxData : null\)/.test(src))
+has("applyMasterFxModuleSelection", "clearFxBusUserPresetRecord(0, comp.index)", "clear the record when a module is replaced");
+has("clearMasterFxOnMaster", "clearFxBusUserPresetRecord(0, i)", "clear every master record");
+has("loadMasterPreset", "clearFxBusUserPresetRecord(0, i)", "clear records when a whole-chain preset loads");
+has("adoptMasterFxShimModule", "clearFxBusUserPresetRecord(", "clear the record when another client changed the module");
+has("loadMasterFxChainFromConfigOnMaster", "syncFxBusUserPresetRecord(0, i, stateFile)", "reload records at boot");
+if (!/syncFxBusUserPresetRecord\(0, mfxi, mfxDspPath \? mfxData : null\)/.test(src))
     fail("the set-change master reload must sync (or clear) each position record");
 
 /* Persisted AFTER state, in both writes: the shim parser takes the first "state". */
@@ -237,16 +241,16 @@ if (saver.indexOf("slotConfig.user_preset") >= 0)
     fail("config.master_fx_chain must NOT carry user_preset -- it is read back from master_fx_N.json only, and the shim copies master_fx_chain");
 console.log("  ok  every master reshape/swap/clear/adopt/boot/set-change site updates the record; persisted after state");
 
-/* ---- maybeReturnToMasterComponentGrid, lifted and run ----------------- */
-const recon = grab("maybeReturnToMasterComponentGrid");
+/* ---- maybeReturnToFxBusComponentGrid, lifted and run ----------------- */
+const recon = grab("maybeReturnToFxBusComponentGrid");
 const run = (state) => {
     const s = Object.assign({ flag: true, key: "master_fx:fx2", mod: "tunnel", view: "mfx", master: true,
                               moduleNow: "tunnel", textEntry: false, enter: false }, state);
     const log = { entered: [] };
     const patched = recon
-        .replace(/\bmasterComponentModalFromGrid\b/g, "s.flag")
-        .replace(/\bmasterComponentGridReturnKey\b/g, "s.key")
-        .replace(/\bmasterComponentGridReturnModule\b/g, "s.mod")
+        .replace(/\bfxBusComponentModalFromGrid\b/g, "s.flag")
+        .replace(/\bfxBusComponentGridReturnKey\b/g, "s.key")
+        .replace(/\bfxBusComponentGridReturnModule\b/g, "s.mod")
         .replace(/\bcomponentGridReturnEnter\b/g, "s.enter")
         .replace(/\bview\b/g, "s.view")
         .replace(/\bneedsRedraw\b/g, "s.redraw");
@@ -255,12 +259,12 @@ const run = (state) => {
         "const MASTER_CHAIN_TARGET = { slot: 0 };",
         "function isTextEntryActive() { return s.textEntry; }",
         "function fxBusIsMaster() { return s.master; }",
-        "function masterComponentModuleId() { return s.moduleNow; }",
+        "function fxBusComponentModuleId() { return s.moduleNow; }",
         "function getComponentParamPrefix(k) { return k; }",
         "function componentParamPagesIo(slot, k) { return { io: slot + \":\" + k }; }",
         "function paramPagesChromeFor() { return { chrome: 1 }; }",
         "function enterParamPages(...a) { log.entered.push(a); }",
-        patched, "return maybeReturnToMasterComponentGrid;"].join("\n"))(s, log);
+        patched, "return maybeReturnToFxBusComponentGrid;"].join("\n"))(s, log);
     return { fired: fn(), s, log };
 };
 let t = run({});
@@ -285,14 +289,14 @@ t = run({ master: false });
 if (t.fired || t.s.flag !== false) fail("must not fire while a send bus is on screen");
 t = run({ flag: false });
 if (t.fired || t.log.entered.length) fail("no flag, no return");
-console.log("  ok  maybeReturnToMasterComponentGrid: fires on MASTER_FX, holds on the preset screens/keyboard, drops elsewhere/emptied/swapped/send");
+console.log("  ok  maybeReturnToFxBusComponentGrid: fires on MASTER_FX, holds on the preset screens/keyboard, drops elsewhere/emptied/swapped/send");
 
 /* ---- polled before the draw, beside the other reconcilers ------------- */
 const pollAt = src.indexOf("if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();");
-const masterAt = src.indexOf("\n    maybeReturnToMasterComponentGrid();", pollAt);
+const masterAt = src.indexOf("\n    maybeReturnToFxBusComponentGrid();", pollAt);
 if (pollAt < 0 || masterAt < 0 || masterAt - pollAt > 1000)
-    fail("maybeReturnToMasterComponentGrid() must be polled unconditionally right after maybeReturnToComponentGrid()");
-console.log("  ok  maybeReturnToMasterComponentGrid is polled at the reconcile site");
+    fail("maybeReturnToFxBusComponentGrid() must be polled unconditionally right after maybeReturnToComponentGrid()");
+console.log("  ok  maybeReturnToFxBusComponentGrid is polled at the reconcile site");
 '
 
 echo "PASS: Master FX user presets"

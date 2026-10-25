@@ -101,7 +101,7 @@ let selectedPreset = 0;       /* index into `presets` */
  * `presetReturnView` is the view every exit (pick, Back, delete confirm) lands
  * on. null means VIEWS.CHAIN_EDIT, the slot chain's convergence point (see
  * maybeReturnToComponentGrid); a Master FX flow passes VIEWS.MASTER_FX, whose
- * reconciler is maybeReturnToMasterComponentGrid.
+ * reconciler is maybeReturnToFxBusComponentGrid.
  */
 let presetSlot = 0;
 let presetReturnView = null;
@@ -462,8 +462,9 @@ function doDeletePreset(entry) {
 
 /*
  * `opts` — see applyPresetTarget. Omitted is the slot chain, exactly as before;
- * a Master FX position passes { returnView: VIEWS.MASTER_FX, focusSlot: false,
- * audition: false, label } (see masterPresetFlowOptions in shadow_ui.js).
+ * a Master FX position passes { returnView: VIEWS.MASTER_FX, returnLabel,
+ * focusSlot: false, audition: false, label } (see fxBusPresetFlowOptions in
+ * shadow_ui.js).
  */
 export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, opts) {
     const { setView, getSlotParam, VIEWS } = ctx;
@@ -778,7 +779,7 @@ export function handlePresetsSelect() {
          * specifically, and falls through to the plain chain editor when the
          * position no longer holds a module to show. A Master FX flow
          * converges on VIEWS.MASTER_FX instead (presetExitView), and
-         * maybeReturnToMasterComponentGrid does the same job there. */
+         * maybeReturnToFxBusComponentGrid does the same job there. */
         setView(presetExitView());
     }
     ctx.needsRedraw = true;
@@ -821,7 +822,7 @@ export function handlePresetsBack() {
      * revert any active audition to the original sound — and exits through
      * the chain editor (maybeReturnToComponentGrid routes it back to the
      * page it came from), or the Master FX editor for a Master FX position
-     * (maybeReturnToMasterComponentGrid). */
+     * (maybeReturnToFxBusComponentGrid). */
     revertToOriginal();
     setView(presetExitView());
     announce(presetReturnLabel);
