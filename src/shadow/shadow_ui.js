@@ -10388,6 +10388,18 @@ function alignAckTick(now) {
     setSlotParamWithTimeout(0, "set_aligned", String(alignAck.gen), 100);
 }
 
+/* The set's saved Send A/B for each track, kept for the slot restore below: a
+ * clear wipes a chain's sends, so what loadChainConfigFromDir writes first is
+ * written again once the slot has been cleared and (maybe) loaded. */
+const savedEmptySends = [null, null, null, null];
+
+function applySavedEmptySends(i) {
+    const es = savedEmptySends[i];
+    if (!es) return;
+    setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
+    setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
+}
+
 function loadChainConfigFromDir(dir) {
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
@@ -10403,8 +10415,8 @@ function loadChainConfigFromDir(dir) {
             /* Absent (a set saved before pan existed) means centre. */
             setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
             const es = Array.isArray(s.empty_sends) ? s.empty_sends : [0, 0];
-            setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
-            setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
+            savedEmptySends[i] = es;
+            applySavedEmptySends(i);
             /* Always write receive_channel: use saved value if present, else
              * default to slot index + 1. Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
@@ -29492,6 +29504,10 @@ globalThis.tick = function() {
                     answered = restore();
                     confirmed = slotMatchesExpectation(i, exp);
                 }
+                /* A slot with no saved patch has nowhere but the set's chain
+                 * config to keep its sends, and its clear (pass 1) just zeroed
+                 * the chain's. A patch carries its own main_sends. */
+                if (!hasState) applySavedEmptySends(i);
                 if (confirmed === true) {
                     debugLog("SET_CHANGED: slot " + (i + 1) + (hasState ? " loaded" : " empty"));
                 } else {
