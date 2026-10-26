@@ -5340,11 +5340,10 @@ export function createController(io = {}) {
         "no grid":       "step grid unknown",
         "multi page":    "bar spans pages",
         "outside clip":  "past the clip's end",
-        /* NOT "no clip on this track". A clip you just made is unnamed for the
-         * 8-12 s before Move writes Song.abl (measured), and telling the user
-         * there is no clip while they are looking at one reads as a broken
-         * feature rather than as a wait. */
-        "clip pending":  "new clip, try again in a moment",
+        /* Once one code, "clip pending", printed as "new clip, try again in
+         * a moment" -- which a user with NO clip got on every refused lock.
+         * The live model ended the new-clip wait; see step_plock.h. */
+        "no model":      "Move's song not readable",
     };
     function plockRefusalText(token) {
         const t = String(token || "").trim().toLowerCase();
