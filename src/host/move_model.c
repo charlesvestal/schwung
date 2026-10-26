@@ -333,6 +333,37 @@ int mm_pair_consistent(const move_model_t *a, const move_model_t *b)
     return 0;
 }
 
+int mm_classify_maps_line(const char *line, uint64_t *lo, uint64_t *hi)
+{
+    unsigned long long a, b;
+    char perm[8] = "";
+    int path_at = 0;
+    if (!line || sscanf(line, "%llx-%llx %7s %*s %*s %*s %n", &a, &b, perm, &path_at) < 3) return MM_MAP_SKIP;
+    if (lo) *lo = a;
+    if (hi) *hi = b;
+    /* The path is whatever follows the inode, trimmed. */
+    const char *p = path_at > 0 ? line + path_at : "";
+    while (*p == ' ' || *p == '\t') p++;
+    size_t L = strlen(p);
+    while (L && (p[L - 1] == '\n' || p[L - 1] == ' ')) L--;
+    if (L >= 12 && strncmp(p + L - 12, "MoveOriginal", 12) == 0 && (L == 12 || p[L - 13] == '/'))
+        return perm[0] == 'r' ? MM_MAP_IMAGE : MM_MAP_SKIP;
+    if (L == 6 && strncmp(p, "[heap]", 6) == 0) return MM_MAP_HEAP;
+    /* Anonymous: no path at all, or an [anon:...] label. Never [stack] or
+     * any other bracketed kernel region, and never a file. */
+    int anon = (L == 0) || (L > 6 && strncmp(p, "[anon:", 6) == 0);
+    if (anon && perm[0] == 'r' && perm[1] == 'w' && perm[2] != 'x') return MM_MAP_ANON;
+    return MM_MAP_SKIP;
+}
+
+int mm_resolve_retry_delay_s(int n)
+{
+    if (n < 1) n = 1;
+    if (n <= 5) return 1 << (n - 1);      /* 1, 2, 4, 8, 16 */
+    if (n <= 7) return 30;
+    return 60;
+}
+
 #if defined(__linux__) && !defined(MOVE_MODEL_PURE_ONLY)   /* the runtime half; tests/host builds only the pure half (-DMOVE_MODEL_PURE_ONLY) */
 /* ====================================================================== */
 /* Runtime: memory access                                                 */
@@ -359,6 +390,12 @@ static range_t g_img, g_heap;
  * .data.rel.ro (the typeinfo) begins. Scans walk these, never the span. */
 static range_t g_seg[16];
 static int g_nseg;
+/* WHERE OBJECTS CAN LIVE: [heap] first, then every anonymous read-write
+ * mapping, which is where glibc's per-thread malloc arenas are. Searching
+ * [heap] alone could not see anything Move built on another thread. */
+#define MAX_SEARCH 96
+static range_t g_search[MAX_SEARCH];
+static int g_nsearch;
 
 static int parse_maps(void)
 {
@@ -367,21 +404,35 @@ static int parse_maps(void)
     char line[512];
     g_img.lo = g_img.hi = g_heap.lo = g_heap.hi = 0;
     g_nseg = 0;
+    range_t anon[MAX_SEARCH];
+    int nanon = 0;
     while (fgets(line, sizeof line, f)) {
-        unsigned long long a, b;
-        char perm[8] = "";
-        if (sscanf(line, "%llx-%llx %7s", &a, &b, perm) != 3) continue;
-        size_t L = strlen(line);
-        while (L && (line[L - 1] == '\n' || line[L - 1] == ' ')) line[--L] = 0;
-        if (L > 13 && strcmp(line + L - 13, "/MoveOriginal") == 0) {
-            if (!g_img.lo || a < g_img.lo) g_img.lo = a;
-            if (b > g_img.hi) g_img.hi = b;
-            if (perm[0] == 'r' && g_nseg < 16) { g_seg[g_nseg].lo = a; g_seg[g_nseg].hi = b; g_nseg++; }
-        } else if (strstr(line, "[heap]")) {
+        uint64_t a, b;
+        unsigned long long sa, sb;
+        /* The image span counts every MoveOriginal mapping, readable or not;
+         * mm_classify_maps_line reports only the readable ones. */
+        if (sscanf(line, "%llx-%llx", &sa, &sb) == 2 && strstr(line, "/MoveOriginal")) {
+            if (!g_img.lo || sa < g_img.lo) g_img.lo = sa;
+            if (sb > g_img.hi) g_img.hi = sb;
+        }
+        switch (mm_classify_maps_line(line, &a, &b)) {
+        case MM_MAP_IMAGE:
+            if (g_nseg < 16) { g_seg[g_nseg].lo = a; g_seg[g_nseg].hi = b; g_nseg++; }
+            break;
+        case MM_MAP_HEAP:
             g_heap.lo = a; g_heap.hi = b;
+            break;
+        case MM_MAP_ANON:
+            /* Arenas are 64 KB at the very least; smaller rw scraps are
+             * thread-local storage and guard slop, not object memory. */
+            if (b - a >= (64u << 10) && nanon < MAX_SEARCH - 1) { anon[nanon].lo = a; anon[nanon].hi = b; nanon++; }
+            break;
         }
     }
     fclose(f);
+    g_nsearch = 0;
+    if (g_heap.lo) g_search[g_nsearch++] = g_heap;
+    for (int i = 0; i < nanon && g_nsearch < MAX_SEARCH; i++) g_search[g_nsearch++] = anon[i];
     return (g_img.lo && g_heap.lo) ? 0 : -1;
 }
 
@@ -567,37 +618,74 @@ static int find_member(uint64_t cls, const char *name, uint32_t *off, int depth)
     return find_member(rq(cls + CB_SUPER), name, off, depth + 1);
 }
 
-/* One pass over the first 64 MB of the heap: a ClassBase is a {vptr, name}
- * pair with both words in the image and the name one of ours. */
+/* THE CLASS REGISTRY. A ClassBase is a {vptr, name} pair with both words in
+ * the image and the name one of ours.
+ *
+ * This used to search the first 64 MB of [heap] and nothing else, and that
+ * was a field failure, not a theory: on a Move whose boot restored heavy slot
+ * modules the registry sat past the window (or in another thread's arena),
+ * so roughly half its boots logged "flip class registry incomplete" eight
+ * times and turned the model -- automation, p-locks, mute follow -- off until
+ * the next restart. Now every search range is walked (heap, then each
+ * anonymous rw mapping), still stopping as soon as it can: once every
+ * REQUIRED class is in hand and the first 64 MB is behind it, so the common
+ * case costs what it always did. */
+static char g_missing[256];   /* the required classes the last attempt lacked */
+static uint64_t g_cls_far;    /* the furthest class record found, for the status line */
+
+/* "heap+37MB" or "arena3+2MB": where an address sits among the search ranges.
+ * The status line says this for the class registry and the Song, so a field
+ * report shows whether the 64 MB window or a thread arena was the problem. */
+static void where_is(uint64_t a, char *out, size_t cap)
+{
+    for (int r = 0; r < g_nsearch; r++)
+        if (a >= g_search[r].lo && a < g_search[r].hi) {
+            if (r == 0) snprintf(out, cap, "heap+%lluMB", (unsigned long long)((a - g_search[r].lo) >> 20));
+            else snprintf(out, cap, "arena%d+%lluMB", r, (unsigned long long)((a - g_search[r].lo) >> 20));
+            return;
+        }
+    snprintf(out, cap, a ? "elsewhere" : "none");
+}
 static int resolve_classes(void)
 {
     memset(g_cls, 0, sizeof g_cls);
     memset(g_res_beats, 0, sizeof g_res_beats);
+    g_missing[0] = 0;
+    g_cls_far = 0;
     const size_t CH = 1 << 20;
     uint64_t *buf = malloc(CH + 16);
     if (!buf) return -1;
-    uint64_t end = g_heap.lo + (64ull << 20);
-    if (end > g_heap.hi) end = g_heap.hi;
-    int found = 0;
-    for (uint64_t s = g_heap.lo; s < end && found < C_COUNT; s += CH) {
-        size_t n = (end - s < CH) ? (size_t)(end - s) : CH;
-        if (RD(s, buf, n)) continue;
-        for (size_t k = 0; k + 1 < n / 8; k++) {
-            if (!in_img(buf[k], g_img.lo, g_img.hi) || !in_img(buf[k + 1], g_img.lo, g_img.hi)) continue;
-            char nm[32];
-            if (RD(buf[k + 1], nm, sizeof nm)) continue;
-            nm[31] = 0;
-            if (strcmp(nm, "StepEditorResolution") == 0) { resolve_enum_at(s + k * 8); continue; }
-            if (strcmp(nm, "LaunchQuantization") == 0) { resolve_quant_at(s + k * 8); continue; }
-            if (memcmp(nm, "live.", 5)) continue;
-            for (int c = 0; c < C_COUNT; c++) {
-                if (!g_cls[c] && strcmp(nm, CLASS_NAMES[c]) == 0) {
-                    g_cls[c] = s + k * 8;
-                    found++;
+    int found = 0, required_found = 0, required_total = 0;
+    for (int c = 0; c < C_COUNT; c++) if (!class_optional(c)) required_total++;
+    uint64_t scanned = 0;
+    int done = 0;
+    for (int r = 0; r < g_nsearch && !done; r++) {
+        const uint64_t end = g_search[r].hi;
+        for (uint64_t s = g_search[r].lo; s < end && !done; s += CH) {
+            size_t n = (end - s < CH) ? (size_t)(end - s) : CH;
+            scanned += n;
+            if (RD(s, buf, n)) continue;
+            for (size_t k = 0; k + 1 < n / 8; k++) {
+                if (!in_img(buf[k], g_img.lo, g_img.hi) || !in_img(buf[k + 1], g_img.lo, g_img.hi)) continue;
+                char nm[32];
+                if (RD(buf[k + 1], nm, sizeof nm)) continue;
+                nm[31] = 0;
+                if (strcmp(nm, "StepEditorResolution") == 0) { resolve_enum_at(s + k * 8); continue; }
+                if (strcmp(nm, "LaunchQuantization") == 0) { resolve_quant_at(s + k * 8); continue; }
+                if (memcmp(nm, "live.", 5)) continue;
+                for (int c = 0; c < C_COUNT; c++) {
+                    if (!g_cls[c] && strcmp(nm, CLASS_NAMES[c]) == 0) {
+                        g_cls[c] = s + k * 8;
+                        found++;
+                        if (!class_optional(c)) required_found++;
+                        g_cls_far = s + k * 8;   /* scan order: the last one is the furthest */
+                    }
                 }
             }
+            if (found == C_COUNT ||
+                (required_found == required_total && scanned >= (64ull << 20))) done = 1;
+            sched_yield();
         }
-        sched_yield();
     }
     free(buf);
     int required_missing = 0;
@@ -605,14 +693,22 @@ static int resolve_classes(void)
         if (g_cls[c]) continue;
         unified_log("move_model", LOG_LEVEL_WARN, "class %s not found%s", CLASS_NAMES[c],
                     class_optional(c) ? " (optional)" : "");
-        if (!class_optional(c)) required_missing = 1;
+        if (!class_optional(c)) {
+            required_missing = 1;
+            size_t L = strlen(g_missing);
+            snprintf(g_missing + L, sizeof g_missing - L, "%s%s", L ? " " : "", CLASS_NAMES[c]);
+        }
     }
     if (required_missing) return -1;
     for (int o = 0; o < O_COUNT; o++) {
         if (find_member(g_cls[g_off[o].cls], g_off[o].member, &g_off[o].off, 0)) {
             unified_log("move_model", LOG_LEVEL_WARN, "member %s.%s not resolved%s",
                         CLASS_NAMES[g_off[o].cls], g_off[o].member, o >= O_FIRST_OPTIONAL ? " (optional)" : "");
-            if (o < O_FIRST_OPTIONAL) return -1;
+            if (o < O_FIRST_OPTIONAL) {
+                snprintf(g_missing, sizeof g_missing, "member %s.%s",
+                         CLASS_NAMES[g_off[o].cls], g_off[o].member);
+                return -1;
+            }
             g_off[o].off = O_UNRESOLVED;
         }
     }
@@ -707,17 +803,23 @@ static int song_ok(uint64_t s)
     return tempo >= 20.0 && tempo <= 999.0;
 }
 
+/* Every search range, not [heap] alone: a set loaded on another of Move's
+ * threads puts its Song in that thread's arena, and a [heap]-only search
+ * answered 0 for the rest of the session ("re-found at 0", hourly, in the
+ * field). */
 static uint64_t find_song(void)
 {
     const size_t CH = 1 << 20;
     uint64_t *buf = malloc(CH), hit = 0;
     if (!buf) return 0;
-    for (uint64_t s = g_heap.lo; s < g_heap.hi && !hit; s += CH) {
-        size_t n = (g_heap.hi - s < CH) ? (size_t)(g_heap.hi - s) : CH;
-        if (RD(s, buf, n)) continue;
-        for (size_t k = 0; k < n / 8; k++)
-            if (vp_is(&g_vp_song, buf[k]) && song_ok(s + k * 8)) { hit = s + k * 8; break; }
-        sched_yield();
+    for (int r = 0; r < g_nsearch && !hit; r++) {
+        for (uint64_t s = g_search[r].lo; s < g_search[r].hi && !hit; s += CH) {
+            size_t n = (g_search[r].hi - s < CH) ? (size_t)(g_search[r].hi - s) : CH;
+            if (RD(s, buf, n)) continue;
+            for (size_t k = 0; k < n / 8; k++)
+                if (vp_is(&g_vp_song, buf[k]) && song_ok(s + k * 8)) { hit = s + k * 8; break; }
+            sched_yield();
+        }
     }
     free(buf);
     return hit;
@@ -733,6 +835,11 @@ static mm_hist_vps_t hist_vps(void)
     return v;
 }
 static void status(const char *fmt, ...);
+/* Per-attempt status is for the first attempts only; the retry loop speaks
+ * for the slow tail (see the reader thread), or the file grows a line pair a
+ * minute for as long as a registry stays missing. */
+static int g_resolve_quiet;
+#define RSTATUS(...) do { if (!g_resolve_quiet) status(__VA_ARGS__); } while (0)
 static uint64_t find_history(void)
 {
     if (!g_vp_hist.n || !g_vp_hstore.n || !g_vp_tx.n) return 0;
@@ -741,15 +848,16 @@ static uint64_t find_history(void)
     if (!buf) return 0;
     mm_hist_vps_t v = hist_vps();
     int found = 0;
-    for (uint64_t s = g_heap.lo; s < g_heap.hi; s += CH) {
-        size_t n = (g_heap.hi - s < CH) ? (size_t)(g_heap.hi - s) : CH;
+    for (int r = 0; r < g_nsearch; r++)
+    for (uint64_t s = g_search[r].lo; s < g_search[r].hi; s += CH) {
+        size_t n = (g_search[r].hi - s < CH) ? (size_t)(g_search[r].hi - s) : CH;
         if (RD(s, buf, n)) continue;
         for (size_t k = 0; k + 2 < n / 8; k++) {
             if (!vp_is(&g_vp_hist, buf[k]) || !vp_is(&g_vp_hstore, buf[k + 2])) continue;
             move_model_t t;
             const uint64_t at = s + k * 8;
             if (mm_history_read(self_read, NULL, at, &v, &t)) continue;
-            status("history candidate %d at %llx size=%u", found, (unsigned long long)at, t.hist_size);
+            RSTATUS("history candidate %d at %llx size=%u", found, (unsigned long long)at, t.hist_size);
             if (!hit) hit = at;
             found++;
         }
@@ -791,8 +899,15 @@ static int resolve_all(void)
      * MoveOriginal carries the assertion that guards it. Looked up by the
      * same string search the class registry uses. */
     g_note_format = find_string_in_image("hasProbability()") ? MM_NOTES_FMT_PROB : MM_NOTES_FMT_210;
-    status("notes: %s layout", g_note_format == MM_NOTES_FMT_PROB ? "2.1.1+ (probability)" : "2.1.0");
-    if (resolve_classes()) { status("resolve: flip class registry incomplete (build %s)", bid); return -1; }
+    RSTATUS("notes: %s layout", g_note_format == MM_NOTES_FMT_PROB ? "2.1.1+ (probability)" : "2.1.0");
+    if (resolve_classes()) {
+        uint64_t anon = 0;
+        for (int r = 1; r < g_nsearch; r++) anon += g_search[r].hi - g_search[r].lo;
+        RSTATUS("resolve: flip class registry incomplete (build %s) missing=[%s] heap=%lluMB anon=%dx/%lluMB",
+               bid, g_missing, (unsigned long long)((g_heap.hi - g_heap.lo) >> 20),
+               g_nsearch - 1, (unsigned long long)(anon >> 20));
+        return -1;
+    }
     g_vp_song.n        = rtti_vptrs("N7ableton10flip_model5FSongE", g_vp_song.v, MAXVP);
     g_vp_clips.n       = rtti_vptrs("N7ableton10flip_model6FClipsE", g_vp_clips.v, MAXVP);
     g_vp_sessionclip.n = rtti_vptrs("N7ableton10flip_model12FSessionClipE", g_vp_sessionclip.v, MAXVP);
@@ -803,7 +918,7 @@ static int resolve_all(void)
     /* The MIXER is mandatory too: the model owning mute/solo while it can
      * read no mixer turns every fallback off and follows nothing. */
     if (!g_vp_song.n || !g_vp_clips.n || !g_vp_sessionclip.n || !g_vp_mixparams.n) {
-        status("resolve: rtti unresolved song=%d clips=%d sessionclip=%d mixer=%d",
+        RSTATUS("resolve: rtti unresolved song=%d clips=%d sessionclip=%d mixer=%d",
                g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_mixparams.n);
         return -1;
     }
@@ -812,11 +927,16 @@ static int resolve_all(void)
     g_vp_hstore.n = rtti_vptrs("N4flip18HistoryStoreMemoryE", g_vp_hstore.v, MAXVP);
     g_vp_tx.n     = rtti_vptrs("N4flip11TransactionE", g_vp_tx.v, MAXVP);
     g_hist = find_history();
-    status("history: vptrs hist=%d store=%d tx=%d obj=%llx", g_vp_hist.n, g_vp_hstore.n, g_vp_tx.n,
+    RSTATUS("history: vptrs hist=%d store=%d tx=%d obj=%llx", g_vp_hist.n, g_vp_hstore.n, g_vp_tx.n,
            (unsigned long long)g_hist);
-    status("resolve: build=%s clock=%s song=%llx vptrs song=%d clips=%d sc=%d mc=%d", bid,
-           g_clock_pinned ? "pinned" : "UNKNOWN-BUILD(no clock)", (unsigned long long)g_song,
-           g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_midicontent.n);
+    char w_cls[32], w_song[32];
+    where_is(g_cls_far, w_cls, sizeof w_cls);
+    where_is(g_song, w_song, sizeof w_song);
+    RSTATUS("resolve: build=%s clock=%s song=%llx vptrs song=%d clips=%d sc=%d mc=%d"
+            " | registry to %s, song in %s, heap=%lluMB arenas=%d",
+            bid, g_clock_pinned ? "pinned" : "UNKNOWN-BUILD(no clock)", (unsigned long long)g_song,
+            g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_midicontent.n,
+            w_cls, w_song, (unsigned long long)((g_heap.hi - g_heap.lo) >> 20), g_nsearch - 1);
     return g_song ? 0 : -1;
 }
 
@@ -1484,19 +1604,33 @@ static void *reader_main(void *arg)
     pthread_setaffinity_np(pthread_self(), sizeof mask, &mask);
 
     sleep(8);                        /* let Move build its document first */
-    /* BOUNDED. Each attempt scans the heap and the image; an unrecognised
-     * firmware would otherwise pay that every 32 s for the life of the
-     * process and grow the status file without end. The fallbacks (D-Bus
-     * mute follow, Song.abl, the file poll) are in charge meanwhile. */
-    int backoff = 1, attempts = 0;
+    /* NEVER GIVE UP FOR THE BOOT. This was bounded at eight attempts (~100 s)
+     * "so an unrecognised firmware does not pay a scan every 32 s forever" --
+     * and on a recognised firmware whose registry simply was not there yet
+     * (heavy slot modules restored first, a type Move had not instantiated)
+     * that turned automation, p-locks and mute follow off until the next
+     * restart, on about half of one user's boots. The fallbacks stay in
+     * charge meanwhile, as before; what changed is that a late registry is
+     * still picked up. The cost of the slow tail is one scan a minute on a
+     * SCHED_OTHER thread pinned off core 3, and the status file is spared:
+     * it gets the first attempts, any change in what is missing, and every
+     * tenth retry after that. */
+    int attempts = 0;
+    char last_missing[sizeof g_missing] = "";
     while (resolve_all() != 0) {
-        if (++attempts >= 8) {
-            status("resolve: giving up after %d attempts; the model stays off this boot", attempts);
-            return NULL;
-        }
-        sleep(backoff);
-        if (backoff < 30) backoff *= 2;
+        attempts++;
+        g_resolve_quiet = attempts >= 8;
+        const int delay = mm_resolve_retry_delay_s(attempts);
+        if (attempts == 8)
+            status("resolve: still failing after %d attempts; retrying every %d s (missing=[%s])",
+                   attempts, delay, g_missing);
+        else if (attempts > 8 && (strcmp(last_missing, g_missing) != 0 || attempts % 10 == 0))
+            status("resolve: attempt %d still failing (missing=[%s])", attempts, g_missing);
+        snprintf(last_missing, sizeof last_missing, "%s", g_missing);
+        sleep(delay);
     }
+    g_resolve_quiet = 0;
+    if (attempts) status("resolve: succeeded after %d failed attempts", attempts);
 
     static move_model_t prev, a, b, skel;
     memset(&prev, 0, sizeof prev);
@@ -1540,7 +1674,11 @@ static void *reader_main(void *arg)
             if (ra == -2) {                                  /* the Song moved: find it again */
                 refinds++;
                 if (parse_maps() == 0) g_song = find_song();
-                status("song object invalid; re-found at %llx", (unsigned long long)g_song);
+                {
+                    char w[32];
+                    where_is(g_song, w, sizeof w);
+                    status("song object invalid; re-found at %llx (%s)", (unsigned long long)g_song, w);
+                }
                 /* A heap scan is not a 50 Hz thing, nor a 2 s one forever:
                  * back off to a minute. The model is reported stale
                  * meanwhile (move_model_last_publish_ms), so the fallbacks
