@@ -72,6 +72,10 @@ const DEVICE_ANSWER = "{\"a\":1.000,\"b\":2.000}";
       makeRecord: CP.makeRecord,
       paramPagesRefreshTrailing: () => calls.push(["refresh"]),
       notifyModuleUiPresetsChanged: () => calls.push(["notify"]),
+      /* An FX-bus record (Master FX / Send) is tagged with its module; a slot
+       * record ("synth" below) is not -- see test_send_fx_user_presets.sh. */
+      isFxBusComponentKey: (k) => /^(master_fx|send[12]):fx[1-8]$/.test(String(k)),
+      fxBusComponentModuleId: () => "tunnel",
       needsRedraw: false,
     };
     let fn;

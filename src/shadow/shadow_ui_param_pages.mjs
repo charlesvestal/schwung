@@ -1136,10 +1136,10 @@ export function headerTitle() {
      * (userPresetHeaderMark), never the DSP, so this costs nothing beyond the
      * read the My Presets page already pays for.
      *
-     * A synthesised contract (Slot Settings, Master FX/Global Settings) or a
-     * send position never has a record for its key, so this answers null
-     * there and falls through unaffected. A Master FX position CAN have one
-     * (it has a My Presets page), and shows it here the same way.
+     * A synthesised contract (Slot Settings, Master FX/Global Settings)
+     * never has a record for its key, so this answers null there and falls
+     * through unaffected. An FX-bus position (Master FX, Send A, Send B) CAN
+     * have one (it has a My Presets page), and shows it here the same way.
      *
      * A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain

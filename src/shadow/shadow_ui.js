@@ -2371,55 +2371,72 @@ function masterFxIndexFromComponentKey(componentKey) {
     return (i >= 0 && i < MASTER_FX_SLOTS) ? i : -1;
 }
 
-/* ===== MASTER FX USER PRESETS =====
+/* ===== FX BUS USER PRESETS =====
  *
- * A Master FX position gets the same "My Presets" page a slot component does,
- * through the same code (componentTrailingMenus, runComponentActionFromGrid,
- * shadow_ui_presets.mjs, currentUserPresets). What is master-specific is
- * gathered here: which keys are the MASTER bus's (not a send's), where the
- * module id comes from, how the preset flow is told to come back to
- * VIEWS.MASTER_FX, and how the per-position record follows the chain when it
- * is reshaped, cleared, persisted and reloaded.
+ * An FX-bus position (Master FX, Send A, Send B) gets the same "My Presets"
+ * page a slot component does, through the same code (componentTrailingMenus,
+ * runComponentActionFromGrid, shadow_ui_presets.mjs, currentUserPresets).
+ * What is bus-specific is gathered here: which keys are an FX bus's and which
+ * bus, where the module id comes from, how the preset flow is told to come
+ * back to VIEWS.MASTER_FX (the one editor the FX buses share), and how the
+ * per-position record follows the chain when it is reshaped, cleared,
+ * persisted and reloaded.
  *
- * Records are keyed (MASTER_CHAIN_TARGET.slot, "master_fx:fxN") -- the prefixed
- * key is its own DSP prefix (getComponentParamPrefix returns it verbatim) -- so
- * "0:master_fx:fx2" can never collide with instrument slot 1's "0:fx2".
+ * Records are keyed (MASTER_CHAIN_TARGET.slot, "<bus prefix>fxN") -- the
+ * prefixed key is its own DSP prefix (getComponentParamPrefix returns it
+ * verbatim) -- so "0:master_fx:fx2", "0:send1:fx2", "0:send2:fx2" and
+ * instrument slot 1's "0:fx2" can never collide.
+ *
+ * The helpers that name a bus take it as an ARGUMENT (an index into
+ * FX_BUSES), never from the editor, because their callers run from any screen
+ * (autosave, set change, boot). The two exceptions are the ones that are
+ * ABOUT the editor: a reshape (writeChainShape addresses the bus on screen)
+ * and the return to the grid (only while that bus is the one on screen).
  */
 
-/* The MASTER bus's spelling — FX_BUSES[0], never whichever bus the editor is
- * on — so a writer that runs from any screen (autosave, set change, boot)
- * names the master positions whatever bus is open. */
-function masterUserPresetPrefix(i) {
+/* Which FX bus a component key is a POSITION of -- 0 master, 1 Send A, 2 Send
+ * B -- or -1 ("fx2", "bus1:fx2", "send1:settings", an out-of-range "fx9"). */
+function fxBusOfComponentKey(componentKey) {
+    if (masterFxIndexFromComponentKey(componentKey) < 0) return -1;
+    const key = String(componentKey);
+    return FX_BUSES.findIndex((b) => key.startsWith(b.prefix));
+}
+
+function isFxBusComponentKey(componentKey) {
+    return fxBusOfComponentKey(componentKey) >= 0;
+}
+
+/* Bus `bus`'s spelling of position i ("send1:fx2"), or null out of range. */
+function fxBusUserPresetPrefix(bus, i) {
+    const b = FX_BUSES[bus];
     const k = masterFxComponentKey(i);
-    return k ? `${FX_BUSES[0].prefix}${k}` : null;
+    return (b && k) ? `${b.prefix}${k}` : null;
 }
 
-/* A Master FX position on the MASTER bus — "master_fx:fx2", not "send1:fx2". */
-function isMasterBusComponentKey(componentKey) {
-    return masterFxIndexFromComponentKey(componentKey) >= 0 &&
-           String(componentKey).startsWith(FX_BUSES[0].prefix);
-}
-
-/* The module id loaded at a master position, from the master mirror (no IPC),
- * or "" when empty / not a master key. withFxBus(0): masterFxConfig follows
- * the editor, and the question is always about the master bus. */
-function masterComponentModuleId(componentKey) {
-    if (!isMasterBusComponentKey(componentKey)) return "";
+/* The module id loaded at an FX-bus position, from THAT bus's mirror (no IPC),
+ * or "" when empty / not an FX-bus key. withFxBus: masterFxConfig follows the
+ * editor, and the question is about the bus the key names. */
+function fxBusComponentModuleId(componentKey) {
+    const bus = fxBusOfComponentKey(componentKey);
+    if (bus < 0) return "";
     const i = masterFxIndexFromComponentKey(componentKey);
-    return withFxBus(0, () => ((masterFxConfig[`fx${i + 1}`] || {}).module || ""));
+    return withFxBus(bus, () => ((masterFxConfig[`fx${i + 1}`] || {}).module || ""));
 }
 
-/* The target the preset flow (shadow_ui_presets.mjs) is entered with for a
- * Master FX position: every exit lands on VIEWS.MASTER_FX (where
- * maybeReturnToMasterComponentGrid picks it up), the focused instrument slot
- * is NOT touched (IPC slot 0 is not slot 1), and audition is off for now. */
-function masterPresetFlowOptions(moduleId) {
+/* The target the preset flow (shadow_ui_presets.mjs) is entered with for an
+ * FX-bus position: every exit lands on VIEWS.MASTER_FX (where
+ * maybeReturnToFxBusComponentGrid picks it up), the focused instrument slot
+ * is NOT touched (IPC slot 0 is not slot 1), and audition is off: on a bus it
+ * would be applied to the whole mix (or a whole send return), and the bus
+ * autosaves have no audition guard. Back announces the bus it returns to. */
+function fxBusPresetFlowOptions(componentKey, moduleId) {
+    const bus = FX_BUSES[fxBusOfComponentKey(componentKey)] || FX_BUSES[0];
     return {
         returnView: VIEWS.MASTER_FX,
-        returnLabel: "Master FX",
+        returnLabel: bus.label,
         focusSlot: false,
         audition: false,
-        label: (moduleId && getModuleDisplayName(moduleId)) || moduleId || "Master FX",
+        label: (moduleId && getModuleDisplayName(moduleId)) || moduleId || bus.label,
     };
 }
 
@@ -2447,15 +2464,18 @@ function remapPositionRecords(records, op) {
     return out;
 }
 
-/* Re-key the master records after a shape verb went to the DSP: a removal
- * that renumbers fx3 to fx2 must take fx3's preset name with it, or the
- * position would read a name that belonged to its old neighbour. Only for
- * the master bus (sends carry no records). */
-function remapMasterUserPresetRecords(op) {
-    if (!op || op.section !== "fx" || !fxBusIsMaster()) return;
+/* Re-key the records of the bus ON SCREEN after a shape verb went to the DSP:
+ * a removal that renumbers fx3 to fx2 must take fx3's preset name with it, or
+ * the position would read a name that belonged to its old neighbour. The bus
+ * on screen because that is the one writeChainShape(MASTER_CHAIN_TARGET, ...)
+ * just addressed (its key rule is the current bus's prefix). */
+function remapFxBusUserPresetRecords(op) {
+    if (!op || op.section !== "fx") return;
+    const bus = currentFxBusIndex;
     const slot = MASTER_CHAIN_TARGET.slot;
     const keys = [];
-    for (let i = 0; i < MASTER_FX_SLOTS; i++) keys.push(masterUserPresetPrefix(i));
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) keys.push(fxBusUserPresetPrefix(bus, i));
+    if (keys.some((k) => !k)) return;
     const after = remapPositionRecords(keys.map((k) => getUserPresetRecord(slot, k)), op);
     keys.forEach((k, i) => {
         setUserPresetRecord(slot, k, after[i]);
@@ -2463,36 +2483,55 @@ function remapMasterUserPresetRecords(op) {
     });
 }
 
-/* Forget one master position's record (a different module arrived there). */
-function clearMasterUserPresetRecord(i) {
-    const k = masterUserPresetPrefix(i);
+/* Forget one FX-bus position's record (a different module arrived there). */
+function clearFxBusUserPresetRecord(bus, i) {
+    const k = fxBusUserPresetPrefix(bus, i);
     if (!k) return;
     setUserPresetRecord(MASTER_CHAIN_TARGET.slot, k, null);
     delete userPresetLiveBlobCache[userPresetKey(MASTER_CHAIN_TARGET.slot, k)];
 }
 
-/* Load one master position's record from its saved entry (master_fx_N.json),
- * CLEARING it when the entry carries none — the same rule as
- * syncUserPresetRecordsFromChain, so a set switch or boot never leaves the
- * previous set's name attached to this set's position. */
-function syncMasterUserPresetRecord(i, savedEntry) {
-    const k = masterUserPresetPrefix(i);
+/* Load one FX-bus position's record from its saved entry (master_fx_N.json /
+ * send_fx_<send>_<N>.json), CLEARING it when the entry carries none — the same
+ * rule as syncUserPresetRecordsFromChain, so a set switch or boot never leaves
+ * the previous set's name attached to this set's position. The record is
+ * tagged with the entry's module id (see fxBusRecordOrphaned). */
+function syncFxBusUserPresetRecord(bus, i, savedEntry) {
+    const k = fxBusUserPresetPrefix(bus, i);
     if (!k) return;
-    const rec = (savedEntry && savedEntry.module_id) ? entryUserPreset(savedEntry) : null;
+    let rec = (savedEntry && savedEntry.module_id) ? entryUserPreset(savedEntry) : null;
+    if (rec) rec = Object.assign(rec, { module: savedEntry.module_id });
     setUserPresetRecord(MASTER_CHAIN_TARGET.slot, k, rec);
     delete userPresetLiveBlobCache[userPresetKey(MASTER_CHAIN_TARGET.slot, k)];
 }
 
-/* The `user_preset` field to persist for a master position, or null. Only
+/* The `user_preset` field to persist for an FX-bus position, or null. Only
  * alongside a real `state`: a preset IS a state blob, and the shim's boot
- * parser (master_fx_saved_state.h) takes the FIRST `"state"` in the file with
- * strstr, so the field must always be written AFTER `state` — a preset named
- * "state" written first would be read as the state. */
-function masterUserPresetField(i, stateObj) {
+ * parser (master_fx_saved_state.h, used by fx_boot_restore_one for the master
+ * AND the send files) takes the FIRST `"state"` in the file with strstr, so
+ * the field must always be written AFTER `state` — a preset named "state"
+ * written first would be read as the state. Exactly {name, hash}: the module
+ * tag is in-memory bookkeeping, the file already says module_id. */
+function fxBusUserPresetField(bus, i, stateObj) {
     if (stateObj === null || stateObj === undefined || stateObj === "") return null;
-    const k = masterUserPresetPrefix(i);
+    const k = fxBusUserPresetPrefix(bus, i);
     const rec = k ? getUserPresetRecord(MASTER_CHAIN_TARGET.slot, k) : null;
     return (rec && rec.name) ? { name: rec.name, hash: rec.hash || null } : null;
+}
+
+/* True when an FX-bus position's record belongs to a module that is no longer
+ * there: the position is empty, or the record was made on (tagged with) a
+ * different module. The send saver's equivalent of adoptMasterFxShimModule's
+ * clear -- a send has no mirror that is always loaded to adopt into, so the
+ * shim's `send<N>:modules` answer is compared with the record's own tag. An
+ * untagged record cannot be judged and is kept. Case-insensitive: ids arrive
+ * from the picker and from the DSP, which answers lowercase. */
+function fxBusRecordOrphaned(bus, i, moduleId) {
+    const k = fxBusUserPresetPrefix(bus, i);
+    const rec = k ? getUserPresetRecord(MASTER_CHAIN_TARGET.slot, k) : null;
+    if (!rec) return false;
+    if (!moduleId) return true;
+    return !!rec.module && String(rec.module).toLowerCase() !== String(moduleId).toLowerCase();
 }
 
 /*
@@ -2588,17 +2627,16 @@ function componentModuleIdKey(componentKey) {
  * site:
  *
  *   - a chain slot's component: "My Presets" + "Module" (the io below);
- *   - a MASTER FX position ("master_fx:fxN"): "My Presets" only, through the
- *     SAME componentTrailingMenus / runComponentActionFromGrid the slot chain
- *     uses (they branch on isMasterBusComponentKey for the module lookup, the
- *     preset-flow target and the way back). There is no "Module" page there
- *     for now: every row on it (Swap, Remove, Add to List, Clear
- *     Automation, Module Help) is slot-chain shaped, and the Master FX
- *     editor has its own Shift+Click picker for the swap/remove half;
- *   - a SEND position ("send1:fxN", same FX_BUSES code path as the master):
- *     none. The send buses have no per-set user-preset persistence yet
- *     (saveSendFxChainConfig writes no `user_preset`), so offering the page
- *     would show a "loaded" preset that is forgotten on the next boot;
+ *   - an FX-BUS position -- Master FX ("master_fx:fxN"), Send A ("send1:fxN")
+ *     or Send B ("send2:fxN"), one FX_BUSES code path: "My Presets" only,
+ *     through the SAME componentTrailingMenus / runComponentActionFromGrid the
+ *     slot chain uses (they branch on isFxBusComponentKey for the module
+ *     lookup, the preset-flow target and the way back). There is no "Module"
+ *     page there for now: every row on it (Swap, Remove, Add to List, Clear
+ *     Automation, Module Help) is slot-chain shaped, and the bus editor has
+ *     its own Shift+Click picker for the swap/remove half. The record persists
+ *     per bus (master_fx_N.json / send_fx_<send>_<N>.json, see
+ *     fxBusUserPresetField);
  *   - a bus insert: none (below).
  *
  * masterFxIndexFromComponentKey is the same test paramPagesChromeFor already
@@ -2611,14 +2649,15 @@ function componentModuleIdKey(componentKey) {
  */
 function componentParamPagesIo(slotIndex, componentKey) {
     if (masterFxIndexFromComponentKey(componentKey) >= 0) {
-        if (!isMasterBusComponentKey(componentKey)) return null;   /* a send */
-        /* Addressed at IPC slot 0 by CONVENTION (not instrument slot 1), and
-         * with the prefixed key verbatim: "master_fx:fx2" is its own prefix,
-         * so the record is "0:master_fx:fx2" and can never collide with slot
-         * 1's "0:fx2". No p-lock hooks: the lane store is a slot chain's, and
-         * the Master FX grid never had them (its io was null until now, so
-         * this setParam reproduces the controller default it replaces --
-         * noteLaneWriteRefusal, then the write -- plus the `*` hook). */
+        /* Any FX bus (master or a send). Addressed at IPC slot 0 by
+         * CONVENTION (not instrument slot 1), and with the prefixed key
+         * verbatim: "send1:fx2" is its own prefix, so the record is
+         * "0:send1:fx2" and can never collide with the master's
+         * "0:master_fx:fx2" or slot 1's "0:fx2". No p-lock hooks: the lane
+         * store is a slot chain's, and the FX-bus grid never had them (its
+         * io was null before My Presets, so this setParam reproduces the
+         * controller default it replaces -- noteLaneWriteRefusal, then the
+         * write -- plus the `*` hook). */
         const slot = MASTER_CHAIN_TARGET.slot;
         const prefix = getComponentParamPrefix(componentKey);
         return {
@@ -2874,13 +2913,13 @@ function moduleMenuEntries(moduleId, clipLabel) {
  * explicitly rather than relying on the next tick to notice.
  */
 function componentTrailingMenus(slotIndex, componentKey, prefix) {
-    /* A Master FX position (slotIndex is IPC slot 0 there) reads its module
-     * from the master mirror, and gets "My Presets" only -- see
-     * componentParamPagesIo for why there is no "Module" page there. */
-    const isMaster = isMasterBusComponentKey(componentKey);
+    /* An FX-bus position (Master FX / Send A / Send B; slotIndex is IPC slot 0
+     * there) reads its module from its bus's mirror, and gets "My Presets"
+     * only -- see componentParamPagesIo for why there is no "Module" page. */
+    const isFxBus = isFxBusComponentKey(componentKey);
     let moduleId;
-    if (isMaster) {
-        moduleId = masterComponentModuleId(componentKey);
+    if (isFxBus) {
+        moduleId = fxBusComponentModuleId(componentKey);
     } else {
         const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
         const loaded = getChainComponentModule(cfg, componentKey);
@@ -2927,7 +2966,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
      * already plan a page called that, so claimName would dedupe this to
      * "Presets - 2". "My Presets" (46px) collides with nothing. */
     const pages = [{ name: "My Presets", entries: presetEntries }];
-    if (!isMaster) {
+    if (!isFxBus) {
         pages.push({ name: "Module", entries: moduleMenuEntries(moduleId,
                                                                 slotClipLabel(slotIndex)) });
     }
@@ -2954,22 +2993,23 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
  */
 function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const prefix = getComponentParamPrefix(componentKey);
-    /* A MASTER FX position: same four preset actions, a different module
-     * lookup, a preset-flow target that comes back to VIEWS.MASTER_FX
-     * (presetOpts, undefined for a slot = the flow's slot-chain defaults), and
-     * nothing else -- the "Module" page's rows are slot-chain shaped and the
-     * master gets no such page (see componentTrailingMenus). */
-    const isMaster = isMasterBusComponentKey(componentKey);
-    if (isMaster && !MASTER_COMPONENT_ACTIONS.has(action)) return false;
+    /* An FX-BUS position (Master FX / Send A / Send B): same four preset
+     * actions, a different module lookup, a preset-flow target that comes
+     * back to VIEWS.MASTER_FX (presetOpts, undefined for a slot = the flow's
+     * slot-chain defaults), and nothing else -- the "Module" page's rows are
+     * slot-chain shaped and a bus gets no such page (see
+     * componentTrailingMenus). */
+    const isFxBus = isFxBusComponentKey(componentKey);
+    if (isFxBus && !FX_BUS_COMPONENT_ACTIONS.has(action)) return false;
     let moduleId;
-    if (isMaster) {
-        moduleId = masterComponentModuleId(componentKey);
+    if (isFxBus) {
+        moduleId = fxBusComponentModuleId(componentKey);
     } else {
         const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
         const loaded = getChainComponentModule(cfg, componentKey);
         moduleId = loaded && loaded.module;
     }
-    const presetOpts = isMaster ? masterPresetFlowOptions(moduleId) : undefined;
+    const presetOpts = isFxBus ? fxBusPresetFlowOptions(componentKey, moduleId) : undefined;
     const record = getUserPresetRecord(slotIndex, prefix);
     let result;
     /* The view this action was asked FROM. Two grids can ask: the shadow UI's
@@ -3137,12 +3177,13 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
      * screen rather than the key is what keeps a future action from being
      * silently wrong here too. */
     if (gridActionOpenedSomething(view !== viewBefore)) {
-        if (isMaster) {
+        if (isFxBus) {
             /* Its own return pair: the flow converges on VIEWS.MASTER_FX,
-             * not CHAIN_EDIT -- see maybeReturnToMasterComponentGrid. */
-            masterComponentModalFromGrid = true;
-            masterComponentGridReturnKey = componentKey;
-            masterComponentGridReturnModule = moduleId || "";
+             * not CHAIN_EDIT -- see maybeReturnToFxBusComponentGrid. The key
+             * carries the bus prefix, so it also says WHICH bus to wait for. */
+            fxBusComponentModalFromGrid = true;
+            fxBusComponentGridReturnKey = componentKey;
+            fxBusComponentGridReturnModule = moduleId || "";
         } else {
             componentModalFromGrid = true;
             componentGridReturnSlot = slotIndex;
@@ -3154,8 +3195,8 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     return result;
 }
 
-/* The only trailing-page actions a Master FX position offers. */
-const MASTER_COMPONENT_ACTIONS = new Set(["up_load", "up_save", "up_save_as", "up_delete"]);
+/* The only trailing-page actions an FX-bus position offers. */
+const FX_BUS_COMPONENT_ACTIONS = new Set(["up_load", "up_save", "up_save_as", "up_delete"]);
 
 /*
  * ...and back to the grid once the hand-off screen is done with.
@@ -3284,35 +3325,37 @@ function maybeReturnToComponentGrid() {
 }
 
 /*
- * ...and the Master FX half: back to a Master FX position's grid, on its "My
- * Presets" page, once the preset flow it handed off to is done with.
+ * ...and the FX-bus half: back to a Master FX / Send A / Send B position's
+ * grid, on its "My Presets" page, once the preset flow it handed off to is
+ * done with.
  *
  * Same reconcile-don't-hook shape as maybeReturnToComponentGrid, aimed at the
- * convergence point the master flow uses: every exit from the preset browser
- * and the delete confirm lands on VIEWS.MASTER_FX for a master flow
- * (presetExitView in shadow_ui_presets.mjs). Polled UNCONDITIONALLY rather
- * than only on MASTER_FX so the flag is resolved -- fired OR dropped -- on the
- * FIRST arrival anywhere other than the two hand-off screens themselves: a
- * flag left raised by a flow the user abandoned through a global shortcut
- * would otherwise fire on some unrelated later visit to Master FX.
+ * convergence point the FX-bus flow uses: every exit from the preset browser
+ * and the delete confirm lands on VIEWS.MASTER_FX -- the one editor the three
+ * buses share -- for an FX-bus flow (presetExitView in shadow_ui_presets.mjs).
+ * Polled UNCONDITIONALLY rather than only on MASTER_FX so the flag is
+ * resolved -- fired OR dropped -- on the FIRST arrival anywhere other than the
+ * two hand-off screens themselves: a flag left raised by a flow the user
+ * abandoned through a global shortcut would otherwise fire on some unrelated
+ * later visit to the bus editor.
  *
- * Fires only when the master bus is the one on screen and the position still
- * holds the SAME module it held when the flow began; a removed or swapped
- * position leaves the user on the chain diagram (the Master FX editor's own
- * Shift+Click swap reopens the position through its own door).
+ * Fires only when the bus the key names (its prefix) is the one on screen and
+ * the position still holds the SAME module it held when the flow began; a
+ * removed or swapped position leaves the user on the chain diagram (the bus
+ * editor's own Shift+Click swap reopens the position through its own door).
  */
-function maybeReturnToMasterComponentGrid() {
-    if (!masterComponentModalFromGrid) return false;
+function maybeReturnToFxBusComponentGrid() {
+    if (!fxBusComponentModalFromGrid) return false;
     if (view === VIEWS.PRESETS || view === VIEWS.PRESET_DETAIL) return false;
     if (isTextEntryActive()) return false;
-    masterComponentModalFromGrid = false;
-    const componentKey = masterComponentGridReturnKey;
-    const moduleBefore = masterComponentGridReturnModule;
-    masterComponentGridReturnKey = "";
-    masterComponentGridReturnModule = "";
+    fxBusComponentModalFromGrid = false;
+    const componentKey = fxBusComponentGridReturnKey;
+    const moduleBefore = fxBusComponentGridReturnModule;
+    fxBusComponentGridReturnKey = "";
+    fxBusComponentGridReturnModule = "";
     if (view !== VIEWS.MASTER_FX) return false;
-    if (!fxBusIsMaster()) return false;
-    const moduleNow = masterComponentModuleId(componentKey);
+    if (fxBusOfComponentKey(componentKey) !== currentFxBusIndex) return false;
+    const moduleNow = fxBusComponentModuleId(componentKey);
     if (!moduleNow) return false;
     if (moduleBefore && moduleNow !== moduleBefore) return false;
     const enterOnArrival = componentGridReturnEnter;
@@ -3868,7 +3911,13 @@ function notifyModuleUiPresetsChanged() {
 function recordUserPresetFromDevice(slot, prefix, name) {
     const live = getSlotStateWithRetry(slot, prefix + ":state");
     userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
-    setUserPresetRecord(slot, prefix, makeRecord(name, live));
+    const record = makeRecord(name, live);
+    /* An FX-bus record remembers which module it was made on, so the send
+     * saver can drop it when something else replaced that module (see
+     * fxBusRecordOrphaned). A slot record needs no tag: the slot chain clears
+     * its records at every swap site it owns. */
+    if (isFxBusComponentKey(prefix)) record.module = fxBusComponentModuleId(prefix);
+    setUserPresetRecord(slot, prefix, record);
     paramPagesRefreshTrailing();
     notifyModuleUiPresetsChanged();
     needsRedraw = true;
@@ -3946,10 +3995,10 @@ function tickUserPresetStale() {
  * comparison componentTrailingMenus already makes for the My Presets page,
  * so showing it in the header on every page of the component costs nothing
  * beyond the read that page already pays for. Answers null harmlessly for a
- * synthesised contract (Slot Settings, Master FX/Global Settings) or a send
- * position, none of which ever populate currentUserPresets for their key. A
- * MASTER FX position does: its key "master_fx:fxN" is its own prefix, so the
- * same lookup answers for it at IPC slot 0.
+ * synthesised contract (Slot Settings, Master FX/Global Settings), none of
+ * which ever populate currentUserPresets for their key. An FX-BUS position
+ * (Master FX, Send A, Send B) does: its key "master_fx:fxN" / "send1:fxN" is
+ * its own prefix, so the same lookup answers for it at IPC slot 0.
  */
 function userPresetHeaderMark(slotIndex, componentKey) {
     const prefix = getComponentParamPrefix(componentKey);
@@ -4929,8 +4978,8 @@ const MASTER_CHAIN_TARGET = {
      * the pending position survives for exactly as long as it has to. */
     invalidate: () => { invalidateMasterFxConfig(); },
     /* After a shape verb (writeChainShape): the per-position User Preset
-     * records follow the renumbering. */
-    onReshape: (op) => { remapMasterUserPresetRecords(op); },
+     * records of the bus on screen follow the renumbering. */
+    onReshape: (op) => { remapFxBusUserPresetRecords(op); },
     reload: () => loadMasterFxChainConfig(),
     selection: () => selectedMasterFxComponent,
     setSelection: (i) => { selectedMasterFxComponent = i; },
@@ -5670,13 +5719,14 @@ let componentGridReturnModuleUi = false;
 /* ...and WHICH module held the position when it was raised. A swap leaves a
  * different one there, and nothing about the old grid applies to it. */
 let componentGridReturnModule = "";
-/* The same return pair for a MASTER FX position's "My Presets" page, whose
- * hand-offs converge on VIEWS.MASTER_FX instead. The slot is always
- * MASTER_CHAIN_TARGET.slot, so only the key and module are remembered. See
- * maybeReturnToMasterComponentGrid. */
-let masterComponentModalFromGrid = false;
-let masterComponentGridReturnKey = "";
-let masterComponentGridReturnModule = "";
+/* The same return pair for an FX-BUS position's "My Presets" page (Master
+ * FX, Send A, Send B), whose hand-offs converge on VIEWS.MASTER_FX instead.
+ * The slot is always MASTER_CHAIN_TARGET.slot and the key carries the bus
+ * prefix, so only the key and module are remembered. See
+ * maybeReturnToFxBusComponentGrid. */
+let fxBusComponentModalFromGrid = false;
+let fxBusComponentGridReturnKey = "";
+let fxBusComponentGridReturnModule = "";
 
 /* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
  * "Module Help". The help viewer has no view of its own -- it is drawn by
@@ -7269,19 +7319,20 @@ function setupModuleParamShims(slot, componentKey) {
      * caller's cue to stop drawing; ui_chain.js should return from its input
      * handler when it sees true.
      */
-    /* NOT for a Master FX position (for now): its preset flow returns through
-     * maybeReturnToMasterComponentGrid, which re-enters the HOST grid -- a
-     * contract read nobody answers for a module drawing its own pages. The
-     * module-owned-grid return path (componentGridReturnModuleUi) is the slot
-     * chain's alone, so a module UI on Master FX gets no trailing pages. */
-    const masterPosition = isMasterBusComponentKey(componentKey);
+    /* NOT for an FX-bus position (Master FX, Send A, Send B; for now): its
+     * preset flow returns through maybeReturnToFxBusComponentGrid, which
+     * re-enters the HOST grid -- a contract read nobody answers for a module
+     * drawing its own pages. The module-owned-grid return path
+     * (componentGridReturnModuleUi) is the slot chain's alone, so a module UI
+     * on an FX bus gets no trailing pages. */
+    const busPosition = isFxBusComponentKey(componentKey);
     globalThis.shadow_component_trailing_menus = function() {
-        if (masterPosition) return [];
+        if (busPosition) return [];
         return componentTrailingMenus(slot, componentKey, prefix) || [];
     };
 
     globalThis.shadow_component_run_action = function(action) {
-        if (!action || masterPosition) return false;
+        if (!action || busPosition) return false;
         return !!runComponentActionFromGrid(slot, componentKey, action);
     };
 
@@ -7780,11 +7831,11 @@ function writeChainShape(target, op) {
     } else {
         return;
     }
-    /* The master positions' User Preset records follow the renumbering, for
+    /* The FX-bus positions' User Preset records follow the renumbering, for
      * the same reason the invalidate below is here: one emitter, so no caller
      * (picker None, Delete+Click, Shift+jog, Move rows, `+` insert) can forget.
      * A target with nothing to follow simply declares no hook (the slot chain
-     * does not, today); the master's is a no-op off the master bus. */
+     * does not, today); the FX-bus target re-keys the bus on screen. */
     if (typeof target.onReshape === "function") target.onReshape(op);
     /* The chain the editor is drawing from has just been renumbered underneath
      * it. Here rather than in each caller so a fourth one cannot forget — and
@@ -13520,7 +13571,7 @@ function clearMasterFxOnMaster() {
     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         setMasterFxSlotModule(i, "");
         masterFxConfig[`fx${i + 1}`].module = "";
-        clearMasterUserPresetRecord(i);
+        clearFxBusUserPresetRecord(0, i);
         /* Different module — it may implement display_name even if the
          * last one didn't, so poll it at full rate again. */
         delete fxDisplayNameCache[`master:fx${i + 1}`];
@@ -13547,7 +13598,7 @@ function loadMasterPreset(index, presetName) {
             const fxConfig = fx[key];
             /* A whole-chain preset replaces every position's sound, so no
              * position is on a User Preset any more. */
-            clearMasterUserPresetRecord(i);
+            clearFxBusUserPresetRecord(0, i);
             if (fxConfig && fxConfig.type) {
                 /* Find module path from type */
                 const opt = MASTER_FX_OPTIONS.find(o => o.id === fxConfig.type);
@@ -15097,11 +15148,10 @@ function adoptMasterFxShimModule(key, shimId) {
     debugLog(`MFX save: ${key} adopting shim state "${shimId}" (mirror had "${had}")`);
     masterFxConfig[key].module = shimId;
     /* Something else (Remote UI, an overtake tool) changed the module here:
-     * the loaded-preset record was the previous module's. */
-    if (fxBusIsMaster()) {
-        const at = parseChainId(key);
-        if (at) clearMasterUserPresetRecord(at.index);
-    }
+     * the loaded-preset record was the previous module's. The bus adopted
+     * into is the one masterFxConfig mirrors right now. */
+    const at = parseChainId(key);
+    if (at) clearFxBusUserPresetRecord(currentFxBusIndex, at.index);
     /* Different module — it may implement display_name even if the
      * last one didn't, so poll it at full rate again. */
     delete fxDisplayNameCache[`master:${key}`];
@@ -15320,8 +15370,9 @@ function applyMasterFxModuleSelection() {
             clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
             /* A different module now: the loaded-preset record belonged to
              * the one that left (see applyComponentSelectionConfirmed's note
-             * for the slot chain's identical rule). Master bus only. */
-            if (fxBusIsMaster()) clearMasterUserPresetRecord(comp.index);
+             * for the slot chain's identical rule). Whichever bus is on
+             * screen -- this picker serves all three. */
+            clearFxBusUserPresetRecord(currentFxBusIndex, comp.index);
         }
         /* comp.index is the FX POSITION; selectedMasterFxComponent is the ROW. */
         setMasterFxSlotModule(comp.index, (selected && selected.dspPath) || "");
@@ -15491,7 +15542,7 @@ function saveMasterFxChainConfigOnMaster() {
              * shim copies that object into shadow_config.json, and a
              * user-typed name there only adds size and risk to a copy nobody
              * reads it from. */
-            const userPreset = masterUserPresetField(slotIdx, stateObj);
+            const userPreset = fxBusUserPresetField(0, slotIdx, stateObj);
 
             config.master_fx_chain[key] = slotConfig;
 
@@ -15602,6 +15653,7 @@ function saveSendFxChainConfig() {
     if (typeof shadow_get_param !== "function") return;
     for (const bus of FX_BUSES) {
         if (bus.send < 0) continue;
+        const busIndex = FX_BUSES.indexOf(bus);
 
         let raw;
         try { raw = shadow_get_param(0, bus.prefix + "modules"); } catch (e) { raw = null; }
@@ -15620,6 +15672,10 @@ function saveSendFxChainConfig() {
             const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
             const moduleId = (entry && entry.id) || "";
             const dspPath = (entry && entry.path) || "";
+            /* The shim says what is loaded: a User Preset record made on a
+             * module that is no longer here (emptied, or replaced by another
+             * client) is dropped before anything is persisted for it. */
+            if (fxBusRecordOrphaned(busIndex, i, moduleId)) clearFxBusUserPresetRecord(busIndex, i);
             if (!moduleId || !dspPath) {
                 /* An empty position is written as "{}" rather than skipped, so
                  * a position emptied in this set does not restore from the file
@@ -15672,6 +15728,13 @@ function saveSendFxChainConfig() {
                  * overwrite the good file it already has. */
                 continue;
             }
+            /* Which User Preset this position is on -- AFTER `state`, always:
+             * insertion order is serialisation order, and the shim's boot
+             * parser (fx_boot_restore_one, shared with Master FX) takes the
+             * first "state" in the file. Only with a state blob (see
+             * fxBusUserPresetField). */
+            const userPreset = fxBusUserPresetField(busIndex, i, stateFile.state);
+            if (userPreset) stateFile.user_preset = userPreset;
             let bypassed = 0;
             try {
                 bypassed = parseInt(shadow_get_param(0, `${bus.prefix}${key}:bypassed`) || "0", 10);
@@ -15788,6 +15851,7 @@ function loadSendFxChainConfigForSet() {
     if (typeof shadow_set_param !== "function") return;
     for (const bus of FX_BUSES) {
         if (bus.send < 0) continue;
+        const busIndex = FX_BUSES.indexOf(bus);
         for (let i = 0; i < MASTER_FX_SLOTS; i++) {
             const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
             let data = null;
@@ -15800,6 +15864,9 @@ function loadSendFxChainConfigForSet() {
             const key = `fx${i + 1}`;
             const dspPath = (data && data.module_path) || "";
             shadow_set_param(0, `${bus.prefix}${key}:module`, dspPath);
+            /* The incoming set's User Preset record for this position (or
+             * none) -- the outgoing set's must not survive onto it. */
+            syncFxBusUserPresetRecord(busIndex, i, dspPath ? data : null);
             if (!dspPath || !data) continue;
             /* The module write is ACCEPTED, not completed — the state below has
              * to have somewhere to land. */
@@ -15851,6 +15918,34 @@ function loadSendFxChainConfigForSet() {
             const n = parseInt(levels[field], 10);
             if (!Number.isFinite(n)) continue;
             shadow_set_param(0, bus.prefix + k, String(n));
+        }
+    }
+}
+
+/*
+ * The send positions' User Preset records at BOOT.
+ *
+ * The shim restores the send chains itself from send_fx_<send>_<i>.json
+ * (fx_boot_restore_one), so nothing on the JS side reads those files at boot
+ * -- which is why the records need their own pass, the send half of what
+ * loadMasterFxChainFromConfigOnMaster does for master_fx_N.json. Every
+ * position is synced, so a missing or empty file CLEARS rather than keeping
+ * whatever was there. Files only, no IPC.
+ */
+function syncSendUserPresetRecordsFromFiles() {
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        const busIndex = FX_BUSES.indexOf(bus);
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+            const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
+            let data = null;
+            if (host_file_exists(path)) {
+                try {
+                    const rawFile = host_read_file(path);
+                    if (rawFile && rawFile.length > 10) data = JSON.parse(rawFile);
+                } catch (e) {}
+            }
+            syncFxBusUserPresetRecord(busIndex, i, (data && data.module_path) ? data : null);
         }
     }
 }
@@ -16067,12 +16162,12 @@ function loadMasterFxChainFromConfigOnMaster() {
             const stateFilePath = activeSlotStateDir + "/master_fx_" + i + ".json";
             /* The User Preset record rides the same file; cleared first so an
              * unreadable or empty file leaves no stale record behind. */
-            syncMasterUserPresetRecord(i, null);
+            syncFxBusUserPresetRecord(0, i, null);
             try {
                 const raw = host_read_file(stateFilePath);
                 if (raw) {
                     const stateFile = JSON.parse(raw);
-                    syncMasterUserPresetRecord(i, stateFile);
+                    syncFxBusUserPresetRecord(0, i, stateFile);
                     if (stateFile.module_id) {
                         masterFxConfig[key].module = stateFile.module_id;
                         /* Different module — it may implement display_name even if the
@@ -19074,9 +19169,9 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
      * slot chain. See paramPagesChromeFor.
      */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
-        /* componentParamPagesIo decides what a Master FX target gets (its
-         * "My Presets" page; nothing for a send position — see its own note),
-         * routed through the SAME helper as the slot-chain sites rather than
+        /* componentParamPagesIo decides what an FX-bus target gets (its
+         * "My Presets" page, on Master FX and on either send — see its own
+         * note), routed through the SAME helper as the slot-chain sites rather than
          * decided here, so every call site agrees by construction. */
         enterParamPages(MASTER_CHAIN_TARGET.slot, componentKey,
                         getComponentParamPrefix(componentKey), null,
@@ -28497,6 +28592,8 @@ globalThis.init = function() {
     }
     /* Re-apply Master FX sync after activeSlotStateDir resolves to the active set. */
     loadMasterFxChainFromConfig();
+    /* ...and the send positions' User Preset records, from the same set. */
+    syncSendUserPresetRecordsFromFiles();
 
     /* Sync dirty cache and slot names from autosave files (shim loaded them on startup) */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -29568,7 +29665,7 @@ globalThis.tick = function() {
                 masterFxConfig[key].module = mfxModuleId;
                 /* The incoming set's User Preset record for this position (or
                  * none) -- the outgoing set's must not survive onto it. */
-                syncMasterUserPresetRecord(mfxi, mfxDspPath ? mfxData : null);
+                syncFxBusUserPresetRecord(0, mfxi, mfxDspPath ? mfxData : null);
                 /* Different module — it may implement display_name even if the
                  * last one didn't, so poll it at full rate again. */
                 delete fxDisplayNameCache[`master:${key}`];
@@ -30292,11 +30389,11 @@ globalThis.tick = function() {
      * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than
      * staying on the view the grid left. See maybeReturnToComponentGrid. */
     if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
-    /* ...and its Master FX twin. Unconditional, unlike the lines above: it
+    /* ...and its FX-bus twin (Master FX, Send A, Send B). Unconditional, unlike the lines above: it
      * resolves its flag on the first arrival ANYWHERE off the preset screens
-     * (firing only on VIEWS.MASTER_FX), so an abandoned flow cannot fire later.
-     * See maybeReturnToMasterComponentGrid. */
-    maybeReturnToMasterComponentGrid();
+     * (firing only on VIEWS.MASTER_FX with the same bus on screen), so an
+     * abandoned flow cannot fire later. See maybeReturnToFxBusComponentGrid. */
+    maybeReturnToFxBusComponentGrid();
 
     /* Probe a component we are waiting on BEFORE the switch, not inside its
      * draw case: a probe that lands changes `view`, and doing it here means the

@@ -91,17 +91,19 @@ let selectedPreset = 0;       /* index into `presets` */
  *
  * `presetSlot` is the IPC slot the component is addressed at. For a chain
  * slot's component it is the instrument slot, and equal to ctx.selectedSlot
- * (entry focuses it, as it always has). For a MASTER FX position it is IPC
- * slot 0 by convention — which is NOT instrument slot 1, so a Master FX flow
- * must never write ctx.selectedSlot or move the focused slot: doing so would
+ * (entry focuses it, as it always has). For an FX-BUS position (Master FX,
+ * Send A, Send B) it is IPC slot 0 by convention — which is NOT instrument
+ * slot 1, so an FX-bus flow must never write ctx.selectedSlot or move the
+ * focused slot: doing so would
  * re-aim Move's track buttons, the knob overlay and the next autosave at slot
  * 1 for the sake of a preset list. Every read/apply in this file goes through
  * presetSlot rather than ctx.selectedSlot for that reason.
  *
  * `presetReturnView` is the view every exit (pick, Back, delete confirm) lands
  * on. null means VIEWS.CHAIN_EDIT, the slot chain's convergence point (see
- * maybeReturnToComponentGrid); a Master FX flow passes VIEWS.MASTER_FX, whose
- * reconciler is maybeReturnToMasterComponentGrid.
+ * maybeReturnToComponentGrid); an FX-bus flow passes VIEWS.MASTER_FX (the
+ * editor the three buses share), whose reconciler is
+ * maybeReturnToFxBusComponentGrid.
  */
 let presetSlot = 0;
 let presetReturnView = null;
@@ -462,16 +464,17 @@ function doDeletePreset(entry) {
 
 /*
  * `opts` — see applyPresetTarget. Omitted is the slot chain, exactly as before;
- * a Master FX position passes { returnView: VIEWS.MASTER_FX, focusSlot: false,
- * audition: false, label } (see masterPresetFlowOptions in shadow_ui.js).
+ * an FX-bus position passes { returnView: VIEWS.MASTER_FX, returnLabel,
+ * focusSlot: false, audition: false, label } (see fxBusPresetFlowOptions in
+ * shadow_ui.js).
  */
 export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, opts) {
     const { setView, getSlotParam, VIEWS } = ctx;
     const o = applyPresetTarget(slotIndex, opts);
 
-    /* Component-scoped: synth or any FX / MIDI-FX slot, or a Master FX
-     * position ("master_fx:fxN"). The DSP prefix selects which component's
-     * :state we snapshot; moduleId keys the presets folder. */
+    /* Component-scoped: synth or any FX / MIDI-FX slot, or an FX-bus
+     * position ("master_fx:fxN", "send1:fxN"). The DSP prefix selects which
+     * component's :state we snapshot; moduleId keys the presets folder. */
     presetPrefix = prefix || "synth";
     presetModule = moduleId || "";
     presetModuleLabel = o.label || getSlotParam(slotIndex, presetPrefix + ":name") || presetModule || "Module";
@@ -494,10 +497,12 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, op
      * Off does not disable the list, only the audition: Load still loads.
      *
      * A caller may also refuse audition outright (opts.audition === false).
-     * Master FX does, for now: an audition there is applied to the whole mix,
-     * and the master autosave (saveMasterFxChainConfig) has no equivalent of
+     * Every FX bus does, for now: an audition there is applied to the whole
+     * mix (or a whole send return), and the bus autosaves
+     * (saveMasterFxChainConfig, saveSendFxChainConfig) have no equivalent of
      * the slot autosave's isPresetPreviewActive guard, so an uncommitted
-     * audition could be persisted into master_fx_N.json. */
+     * audition could be persisted into master_fx_N.json or
+     * send_fx_<send>_<N>.json. */
     originalState = null;
     previewEnabled = false;
     previewActive = false;
@@ -776,9 +781,9 @@ export function handlePresetsSelect() {
          * grid's My Presets page returns through — maybeReturnToComponentGrid
          * (in shadow_ui.js) is what routes the arrival back onto that page
          * specifically, and falls through to the plain chain editor when the
-         * position no longer holds a module to show. A Master FX flow
+         * position no longer holds a module to show. An FX-bus flow
          * converges on VIEWS.MASTER_FX instead (presetExitView), and
-         * maybeReturnToMasterComponentGrid does the same job there. */
+         * maybeReturnToFxBusComponentGrid does the same job there. */
         setView(presetExitView());
     }
     ctx.needsRedraw = true;
@@ -802,7 +807,7 @@ export function handlePresetDetailSelect() {
          * from the grid's My Presets page now, and that page is where the
          * result belongs. Reported from hardware: "after deleting i get to a
          * menu of [save current] not the preset (none) page".
-         * (presetExitView: CHAIN_EDIT for a slot, MASTER_FX for Master FX.)
+         * (presetExitView: CHAIN_EDIT for a slot, MASTER_FX for an FX bus.)
          */
         setView(presetExitView());
         announce("Preset deleted");
@@ -820,8 +825,8 @@ export function handlePresetsBack() {
     /* Entered from the grid's My Presets page; Back cancels the whole flow —
      * revert any active audition to the original sound — and exits through
      * the chain editor (maybeReturnToComponentGrid routes it back to the
-     * page it came from), or the Master FX editor for a Master FX position
-     * (maybeReturnToMasterComponentGrid). */
+     * page it came from), or the bus editor for an FX-bus position
+     * (maybeReturnToFxBusComponentGrid). */
     revertToOriginal();
     setView(presetExitView());
     announce(presetReturnLabel);
