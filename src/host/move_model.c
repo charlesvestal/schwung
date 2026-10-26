@@ -631,11 +631,27 @@ static int find_member(uint64_t cls, const char *name, uint32_t *off, int depth)
  * REQUIRED class is in hand and the first 64 MB is behind it, so the common
  * case costs what it always did. */
 static char g_missing[256];   /* the required classes the last attempt lacked */
+static uint64_t g_cls_far;    /* the furthest class record found, for the status line */
+
+/* "heap+37MB" or "arena3+2MB": where an address sits among the search ranges.
+ * The status line says this for the class registry and the Song, so a field
+ * report shows whether the 64 MB window or a thread arena was the problem. */
+static void where_is(uint64_t a, char *out, size_t cap)
+{
+    for (int r = 0; r < g_nsearch; r++)
+        if (a >= g_search[r].lo && a < g_search[r].hi) {
+            if (r == 0) snprintf(out, cap, "heap+%lluMB", (unsigned long long)((a - g_search[r].lo) >> 20));
+            else snprintf(out, cap, "arena%d+%lluMB", r, (unsigned long long)((a - g_search[r].lo) >> 20));
+            return;
+        }
+    snprintf(out, cap, a ? "elsewhere" : "none");
+}
 static int resolve_classes(void)
 {
     memset(g_cls, 0, sizeof g_cls);
     memset(g_res_beats, 0, sizeof g_res_beats);
     g_missing[0] = 0;
+    g_cls_far = 0;
     const size_t CH = 1 << 20;
     uint64_t *buf = malloc(CH + 16);
     if (!buf) return -1;
@@ -662,6 +678,7 @@ static int resolve_classes(void)
                         g_cls[c] = s + k * 8;
                         found++;
                         if (!class_optional(c)) required_found++;
+                        g_cls_far = s + k * 8;   /* scan order: the last one is the furthest */
                     }
                 }
             }
@@ -912,9 +929,14 @@ static int resolve_all(void)
     g_hist = find_history();
     RSTATUS("history: vptrs hist=%d store=%d tx=%d obj=%llx", g_vp_hist.n, g_vp_hstore.n, g_vp_tx.n,
            (unsigned long long)g_hist);
-    RSTATUS("resolve: build=%s clock=%s song=%llx vptrs song=%d clips=%d sc=%d mc=%d", bid,
-           g_clock_pinned ? "pinned" : "UNKNOWN-BUILD(no clock)", (unsigned long long)g_song,
-           g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_midicontent.n);
+    char w_cls[32], w_song[32];
+    where_is(g_cls_far, w_cls, sizeof w_cls);
+    where_is(g_song, w_song, sizeof w_song);
+    RSTATUS("resolve: build=%s clock=%s song=%llx vptrs song=%d clips=%d sc=%d mc=%d"
+            " | registry to %s, song in %s, heap=%lluMB arenas=%d",
+            bid, g_clock_pinned ? "pinned" : "UNKNOWN-BUILD(no clock)", (unsigned long long)g_song,
+            g_vp_song.n, g_vp_clips.n, g_vp_sessionclip.n, g_vp_midicontent.n,
+            w_cls, w_song, (unsigned long long)((g_heap.hi - g_heap.lo) >> 20), g_nsearch - 1);
     return g_song ? 0 : -1;
 }
 
@@ -1652,7 +1674,11 @@ static void *reader_main(void *arg)
             if (ra == -2) {                                  /* the Song moved: find it again */
                 refinds++;
                 if (parse_maps() == 0) g_song = find_song();
-                status("song object invalid; re-found at %llx", (unsigned long long)g_song);
+                {
+                    char w[32];
+                    where_is(g_song, w, sizeof w);
+                    status("song object invalid; re-found at %llx (%s)", (unsigned long long)g_song, w);
+                }
                 /* A heap scan is not a 50 Hz thing, nor a 2 s one forever:
                  * back off to a minute. The model is reported stale
                  * meanwhile (move_model_last_publish_ms), so the fallbacks
