@@ -2490,6 +2490,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinyscratch",
+      "name": "TinyScratch",
+      "description": "Generative auto-scratcher: press a pad and it writes a new, human-sounding scratch for your sample, plays it in time with the song, and lets you keep the ones you like. Thirteen styles, a Groove dial that keeps Improv to a drum groove, pages of clips, Auto and cue pads",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "generative"
+      ],
+      "github_repo": "fleshinachair/TinyScratch",
+      "default_branch": "main",
+      "asset_name": "TinyScratch.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
