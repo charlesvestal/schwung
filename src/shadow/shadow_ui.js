@@ -47,6 +47,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { compareNames } from '/data/UserData/schwung/shared/name_sort.mjs';
+import { createTextScroller } from '/data/UserData/schwung/shared/text_scroll.mjs';
 import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
@@ -6597,6 +6598,9 @@ let hierEditorIsPresetLevel = false;  // true when current level is a preset bro
 let hierEditorPresetCount = 0;
 let hierEditorPresetIndex = 0;
 let hierEditorPresetName = "";
+/* The name line fits 22 glyphs; a longer name scrolls (see the preset browser draw). */
+const HIER_PRESET_NAME_CHARS = 22;
+const hierPresetNameScroller = createTextScroller();
 let hierEditorPresetEditMode = false; // true when editing params within a preset browser level
 
 /* Dynamic items level state (for items_param type levels) */
@@ -23751,7 +23755,18 @@ function drawHierarchyEditor() {
             const freshPresetName = getSlotParam(hierEditorSlot, `${prefix}:${drawNameParam}`);
             const presetNameForDraw = (freshPresetName && freshPresetName.length > 0)
                 ? freshPresetName : hierEditorPresetName;
-            const name = truncateText(presetNameForDraw || "(unnamed)", 22);
+            /* A name wider than the screen marquees (the shared scroller: a
+             * pause, then a step at a time, a pause at the end, back to the
+             * start) instead of being cut off for good. A name that fits is
+             * drawn exactly as before. */
+            const fullPresetName = presetNameForDraw || "(unnamed)";
+            let name = fullPresetName;
+            if (fullPresetName.length > HIER_PRESET_NAME_CHARS) {
+                hierPresetNameScroller.setSelected(
+                    `${hierEditorSlot}:${hierEditorComponent}:${hierEditorPresetIndex}`);
+                hierPresetNameScroller.tick();
+                name = hierPresetNameScroller.getScrolledText(fullPresetName, HIER_PRESET_NAME_CHARS);
+            }
             const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
             print(nameX, centerY + 4, name, 1);
 
