@@ -72,6 +72,7 @@ import {
     announce, announceMenuItem
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { openTextEntry } from '/data/UserData/schwung/shared/text_entry.mjs';
+import { cursorForPreset } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -116,6 +117,8 @@ let presetReturnLabel = "Chain Editor";
  *   focusSlot    false = leave ctx.selectedSlot / the focused slot alone
  *   audition     false = never audition, whatever the global switch says
  *   label        header label (default: the component's "<prefix>:name")
+ *   currentName  the user preset the component is on, if any: the list opens
+ *                with the cursor on it (enterPresetBrowser only)
  */
 function applyPresetTarget(slot, opts) {
     const o = opts || {};
@@ -480,7 +483,9 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, op
     presetModuleLabel = o.label || getSlotParam(slotIndex, presetPrefix + ":name") || presetModule || "Module";
 
     loadPresetList();
-    selectedPreset = 0;
+    /* On the preset the component is already on, not the top of the list. A
+     * record whose file is gone (deleted behind its back) opens at the top. */
+    selectedPreset = cursorForPreset(presets.map((p) => p.name), o.currentName);
     confirmingDelete = false;
 
     /* Capture the slot's current state so scroll-audition can revert on cancel.
