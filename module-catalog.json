@@ -2590,6 +2590,23 @@
       "default_branch": "main",
       "asset_name": "bloom-module.tar.gz",
       "min_host_version": "1.7.3"
+    },
+    {
+      "id": "s3g-thru",
+      "name": "s3g Thru",
+      "description": "Four-lane stereo sampler with nine playback engines, Single, Split, Shared Dual and Quad layouts, performance-data looping, live recording, and configurable effects.",
+      "author": "s3g",
+      "component_type": "overtake",
+      "subcategory": "sampler-looper",
+      "tags": [
+        "granular",
+        "polyphonic",
+        "sample-based"
+      ],
+      "github_repo": "s3g/s3g-thru",
+      "default_branch": "main",
+      "asset_name": "s3g-thru-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
