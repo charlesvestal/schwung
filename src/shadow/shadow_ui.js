@@ -10401,6 +10401,10 @@ function applySavedEmptySends(i) {
 }
 
 function loadChainConfigFromDir(dir) {
+    /* Forget the previous set's sends first: a missing or unreadable config
+     * returns early below, and the restore's re-apply would otherwise put the
+     * outgoing set's sends on this set's empty tracks. */
+    savedEmptySends.fill(null);
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
     try {

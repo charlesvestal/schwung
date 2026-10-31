@@ -31,6 +31,31 @@ reapply=$(awk -v s="$start" 'NR>s && /if \(!hasState\) applySavedEmptySends\(i\)
 [ -n "$clear_pass" ] && [ -n "$reapply" ] && [ "$clear_pass" -lt "$reapply" ] \
   || { echo "FAIL: the saved sends are not re-applied after the slot clear"; exit 1; }
 
+# 3b. A set whose chain config is missing must not inherit the previous set's
+# sends: run the real JS functions with the host calls stubbed.
+node - "$ui" <<'JS'
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const grab = (re) => { const m = src.match(re); if (!m) throw new Error("not found: " + re); return m[0]; };
+const code = [
+  grab(/const savedEmptySends = \[[^\]]*\];/),
+  grab(/function applySavedEmptySends\(i\) \{[\s\S]*?\n\}/),
+  grab(/function loadChainConfigFromDir\(dir\) \{[\s\S]*?\n\}/),
+].join("\n");
+let files = {}, writes = [];
+const run = new Function("host_read_file", "setSlotParamWithTimeout", "moveModelOwnsMix", "debugLog", "SHADOW_UI_SLOTS",
+  code + "\nreturn { loadChainConfigFromDir, applySavedEmptySends };");
+const api = run((p) => files[p] || null, (i, k, v) => writes.push([i, k, v]), () => false, () => {}, 4);
+files["/a/shadow_chain_config.json"] = JSON.stringify({ slots: [{ empty_sends: [40, 70] }] });
+api.loadChainConfigFromDir("/a");
+api.applySavedEmptySends(0);
+if (!writes.some(w => w[1] === "slot:empty_send1" && w[2] === "40")) { console.error("FAIL: set A's sends were not applied"); process.exit(1); }
+writes = [];
+api.loadChainConfigFromDir("/b");          /* no config on disk */
+api.applySavedEmptySends(0);              /* the restore's re-apply */
+if (writes.some(w => /empty_send/.test(w[1]))) { console.error("FAIL: set B inherited set A's sends: " + JSON.stringify(writes)); process.exit(1); }
+JS
+
 # 4. The per-set config parse, run through the real shadow_set_pages.c.
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/sys"
