@@ -398,9 +398,10 @@ console.log("  ok  saveSendFxChainConfig: user_preset after state (a preset name
 console.log("  ok  send records reload per set (16 positions, absent = cleared) and at boot");
 
 /* ---- the picker / adopt sites use the bus on screen --------------------- */
-const pick = grab("applyMasterFxModuleSelection");
+/* The picker commits through commitMasterFxPick, shared with Delete+JogClick. */
+const pick = grab("commitMasterFxPick");
 if (!/clearFxBusUserPresetRecord\(currentFxBusIndex, comp\.index\)/.test(pick) || /fxBusIsMaster\(\)\) clear/.test(pick))
-    fail("a swap in ANY bus editor must clear that bus record (applyMasterFxModuleSelection)");
+    fail("a swap in ANY bus editor must clear that bus record (commitMasterFxPick)");
 if (!/clearFxBusUserPresetRecord\(currentFxBusIndex, at\.index\)/.test(grab("adoptMasterFxShimModule")))
     fail("adoptMasterFxShimModule clears the record of the bus it adopts into");
 if (!/onReshape: \(op\) => \{ remapFxBusUserPresetRecords\(op\); \}/.test(src.match(/^const MASTER_CHAIN_TARGET = \{[^]*?^\};/m)[0]))

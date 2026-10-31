@@ -226,7 +226,9 @@ const has = (name, needle, why) => { if (!body(name).includes(needle)) fail(name
 has("writeChainShape", "target.onReshape(op)", "hand every shape verb to the target");
 if (!/onReshape: \(op\) => \{ remapFxBusUserPresetRecords\(op\); \}/.test(src.match(/^const MASTER_CHAIN_TARGET = \{[^]*?^\};/m)[0]))
     fail("MASTER_CHAIN_TARGET.onReshape must re-key the records of the bus on screen");
-has("applyMasterFxModuleSelection", "clearFxBusUserPresetRecord(currentFxBusIndex, comp.index)", "clear the record when a module is replaced");
+/* The picker and Delete+JogClick commit a position through ONE helper. */
+has("applyMasterFxModuleSelection", "commitMasterFxPick(", "commit through the shared commitMasterFxPick");
+has("commitMasterFxPick", "clearFxBusUserPresetRecord(currentFxBusIndex, comp.index)", "clear the record when a module is replaced");
 has("clearMasterFxOnMaster", "clearFxBusUserPresetRecord(0, i)", "clear every master record");
 has("loadMasterPreset", "clearFxBusUserPresetRecord(0, i)", "clear records when a whole-chain preset loads");
 has("adoptMasterFxShimModule", "clearFxBusUserPresetRecord(", "clear the record when another client changed the module");

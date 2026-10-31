@@ -99,7 +99,8 @@ import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
 import { drawChainEditorBands, drawChainPicker, drawListScreen, shiftHintsFor,
-         CHAIN_HINTS_AT_REST }
+         CHAIN_HINTS_AT_REST, deleteHintsFor, createFooterNotice,
+         footerNoticeDismissedBy }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -1291,6 +1292,57 @@ let shimBootstrapPromptShown = false;
 let hostVolumeKnobTouched = false;
 let hostShiftHeld = false;  /* Local shift tracking - shim tracking doesn't work in overtake mode */
 let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute+JogClick bypass */
+/*
+ * Delete ("X", CC 119) held -- the modifier for Delete+JogClick device removal.
+ *
+ * Read from the shim's byte (shadow_control_t.delete_held), NOT tracked from
+ * CC 119 here. The shim does not forward an unclaimed Delete to this UI, and
+ * must not: the knob grid's edit gestures rely on Undo/Copy/Delete arriving
+ * only for a module that claimed them. The byte is the one the grid's own
+ * "Delete + a knob" gesture reads, and the shim updates it in EVERY mode --
+ * so a Delete released while this UI is hidden still clears it. A JS-side flag
+ * fed by CC 119 could not see that release and stayed set, and a plain click
+ * after reopening removed a module.
+ */
+function isDeleteHeld() {
+    return typeof shadow_get_delete_held === "function" && shadow_get_delete_held() === 1;
+}
+
+/*
+ * The footer-row confirmation a Delete+JogClick removal raises ("REMOVED
+ * CLOUDSEED"), for both chain editors. Drawn in place of the hint pills only --
+ * never over the boxes, which are what the user wants to see change -- and
+ * gone after FOOTER_NOTICE_MS or on the next jog turn / button press, whichever
+ * comes first (footerNoticeDismissedBy, in the MIDI handler; a Delete press,
+ * which never reaches the MIDI handler, through observeDeleteHeld). The state
+ * and its rules live in chain_editor_chrome.mjs; this is just the one instance.
+ */
+const chainFooterNotice = createFooterNotice({ now: () => Date.now() });
+function chainFooterNoticeText(editor) { return chainFooterNotice.textFor(editor); }
+
+/*
+ * Follow the Delete byte for the two things that react to its EDGES rather
+ * than its level: the footer (CLK DELETE while held) redraws on a change, and a
+ * fresh press dismisses a showing notice the way any other button press does.
+ * Called every tick, and at the top of the MIDI handler so an edge is consumed
+ * before a jog click in the same frame can raise a new notice. The removal
+ * itself never reads lastDeleteHeld: it asks isDeleteHeld() at the click.
+ */
+let lastDeleteHeld = false;
+function observeDeleteHeld() {
+    const held = isDeleteHeld();
+    if (held === lastDeleteHeld) return;
+    lastDeleteHeld = held;
+    needsRedraw = true;
+    if (held) chainFooterNotice.clear();
+}
+
+/* Does THIS jog click remove the focused device? Delete held now, and a loaded
+ * module under the cursor -- on the `+`, the patch node or Settings there is
+ * nothing to remove and the click stays a plain click. */
+function deleteClickRemoves(moduleData) {
+    return isDeleteHeld() && !!(moduleData && moduleData.module);
+}
 
 /* Deferred module init - clear LEDs and wait before calling init() */
 let overtakeInitPending = false;
@@ -15318,6 +15370,25 @@ function applyMasterFxModuleSelection() {
         return;
     }
 
+    commitMasterFxPick(comp, picked, (selected && selected.dspPath) || "", pending);
+
+    /* Exit module selection mode */
+    selectingMasterFxModule = false;
+    needsRedraw = true;
+}
+
+/*
+ * Commit one Master FX choice to a position: the model, the shape verb (where
+ * the bus serves one), the module write, the records, the save.
+ *
+ * `picked` is a module id ("" for None, a removal), `dspPath` the path the shim
+ * loads it from ("" to empty the position) and `pending` the hole a `+` box
+ * opened (or null). The picker's choice (applyMasterFxModuleSelection) and
+ * Delete+JogClick (removeMasterFxComponent) both come through here, so a
+ * removal is ONE path: on a bus that serves shape verbs it is the `remove`
+ * verb, on one that does not (hasShapeVerbs false) the empty module write.
+ */
+function commitMasterFxPick(comp, picked, dspPath, pending) {
     const choice = withPendingChainInsert(
         applyPickerChoiceToChain(masterFxChainConfig(), comp.key, picked), pending);
     MASTER_CHAIN_TARGET.setConfig(choice.cfg);
@@ -15349,14 +15420,20 @@ function applyMasterFxModuleSelection() {
             clearFxBusUserPresetRecord(currentFxBusIndex, comp.index);
         }
         /* comp.index is the FX POSITION; selectedMasterFxComponent is the ROW. */
-        setMasterFxSlotModule(comp.index, (selected && selected.dspPath) || "");
+        setMasterFxSlotModule(comp.index, dspPath);
     }
 
     resetLfoTargetLabels();
     saveMasterFxChainConfig();
+}
 
-    /* Exit module selection mode */
-    selectingMasterFxModule = false;
+/*
+ * Remove a populated Master FX position directly, without the picker -- the
+ * Delete+JogClick gesture. Exactly the picker's "None" pick on a loaded
+ * position: commitMasterFxPick with nothing picked and no pending insert.
+ */
+function removeMasterFxComponent(comp) {
+    commitMasterFxPick(comp, "", "", null);
     needsRedraw = true;
 }
 
@@ -24855,6 +24932,23 @@ function handleSelect() {
                         break;
                     }
 
+                    /* Delete("X")+JogClick: remove a populated MFX slot directly,
+                     * through the picker's own "None" commit
+                     * (removeMasterFxComponent -> commitMasterFxPick). Delete is
+                     * the shim's byte, read now (deleteClickRemoves). */
+                    if (deleteClickRemoves(moduleData)) {
+                        const removedLabel = selectedComp.label;
+                        /* Named BEFORE the removal, from the module scan the
+                         * info band already reads -- no IPC. */
+                        const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
+                        const removedName = (opt && opt.name) || getModuleDisplayName(moduleData.module);
+                        removeMasterFxComponent(selectedComp);
+                        announce(`Removed ${removedLabel}`);
+                        chainFooterNotice.show("master", `Removed ${removedName}`);
+                        needsRedraw = true;
+                        break;
+                    }
+
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
                         const fxAt = masterFxPositionOf(selectedMasterFxComponent);
@@ -24916,6 +25010,30 @@ function handleSelect() {
                 if (hostMuteHeld && moduleData && moduleData.module) {
                     toggleChainComponentBypass(slotChainTarget(selectedSlot),
                                                comp.key, comp.label);
+                    break;
+                }
+
+                /* Delete("X")+JogClick: remove a populated module directly,
+                 * through the SAME call the "Remove Module" grid-menu row uses
+                 * (applyChainComponentPick(..., "", null) — its own comment
+                 * calls out that a picker "None" and a menu Remove must stay
+                 * the one path, not two that can drift). Delete is the shim's
+                 * byte, read now (deleteClickRemoves). */
+                if (deleteClickRemoves(moduleData)) {
+                    const removedLabel = comp.label;
+                    /* Named BEFORE the removal: afterwards the position is gone.
+                     * The same cached name the info band shows -- no new read. */
+                    const removedName = getSlotParamCached(selectedSlot,
+                        `${getComponentParamPrefix(comp.key)}:name`, moduleData.module) ||
+                        getModuleDisplayName(moduleData.module);
+                    /* The loaded-preset record is cleared on this path by
+                     * applyComponentSelectionConfirmed, as for the menu row. */
+                    applyChainComponentPick(selectedSlot, comp.key, "", null);
+                    announce(`Removed ${removedLabel}`);
+                    /* The visible half of the acknowledgement: the row just
+                     * closes the gap, which reads as nothing if you blinked. */
+                    chainFooterNotice.show("slot", `Removed ${removedName}`);
+                    needsRedraw = true;
                     break;
                 }
 
@@ -26437,13 +26555,27 @@ function drawChainEdit() {
      *
      * isShiftHeld() is a read of the control SHM, not an IPC round trip, so
      * this is a per-frame call that costs nothing measurable.
+     *
+     * Delete ("X") gets the same treatment, for the same reason: Delete+click
+     * removes the focused device, and a footer still reading CLK OPEN would
+     * be describing a different button. Shift is asked FIRST because the
+     * click dispatch asks it first -- Shift+click is handled before
+     * handleSelect ever looks at Delete -- so with both held the footer names
+     * what actually happens. isDeleteHeld() is a read of the same control SHM
+     * (the shim's delete_held byte), also free.
+     *
+     * `notice` is the Delete+JogClick confirmation; while it is up it replaces
+     * the hint pills IN THE FOOTER ROW ONLY (see createFooterNotice).
      */
     drawChainEditorBands(movy, {
         headerLeft: headerText,
         headerRight,
         label,
         info: infoLine,
-        hints: isShiftHeld() ? shiftHintsFor(selectedComp) : CHAIN_HINTS_AT_REST,
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
+             : isDeleteHeld() ? deleteHintsFor(selectedComp)
+             : CHAIN_HINTS_AT_REST,
+        notice: chainFooterNoticeText("slot"),
     });
 
     /*
@@ -27045,6 +27177,8 @@ function drawHelpDetail() {
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
     _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
     _ctx.isShiftHeld = () => isShiftHeld();
+    _ctx.isDeleteHeld = () => isDeleteHeld();
+    _ctx.chainFooterNoticeText = (editor) => chainFooterNoticeText(editor);
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
@@ -30189,6 +30323,10 @@ globalThis.tick = function() {
         }
     }
 
+    /* Delete's held byte: a change redraws the footer, a press dismisses a
+     * Delete+JogClick notice. A shared-memory read, no IPC. */
+    observeDeleteHeld();
+
     /* THE STEP MENU (hold one step, press Menu): the shim owns it and fills
      * the state; a change of its seq, or its closing, is a redraw. */
     const stepMenu = (typeof shadow_get_step_menu === "function") ? shadow_get_step_menu() : null;
@@ -30839,6 +30977,19 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Always track mute state (CC 88) — modifier for Mute+JogClick module-bypass shortcut */
     if ((status & 0xF0) === 0xB0 && d1 === 88) {
         hostMuteHeld = (d2 > 0);
+    }
+    /* Delete (CC 119) is NOT tracked here: it is not forwarded to this UI
+     * unless a module claimed it, so its held state is the shim's byte
+     * (isDeleteHeld). Its edges are followed here as well as every tick, so a
+     * press the tick has not seen yet is consumed BEFORE the jog click below
+     * can raise a notice -- otherwise the next tick would take that press for
+     * a new one and dismiss the notice it just raised. */
+    observeDeleteHeld();
+    /* A jog turn or any button press dismisses a Delete+JogClick confirmation
+     * early. HERE, ahead of every dispatch below, so the jog click that raises
+     * a new notice clears the old one first rather than the other way round. */
+    if (footerNoticeDismissedBy(status, d1, d2) && chainFooterNotice.clear()) {
+        needsRedraw = true;
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */

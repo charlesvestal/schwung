@@ -1490,6 +1490,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
+- **Delete + Jog Click** on a focused, populated chain/MFX module — remove it, through the same commit as the "Remove Module" row / picker "None". Held state is the shim's `delete_held` byte, **never a forwarded CC 119** (a JS flag never sees a release made while the UI is hidden). See `docs/SHADOW_UI.md`.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 - **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 
