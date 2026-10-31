@@ -3018,6 +3018,17 @@ int shadow_inprocess_load_chain(void) {
             continue;
         }
 
+        /* An empty track's Send A/B, from the set's shadow_chain_config.json
+         * (shadow_load_config_from_dir). Staged BEFORE the autosave load below
+         * so a slot that has a patch still takes its own main_sends from it. */
+        for (int sb = 0; sb < 2; sb++) {
+            if (!shadow_chain_slots[i].empty_send[sb] || !shadow_plugin_v2->set_param) continue;
+            char ck[24], cv[8];
+            snprintf(ck, sizeof(ck), "buses:main_send%d", sb + 1);
+            snprintf(cv, sizeof(cv), "%d", shadow_chain_slots[i].empty_send[sb]);
+            shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, ck, cv);
+        }
+
         /* Check for autosave file */
         char autosave_path[256];
         snprintf(autosave_path, sizeof(autosave_path),
@@ -3357,8 +3368,15 @@ void shadow_process_fade_completions(void) {
  * AN EMPTY SLOT'S SENDS. A slot's Send A/B levels live in its module chain,
  * so a slot with no module had nowhere to keep one -- and its Move track (under
  * Move->Schwung) reached neither send bus. The shim keeps two levels for it:
- * `buses:main_send<N>` lands here while the slot is empty (and in the chain
- * otherwise), `slot:empty_send<N>` always does, for saving and restoring.
+ * `buses:main_send<N>` lands here while the slot has no chain instance (and in
+ * the chain otherwise), `slot:empty_send<N>` is the save/restore spelling.
+ *
+ * EVERY SLOT HAS AN INSTANCE once the chain is up (boot creates all of them),
+ * and an instance is what the mix drains, so the live level is the chain's.
+ * `slot:empty_send<N>` therefore reads and writes THROUGH to the instance when
+ * there is one. Kept as a plain mirror it saved 0 forever -- the UI writes
+ * `buses:main_send<N>` straight to the chain -- and a restore wrote a value
+ * nobody drains: an empty track's Send A/B came back at 0 on every re-entry.
  * Returns the send index 0/1, or -1.
  */
 static int empty_send_index(int slot, const char *key) {
@@ -3379,6 +3397,13 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
             if (v < 0) v = 0;
             if (v > 127) v = 127;
             shadow_chain_slots[slot].empty_send[es] = (uint8_t)v;
+            if (shadow_chain_slots[slot].instance && shadow_plugin_v2 &&
+                shadow_plugin_v2->set_param) {
+                char ck[24], cv[8];
+                snprintf(ck, sizeof(ck), "buses:main_send%d", es + 1);
+                snprintf(cv, sizeof(cv), "%d", v);
+                shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, ck, cv);
+            }
             return 1;
         }
     }
@@ -3483,7 +3508,20 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
     {
         const int es = empty_send_index(slot, key);
-        if (es >= 0) return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
+        if (es >= 0) {
+            if (shadow_chain_slots[slot].instance && shadow_plugin_v2 &&
+                shadow_plugin_v2->get_param) {
+                char ck[24], cv[16];
+                snprintf(ck, sizeof(ck), "buses:main_send%d", es + 1);
+                int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                      ck, cv, sizeof(cv));
+                if (len > 0) {
+                    cv[len < (int)sizeof(cv) ? len : (int)sizeof(cv) - 1] = '\0';
+                    return snprintf(buf, buf_len, "%d", atoi(cv));
+                }
+            }
+            return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
+        }
     }
     if (strcmp(key, "slot:volume") == 0 || strcmp(key, "slot:pan") == 0) {
         char t[8];
