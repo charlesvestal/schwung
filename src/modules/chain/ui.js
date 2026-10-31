@@ -6,6 +6,7 @@
 
 import * as std from 'std';
 import * as os from 'os';
+import { loadUiModule } from '/data/UserData/schwung/shared/ui_module_load.mjs';
 import { isCapacitiveTouchMessage } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { MoveBack, MoveMenu, MoveSteps, MoveMainButton, MoveMainKnob, MoveShift } from '/data/UserData/schwung/shared/constants.mjs';
 import { drawMenuHeader, drawMenuList, drawMenuFooter, menuLayoutDefaults, showOverlay, tickOverlay, drawOverlay, isOverlayActive } from '/data/UserData/schwung/shared/menu_layout.mjs';
@@ -1636,18 +1637,21 @@ function loadSourceUi(moduleId) {
         sourceUiLoadError = true;
         return null;
     }
-    globalThis.chain_ui = null;
     if (typeof host_load_ui_module !== "function") {
         sourceUiLoadError = true;
         return null;
     }
-    const ok = host_load_ui_module(path);
-    if (!ok) {
+    let loaded;
+    try {
+        loaded = loadUiModule(host_load_ui_module, path);
+    } catch (e) {
+        console.log("Chain UI: failed to load source UI: " + e);
+    }
+    if (!loaded) {
         sourceUiLoadError = true;
         return null;
     }
-    const ui = globalThis.chain_ui;
-    globalThis.chain_ui = null;
+    const ui = loaded.chainUi;
     if (!ui || typeof ui.init !== "function") return null;
     sourceUiLoadError = false;
     return ui;
@@ -1711,34 +1715,14 @@ function loadComponentUi(moduleId) {
         return null;
     }
 
-    /* The module will set globalThis.init, globalThis.tick, etc */
-    /* We need to capture these before they get overwritten */
-    const savedInit = globalThis.init;
-    const savedTick = globalThis.tick;
-    const savedOnMidiInternal = globalThis.onMidiMessageInternal;
-    const savedOnMidiExternal = globalThis.onMidiMessageExternal;
-
-    const ok = host_load_ui_module(path);
-    if (!ok) {
-        console.log(`Chain UI: failed to load component UI: ${path}`);
-        return null;
+    try {
+        const loaded = loadUiModule(host_load_ui_module, path);
+        if (loaded) return loaded.callbacks;
+    } catch (e) {
+        console.log("Chain UI: failed to load component UI: " + e);
     }
-
-    /* Capture the loaded module's functions */
-    const ui = {
-        init: globalThis.init,
-        tick: globalThis.tick,
-        onMidiMessageInternal: globalThis.onMidiMessageInternal,
-        onMidiMessageExternal: globalThis.onMidiMessageExternal
-    };
-
-    /* Restore our functions */
-    globalThis.init = savedInit;
-    globalThis.tick = savedTick;
-    globalThis.onMidiMessageInternal = savedOnMidiInternal;
-    globalThis.onMidiMessageExternal = savedOnMidiExternal;
-
-    return ui;
+    console.log(`Chain UI: failed to load component UI: ${path}`);
+    return null;
 }
 
 /* Get the module ID for a component slot */

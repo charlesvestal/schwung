@@ -895,6 +895,10 @@ globalThis.chain_ui = {
 
 Do not override `globalThis.init` or `globalThis.tick` in `ui_chain.js`.
 
+UI-only loads restore parent callbacks; omitted child callbacks do not inherit
+host handlers. Shadow component editors leave external MIDI with the host;
+active tools receive it until hidden, exited or suspended.
+
 **Your knobs on an external surface (`ui_pages`).** A module that draws its
 own screen often refuses `ui_hierarchy` on purpose, because serving one stops
 the host from loading `ui_chain.js`. External control surfaces (the E16 and

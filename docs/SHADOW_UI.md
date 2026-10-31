@@ -10,6 +10,20 @@ trailing pages, and Master FX persistence.
 The tri-state read rule these all depend on — **a param read has THREE answers,
 not two** — stays in `CLAUDE.md`, because it is cited from everywhere.
 
+### UI loads preserve the host's callbacks
+
+`loadUiModule()` in `src/shared/ui_module_load.mjs` captures component/tool exports
+and restores host callbacks and `chain_ui` in `finally`, even after failed loads.
+Both global-callback and `chain_ui` modules are supported; omitted callbacks are
+null. This also protects the standalone Chain source/component loaders.
+
+The shadow host keeps `onMidiMessageExternal` installed so a component visit
+cannot bypass CC Learn. Active tools receive raw MIDI through `runToolCallback()`
+with their DSP parameter bindings, including during co-run. Hide, exit and
+suspend clear the active callbacks; resume restores them. The standalone Chain
+UI retains its own component/source dispatch. Regression coverage lives in
+`tests/host/test_ui_module_load.sh`.
+
 ### Whatever is drawn LAST must be fed FIRST
 
 `onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
