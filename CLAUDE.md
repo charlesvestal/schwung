@@ -974,6 +974,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   four, one read stop each. Before it, the only way to get a fact to a widget
   was to give it a knob, which is how a module shipped a read-only cell whose
   whole job was carrying a number to the cell beside it.
+- **A widget's extra key can be `"live": true`** — also read every tick, taking
+  turns on the one-live-read-per-tick budget (it keeps its rotation stop too); a
+  canvas page's own `extra_keys` cannot (they stay on the rotation).
 - **A module can own a PAGE (`as_page`), and it is a PAGE_KNOBS page with a
   drawer, NOT a new kind.** That is what makes the encoders work with no input
   code and the reads happen at all: 22 controller branches test PAGE_KNOBS, and

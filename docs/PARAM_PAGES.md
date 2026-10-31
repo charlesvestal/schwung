@@ -1975,6 +1975,28 @@ but only an internal detector could produce one. `viz.extra_keys` lets a module
 declare them. Capped at four: one read per stop, and a cell asking for twenty
 would spend the page's whole read budget and starve every other value on screen.
 
+**A widget's extra key may be `live`.** The rotation visits a key once per pass,
+a few times a second, which is a slideshow for a meter or a playhead. Declare
+the key `"live": true` in `chain_params` and `liveExtraKeys` (in
+`page_controller.mjs`) adds it to the `modKeys` list `refreshModulatedValues`
+already walks, so it is also re-read as `<key>:effective` every tick, like a
+live cell key. The rotation still visits it too: that stop (counted in the cap
+of four) supplies the plain read behind `baseValues`. It spends the same
+`MOD_FAST_READS_PER_TICK` budget as every other live key on the page: live keys
+take turns, so with N of them each is read once every N ticks, and they do not
+stack. `liveExtraKeys` walks `vizGroups()` only, so **`live` applies to a
+widget's `viz.extra_keys` and not to a canvas page's own `extra_keys`** (see the
+next section): those stay on the rotation and the flag is ignored there, while a
+key that is also a widget extra on the same page is live. A key that also has a
+cell is left to `moving()`.
+
+Two side effects. Any live extra makes `modValues` non-empty, so every widget on
+the page is handed `baseValues`: `drawFader` draws its base marks (and
+`drawSample` is handed them too) even though nothing on it is modulated; custom
+widgets only care if they read `baseValues`. And on an `as_page` canvas page
+that also has knobs, a widget's live extra is merged into the canvas `values`,
+although that page draws no widget.
+
 ### A page the MODULE draws, and it is still a page
 
 `type: "canvas"` gives a cell you dive into. `as_page` gives a page in the
@@ -2023,7 +2045,8 @@ widget drawing that vowel sat frozen at the knob while the sound moved.
 `"live": true` buys the treatment a modulated key already gets: `:effective`
 re-read EVERY TICK rather than on the rotation, which on an eight-knob page
 comes round about four times a second — an animation drawn from that is a
-slideshow.
+slideshow. A widget's `viz.extra_keys` entry can be live too (see above); a
+canvas page's cannot.
 
 Two traps behind it, both found on hardware. The chain host OWNED `:effective`
 and, for a key it was not modulating, stripped the suffix and asked the plugin
