@@ -141,7 +141,7 @@ import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mj
  * has moved away from it since — the "My Presets" trailing page's row 1
  * (see componentTrailingMenus below). Pure: the caller supplies the record and
  * the live blob, and never turns a failed read into a `*`. */
-import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
+import { makeRecord, presetRowValue, isModified, cursorForPreset } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexOfKey }
     from '/data/UserData/schwung/shared/lfo_target_groups.mjs';
@@ -3025,7 +3025,9 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
 
     switch (action) {
         case "up_load":
-            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, presetOpts);
+            /* Open the list on the preset this component is on. */
+            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix,
+                Object.assign({}, presetOpts, { currentName: record ? record.name : "" }));
             result = true;
             break;
 
@@ -13486,11 +13488,15 @@ function loadMasterPresetList() {
 function enterMasterPresetPicker() {
     loadMasterPresetList();
     inMasterPresetPicker = true;
-    selectedMasterPresetIndex = 0;  /* Start at [New] */
+    /* On the loaded preset when there is one (row 0 is [New], so presets start
+     * at row 1); [New] only when nothing is loaded or it is no longer on disk. */
+    selectedMasterPresetIndex = cursorForPreset(
+        masterPresets.map((p) => p.name), currentMasterPresetName, 0, 1);
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    announce("Master Presets, [New]");
+    announce(`Master Presets, ${selectedMasterPresetIndex === 0
+        ? "[New]" : masterPresets[selectedMasterPresetIndex - 1].name}`);
 }
 
 function exitMasterPresetPicker() {

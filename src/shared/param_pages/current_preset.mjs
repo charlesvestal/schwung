@@ -70,3 +70,23 @@ export function presetRowValue(record, liveBlob) {
     if (!record || !record.name) return "(none)";
     return isModified(record, liveBlob) ? `* ${record.name}` : record.name;
 }
+
+/**
+ * Where a preset LIST should put its cursor when it opens.
+ *
+ * On the preset the component is already on, so coming back to the list
+ * shows where you are instead of the top of it. Anything that cannot be
+ * resolved falls back to `fallback` (the first row by default): no record,
+ * a name that is no longer on disk (deleted or renamed behind the record's
+ * back), or a list that is empty. Never throws and never returns an index
+ * outside the list.
+ *
+ * `names` is the list's display names in list order. `offset` is for lists
+ * with fixed rows ahead of the presets (the Master preset picker keeps
+ * "[New]" at row 0, so its presets start at 1).
+ */
+export function cursorForPreset(names, currentName, fallback = 0, offset = 0) {
+    if (!Array.isArray(names) || !currentName) return fallback;
+    const at = names.indexOf(String(currentName));
+    return at >= 0 ? at + offset : fallback;
+}
