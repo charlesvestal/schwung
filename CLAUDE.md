@@ -974,6 +974,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   four, one read stop each. Before it, the only way to get a fact to a widget
   was to give it a knob, which is how a module shipped a read-only cell whose
   whole job was carrying a number to the cell beside it.
+- **A widget's extra key can be `"live": true`** — also read every tick, taking
+  turns on the one-live-read-per-tick budget (it keeps its rotation stop too); a
+  canvas page's own `extra_keys` cannot (they stay on the rotation).
 - **A module can own a PAGE (`as_page`), and it is a PAGE_KNOBS page with a
   drawer, NOT a new kind.** That is what makes the encoders work with no input
   code and the reads happen at all: 22 controller branches test PAGE_KNOBS, and
@@ -1347,6 +1350,8 @@ The synthesised contracts (Global Settings, Slot Settings, Master FX Settings), 
 component load gate, and the input-dispatch order. Read it before editing
 `src/shadow/shadow_ui.js` or its `.mjs` siblings.
 
+- **Component/tool UI loads must restore host callbacks, including on failure.**
+  Use `shared/ui_module_load.mjs`; see `docs/SHADOW_UI.md` for MIDI ownership.
 - **Whatever is drawn LAST must be fed FIRST.** The draw path is a switch with the
   overlays painted after it; the input path is a run of early-outs *before* it. The
   two orders are the reverse of each other, and nothing at either site says so.
@@ -1485,6 +1490,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
+- **Delete + Jog Click** on a focused, populated chain/MFX module — remove it, through the same commit as the "Remove Module" row / picker "None". Held state is the shim's `delete_held` byte, **never a forwarded CC 119** (a JS flag never sees a release made while the UI is hidden). See `docs/SHADOW_UI.md`.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 - **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 

@@ -10,6 +10,20 @@ trailing pages, and Master FX persistence.
 The tri-state read rule these all depend on — **a param read has THREE answers,
 not two** — stays in `CLAUDE.md`, because it is cited from everywhere.
 
+### UI loads preserve the host's callbacks
+
+`loadUiModule()` in `src/shared/ui_module_load.mjs` captures component/tool exports
+and restores host callbacks and `chain_ui` in `finally`, even after failed loads.
+Both global-callback and `chain_ui` modules are supported; omitted callbacks are
+null. This also protects the standalone Chain source/component loaders.
+
+The shadow host keeps `onMidiMessageExternal` installed so a component visit
+cannot bypass CC Learn. Active tools receive raw MIDI through `runToolCallback()`
+with their DSP parameter bindings, including during co-run. Hide, exit and
+suspend clear the active callbacks; resume restores them. The standalone Chain
+UI retains its own component/source dispatch. Regression coverage lives in
+`tests/host/test_ui_module_load.sh`.
+
 ### Whatever is drawn LAST must be fed FIRST
 
 `onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
@@ -965,6 +979,44 @@ this device jogs. Two related rules fell out of the same render: a footer must
 name the verb of the row **under the cursor** (the picker's filter row cycles
 and loads nothing, so `drawChainPicker` reads `clickVerb` off the row), and a
 one-row screen must not name a JOG with nowhere to go.
+
+**The two chain editors' footers follow the held modifier, and keep their
+places** (`src/shared/chain_editor_chrome.mjs`, used by `drawChainEdit` and
+`drawMasterFx`). At rest `JOG SEL / CLK OPEN / BACK EXIT` (`BACK BUS` on an FX
+bus). **Shift** (`shiftHintsFor`): `JOG MOVE / CLK SWAP` on a module, `CLK SWAP`
+in OPEN's slot on the synth. **Delete ("X", CC 119)** (`deleteHintsFor`):
+`JOG SEL / CLK DELETE` on a loaded module or the synth -- BACK is dropped on
+purpose, because three pairs with DELETE measure 135px against the 128px bar
+and `drawFooter` would drop the MIDDLE pair instead. On the `+`, the patch /
+preset node and Settings the click does exactly what a plain click does, so the
+footer is the resting one (pinned in `SAME_ON_PURPOSE` of the chain-editor
+snapshot). Shift is asked first because Shift+click is dispatched before
+`handleSelect` looks at Delete.
+
+**A Delete+JogClick removal leaves a footer notice, never an overlay.**
+`REMOVED <MODULE NAME>` is drawn as one centred pill IN THE FOOTER ROW, in
+place of the hints (`drawChainEditorBands`' `notice`), so the chain the user is
+checking stays fully visible -- the snapshot test asserts that a notice case
+matches its twin byte for byte above `RULE_Y`. It lasts `FOOTER_NOTICE_MS`
+(1.5 s) and is dismissed earlier by a jog turn, a Delete press or any button /
+step / pad press (`footerNoticeDismissedBy`, run in the MIDI handler AHEAD of the
+jog-click dispatch so the click that raises a notice does not clear it); a
+button release and a capacitive touch (notes 0-9) do not dismiss it. Expiry
+needs no timer: the shadow UI redraws every `REDRAW_INTERVAL` ticks, and the
+draw path resolves the expiry on read. The notice is scoped to the editor that
+raised it (`"slot"` / `"master"`). Tests: `test_delete_footer_notice.sh`,
+`test_chain_gestures.sh`, `test_chain_editor_snapshot.sh`.
+
+**Delete's held state is the shim's byte, not CC 119.** The removal, the
+footer and the notice all ask `isDeleteHeld()`, which reads
+`shadow_get_delete_held()` (`shadow_control_t.delete_held`, the byte the knob
+grid's "Delete + a knob" gesture reads). The shim updates it in every mode and
+does not forward an unclaimed CC 119 to the shadow UI, so nothing in the JS
+can be left believing Delete is down after it was released with the UI hidden.
+A Delete press, which never reaches the MIDI handler, dismisses the notice
+through `observeDeleteHeld()` (every tick, and at the top of the MIDI handler
+so the edge is consumed before a jog click in the same frame raises a notice).
+Test: `test_delete_jogclick_remove.sh`.
 
 ### The metronome is missing by CONSTRUCTION, and detection is one exact string
 

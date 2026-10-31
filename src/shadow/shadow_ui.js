@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as std from 'std';
+import { loadUiModule } from '/data/UserData/schwung/shared/ui_module_load.mjs';
 
 /* Import unified logger */
 import { log as unifiedLog, installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
@@ -47,6 +48,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { compareNames } from '/data/UserData/schwung/shared/name_sort.mjs';
+import { createTextScroller, fitScrollWindow } from '/data/UserData/schwung/shared/text_scroll.mjs';
 import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
@@ -97,7 +99,8 @@ import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
 import { drawChainEditorBands, drawChainPicker, drawListScreen, shiftHintsFor,
-         CHAIN_HINTS_AT_REST }
+         CHAIN_HINTS_AT_REST, deleteHintsFor, createFooterNotice,
+         footerNoticeDismissedBy }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -140,7 +143,7 @@ import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mj
  * has moved away from it since — the "My Presets" trailing page's row 1
  * (see componentTrailingMenus below). Pure: the caller supplies the record and
  * the live blob, and never turns a failed read into a `*`. */
-import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
+import { makeRecord, presetRowValue, isModified, cursorForPreset } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexOfKey }
     from '/data/UserData/schwung/shared/lfo_target_groups.mjs';
@@ -1289,6 +1292,57 @@ let shimBootstrapPromptShown = false;
 let hostVolumeKnobTouched = false;
 let hostShiftHeld = false;  /* Local shift tracking - shim tracking doesn't work in overtake mode */
 let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute+JogClick bypass */
+/*
+ * Delete ("X", CC 119) held -- the modifier for Delete+JogClick device removal.
+ *
+ * Read from the shim's byte (shadow_control_t.delete_held), NOT tracked from
+ * CC 119 here. The shim does not forward an unclaimed Delete to this UI, and
+ * must not: the knob grid's edit gestures rely on Undo/Copy/Delete arriving
+ * only for a module that claimed them. The byte is the one the grid's own
+ * "Delete + a knob" gesture reads, and the shim updates it in EVERY mode --
+ * so a Delete released while this UI is hidden still clears it. A JS-side flag
+ * fed by CC 119 could not see that release and stayed set, and a plain click
+ * after reopening removed a module.
+ */
+function isDeleteHeld() {
+    return typeof shadow_get_delete_held === "function" && shadow_get_delete_held() === 1;
+}
+
+/*
+ * The footer-row confirmation a Delete+JogClick removal raises ("REMOVED
+ * CLOUDSEED"), for both chain editors. Drawn in place of the hint pills only --
+ * never over the boxes, which are what the user wants to see change -- and
+ * gone after FOOTER_NOTICE_MS or on the next jog turn / button press, whichever
+ * comes first (footerNoticeDismissedBy, in the MIDI handler; a Delete press,
+ * which never reaches the MIDI handler, through observeDeleteHeld). The state
+ * and its rules live in chain_editor_chrome.mjs; this is just the one instance.
+ */
+const chainFooterNotice = createFooterNotice({ now: () => Date.now() });
+function chainFooterNoticeText(editor) { return chainFooterNotice.textFor(editor); }
+
+/*
+ * Follow the Delete byte for the two things that react to its EDGES rather
+ * than its level: the footer (CLK DELETE while held) redraws on a change, and a
+ * fresh press dismisses a showing notice the way any other button press does.
+ * Called every tick, and at the top of the MIDI handler so an edge is consumed
+ * before a jog click in the same frame can raise a new notice. The removal
+ * itself never reads lastDeleteHeld: it asks isDeleteHeld() at the click.
+ */
+let lastDeleteHeld = false;
+function observeDeleteHeld() {
+    const held = isDeleteHeld();
+    if (held === lastDeleteHeld) return;
+    lastDeleteHeld = held;
+    needsRedraw = true;
+    if (held) chainFooterNotice.clear();
+}
+
+/* Does THIS jog click remove the focused device? Delete held now, and a loaded
+ * module under the cursor -- on the `+`, the patch node or Settings there is
+ * nothing to remove and the click stays a plain click. */
+function deleteClickRemoves(moduleData) {
+    return isDeleteHeld() && !!(moduleData && moduleData.module);
+}
 
 /* Deferred module init - clear LEDs and wait before calling init() */
 let overtakeInitPending = false;
@@ -3024,7 +3078,9 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
 
     switch (action) {
         case "up_load":
-            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, presetOpts);
+            /* Open the list on the preset this component is on. */
+            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix,
+                Object.assign({}, presetOpts, { currentName: record ? record.name : "" }));
             result = true;
             break;
 
@@ -6597,6 +6653,11 @@ let hierEditorIsPresetLevel = false;  // true when current level is a preset bro
 let hierEditorPresetCount = 0;
 let hierEditorPresetIndex = 0;
 let hierEditorPresetName = "";
+/* The name line is measured in pixels (the font is proportional); a name wider
+ * than it scrolls (see the preset browser draw). */
+const HIER_PRESET_NAME_WIDTH = SCREEN_WIDTH - 4;
+const hierPresetNameScroller = createTextScroller();
+let hierPresetNameWindow = { name: null, chars: 0 };
 let hierEditorPresetEditMode = false; // true when editing params within a preset browser level
 
 /* Dynamic items level state (for items_param type levels) */
@@ -7412,9 +7473,6 @@ function loadModuleUi(slot, componentKey, moduleId) {
         return false;
     }
 
-    /* Clear any previous chain_ui */
-    globalThis.chain_ui = null;
-
     /* Set up param shims before loading */
     setupModuleParamShims(slot, componentKey);
 
@@ -7425,38 +7483,18 @@ function loadModuleUi(slot, componentKey, moduleId) {
         return false;
     }
 
-    /* Save current globals before loading - module may overwrite them */
-    const savedInit = globalThis.init;
-    const savedTick = globalThis.tick;
-    const savedMidi = globalThis.onMidiMessageInternal;
-
-    const ok = shadow_load_ui_module(uiPath);
-    if (!ok) {
+    let loaded;
+    try {
+        loaded = loadUiModule(shadow_load_ui_module, uiPath);
+    } catch (e) {
+        debugLog("loadModuleUi: " + e);
+    }
+    if (!loaded) {
         moduleUiLoadError = true;
         clearModuleParamShims();
-        /* Restore globals in case partial load modified them */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
         return false;
     }
-
-    /* Check if module used chain_ui pattern (preferred) */
-    if (globalThis.chain_ui) {
-        loadedModuleUi = globalThis.chain_ui;
-    } else {
-        /* Module used standard globals - wrap them in chain_ui object */
-        loadedModuleUi = {
-            init: (globalThis.init !== savedInit) ? globalThis.init : null,
-            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
-        };
-
-        /* Restore shadow UI's globals */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
-    }
+    loadedModuleUi = loaded.chainUi || loaded.callbacks;
 
     /* Verify we got something useful */
     if (!loadedModuleUi || (!loadedModuleUi.tick && !loadedModuleUi.init && !loadedModuleUi.onMidiMessageInternal)) {
@@ -9745,11 +9783,6 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         const wantLedQueue = !skipOvertake && !(moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear);
         if (wantLedQueue) activateLedQueue();
 
-        /* Save current globals before loading - module may overwrite them */
-        const savedInit = globalThis.init;
-        const savedTick = globalThis.tick;
-        const savedMidi = globalThis.onMidiMessageInternal;
-
         overtakeModulePath = moduleInfo.uiPath;
         overtakeModuleId = moduleInfo.id || "";
         setView(VIEWS.OVERTAKE_MODULE);
@@ -9856,8 +9889,10 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         /* Step 4: Load the module's UI script (after DSP + shims so module can use them) */
         debugLog("loadOvertakeModule: loading " + moduleInfo.uiPath);
+        let loaded;
         if (typeof shadow_load_ui_module === "function") {
-            const result = shadow_load_ui_module(moduleInfo.uiPath);
+            loaded = loadUiModule(shadow_load_ui_module, moduleInfo.uiPath);
+            const result = !!loaded;
             debugLog("loadOvertakeModule: shadow_load_ui_module returned " + result);
             if (!result) {
                 deactivateLedQueue();
@@ -9879,24 +9914,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             return false;
         }
 
-        /* Step 5: Capture the module's callbacks */
-        overtakeModuleCallbacks = {
-            init: (globalThis.init !== savedInit) ? globalThis.init : null,
-            tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
-            onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
-            /* onResume(): optional. Called once each time the module is
-             * resumed from suspend (init() is NOT re-run). See
-             * invokeModuleOnResume for the module-facing contract. */
-            onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
-        };
-
-        /* Restore shadow UI's globals */
-        globalThis.init = savedInit;
-        globalThis.tick = savedTick;
-        globalThis.onMidiMessageInternal = savedMidi;
-        if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
-        if (typeof globalThis.onResume === "function") delete globalThis.onResume;
+        /* Keep tool callbacks off globalThis; the host routes external MIDI
+         * to this active owner, just as it routes internal MIDI and tick. */
+        overtakeModuleCallbacks = loaded.callbacks;
 
         debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                  " tick:" + !!overtakeModuleCallbacks.tick +
@@ -10439,7 +10459,23 @@ function alignAckTick(now) {
     setSlotParamWithTimeout(0, "set_aligned", String(alignAck.gen), 100);
 }
 
+/* The set's saved Send A/B for each track, kept for the slot restore below: a
+ * clear wipes a chain's sends, so what loadChainConfigFromDir writes first is
+ * written again once the slot has been cleared and (maybe) loaded. */
+const savedEmptySends = [null, null, null, null];
+
+function applySavedEmptySends(i) {
+    const es = savedEmptySends[i];
+    if (!es) return;
+    setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
+    setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
+}
+
 function loadChainConfigFromDir(dir) {
+    /* Forget the previous set's sends first: a missing or unreadable config
+     * returns early below, and the restore's re-apply would otherwise put the
+     * outgoing set's sends on this set's empty tracks. */
+    savedEmptySends.fill(null);
     if (!dir) return;
     const path = dir + "/shadow_chain_config.json";
     try {
@@ -10454,8 +10490,8 @@ function loadChainConfigFromDir(dir) {
             /* Absent (a set saved before pan existed) means centre. */
             setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
             const es = Array.isArray(s.empty_sends) ? s.empty_sends : [0, 0];
-            setSlotParamWithTimeout(i, "slot:empty_send1", String(es[0] | 0), 500);
-            setSlotParamWithTimeout(i, "slot:empty_send2", String(es[1] | 0), 500);
+            savedEmptySends[i] = es;
+            applySavedEmptySends(i);
             /* Always write receive_channel: use saved value if present, else
              * default to slot index + 1. Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
@@ -13526,11 +13562,15 @@ function loadMasterPresetList() {
 function enterMasterPresetPicker() {
     loadMasterPresetList();
     inMasterPresetPicker = true;
-    selectedMasterPresetIndex = 0;  /* Start at [New] */
+    /* On the loaded preset when there is one (row 0 is [New], so presets start
+     * at row 1); [New] only when nothing is loaded or it is no longer on disk. */
+    selectedMasterPresetIndex = cursorForPreset(
+        masterPresets.map((p) => p.name), currentMasterPresetName, 0, 1);
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    announce("Master Presets, [New]");
+    announce(`Master Presets, ${selectedMasterPresetIndex === 0
+        ? "[New]" : masterPresets[selectedMasterPresetIndex - 1].name}`);
 }
 
 function exitMasterPresetPicker() {
@@ -14531,11 +14571,6 @@ function startInteractiveTool(toolModule, filePath) {
             setView(VIEWS.OVERTAKE_MODULE);
             needsRedraw = true;
 
-            /* Save current globals before loading - module may overwrite them */
-            const savedInit = globalThis.init;
-            const savedTick = globalThis.tick;
-            const savedMidi = globalThis.onMidiMessageInternal;
-
             /* Reinstall shims before loading the ES module.
              * QuickJS resolves bare global identifiers at compile time,
              * so they must exist on globalThis when shadow_load_ui_module
@@ -14587,8 +14622,14 @@ function startInteractiveTool(toolModule, filePath) {
             };
             globalThis.host_tool_file_path = filePath || "";
 
+            let loaded;
             if (typeof shadow_load_ui_module === "function") {
-                const result = shadow_load_ui_module(uiPath);
+                try {
+                    loaded = loadUiModule(shadow_load_ui_module, uiPath);
+                } catch (e) {
+                    debugLog("startInteractiveTool reconnect: " + e);
+                }
+                const result = !!loaded;
                 debugLog("startInteractiveTool reconnect: shadow_load_ui_module returned " + result);
                 if (!result) {
                     debugLog("startInteractiveTool reconnect: failed to load UI");
@@ -14609,22 +14650,7 @@ function startInteractiveTool(toolModule, filePath) {
                 return;
             }
 
-            /* Capture callbacks (same keys as loadOvertakeModule) */
-            overtakeModuleCallbacks = {
-                init: (globalThis.init !== savedInit) ? globalThis.init : null,
-                tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-                onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
-                onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
-                /* onResume(): optional. Called once each time the module is
-                 * resumed from suspend (init() is NOT re-run). See
-                 * invokeModuleOnResume for the module-facing contract. */
-                onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
-            };
-            globalThis.init = savedInit;
-            globalThis.tick = savedTick;
-            globalThis.onMidiMessageInternal = savedMidi;
-            if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
-            if (typeof globalThis.onResume === "function") delete globalThis.onResume;
+            overtakeModuleCallbacks = loaded.callbacks;
             debugLog("startInteractiveTool reconnect: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                      " tick:" + !!overtakeModuleCallbacks.tick +
                      " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
@@ -15344,6 +15370,25 @@ function applyMasterFxModuleSelection() {
         return;
     }
 
+    commitMasterFxPick(comp, picked, (selected && selected.dspPath) || "", pending);
+
+    /* Exit module selection mode */
+    selectingMasterFxModule = false;
+    needsRedraw = true;
+}
+
+/*
+ * Commit one Master FX choice to a position: the model, the shape verb (where
+ * the bus serves one), the module write, the records, the save.
+ *
+ * `picked` is a module id ("" for None, a removal), `dspPath` the path the shim
+ * loads it from ("" to empty the position) and `pending` the hole a `+` box
+ * opened (or null). The picker's choice (applyMasterFxModuleSelection) and
+ * Delete+JogClick (removeMasterFxComponent) both come through here, so a
+ * removal is ONE path: on a bus that serves shape verbs it is the `remove`
+ * verb, on one that does not (hasShapeVerbs false) the empty module write.
+ */
+function commitMasterFxPick(comp, picked, dspPath, pending) {
     const choice = withPendingChainInsert(
         applyPickerChoiceToChain(masterFxChainConfig(), comp.key, picked), pending);
     MASTER_CHAIN_TARGET.setConfig(choice.cfg);
@@ -15375,14 +15420,20 @@ function applyMasterFxModuleSelection() {
             clearFxBusUserPresetRecord(currentFxBusIndex, comp.index);
         }
         /* comp.index is the FX POSITION; selectedMasterFxComponent is the ROW. */
-        setMasterFxSlotModule(comp.index, (selected && selected.dspPath) || "");
+        setMasterFxSlotModule(comp.index, dspPath);
     }
 
     resetLfoTargetLabels();
     saveMasterFxChainConfig();
+}
 
-    /* Exit module selection mode */
-    selectingMasterFxModule = false;
+/*
+ * Remove a populated Master FX position directly, without the picker -- the
+ * Delete+JogClick gesture. Exactly the picker's "None" pick on a loaded
+ * position: commitMasterFxPick with nothing picked and no pending insert.
+ */
+function removeMasterFxComponent(comp) {
+    commitMasterFxPick(comp, "", "", null);
     needsRedraw = true;
 }
 
@@ -23751,8 +23802,23 @@ function drawHierarchyEditor() {
             const freshPresetName = getSlotParam(hierEditorSlot, `${prefix}:${drawNameParam}`);
             const presetNameForDraw = (freshPresetName && freshPresetName.length > 0)
                 ? freshPresetName : hierEditorPresetName;
-            const name = truncateText(presetNameForDraw || "(unnamed)", 22);
-            const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
+            /* A name wider than the screen marquees (the shared scroller: a
+             * pause, then a step at a time, a pause at the end, back to the
+             * start) instead of being cut off for good. A name that fits is
+             * drawn exactly as before. */
+            const fullPresetName = presetNameForDraw || "(unnamed)";
+            if (hierPresetNameWindow.name !== fullPresetName) {
+                hierPresetNameWindow = { name: fullPresetName,
+                    chars: fitScrollWindow(fullPresetName, HIER_PRESET_NAME_WIDTH, text_width) };
+            }
+            let name = fullPresetName;
+            if (fullPresetName.length > hierPresetNameWindow.chars) {
+                hierPresetNameScroller.setSelected(
+                    `${hierEditorSlot}:${hierEditorComponent}:${hierEditorPresetIndex}`);
+                hierPresetNameScroller.tick();
+                name = hierPresetNameScroller.getScrolledText(fullPresetName, hierPresetNameWindow.chars);
+            }
+            const nameX = Math.max(0, Math.floor((SCREEN_WIDTH - text_width(name)) / 2));
             print(nameX, centerY + 4, name, 1);
 
             /* Check for load error and display if present */
@@ -24866,6 +24932,23 @@ function handleSelect() {
                         break;
                     }
 
+                    /* Delete("X")+JogClick: remove a populated MFX slot directly,
+                     * through the picker's own "None" commit
+                     * (removeMasterFxComponent -> commitMasterFxPick). Delete is
+                     * the shim's byte, read now (deleteClickRemoves). */
+                    if (deleteClickRemoves(moduleData)) {
+                        const removedLabel = selectedComp.label;
+                        /* Named BEFORE the removal, from the module scan the
+                         * info band already reads -- no IPC. */
+                        const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
+                        const removedName = (opt && opt.name) || getModuleDisplayName(moduleData.module);
+                        removeMasterFxComponent(selectedComp);
+                        announce(`Removed ${removedLabel}`);
+                        chainFooterNotice.show("master", `Removed ${removedName}`);
+                        needsRedraw = true;
+                        break;
+                    }
+
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
                         const fxAt = masterFxPositionOf(selectedMasterFxComponent);
@@ -24927,6 +25010,30 @@ function handleSelect() {
                 if (hostMuteHeld && moduleData && moduleData.module) {
                     toggleChainComponentBypass(slotChainTarget(selectedSlot),
                                                comp.key, comp.label);
+                    break;
+                }
+
+                /* Delete("X")+JogClick: remove a populated module directly,
+                 * through the SAME call the "Remove Module" grid-menu row uses
+                 * (applyChainComponentPick(..., "", null) — its own comment
+                 * calls out that a picker "None" and a menu Remove must stay
+                 * the one path, not two that can drift). Delete is the shim's
+                 * byte, read now (deleteClickRemoves). */
+                if (deleteClickRemoves(moduleData)) {
+                    const removedLabel = comp.label;
+                    /* Named BEFORE the removal: afterwards the position is gone.
+                     * The same cached name the info band shows -- no new read. */
+                    const removedName = getSlotParamCached(selectedSlot,
+                        `${getComponentParamPrefix(comp.key)}:name`, moduleData.module) ||
+                        getModuleDisplayName(moduleData.module);
+                    /* The loaded-preset record is cleared on this path by
+                     * applyComponentSelectionConfirmed, as for the menu row. */
+                    applyChainComponentPick(selectedSlot, comp.key, "", null);
+                    announce(`Removed ${removedLabel}`);
+                    /* The visible half of the acknowledgement: the row just
+                     * closes the gap, which reads as nothing if you blinked. */
+                    chainFooterNotice.show("slot", `Removed ${removedName}`);
+                    needsRedraw = true;
                     break;
                 }
 
@@ -26448,13 +26555,27 @@ function drawChainEdit() {
      *
      * isShiftHeld() is a read of the control SHM, not an IPC round trip, so
      * this is a per-frame call that costs nothing measurable.
+     *
+     * Delete ("X") gets the same treatment, for the same reason: Delete+click
+     * removes the focused device, and a footer still reading CLK OPEN would
+     * be describing a different button. Shift is asked FIRST because the
+     * click dispatch asks it first -- Shift+click is handled before
+     * handleSelect ever looks at Delete -- so with both held the footer names
+     * what actually happens. isDeleteHeld() is a read of the same control SHM
+     * (the shim's delete_held byte), also free.
+     *
+     * `notice` is the Delete+JogClick confirmation; while it is up it replaces
+     * the hint pills IN THE FOOTER ROW ONLY (see createFooterNotice).
      */
     drawChainEditorBands(movy, {
         headerLeft: headerText,
         headerRight,
         label,
         info: infoLine,
-        hints: isShiftHeld() ? shiftHintsFor(selectedComp) : CHAIN_HINTS_AT_REST,
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
+             : isDeleteHeld() ? deleteHintsFor(selectedComp)
+             : CHAIN_HINTS_AT_REST,
+        notice: chainFooterNoticeText("slot"),
     });
 
     /*
@@ -27056,6 +27177,8 @@ function drawHelpDetail() {
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
     _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
     _ctx.isShiftHeld = () => isShiftHeld();
+    _ctx.isDeleteHeld = () => isDeleteHeld();
+    _ctx.chainFooterNoticeText = (editor) => chainFooterNoticeText(editor);
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
@@ -29589,6 +29712,10 @@ globalThis.tick = function() {
                     answered = restore();
                     confirmed = slotMatchesExpectation(i, exp);
                 }
+                /* A slot with no saved patch has nowhere but the set's chain
+                 * config to keep its sends, and its clear (pass 1) just zeroed
+                 * the chain's. A patch carries its own main_sends. */
+                if (!hasState) applySavedEmptySends(i);
                 if (confirmed === true) {
                     debugLog("SET_CHANGED: slot " + (i + 1) + (hasState ? " loaded" : " empty"));
                 } else {
@@ -30195,6 +30322,10 @@ globalThis.tick = function() {
             overlayState = shadow_get_overlay_state();
         }
     }
+
+    /* Delete's held byte: a change redraws the footer, a press dismisses a
+     * Delete+JogClick notice. A shared-memory read, no IPC. */
+    observeDeleteHeld();
 
     /* THE STEP MENU (hold one step, press Menu): the shim owns it and fills
      * the state; a change of its seq, or its closing, is a redraw. */
@@ -30846,6 +30977,19 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Always track mute state (CC 88) — modifier for Mute+JogClick module-bypass shortcut */
     if ((status & 0xF0) === 0xB0 && d1 === 88) {
         hostMuteHeld = (d2 > 0);
+    }
+    /* Delete (CC 119) is NOT tracked here: it is not forwarded to this UI
+     * unless a module claimed it, so its held state is the shim's byte
+     * (isDeleteHeld). Its edges are followed here as well as every tick, so a
+     * press the tick has not seen yet is consumed BEFORE the jog click below
+     * can raise a notice -- otherwise the next tick would take that press for
+     * a new one and dismiss the notice it just raised. */
+    observeDeleteHeld();
+    /* A jog turn or any button press dismisses a Delete+JogClick confirmation
+     * early. HERE, ahead of every dispatch below, so the jog click that raises
+     * a new notice clears the old one first rather than the other way round. */
+    if (footerNoticeDismissedBy(status, d1, d2) && chainFooterNotice.clear()) {
+        needsRedraw = true;
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
@@ -31575,8 +31719,20 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
-    /* BEFORE the canvas dispatch, and unconditional: SysEx arrives as a run of
-     * 1-3 byte fragments, so a branch that could skip one fragment would leave
+    /* Tools own raw external MIDI while active. Hide/exit/suspend clears this
+     * callback object; resume restores it. Never leave a module's handler on
+     * globalThis, where it would bypass CC Learn after returning to a synth. */
+    const onExternal = overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageExternal;
+    if (onExternal) {
+        try {
+            runToolCallback(() => onExternal(data));
+        } catch (e) {
+            debugLog("OVERTAKE onMidiMessageExternal exception: " + e);
+        }
+        return;
+    }
+    /* Host-owned MIDI reaches the surface BEFORE canvas dispatch. SysEx arrives
+     * as 1-3 byte fragments, so a branch that skipped one fragment would leave
      * the assembler holding half a message and splice the next one onto it. */
     externalSurfaceMidi(data);
     /* The CC map, never for a message the active surface claims (its own

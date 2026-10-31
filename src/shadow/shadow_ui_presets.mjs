@@ -66,12 +66,17 @@ import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as M
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { renderPicker as renderMovyPicker }
     from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
+/* The list screen every other chain-editor list draws through: its selected row
+ * marquees when the name does not fit (drawMenuList), which renderPicker never
+ * did. */
+import { drawListScreen } from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import {
     announce, announceMenuItem
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { openTextEntry } from '/data/UserData/schwung/shared/text_entry.mjs';
+import { cursorForPreset } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -116,6 +121,8 @@ let presetReturnLabel = "Chain Editor";
  *   focusSlot    false = leave ctx.selectedSlot / the focused slot alone
  *   audition     false = never audition, whatever the global switch says
  *   label        header label (default: the component's "<prefix>:name")
+ *   currentName  the user preset the component is on, if any: the list opens
+ *                with the cursor on it (enterPresetBrowser only)
  */
 function applyPresetTarget(slot, opts) {
     const o = opts || {};
@@ -480,7 +487,9 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix, op
     presetModuleLabel = o.label || getSlotParam(slotIndex, presetPrefix + ":name") || presetModule || "Module";
 
     loadPresetList();
-    selectedPreset = 0;
+    /* On the preset the component is already on, not the top of the list. A
+     * record whose file is gone (deleted behind its back) opens at the top. */
+    selectedPreset = cursorForPreset(presets.map((p) => p.name), o.currentName);
     confirmingDelete = false;
 
     /* Capture the slot's current state so scroll-audition can revert on cancel.
@@ -670,32 +679,33 @@ function movyRect() {
 export function drawPresets() {
     clear_screen();
     const c = movyCtx();
-    drawMovyHeader(c, truncateText(presetModuleLabel, 16), "PRESETS", false);
 
     if (!presetModule) {
+        drawMovyHeader(c, truncateText(presetModuleLabel, 16), "PRESETS", false);
         print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No module in slot", 1);
         drawMovyFooter(c, [["BACK", "EXIT"]]);
         return;
     }
 
-    /* Nothing saved: a real state, not an empty list drawn as a blank rect --
+    /* The list is drawn by the shared list screen, so a preset name too long
+     * for the row scrolls while it is selected (after a pause, and again from
+     * the start once it reaches the end) instead of staying cut off.
+     *
+     * Nothing saved: a real state, not an empty list drawn as a blank rect --
      * Save/Save As live on the My Presets grid page now, so this screen has
-     * nothing else to offer. */
-    if (!presets.length) {
-        print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No presets saved", 1);
-        drawMovyFooter(c, [["BACK", "EXIT"]]);
-        return;
-    }
-
-    renderMovyPicker(c, {
-        rect: movyRect(),
+     * nothing else to offer.
+     *
+     * CLK LOAD, not CLK OPEN: picking a row loads it immediately -- there is
+     * no detail screen behind it any more (see handlePresetsSelect). */
+    drawListScreen(c, {
+        headerLeft: truncateText(presetModuleLabel, 16),
+        headerRight: "PRESETS",
         entries: presets.map((p) => ({ name: p.name, value: "" })),
         index: selectedPreset,
-        header: false,
+        emptyMessage: "No presets saved",
+        emptyFooter: [["BACK", "EXIT"]],
+        footer: [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]],
     });
-    /* CLK LOAD, not CLK OPEN: picking a row loads it immediately -- there is
-     * no detail screen behind it any more (see handlePresetsSelect). */
-    drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }
 
 /*

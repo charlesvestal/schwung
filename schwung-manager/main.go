@@ -4150,7 +4150,19 @@ func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
 	// response would also pin stale security headers in the browser. Never cache.
 	w.Header().Set("Cache-Control", "no-store")
 
-	http.ServeFile(w, r, fullPath)
+	// NOT http.ServeFile: it redirects any request whose path ends in
+	// "/index.html" to "./", the browser then asks for the directory, and the
+	// directory check above answers 404 -- so a module whose page is named
+	// index.html (web_ui "assets/index.html", say) could never be opened.
+	// ServeContent serves the file it is handed and keeps what ServeFile gave
+	// us here: the content type from the name, Range and conditional requests.
+	f, err := os.Open(fullPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // ---------------------------------------------------------------------------
