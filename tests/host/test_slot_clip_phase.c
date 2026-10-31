@@ -276,10 +276,24 @@ int main(void)
     rc = shadow_lanes_step_phase(1, 2, &sp, NULL, NULL);
     CHECK(rc == STEP_PLOCK_OK && fabs(sp - 0.5) < 1e-9, "stopped step sp=%f", sp);
 
-    /* no clip on the track yet: pending, not a phase */
+    /* no current clip on the track: NO_CLIP, never "try again" -- the live
+     * model has no new-clip wait, so this state does not end by itself */
     fake_model.track[1].mode = 2;
     rc = shadow_lanes_step_phase(1, 2, &sp, NULL, NULL);
-    CHECK(rc == STEP_PLOCK_CLIP_PENDING, "pending rc=%d", rc);
+    CHECK(rc == STEP_PLOCK_NO_CLIP, "no clip rc=%d", rc);
+
+    /* a current slot that holds nothing is the same answer */
+    fake_model.track[1].mode = 1;
+    c->exists = 0;
+    rc = shadow_lanes_step_phase(1, 2, &sp, NULL, NULL);
+    CHECK(rc == STEP_PLOCK_NO_CLIP, "empty slot rc=%d", rc);
+    c->exists = 1;
+
+    /* the model not being live is a DIFFERENT fact from "no clip" */
+    fake_model.valid = 0;
+    rc = shadow_lanes_step_phase(1, 2, &sp, NULL, NULL);
+    CHECK(rc == STEP_PLOCK_NO_MODEL && isnan(sp), "no model rc=%d", rc);
+    fake_model.valid = 1;
 
     /* an audio clip has no step editor scroll */
     fake_model.track[1].mode = 1;

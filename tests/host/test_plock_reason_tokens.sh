@@ -36,19 +36,20 @@ for e in $enum; do
     || fail "$e prints \"$tok\" and PLOCK_REFUSAL_TEXT has no \"$words\" -- the user gets the raw token"
 done
 
-# And the pending case specifically, because it is the one that was WRONG
-# rather than missing: a brand-new clip reported "no clip on this track" while
-# the user was looking at one. Measured 2026-09-14: the slot is unknown for
-# 8-12 s, ending the second Move writes Song.abl.
-grep -q 'STEP_PLOCK_CLIP_PENDING' src/host/step_plock.h \
-  || fail "the pending-clip reason is gone -- a new clip refuses as though it were absent"
-# "Pending" now means exactly one thing: Move's model shows NO current clip on
-# the track (an empty slot picked, or none ever). There is no blind window any
-# more -- a new clip is in the model on the step press that makes it -- so the
-# old "no row AND no length" gate and LANE_SLOT_PENDING reporting are gone.
-# Behaviour is driven in tests/host/test_slot_clip_phase.c ("pending rc").
-awk '/^static int shadow_lanes_step_phase\(/,/^\}/' src/host/shadow_chain_mgmt.c \
-  | grep -q 'return STEP_PLOCK_CLIP_PENDING' \
-  || fail "shadow_lanes_step_phase no longer reports a pending clip"
+# "clip pending" is GONE, and must not come back. It printed "new clip, try
+# again in a moment" for two states that do not end by waiting -- no clip on
+# the track, and the live model not being read -- and a user with NO clip got
+# it on every refused lock (field report 2026-10-24). The live model has no
+# new-clip blind window, so there is nothing left for "pending" to mean.
+# Behaviour is driven in tests/host/test_slot_clip_phase.c.
+! grep -q 'CLIP_PENDING' src/host/step_plock.h src/host/shadow_chain_mgmt.c \
+  || fail "STEP_PLOCK_CLIP_PENDING is back -- a permanent state told to 'try again'"
+! grep -q 'try again in a moment' src/shared/param_pages/page_controller.mjs \
+  || fail "a p-lock refusal tells the user to wait again"
+body=$(awk '/^static int shadow_lanes_step_phase\(/,/^\}/' src/host/shadow_chain_mgmt.c)
+grep -q 'return STEP_PLOCK_NO_CLIP' <<<"$body" \
+  || fail "shadow_lanes_step_phase no longer reports a missing clip as NO_CLIP"
+grep -q 'return STEP_PLOCK_NO_MODEL' <<<"$body" \
+  || fail "shadow_lanes_step_phase no longer separates 'model not live' from 'no clip'"
 
 echo "PASS: every plock refusal crosses all three tables ($(wc -w <<<"$enum") codes)"

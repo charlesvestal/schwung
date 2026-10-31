@@ -97,7 +97,7 @@ function masterTarget(cfg, onInvalidate) {
      lift has to say which. Master, here. */
   const t = new Function("parseChainId", "MASTER_FX_SLOTS", "masterFxChainComponents",
     "masterFxChainConfig", "setMasterFxChainConfig", "invalidateMasterFxConfig", "fxBus",
-    "remapMasterUserPresetRecords",
+    "remapFxBusUserPresetRecords",
     src.slice(at, end + 4) + "\nreturn MASTER_CHAIN_TARGET;")(
     parseChainId, 8,
     () => chainEditorComponents(held.cfg, { hasSynth: false, hasMidiFx: false }),
