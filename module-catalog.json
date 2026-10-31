@@ -2605,6 +2605,45 @@
       "default_branch": "main",
       "asset_name": "bloom-module.tar.gz",
       "min_host_version": "1.7.3"
+    },
+    {
+      "id": "amino",
+      "name": "Amino",
+      "description": "Gritty 8-bit wavetable synth: four layers, two oscillators, dirt noise, drive, a resonant multimode filter, four envelopes, two LFOs, an eight-slot mod matrix and two multi-effect slots. 324 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": ["has-remote-ui", "lo-fi", "polyphonic"],
+      "github_repo": "klaine/amino",
+      "default_branch": "main",
+      "asset_name": "amino-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "bizar",
+      "name": "Bizar",
+      "description": "Two-engine hybrid synth: 17 oscillator engines plus processor modes on the second engine, a modulation grid, a cycling envelope, a sequencer and arpeggiator, and three effect slots. 128 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": ["has-remote-ui", "polyphonic", "wavetable"],
+      "github_repo": "klaine/bizar",
+      "default_branch": "main",
+      "asset_name": "bizar-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "crest",
+      "name": "Crest",
+      "description": "8-voice hybrid polysynth: three oscillators with 75 wavetables and cross-FM, a saturating multimode filter, a 20-slot mod matrix, an arpeggiator and a distortion / chorus / delay / reverb chain",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": ["has-remote-ui", "wavetable"],
+      "github_repo": "klaine/crest",
+      "default_branch": "main",
+      "asset_name": "crest-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
