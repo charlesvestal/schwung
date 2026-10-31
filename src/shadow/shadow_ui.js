@@ -47,7 +47,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { compareNames } from '/data/UserData/schwung/shared/name_sort.mjs';
-import { createTextScroller } from '/data/UserData/schwung/shared/text_scroll.mjs';
+import { createTextScroller, fitScrollWindow } from '/data/UserData/schwung/shared/text_scroll.mjs';
 import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 import { songMixState, songMixParamValue } from '/data/UserData/schwung/shared/song_mix.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
@@ -6598,9 +6598,11 @@ let hierEditorIsPresetLevel = false;  // true when current level is a preset bro
 let hierEditorPresetCount = 0;
 let hierEditorPresetIndex = 0;
 let hierEditorPresetName = "";
-/* The name line fits 22 glyphs; a longer name scrolls (see the preset browser draw). */
-const HIER_PRESET_NAME_CHARS = 22;
+/* The name line is measured in pixels (the font is proportional); a name wider
+ * than it scrolls (see the preset browser draw). */
+const HIER_PRESET_NAME_WIDTH = SCREEN_WIDTH - 4;
 const hierPresetNameScroller = createTextScroller();
+let hierPresetNameWindow = { name: null, chars: 0 };
 let hierEditorPresetEditMode = false; // true when editing params within a preset browser level
 
 /* Dynamic items level state (for items_param type levels) */
@@ -23760,14 +23762,18 @@ function drawHierarchyEditor() {
              * start) instead of being cut off for good. A name that fits is
              * drawn exactly as before. */
             const fullPresetName = presetNameForDraw || "(unnamed)";
+            if (hierPresetNameWindow.name !== fullPresetName) {
+                hierPresetNameWindow = { name: fullPresetName,
+                    chars: fitScrollWindow(fullPresetName, HIER_PRESET_NAME_WIDTH, text_width) };
+            }
             let name = fullPresetName;
-            if (fullPresetName.length > HIER_PRESET_NAME_CHARS) {
+            if (fullPresetName.length > hierPresetNameWindow.chars) {
                 hierPresetNameScroller.setSelected(
                     `${hierEditorSlot}:${hierEditorComponent}:${hierEditorPresetIndex}`);
                 hierPresetNameScroller.tick();
-                name = hierPresetNameScroller.getScrolledText(fullPresetName, HIER_PRESET_NAME_CHARS);
+                name = hierPresetNameScroller.getScrolledText(fullPresetName, hierPresetNameWindow.chars);
             }
-            const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
+            const nameX = Math.max(0, Math.floor((SCREEN_WIDTH - text_width(name)) / 2));
             print(nameX, centerY + 4, name, 1);
 
             /* Check for load error and display if present */

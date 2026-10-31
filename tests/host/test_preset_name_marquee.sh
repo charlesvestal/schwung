@@ -107,10 +107,35 @@ if (!/drawListScreen\(/.test(body)) fail("drawPresets must draw its list through
 
 if (!/const hierPresetNameScroller\s*=\s*createTextScroller\(\)/.test(ui)) fail("the hierarchy preset browser needs its own scroller");
 if (/truncateText\(presetNameForDraw/.test(ui)) fail("the hierarchy preset browser must not cut the name for good");
-if (!/hierPresetNameScroller\.getScrolledText\(fullPresetName, HIER_PRESET_NAME_CHARS\)/.test(ui)) {
+if (!/hierPresetNameScroller\.getScrolledText\(fullPresetName, hierPresetNameWindow\.chars\)/.test(ui)) {
   fail("the hierarchy preset browser must scroll a name wider than the line");
 }
-if (!/fullPresetName\.length > HIER_PRESET_NAME_CHARS/.test(ui)) fail("a name that fits must bypass the scroller");
+if (!/fitScrollWindow\(fullPresetName, HIER_PRESET_NAME_WIDTH, text_width\)/.test(ui)) fail("the browser window must be measured in pixels");
+{
+  const a = ui.indexOf("const fullPresetName"), b = ui.indexOf("print(nameX", a);
+  if (!/const nameX = [^;]*text_width\(name\)/.test(ui.slice(a, b))) fail("the name must be centred on its measured width");
+}
+
+/* ---- 5b. every frame of the browser marquee fits the screen ----------------- */
+{
+  const { fitScrollWindow } = await import(R + "/src/shared/text_scroll.mjs");
+  const fb = createFramebuffer();
+  const WIDTH = 128 - 4;
+  for (const name of [LONG, "WWWWWWWWWWWWWWWWWWWWWWWWWWWW", "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii Wide End MMMMMM"]) {
+    const k = fitScrollWindow(name, WIDTH, fb.textWidth);
+    if (k < 1) fail("window must hold at least one character: " + name);
+    const s = createTextScroller();
+    let reachedEnd = false;
+    for (let i = 0; i < 1500; i++) {
+      s.setSelected("k"); s.tick();
+      const shown = s.getScrolledText(name, k);
+      const w = fb.textWidth(shown);
+      if (w > WIDTH) { fail("frame overflows (" + w + "px > " + WIDTH + "): \"" + shown + "\""); break; }
+      if (name.endsWith(shown)) reachedEnd = true;
+    }
+    if (!reachedEnd) fail("the marquee never showed the end of " + name);
+  }
+}
 
 /* ---- 6. the scroller the browser relies on: pause, step, end pause, wrap ----- */
 {
