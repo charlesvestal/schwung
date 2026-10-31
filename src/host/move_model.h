@@ -256,6 +256,28 @@ typedef int (*mm_read_fn)(void *ctx, uint64_t addr, void *buf, size_t n); /* 0 =
  * (and a bare `ret` for offset 0). Returns 0 and writes *off, or -1. */
 int mm_decode_member_stub(const uint32_t insn[4], uint32_t *off);
 
+/* WHERE THE READER LOOKS. One /proc/self/maps line, classified: MoveOriginal's
+ * own mapped segment (the image), the main [heap], or ANONYMOUS read-write
+ * memory -- which is where glibc puts every non-main thread's malloc arena.
+ * Move builds objects on more than one thread, so a reader that searched only
+ * [heap] could not find a Song made on another thread (seen in the field as
+ * "re-found at 0" for an hour after a set switch). Returns the MM_MAP_* kind
+ * and fills lo/hi; MM_MAP_SKIP for everything else (files, stack, guard
+ * pages, executable or read-only memory). */
+#define MM_MAP_SKIP  0
+#define MM_MAP_IMAGE 1   /* readable MoveOriginal segment */
+#define MM_MAP_HEAP  2   /* [heap] */
+#define MM_MAP_ANON  3   /* rw-p, no backing file */
+int mm_classify_maps_line(const char *line, uint64_t *lo, uint64_t *hi);
+
+/* THE RESOLVE RETRY SCHEDULE: seconds to wait after failed attempt `n`
+ * (1-based). Quick at first, because Move is still building its document at
+ * boot; then once a minute for as long as it takes, never giving up. A
+ * missing class can appear long after boot (heavy slot modules restored
+ * first, a set that has not yet instantiated a type), and "giving up for the
+ * boot" turned automation and p-locks off until the next restart. */
+int mm_resolve_retry_delay_s(int n);
+
 /* libc++ std::string (24 bytes, little-endian short/long layout). */
 int mm_sso_string(mm_read_fn rd, void *ctx, const uint8_t raw[24], char *out, size_t cap);
 

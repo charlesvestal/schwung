@@ -4,13 +4,13 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "1.7.3",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.7.3/schwung.tar.gz",
+    "latest_version": "1.8.2",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.8.2/schwung.tar.gz",
     "min_host_version": "0.1.0",
     "channels": {
       "stable": {
-        "version": "1.7.3",
-        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.7.3/schwung.tar.gz"
+        "version": "1.8.2",
+        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.8.2/schwung.tar.gz"
       }
     }
   },
@@ -2490,6 +2490,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinyscratch",
+      "name": "TinyScratch",
+      "description": "Generative auto-scratcher: press a pad and it writes a new, human-sounding scratch for your sample, plays it in time with the song, and lets you keep the ones you like. Thirteen styles, a Groove dial that keeps Improv to a drum groove, pages of clips, Auto and cue pads",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "generative"
+      ],
+      "github_repo": "fleshinachair/TinyScratch",
+      "default_branch": "main",
+      "asset_name": "TinyScratch.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
@@ -2590,6 +2605,58 @@
       "default_branch": "main",
       "asset_name": "bloom-module.tar.gz",
       "min_host_version": "1.7.3"
+    },
+    {
+      "id": "amino",
+      "name": "Amino",
+      "description": "Gritty 8-bit wavetable synth: four layers, two oscillators, dirt noise, drive, a resonant multimode filter, four envelopes, two LFOs, an eight-slot mod matrix and two multi-effect slots. 324 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": ["has-remote-ui", "lo-fi", "polyphonic"],
+      "github_repo": "klaine/amino",
+      "default_branch": "main",
+      "asset_name": "amino-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "bizar",
+      "name": "Bizar",
+      "description": "Two-engine hybrid synth: 17 oscillator engines plus processor modes on the second engine, a modulation grid, a cycling envelope, a sequencer and arpeggiator, and three effect slots. 128 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": ["has-remote-ui", "polyphonic", "wavetable"],
+      "github_repo": "klaine/bizar",
+      "default_branch": "main",
+      "asset_name": "bizar-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "crest",
+      "name": "Crest",
+      "description": "8-voice hybrid polysynth: three oscillators with 75 wavetables and cross-FM, a saturating multimode filter, a 20-slot mod matrix, an arpeggiator and a distortion / chorus / delay / reverb chain",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": ["has-remote-ui", "wavetable"],
+      "github_repo": "klaine/crest",
+      "default_branch": "main",
+      "asset_name": "crest-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "chord-display",
+      "name": "Chord Display",
+      "description": "Shows the chord you play, or a clip plays, on any track, with its roman numeral in the Set's key. Reads any MIDI channel.",
+      "author": "Nipheon",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": ["chord"],
+      "github_repo": "Nipheon/schwung-chord-display",
+      "default_branch": "main",
+      "asset_name": "chord-display-module.tar.gz",
+      "min_host_version": "1.6.2"
     }
   ]
 }

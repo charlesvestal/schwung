@@ -86,14 +86,14 @@ function world(answers, mirror, opts) {
    * and read back through an accessor instead. */
   const adoptPair = new Function(
     "masterFxConfig", "debugLog", "fxDisplayNameCache", "fxDisplayNameSkip",
-    "fxDisplayNameBackoff", "fxBusIsMaster", "parseChainId", "clearMasterUserPresetRecord",
+    "fxDisplayNameBackoff", "currentFxBusIndex", "parseChainId", "clearFxBusUserPresetRecord",
     "let needsRedraw = false;" + body("adoptMasterFxShimModule") +
     "\nreturn { adopt: adoptMasterFxShimModule, redrew: () => needsRedraw };")(
       masterFxConfig, () => {}, caches[0], caches[1], caches[2],
       /* The User Preset record of an adopted position is dropped (issue #305;
          test_master_fx_user_presets.sh) -- recorded here, not asserted. */
-      () => true, (k) => ({ section: "fx", index: Number(k.slice(2)) - 1 }),
-      (i) => { (opts.clearedRecords || []).push(i); });
+      0, (k) => ({ section: "fx", index: Number(k.slice(2)) - 1 }),
+      (bus, i) => { (opts.clearedRecords || []).push(i); });
 
   const masterFxModuleWriteAt = Object.assign({}, opts.writeAt || {});
 
@@ -109,7 +109,7 @@ function world(answers, mirror, opts) {
     "host_read_file", "host_write_file", "MASTER_FX_OPTIONS", "MASTER_FX_SLOTS",
     "masterFxConfig", "masterFxModuleWriteAt", "masterFxShimSlot",
     "masterFxShimSnapshot", "overlay_knobs_get_mode", "shadow_get_param",
-    "tts_get_debounce", "masterUserPresetField",
+    "tts_get_debounce", "fxBusUserPresetField",
   ])(
     "/state", adoptPair.adopt, 0, 0, 0, 0, 0, CONTRACT_SETTLE_MS, "",
     () => {}, () => [], (p) => files[p], (p, v) => { files[p] = v; writes.push(p); },

@@ -3596,7 +3596,8 @@ const char *shadow_lanes_plock_reason_name(int rc) {
         case STEP_PLOCK_BAD_INDEX:    return "bad_index";
         case STEP_PLOCK_MULTI_PAGE:   return "multi_page";
         case STEP_PLOCK_OUTSIDE_CLIP: return "outside_clip";
-        case STEP_PLOCK_CLIP_PENDING: return "clip_pending";
+        case STEP_PLOCK_NO_CLIP:      return "no_clip";
+        case STEP_PLOCK_NO_MODEL:     return "no_model";
         default:                      return "unknown";
     }
 }
@@ -3627,10 +3628,11 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
     *out_phase = NAN;
     static move_model_t m;
     move_model_get(&m);                     /* torn: the last good snapshot */
-    if (!m.valid || !move_model_sync_active() || slot >= MM_TRACKS) return STEP_PLOCK_CLIP_PENDING;
+    if (!m.valid || !move_model_sync_active()) return STEP_PLOCK_NO_MODEL;
+    if (slot >= MM_TRACKS) return STEP_PLOCK_NO_CLIP;
     const mm_track_t *T = &m.track[slot];
     const int cs = (T->mode == 1) ? T->playing_slot : -1;
-    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return STEP_PLOCK_CLIP_PENDING;
+    if (cs < 0 || cs >= MM_SLOTS || !T->slot[cs].exists) return STEP_PLOCK_NO_CLIP;
     const mm_clip_t *c = &T->slot[cs];
     if (!(m.step_beats > 0.0)) return STEP_PLOCK_NO_GRID;
     if (!(c->scroll >= 0.0)) return STEP_PLOCK_NO_BAR;          /* not a MIDI clip */

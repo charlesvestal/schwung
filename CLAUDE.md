@@ -1485,7 +1485,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
-- **Delete ("X", CC 119) + Jog Click** on a focused, populated chain/MFX module — remove it directly, through the exact same call the "Remove Module" menu row / picker "None" pick already use (`applyChainComponentPick` / `removeMasterFxComponent` -> `commitMasterFxPick`, the picker's own commit), never a new removal path. Delete's held state is **the shim's `delete_held` byte** (`shadow_get_delete_held()`, via `isDeleteHeld()`), the same one the knob grid's Delete gesture reads; it is updated in every mode, so a Delete released while the shadow UI is hidden still clears it. **Do not forward an unclaimed CC 119 to the shadow UI** for this: the grid's edit gestures assume Undo/Copy/Delete only arrive for a module that claimed them, and a JS flag fed by CC 119 never sees a release that happens while the UI is hidden. While Delete is held the footer reads `JOG SEL / CLK DELETE` on a loaded position (`deleteHintsFor`); a removal leaves a 1.5 s `REMOVED <NAME>` pill in the footer row only, dismissed early by a jog turn or any button press (`createFooterNotice` / `footerNoticeDismissedBy` in `chain_editor_chrome.mjs`; see `docs/SHADOW_UI.md`).
+- **Delete + Jog Click** on a focused, populated chain/MFX module — remove it, through the same commit as the "Remove Module" row / picker "None". Held state is the shim's `delete_held` byte, **never a forwarded CC 119** (a JS flag never sees a release made while the UI is hidden). See `docs/SHADOW_UI.md`.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 - **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 
@@ -1675,12 +1675,15 @@ pages the PLANNER appends to the end of every component's knob grid.
 - The trailing pages are appended **after the whole walk**, never injected into a
   level: 11 of 95 fleet modules publish no `levels` at all and minijv has no
   `root`, so there is no level an injection could target.
-- Scope is the 4 chain slots' real components **and the 8 Master FX positions**
-  (issue #305) — Master FX gets **My Presets only** (no Module page), through the
-  same code, decided in one helper (`componentParamPagesIo`). Send positions and
-  bus inserts stay excluded. The master record persists as `user_preset`
-  **after `state`** in `master_fx_N.json` (the shim's boot parser takes the first
-  `"state"`). See docs/SHADOW_UI.md.
+- Scope is the 4 chain slots' real components **and every FX-bus position**:
+  the 8 Master FX positions (issue #305) and the 8 of each send bus (Send A /
+  Send B). An FX bus gets **My Presets only** (no Module page), through the
+  same code, decided in one helper (`componentParamPagesIo`), with the
+  bus-specific half in the `fxBus*` helpers (a bus index into `FX_BUSES`, not
+  one copy per bus). Bus inserts stay excluded. The record persists as
+  `user_preset` **after `state`** in `master_fx_N.json` /
+  `send_fx_<send>_<i>.json` (the shim's shared boot parser,
+  `fx_boot_restore_one`, takes the first `"state"`). See docs/SHADOW_UI.md.
 - **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
   thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
   replaced, so the help list wore a bar and the help text wore arrows on the same

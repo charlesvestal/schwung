@@ -268,7 +268,8 @@ function world() {
       "const pickerReplacedModule = (r, m) => String(r || '') !== String(m || '');",
       "const clearLfoRoutingForComponent = () => log.push(['lfo']);",
       "const fxBusIsMaster = () => isMaster;",
-      "const clearMasterUserPresetRecord = (i) => log.push(['record', i]);",
+      "const currentFxBusIndex = isMaster ? 0 : 1;",
+      "const clearFxBusUserPresetRecord = (bus, i) => log.push(['record', bus, i]);",
       "const setMasterFxSlotModule = (i, p) => log.push(['module', i, p]);",
       "const resetLfoTargetLabels = () => {};",
       "const saveMasterFxChainConfig = () => log.push(['save']);",
@@ -283,7 +284,7 @@ function world() {
   if (withVerbs !== JSON.stringify([["setConfig"], ["shape", "remove"], ["save"]]))
     fail("a removal on a bus with shape verbs is not the verb alone: " + withVerbs);
   const noVerbs = run(false, false);
-  if (noVerbs !== JSON.stringify([["setConfig"], ["lfo"], ["module", 0, ""], ["save"]]))
+  if (noVerbs !== JSON.stringify([["setConfig"], ["lfo"], ["record", 1, 0], ["module", 0, ""], ["save"]]))
     fail("a removal on a bus without shape verbs does not empty the position: " + noVerbs);
   ok("Master FX: picker and Delete+JogClick share commitMasterFxPick (hasShapeVerbs guard and empty-module fallback)");
 }
