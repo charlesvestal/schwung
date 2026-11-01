@@ -2659,6 +2659,19 @@
       "min_host_version": "1.6.2"
     },
     {
+      "id": "quark",
+      "name": "Quark",
+      "description": "String and pad machine plus a mono synth: divide-down strings, 89 wavetables (chord stacks included) and FM through 11 filter types, drive, detune bloom and ensemble; a wavetable Mono layer with a chord-following arp; multi-FX and shimmer reverb. 36 presets",
+      "author": "James Fish",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": ["chord", "fm", "wavetable"],
+      "github_repo": "james-fish/schwung-quark",
+      "default_branch": "main",
+      "asset_name": "quark-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
       "id": "s3g-thru",
       "name": "s3g Thru",
       "description": "Four-lane stereo sampler with thirteen playback engines, Single, Split, Shared Dual and Quad layouts, performance-data looping, live recording, and configurable effects.",
