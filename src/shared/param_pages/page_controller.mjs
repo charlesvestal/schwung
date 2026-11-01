@@ -4153,6 +4153,56 @@ export function createController(io = {}) {
                 start = isFinite(num) ? num : 0;
             }
             st = s.knobStates[key] = knobInit(start);
+        } else if ((s.settleUntil[key] || 0) <= s.tickCount && !s.pendingWrite[key]
+                   && s.values[key] !== undefined) {
+            /*
+             * THE INSTRUMENT MOVED THE VALUE, NOT THE KNOB: a knob state may
+             * outlive a value the currently-loaded parameter chain no longer
+             * holds, because the loaded editor shaper rewrites the parameter
+             * BY ITSELF while the grid stands on the page -- an internal
+             * transition reset, a quantizer, a guard that re-runs. The read
+             * cursor follows the change (it re-reads into s.values), but
+             * s.knobStates[key] still holds what the hand last stepped to --
+             * so the first detent after touching the knob again steps FROM
+             * the stale value and writes it straight back, un-doing the very
+             * change the user just watched happen.
+             *
+             * This is the same defect revalue() exists for ("a change made
+             * from OUTSIDE this controller"), arriving through a door
+             * revalue() cannot see: the change was CAUSED by a write this
+             * controller itself made (a sister parameter whose write retriggers
+             * the editor shaper), not by a recall or a preset load, so nobody
+             * called it. Those handlers drop the whole maps because every
+             * value changed at once; here we don't know WHICH values changed,
+             * so instead of a page-wide read storm we reconcile ONE knob
+             * against the value the read cursor already carries, and only
+             * for the knob being turned.
+             *
+             * Guards, each load-bearing:
+             *  - settleUntil: a value inside its own settle window is the
+             *    write this gesture just made, still in flight -- adopting the
+             *    last pre-write read would undo the user's own detent.
+             *  - pendingWrite: same, before it has even been flushed.
+             *  - the read is the routed one (s.modCache keys read ":base"),
+             *    so the knob's own base is reconciled, never the modulated
+             *    effective drawn on top of it.
+             * A realized difference ALWAYS reseeds to the reported value, for
+             * enums (resolved through the wire format, unknown names ignored)
+             * and floats/integers alike: the reported value is the truth, and
+             * knobInit's homing state makes the first detent continue exactly
+             * from where the sound is -- the same property the seeding branch
+             * above already promises.
+             */
+            const raw = s.values[key];
+            if (meta.kind === KIND_ENUM) {
+                const idx = enumIndexOf(meta, raw);
+                if (idx >= 0 && idx !== Math.round(Number(st.value)))
+                    st = s.knobStates[key] = knobInit(idx);
+            } else {
+                const num = Number(raw);
+                if (isFinite(num) && num !== st.value)
+                    st = s.knobStates[key] = knobInit(num);
+            }
         }
 
         /*
