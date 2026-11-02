@@ -598,9 +598,16 @@ if [ ! -f ./build/lib/.tts_bundled ]; then
         ./scripts/verify-espeak-bundle.sh ./build/lib ./build/espeak-ng-data || true
     fi
 
-    # License files
-    cp /usr/share/doc/libespeak-ng1/copyright ./build/licenses/ESPEAK_NG_LICENSE.txt 2>/dev/null || true
-    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || true
+    # License files for the libraries redistributed in build/lib. NOT optional:
+    # these ship beside GPL-3.0 (eSpeak NG), BSD (Flite) and Apache-2.0 (sonic)
+    # binaries, and a `|| true` here produced a release missing them that looked
+    # identical to a good one -- the link-subscriber silent-skip shape.
+    cp /usr/share/doc/libespeak-ng1/copyright ./build/licenses/ESPEAK_NG_LICENSE.txt
+    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt
+    cp /usr/share/doc/libsonic0/copyright ./build/licenses/SONIC_LICENSE.txt
+    # Apache-2.0 requires the licence text itself; sonic's copyright file only
+    # points at Debian's common-licenses copy, which does not ship.
+    cp /usr/share/common-licenses/Apache-2.0 ./build/licenses/APACHE-2.0.txt
 
     touch ./build/lib/.tts_bundled
 else

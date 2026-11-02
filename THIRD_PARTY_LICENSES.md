@@ -42,14 +42,13 @@ gains a `NEEDED` entry for eSpeak NG or Flite.
 | `schwung` (host) | MIT | Links only QuickJS (MIT), stb, curl — no copyleft |
 | `schwung-shim.so` | MIT | Links no TTS engine; talks to `schwung-tts` over `/dev/shm` |
 | `schwung-tts` | **GPL-3.0-or-later** | MIT source **linked** against eSpeak NG; also Flite (BSD) |
-| `schwung-manager` | MIT | Go, no copyleft deps |
+| `schwung-manager` | MIT | Go; statically links the Go standard library (BSD-3-Clause) and nhooyr.io/websocket (ISC) — see below |
 | `link-subscriber` | **GPL-2.0-or-later** | Ableton Link compiled in (header-only) |
 | `lib/jack/jack_shadow.so` | **GPL-2.0-or-later** | jack2 + Cycling '74 JackMoveDriver |
 | `lib/libespeak-ng.so.*` | **GPL-3.0-or-later** | Redistributed unmodified |
 | `lib/libflite*.so.*` | BSD-style | Redistributed unmodified |
-| `lib/libsonic.so.*` | Apache-2.0 | Redistributed unmodified |
+| `lib/libsonic.so.*` | Apache-2.0 | Redistributed unmodified (`licenses/SONIC_LICENSE.txt`, `licenses/APACHE-2.0.txt`) |
 | `bin/curl` | curl licence | Redistributed unmodified |
-| `bin/filebrowser` | Apache-2.0 | Redistributed unmodified |
 
 A build with `SCREEN_READER_ENABLED=0` builds no `schwung-tts` at all, and the
 shim uses `tts_engine_stub.c` in place of the sidecar client.
@@ -396,17 +395,6 @@ Note: libsamplerate was GPL-licensed before version 0.1.9. Schwung pins 0.2.2
 
 ---
 
-## File Browser
-
-**Used in:** Web file manager formerly exposed as a Services toggle; the binary
-is still shipped so that `schwung-heal` can retire a previously-enabled instance
-**Location:** `bin/filebrowser`
-**Upstream:** https://github.com/filebrowser/filebrowser
-
-**License:** Apache-2.0 — full text ships as `licenses/FILEBROWSER_LICENSE.txt`
-
----
-
 ## Freeverb
 
 **Used in:** The bundled `freeverb` audio FX module
@@ -475,6 +463,85 @@ and the implementation is Schwung's own. Two short comments quote upstream
 lines verbatim to record where a constant comes from. Interface facts of this
 kind are not themselves a derivative work, but the provenance is recorded here
 rather than left implicit.
+
+---
+
+## Go standard library
+
+**Used in:** `schwung-manager` (statically linked, as every Go binary is)
+**Upstream:** https://go.dev/
+
+**License:** BSD-3-Clause
+
+```
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## nhooyr.io/websocket
+
+**Used in:** `schwung-manager` (statically linked)
+**Version:** 1.8.17
+**Upstream:** https://github.com/nhooyr/websocket
+
+**License:** ISC
+
+```
+Copyright (c) 2023 Anmol Sethi <hi@nhooyr.io>
+
+Permission to use, copy, modify, and distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+---
+
+## Tamsyn / Tamzen fonts
+
+**Used in:** The host's bitmap fonts (`host/fonts/tamzen-*.png`, generated from
+`fonts/tamzen/*.bdf`)
+**Upstream:** https://github.com/sunaku/tamzen-font (derived from Tamsyn,
+http://www.fial.com/~scott/tamsyn-font/)
+
+**License:** permissive, no conditions — full text in `fonts/tamzen/LICENSE`:
+"Tamsyn font is free. You are hereby granted permission to use, copy, modify,
+and distribute it as you see fit." (Copyright 2010 Scott Fial; Tamzen
+Copyright 2011 Suraj N. Kurapati, same terms.)
 
 ---
 
