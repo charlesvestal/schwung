@@ -198,10 +198,16 @@ done
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
-    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
+    # The shim links NO speech engine: it talks to the schwung-tts sidecar
+    # (built below) over /schwung-tts. eSpeak NG is GPL-3.0, and the shim is
+    # the process every native module is loaded into -- see src/host/tts_shm.h.
+    # tests/host/test_shim_links_no_tts_engine.sh pins this.
+    SHIM_TTS_SRC="src/host/tts_client.c"
     SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
-    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
-    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
+    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include"
+    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm"
+    TTS_SIDECAR_SRC="src/host/tts_sidecar.c src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c src/host/shadow_shm_util.c src/host/unified_log.c"
+    TTS_SIDECAR_LIBS="-L/usr/lib/aarch64-linux-gnu -lrt -lpthread -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
 else
     echo "Screen reader build: disabled"
     SHIM_TTS_SRC="src/host/tts_engine_stub.c"
@@ -328,6 +334,22 @@ if needs_rebuild build/schwung-shim.so \
         $SHIM_LIBS
 else
     echo "Skipping shim (up to date)"
+fi
+
+# Build the TTS sidecar: the ONLY binary eSpeak NG and Flite are linked into.
+if [ "$SCREEN_READER_ENABLED" = "1" ]; then
+    if needs_rebuild build/schwung-tts $TTS_SIDECAR_SRC $SRC_HEADERS; then
+        echo "Building schwung-tts..."
+        "${CROSS_PREFIX}gcc" -g -O2 -Wl,--no-undefined \
+            -Wl,-rpath,'$ORIGIN/lib' \
+            -o build/schwung-tts \
+            $TTS_SIDECAR_SRC \
+            -DENABLE_SCREEN_READER=1 \
+            -Isrc -Isrc/host -I/usr/include -I/usr/include/flite \
+            $TTS_SIDECAR_LIBS
+    else
+        echo "Skipping schwung-tts (up to date)"
+    fi
 fi
 
 # Web shim removed in 0.9.2 — MoveWebService is no longer wrapped.

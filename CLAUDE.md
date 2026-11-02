@@ -2155,28 +2155,33 @@ inline is how this file got to 151 KB.
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
 
-### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
+### Schwung's SOURCE is MIT; only `schwung-tts` is conveyed as GPL-3.0
 
 Two different relationships, and collapsing them is the trap — the first draft
 of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
-`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+`schwung` or `schwung-shim.so`" and was **wrong about the shim** at the time.
 
-**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
-and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
-are separate programs reached over `/dev/shm`, sockets and `exec`.
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+),
+`lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+) and
+`schwung-tts` are separate programs reached over `/dev/shm`, sockets and `exec`.
 
-**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
-`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
-`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
-NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
-is GPL-compatible so this is permitted, and the source stays MIT; what changes
-is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
-in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
-giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+**Linked** (makes a combined work): `schwung-tts` links **`-lespeak-ng`**
+(GPL-3.0-or-later), so that BINARY is conveyed under GPL-3.0-or-later. It used
+to be the SHIM that linked it — and the shim is the process every native module
+is `dlopen`ed into (and is LD_PRELOADed into MoveOriginal), which put a
+proprietary module's author in the position of loading into a GPL-3.0 binary.
+Synthesis now lives in the sidecar (`src/host/tts_shm.h`: a seqlocked request
+block + an SPSC audio ring); `tts_client.c` implements `tts_engine.h` over it so
+the shim's call sites did not change. **Never link an engine into the shim
+again**: `test_license_consistency.sh` fails on `espeak|flite` in `SHIM_LIBS`,
+and CI fails on a `NEEDED` entry for either in the built shim.
+`test_tts_sidecar_roundtrip.sh` runs the real client against the real sidecar
+loop with a fake engine — including a 300-cut stress, which is what found that
+a speak must drop ALL audio until the sidecar ACKs it (`discard_until` alone
+arrives too late to cover the window).
 
-Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
-the real binary (`NEEDED` entries), not the intent — the build flag is what
-decides this, and it is easy to reason about the wrong configuration.
+Flite is BSD and is linked alongside eSpeak (in `schwung-tts`); it is not the
+copyleft one. Check the real binary (`NEEDED` entries), not the intent.
 
 The trap is that **one file's header can silently claim otherwise.**
 `JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
