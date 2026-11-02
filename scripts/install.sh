@@ -1144,7 +1144,7 @@ fi
   # Stop and restart Move service
   iecho "Restarting Move..."
   ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
+  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber schwung-tts display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
   # Also remove Link Audio ring SHMs — these persist wp/rp across restarts
   # and can leave one slot stuck at a stale offset after an in-flight upgrade.
   ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true

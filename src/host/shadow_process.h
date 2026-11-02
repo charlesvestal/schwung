@@ -54,6 +54,11 @@ int shadow_ui_relaunch_backoff_active(void);
  * clears it: an explicit user request for the UI ends the quiesce. */
 void shadow_ui_set_exit_flag(volatile uint8_t *flag);
 
+/* schwung-tts sidecar (speech synthesis, tts_shm.h). Same watchdog shape as
+ * launch_shadow_ui(): a waitpid() in the steady state, safe on the SPI path,
+ * with a give-up after repeated rapid deaths. */
+void launch_tts_sidecar(void);
+
 /* Link subscriber process management */
 void launch_link_subscriber(void);
 void start_link_sub_monitor(void);

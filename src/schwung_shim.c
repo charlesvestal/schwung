@@ -4523,9 +4523,8 @@ static void init_shadow_shm(void)
      * land there, not here. Cheap when no test client is subscribed. */
     shadow_test_stream_init();
 
-    /* TTS engine uses lazy initialization - will init on first speak */
-    tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
-    printf("Shadow: TTS engine configured (will init on first use)\n");
+    /* Speech synthesis runs in the schwung-tts sidecar (tts_shm.h); the
+     * request segment is created by tts_init() below, after state restore. */
 
     /* Create/open Link Audio publisher shared memory */
     shadow_pub_audio_shm = (link_audio_pub_shm_t *)shadow_shm_map(SHM_LINK_AUDIO_PUB,
@@ -4566,6 +4565,19 @@ static bool has_pending_message = false;
 
 static void shadow_check_screenreader(void)
 {
+    /* A (re)started schwung-tts publishes the settings it loaded from disk.
+     * Mirror them into shadow_control BEFORE anything below restates
+     * shadow_control's values to it -- otherwise the defaults would
+     * overwrite the user's saved config. This used to happen once at init,
+     * when the engine was in-process and answered synchronously. */
+    if (tts_take_state_published() && shadow_control) {
+        shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
+        shadow_control->tts_volume = tts_get_volume();
+        shadow_control->tts_speed = tts_get_speed();
+        shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
+        shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
+    }
+
     if (!shadow_screenreader_shm) return;
 
     /* Get current time in milliseconds */
@@ -4912,6 +4924,7 @@ static void shadow_swap_display(void)
      * never recover it. launch_shadow_ui() is a waitpid() in the steady state. */
     if ((ui_check_counter++ % 256) == 0) {
         launch_shadow_ui();
+        if (tts_wants_sidecar()) launch_tts_sidecar();
     }
 
     if (!shadow_display_mode) {
@@ -6055,19 +6068,12 @@ static void shim_init_subsystems(void)
      * as unmuted. Anything short of four tracks keeps the saved state. */
     shadow_sync_mix_from_song(sampler_current_set_uuid, sampler_current_set_name);
 
-    /* Initialize TTS and sync loaded state to shared memory */
-    tts_init(44100);
-    if (shadow_control) {
-        shadow_control->tts_enabled = tts_get_enabled() ? 1 : 0;
-        shadow_control->tts_volume = tts_get_volume();
-        shadow_control->tts_speed = tts_get_speed();
-        shadow_control->tts_pitch = (uint16_t)tts_get_pitch();
-        shadow_control->tts_engine = (strcmp(tts_get_engine(), "flite") == 0) ? 1 : 0;
-        unified_log("shim", LOG_LEVEL_INFO,
-                   "TTS initialized, synced to shared memory: enabled=%s speed=%.2f pitch=%.1f volume=%d",
-                   shadow_control->tts_enabled ? "ON" : "OFF",
-                   shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
-    }
+    /* Create the TTS request segment. The schwung-tts sidecar is launched by
+     * the watchdog in shadow_swap_display() once this exists, loads the
+     * saved settings, and publishes them; shadow_check_screenreader() copies
+     * them into shadow_control when they arrive. */
+    if (tts_init(44100))
+        unified_log("shim", LOG_LEVEL_INFO, "TTS request segment ready; sidecar will publish settings");
 }
 
 /* write() hook removed - conflicts with system headers

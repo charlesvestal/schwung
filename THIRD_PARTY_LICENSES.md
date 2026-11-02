@@ -17,23 +17,31 @@ Some of the *binaries* built from it combine that MIT source with copyleft
 libraries, and a binary is licensed by everything that went into it. Two
 different situations, which must not be conflated:
 
-**Linked — the binary is a combined work.** `schwung-shim.so` is dynamically
-linked against `libespeak-ng` (GPL-3.0-or-later) for the screen reader, which
-is the default and shipping configuration (`SCREEN_READER_ENABLED=1`;
-`libespeak-ng.so.1` is a `NEEDED` entry of the shipped binary). MIT is
-GPL-compatible, so this combination is permitted — but the resulting binary is
-conveyed under GPL-3.0-or-later, and recipients get GPL rights over it. The MIT
-source remains MIT and can be reused as MIT by anyone who does not link eSpeak.
+**Linked — the binary is a combined work.** `schwung-tts`, the screen reader's
+speech synthesiser, is dynamically linked against `libespeak-ng`
+(GPL-3.0-or-later) in the default and shipping configuration
+(`SCREEN_READER_ENABLED=1`). MIT is GPL-compatible, so this combination is
+permitted — but that binary is conveyed under GPL-3.0-or-later, and recipients
+get GPL rights over it. The MIT source remains MIT and can be reused as MIT by
+anyone who does not link eSpeak.
 
-**Aggregated — separate programs sharing a tarball.** `link-subscriber` and
-`lib/jack/jack_shadow.so` are standalone programs that Schwung never links.
-They communicate over shared memory, sockets, and `exec`. Each keeps its own
-licence and neither imposes anything on the rest.
+**Aggregated — separate programs sharing a tarball.** `schwung-tts`,
+`link-subscriber` and `lib/jack/jack_shadow.so` are standalone programs that
+the shim and host never link. They communicate over shared memory, sockets, and
+`exec`. Each keeps its own licence and none imposes anything on the rest.
+
+**`schwung-shim.so` links no copyleft.** Earlier releases linked eSpeak NG into the shim,
+which made the shim itself a GPL-3.0 binary — and the shim is the
+process native modules are `dlopen`ed into. Synthesis was moved into the
+`schwung-tts` sidecar (`src/host/tts_shm.h`) so the shim is MIT again; it
+reaches the engine only through `/dev/shm`. CI fails the build if the shim
+gains a `NEEDED` entry for eSpeak NG or Flite.
 
 | Shipped artifact | Licence as conveyed | Why |
 |---|---|---|
 | `schwung` (host) | MIT | Links only QuickJS (MIT), stb, curl — no copyleft |
-| `schwung-shim.so` | **GPL-3.0-or-later** | MIT source **linked** against eSpeak NG; also Flite (BSD) |
+| `schwung-shim.so` | MIT | Links no TTS engine; talks to `schwung-tts` over `/dev/shm` |
+| `schwung-tts` | **GPL-3.0-or-later** | MIT source **linked** against eSpeak NG; also Flite (BSD) |
 | `schwung-manager` | MIT | Go, no copyleft deps |
 | `link-subscriber` | **GPL-2.0-or-later** | Ableton Link compiled in (header-only) |
 | `lib/jack/jack_shadow.so` | **GPL-2.0-or-later** | jack2 + Cycling '74 JackMoveDriver |
@@ -43,9 +51,8 @@ licence and neither imposes anything on the rest.
 | `bin/curl` | curl licence | Redistributed unmodified |
 | `bin/filebrowser` | Apache-2.0 | Redistributed unmodified |
 
-A build with `SCREEN_READER_ENABLED=0` links no copyleft at all: the shim then
-uses `tts_engine_stub.c` and `SHIM_LIBS` drops to `-ldl -lrt -lpthread -lm`.
-That configuration's `schwung-shim.so` is MIT.
+A build with `SCREEN_READER_ENABLED=0` builds no `schwung-tts` at all, and the
+shim uses `tts_engine_stub.c` in place of the sidecar client.
 
 Corresponding source for the GPL components is available from each project's
 upstream repository, linked in its section below. `libs/link` is a git
@@ -328,7 +335,7 @@ The full upstream copyright file — which also covers the separately-licensed
 `ieee80.c` (Apple) and `compat/getopt.c` (NetBSD Foundation) — ships as
 `licenses/ESPEAK_NG_LICENSE.txt`.
 
-eSpeak NG is a shared library loaded by Schwung's TTS path. It is redistributed
+eSpeak NG is a shared library loaded by `schwung-tts`, and by nothing else. It is redistributed
 unmodified under GPL-3.0-or-later.
 
 ---
@@ -476,21 +483,26 @@ rather than left implicit.
 **Schwung's own source code is MIT** and is not a derivative of any copyleft
 component listed above. Anyone may take that source under MIT terms.
 
-One shipped binary is a combined work. `schwung-shim.so` links
-`libespeak-ng` (GPL-3.0-or-later) in the default screen-reader build, so **that
-binary is conveyed under GPL-3.0-or-later**. MIT is GPL-compatible, so the
-combination is permitted; what it means in practice is that recipients of the
-binary get GPL rights over it, and the corresponding source must be available —
-which it is, publicly, at the project repository.
+One shipped binary is a combined work. `schwung-tts` links `libespeak-ng`
+(GPL-3.0-or-later) in the default screen-reader build, so **that binary is
+conveyed under GPL-3.0-or-later**. MIT is GPL-compatible, so the combination is
+permitted; what it means in practice is that recipients of the binary get GPL
+rights over it, and the corresponding source must be available — which it is,
+publicly, at the project repository.
 
-The remaining GPL components are **separate programs** in the same tarball —
+The GPL components are otherwise **separate programs** in the same tarball —
 mere aggregation on a distribution medium — and impose nothing on anything else:
 
+- `schwung-tts` (GPL-3.0-or-later, as above) is a standalone executable. The
+  shim sends it text and settings and receives audio through `/dev/shm` only.
 - `link-subscriber` (GPL-2.0-or-later) is a standalone executable. It exchanges
   audio with the shim through `/dev/shm` only.
 - `lib/jack/jack_shadow.so` (GPL-2.0-or-later) is a plugin loaded by `jackd`,
   not by Schwung.
 - `lib/libespeak-ng.so.*` (GPL-3.0-or-later) is redistributed unmodified.
+
+`schwung-shim.so` — the process native modules are loaded into — and the
+`schwung` host link no copyleft component.
 
 **Requirements met:**
 - ✅ Attribution provided (this file, shipped in the release tarball)
