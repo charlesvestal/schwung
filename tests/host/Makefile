@@ -67,6 +67,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_cable2_fx_broadcast \
 	$(BUILD_DIR)/test_ui_midi_ring_order \
 	$(BUILD_DIR)/test_master_filter \
 	$(BUILD_DIR)/test_speaker_eq \
@@ -187,6 +188,11 @@ $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host
 
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# The real shadow_midi.c, driven through midi_routing_init with fake slots and
+# a fake MIDI_IN buffer: whether external MIDI reaches audio FX and Master FX.
+$(BUILD_DIR)/test_cable2_fx_broadcast: test_cable2_fx_broadcast.c ../../src/host/shadow_midi.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I../../src $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_ui_midi_ring_order: test_ui_midi_ring_order.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
