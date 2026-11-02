@@ -234,6 +234,23 @@ else
   bad "a blanket 'nothing copyleft is linked' claim is back in:$denial -- schwung-shim.so links eSpeak NG (GPL-3.0+) in the default build"
 fi
 
+# ---------------- 6b. redistributed shared libraries carry their own notices
+#
+# build/lib ships libespeak-ng (GPL-3.0), libflite (BSD) and libsonic
+# (Apache-2.0, which requires the licence TEXT, not a pointer to Debian's
+# common-licenses). These copies were `|| true` for a long time: a release
+# missing them looks identical to a good one.
+for want in ESPEAK_NG_LICENSE.txt FLITE_LICENSE.txt SONIC_LICENSE.txt APACHE-2.0.txt; do
+  line=$(grep -E "cp .*build/licenses/$want" scripts/build.sh || true)
+  if [ -z "$line" ]; then
+    bad "build.sh does not stage licenses/$want"
+  elif printf '%s' "$line" | grep -q '|| true'; then
+    bad "build.sh stages licenses/$want with '|| true' -- a missing notice must fail the build"
+  else
+    ok "build.sh stages licenses/$want unconditionally"
+  fi
+done
+
 # ---------------------------------------- 7. the vendored texts are present
 for t in licenses/GPL-2.0.txt licenses/GPL-3.0.txt; do
   if [ -s "$t" ]; then
