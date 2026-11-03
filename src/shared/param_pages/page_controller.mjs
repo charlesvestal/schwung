@@ -4154,7 +4154,8 @@ export function createController(io = {}) {
             }
             st = s.knobStates[key] = knobInit(start);
         } else if ((s.settleUntil[key] || 0) <= s.tickCount && !s.pendingWrite[key]
-                   && s.values[key] !== undefined) {
+                   && s.values[key] !== undefined
+                   && !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
             /*
              * THE INSTRUMENT MOVED THE VALUE, NOT THE KNOB: a knob state may
              * outlive a value the currently-loaded parameter chain no longer
@@ -4183,9 +4184,18 @@ export function createController(io = {}) {
              *    write this gesture just made, still in flight -- adopting the
              *    last pre-write read would undo the user's own detent.
              *  - pendingWrite: same, before it has even been flushed.
-             *  - the read is the routed one (s.modCache keys read ":base"),
-             *    so the knob's own base is reconciled, never the modulated
-             *    effective drawn on top of it.
+             *  - no step held: a turn under a held step edits the LOCK, and
+             *    that write lands in heldValues, never in s.values -- which
+             *    still says the BASE. Comparing the two would snap the lock
+             *    back to the track on every pause longer than the settle
+             *    window.
+             *  - the difference must survive the WIRE: the knob state
+             *    carries a remainder finer than the decimals a float is
+             *    written with (a shift-fine detent on a 0..0.5 float is
+             *    0.00025), so 0.20025 against the "0.200" it just wrote is
+             *    not the instrument moving anything. Comparing raw numbers
+             *    threw that remainder away on every pause, and a slow fine
+             *    turn never moved at all.
              * A realized difference ALWAYS reseeds to the reported value, for
              * enums (resolved through the wire format, unknown names ignored)
              * and floats/integers alike: the reported value is the truth, and
@@ -4200,7 +4210,8 @@ export function createController(io = {}) {
                     st = s.knobStates[key] = knobInit(idx);
             } else {
                 const num = Number(raw);
-                if (isFinite(num) && num !== st.value)
+                if (isFinite(num) && formatParamForSet(num, meta)
+                                     !== formatParamForSet(st.value, meta))
                     st = s.knobStates[key] = knobInit(num);
             }
         }

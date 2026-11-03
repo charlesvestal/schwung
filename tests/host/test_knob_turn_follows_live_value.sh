@@ -30,9 +30,10 @@ cd "$(dirname "$0")/../.."
 #     gesture just made, still in flight -- adopting the last pre-write read
 #     would undo the user's own detent.
 #   - pendingWrite: same, before it even reaches the wire.
-#   - the read is the routed one (s.modCache keys read ":base"), so the
-#     knob's own base is reconciled, never the modulated effective value
-#     drawn on top of it.
+#   - no step held: a held step's lock lives in heldValues while s.values
+#     still says the base (tests/host/test_step_held_locks.sh pins it).
+#   - the difference must survive the wire format, or a sub-wire remainder
+#     (a slow shift-fine turn) is thrown away on every pause.
 #   - a realized difference ALWAYS reseeds to the reported value, for enums
 #     (resolved through the wire format, unknown names ignored) and
 #     floats/ints alike: the reported value is the truth, and knobInit's
@@ -47,6 +48,8 @@ cd "$(dirname "$0")/../.."
 #      pre-write reading would undo the detent just made).
 #   3. An enum walked to option C, snapped back by the system to A, walks to
 #      B past the four-detents-per-option gate (not C).
+#   4. Slow shift-fine detents finer than the wire's decimals still
+#      accumulate.
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node is required" >&2; exit 1; fi
 
@@ -59,14 +62,15 @@ Promise.all([
   import("./src/shared/param_pages/page_controller.mjs"),
 ]).then(([C]) => {
   const HIER = JSON.stringify({ modes: null, levels: { root: { label: "S",
-      knobs: ["curve", "amount"],
-      params: [{ key: "curve" }, { key: "amount" }] } } });
+      knobs: ["curve", "amount", "depth"],
+      params: [{ key: "curve" }, { key: "amount" }, { key: "depth" }] } } });
   const CP = JSON.stringify([
     { key: "curve",  name: "Curve", type: "enum", options: ["A", "B", "C"] },
     { key: "amount", name: "Amount", type: "float", min: 0, max: 1 },
+    { key: "depth",  name: "Depth",  type: "float", min: 0, max: 0.5 },
   ]);
 
-  const store = { curve: "A", amount: "0" };
+  const store = { curve: "A", amount: "0", depth: "0.2" };
   const writes = [];
   let ticks = 0;
   const ctl = C.createController({
@@ -164,6 +168,24 @@ Promise.all([
   else if (afterEnum !== "B")
     fail("after the reset the walk resolved " + afterEnum + ", expected B");
   else ok("enum: stepping past the four-detent gate after a reset resolved " + afterEnum);
+
+  /* ---- 4. a SLOW shift-fine walk accumulates below the wire precision --- */
+  /* A fine detent on a 0..0.5 float is 0.00025, finer than the three
+   * decimals the value is written with. The knob state carries the
+   * sub-wire remainder; a reseed on every pause would compare 0.20025
+   * against the "0.200" it just wrote, call that a difference, and throw the
+   * remainder away -- so a slow fine turn never moves at all. A difference
+   * is only real when it survives the wire format. */
+  const depthSlot = slotOf("depth");
+  for (let i = 0; i < 40; i++) T();
+  for (let d = 0; d < 12; d++) {
+    ctl.onKnobTurn(depthSlot, 1, undefined, { fine: true });
+    for (let i = 0; i < 20; i++) T();      /* each pause outlives the settle window */
+  }
+  if (!(Number(store.depth) > 0.2015))
+    fail("twelve slow fine detents left depth at " + store.depth +
+         " -- a reseed threw away the sub-wire remainder");
+  else ok("slow fine detents accumulated to " + store.depth);
 
   if (failures) process.exitCode = 1;
   else console.error("ALL PASS");
