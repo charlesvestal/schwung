@@ -35,6 +35,15 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
 - The Shadow UI exposes these settings live under **Global Settings → Screen Reader** and writes them straight to `/data/UserData/schwung/config/tts.json` via the `tts_set_*` bindings — no restart needed.
 - Editing the JSON file by hand is also supported; the engine re-reads it on next init. To force a re-read without rebooting, toggle the screen reader off and back on in Global Settings.
 
+### One writer
+
+Everything that saves `tts.json` goes through `tts_config_update()`
+(`src/host/tts_config.c`). A caller names the fields it owns and every other
+key is carried, so a key added later is not dropped by a writer that has never
+heard of it. Every save is made from the `schwung-tts` sidecar's main loop, one
+thread, so the merge needs no lock. The file is replaced with a rename, so the
+manager never reads a half-written one.
+
 ## Programmatic Control
 
 The TTS engine exposes C API functions and matching JS bindings (in the shadow UI) for runtime control:
