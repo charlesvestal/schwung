@@ -1,6 +1,5 @@
 /*
- * TTS config — see tts_config.h for why there is exactly one writer, and why
- * it takes no lock.
+ * TTS config — see tts_config.h for why there is exactly one writer.
  */
 
 #define _GNU_SOURCE   /* getpwnam, chown under -std=c11 (tests/host) */
@@ -8,7 +7,6 @@
 #include "tts_config.h"
 
 #include <pwd.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,49 +15,27 @@
 static const char *config_path = TTS_CONFIG_PATH;
 
 /*
- * The merged config, one atomic per field. Nothing below waits on another
- * thread -- a writer stores ITS fields, bumps cache_gen and writes the file
- * itself, to a temp name of its own.
+ * The merged config. Plain statics: every caller is the schwung-tts sidecar's
+ * main loop (tts_sidecar.c apply() -> tts_set_* -> the engine savers), one
+ * thread, so an update cannot interleave with another.
  */
-static const char *const engine_names[] = { "espeak", "flite" };
-#define ENGINE_COUNT ((int)(sizeof(engine_names) / sizeof(engine_names[0])))
-
-static atomic_int cache_seeded;          /* 0 until the file has been read once */
-static atomic_int cache_engine;          /* index into engine_names */
-static _Atomic uint32_t cache_speed;     /* float bits */
-static _Atomic uint32_t cache_pitch;     /* float bits */
-static atomic_int cache_volume;
-static _Atomic uint32_t cache_gen;       /* bumped after every update */
-static _Atomic uint32_t tmp_serial;      /* a temp file name per write */
-
-static uint32_t float_bits(float f) { uint32_t u; memcpy(&u, &f, sizeof(u)); return u; }
-static float bits_float(uint32_t u) { float f; memcpy(&f, &u, sizeof(f)); return f; }
-
-static int engine_index(const char *name) {
-    for (int i = 0; i < ENGINE_COUNT; i++) {
-        if (strcmp(name, engine_names[i]) == 0) return i;
-    }
-    return 0;
-}
+static bool cache_seeded;
+static tts_config_t cache;
 
 static void cache_store(unsigned fields, const tts_config_t *c) {
-    if (fields & TTS_CFG_ENGINE) atomic_store(&cache_engine, engine_index(c->engine));
-    if (fields & TTS_CFG_SPEED) atomic_store(&cache_speed, float_bits(c->speed));
-    if (fields & TTS_CFG_PITCH) atomic_store(&cache_pitch, float_bits(c->pitch));
-    if (fields & TTS_CFG_VOLUME) atomic_store(&cache_volume, c->volume);
-}
-
-static void cache_snapshot(tts_config_t *c) {
-    memset(c, 0, sizeof(*c));
-    strcpy(c->engine, engine_names[atomic_load(&cache_engine)]);
-    c->speed = bits_float(atomic_load(&cache_speed));
-    c->pitch = bits_float(atomic_load(&cache_pitch));
-    c->volume = atomic_load(&cache_volume);
+    if (fields & TTS_CFG_ENGINE) {
+        /* Only names we can write back; anything else stays what it was. */
+        if (strcmp(c->engine, "espeak") == 0 || strcmp(c->engine, "flite") == 0)
+            snprintf(cache.engine, sizeof(cache.engine), "%s", c->engine);
+    }
+    if (fields & TTS_CFG_SPEED) cache.speed = c->speed;
+    if (fields & TTS_CFG_PITCH) cache.pitch = c->pitch;
+    if (fields & TTS_CFG_VOLUME) cache.volume = c->volume;
 }
 
 void tts_config_set_path(const char *path) {
     config_path = path ? path : TTS_CONFIG_PATH;
-    atomic_store(&cache_seeded, 0);
+    cache_seeded = false;
 }
 
 /* The value after `"key":`, or NULL. The key is matched WITH its quotes, so
@@ -99,8 +75,9 @@ static void load_defaults(tts_config_t *out) {
     out->volume = 70;
 }
 
-/* Defaults, then whatever the file holds. No lock: a writer replaces the file
- * with rename(), so a reader sees one whole version or the other. */
+/* Defaults, then whatever the file holds. A writer replaces the file with
+ * rename(), so a reader in another process (the manager) sees one whole
+ * version or the other, never a truncated one. */
 static bool read_file(tts_config_t *out) {
     load_defaults(out);
 
@@ -125,20 +102,18 @@ static bool read_file(tts_config_t *out) {
 bool tts_config_load(tts_config_t *out) {
     if (!out) return false;
     bool found = read_file(out);
-    /* The first load seeds the merge cache. That is tts_init(), before
-     * anything can be writing, so the seed has no second writer to race. */
-    if (!atomic_load(&cache_seeded)) {
-        cache_store(TTS_CFG_ALL, out);
-        atomic_store(&cache_seeded, 1);
-    }
+    /* EVERY load refreshes the merge cache, not just the first: tts.json can
+     * be edited by hand and is re-read on the next engine init
+     * (docs/tts-config.md), and a cache seeded once at boot would write the
+     * old values back over that edit on the next save. */
+    cache = *out;
+    cache_seeded = true;
     return found;
 }
 
 static bool write_file(const tts_config_t *c) {
-    /* A name of its own: two writers sharing one ".tmp" would interleave. */
     char tmp[512];
-    snprintf(tmp, sizeof(tmp), "%s.tmp.%u", config_path,
-             (unsigned)atomic_fetch_add(&tmp_serial, 1));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", config_path);
 
     FILE *f = fopen(tmp, "w");
     if (!f) return false;
@@ -154,7 +129,7 @@ static bool write_file(const tts_config_t *c) {
         unlink(tmp);
         return false;
     }
-    /* The shim runs as root; the manager (as ableton) reads this too. */
+    /* The sidecar runs as root; the manager (as ableton) reads this too. */
     struct passwd *pw = getpwnam("ableton");
     if (pw && chown(config_path, pw->pw_uid, pw->pw_gid) != 0) { /* best effort */ }
     return true;
@@ -162,30 +137,14 @@ static bool write_file(const tts_config_t *c) {
 
 bool tts_config_update(unsigned fields, const tts_config_t *vals) {
     if (!vals) return false;
-    if (!atomic_load(&cache_seeded)) {
+    if (!cache_seeded) {
         tts_config_t seed;
         tts_config_load(&seed);
     }
-
     tts_config_t c = *vals;
     c.engine[sizeof(c.engine) - 1] = '\0';
     cache_store(fields, &c);
-    atomic_fetch_add(&cache_gen, 1);
-
-    /* Write what the cache holds now. If another writer updated it while this
-     * one was writing, the file may have been left by whichever rename came
-     * last with the OLDER contents -- so write again. The writer that finishes
-     * last always re-checks, which is what makes the file converge on the
-     * cache without either thread waiting for the other. Bounded: this can
-     * run on the SPI path. */
-    for (int attempt = 0; attempt < 4; attempt++) {
-        uint32_t gen = atomic_load(&cache_gen);
-        tts_config_t snap;
-        cache_snapshot(&snap);
-        if (!write_file(&snap)) return false;
-        if (atomic_load(&cache_gen) == gen) break;
-    }
-    return true;
+    return write_file(&cache);
 }
 
 bool tts_config_save(const tts_config_t *cfg) {

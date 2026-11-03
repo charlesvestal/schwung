@@ -4,16 +4,15 @@
  * Three writers each rewrote the whole file from their own key list, so any
  * key one of them did not list reverted on that writer's next save. The
  * properties below are what stop that: a writer names the fields it owns and
- * every other field is still there, from one thread or from two at once.
+ * every other field is still there.
  */
 
-#define _GNU_SOURCE   /* mkstemp, pthread_barrier under -std=c11 */
+#define _GNU_SOURCE   /* mkstemp under -std=c11 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 
 #include "tts_config.h"
 
@@ -112,41 +111,13 @@ static void test_update_fields(void) {
     tts_config_set_path(NULL);
 }
 
-/* Two writers on two threads, each owning different fields. Every round both
- * update AT ONCE, and afterwards the FILE must hold both values. A
- * load/edit/save pair per writer loses one of them; so does writing once and
- * not re-checking, when the older snapshot's rename lands last. */
-#define RACE_ROUNDS 1000
-
-static pthread_barrier_t race_go, race_done;
-
-static void *race_setter(void *arg) {
-    (void)arg;
-    for (int i = 0; i < RACE_ROUNDS; i++) {
-        tts_config_t c = {0};
-        c.speed = 1.0f;
-        c.pitch = 100.0f;
-        c.volume = i % 101;
-        pthread_barrier_wait(&race_go);
-        tts_config_update(TTS_CFG_SPEED | TTS_CFG_PITCH | TTS_CFG_VOLUME, &c);
-        pthread_barrier_wait(&race_done);
-    }
-    return NULL;
-}
-
-static void *race_switcher(void *arg) {
-    (void)arg;
-    for (int i = 0; i < RACE_ROUNDS; i++) {
-        tts_config_t c = {0};
-        strcpy(c.engine, (i & 1) ? "flite" : "espeak");
-        pthread_barrier_wait(&race_go);
-        tts_config_update(TTS_CFG_ENGINE, &c);
-        pthread_barrier_wait(&race_done);
-    }
-    return NULL;
-}
-
-static void test_two_writers(void) {
+/* The writers as they really run: one thread, the dispatcher saving the
+ * engine and an engine saving its voice, interleaved. Before tts_config.c
+ * each re-parsed the file and rewrote it from its own key list; now each
+ * names its fields, and after every save the FILE must hold both owners'
+ * latest values. An engine name it cannot write back is ignored rather than
+ * stored. */
+static void test_interleaved_owners(void) {
     char path[] = "/tmp/tts_cfg_XXXXXX";
     if (!temp_path(path)) return;
 
@@ -157,30 +128,47 @@ static void test_two_writers(void) {
     c.volume = 70;
     CHECK(tts_config_save(&c), "seed save");
 
-    pthread_barrier_init(&race_go, NULL, 3);
-    pthread_barrier_init(&race_done, NULL, 3);
-    pthread_t a, b;
-    pthread_create(&a, NULL, race_setter, NULL);
-    pthread_create(&b, NULL, race_switcher, NULL);
+    int lost = 0;
+    for (int i = 0; i < 200; i++) {
+        tts_config_t eng = {0};
+        strcpy(eng.engine, (i & 1) ? "flite" : "espeak");
+        tts_config_update(TTS_CFG_ENGINE, &eng);
 
-    int lost_volume = 0, lost_engine = 0;
-    for (int i = 0; i < RACE_ROUNDS; i++) {
-        pthread_barrier_wait(&race_go);
-        pthread_barrier_wait(&race_done);     /* both updates have returned */
+        tts_config_t voice = {0};
+        voice.speed = 1.0f + (float)(i % 5);
+        voice.pitch = 100.0f;
+        voice.volume = i % 101;
+        tts_config_update(TTS_CFG_SPEED | TTS_CFG_PITCH | TTS_CFG_VOLUME, &voice);
+
         tts_config_t r;
         tts_config_load(&r);
-        if (r.volume != i % 101) lost_volume++;
-        if (strcmp(r.engine, (i & 1) ? "flite" : "espeak") != 0) lost_engine++;
+        if (r.volume != i % 101 || r.speed != voice.speed ||
+            strcmp(r.engine, eng.engine) != 0) lost++;
     }
-    pthread_join(a, NULL);
-    pthread_join(b, NULL);
-    pthread_barrier_destroy(&race_go);
-    pthread_barrier_destroy(&race_done);
+    CHECK(lost == 0, "an owner's value was missing from the file in %d of 200 rounds", lost);
 
-    CHECK(lost_volume == 0, "the setter thread's value was missing from the file in %d of %d rounds",
-          lost_volume, RACE_ROUNDS);
-    CHECK(lost_engine == 0, "the switcher thread's engine was missing from the file in %d of %d rounds",
-          lost_engine, RACE_ROUNDS);
+    tts_config_t bogus = {0};
+    strcpy(bogus.engine, "openevv");
+    tts_config_update(TTS_CFG_ENGINE, &bogus);
+    tts_config_t r;
+    tts_config_load(&r);
+    CHECK(strcmp(r.engine, "flite") == 0,
+          "an engine name the file cannot carry replaced the real one: %s", r.engine);
+
+    /* A HAND EDIT survives the next save, once something has re-read it:
+     * the engines re-load on init, and the save after that must merge into
+     * the edited file rather than into what the cache held before it. */
+    FILE *f = fopen(path, "w");
+    fprintf(f, "{ \"engine\": \"espeak\", \"speed\": 2.50, \"pitch\": 150.0, \"volume\": 40 }\n");
+    fclose(f);
+    tts_config_load(&r);                       /* an engine init re-reads it */
+    tts_config_t only_vol = {0};
+    only_vol.volume = 55;
+    tts_config_update(TTS_CFG_VOLUME, &only_vol);
+    tts_config_load(&r);
+    CHECK(r.speed == 2.5f && r.pitch == 150.0f && strcmp(r.engine, "espeak") == 0 && r.volume == 55,
+          "a save after re-reading a hand edit reverted it: engine=%s speed=%.2f pitch=%.1f volume=%d",
+          r.engine, r.speed, r.pitch, r.volume);
 
     unlink(path);
     tts_config_set_path(NULL);
@@ -189,7 +177,7 @@ static void test_two_writers(void) {
 int main(void) {
     test_roundtrip();
     test_update_fields();
-    test_two_writers();
+    test_interleaved_owners();
     if (failures) {
         fprintf(stderr, "test_tts_config: %d failure(s)\n", failures);
         return 1;

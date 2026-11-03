@@ -40,8 +40,9 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
 Everything that saves `tts.json` goes through `tts_config_update()`
 (`src/host/tts_config.c`). A caller names the fields it owns and every other
 key is carried, so a key added later is not dropped by a writer that has never
-heard of it. It takes no lock, because the savers run on the SPI path: the
-merged values live in atomics and the file is replaced with a rename.
+heard of it. Every save is made from the `schwung-tts` sidecar's main loop, one
+thread, so the merge needs no lock. The file is replaced with a rename, so the
+manager never reads a half-written one.
 
 ## Programmatic Control
 

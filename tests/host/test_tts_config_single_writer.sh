@@ -9,10 +9,8 @@ set -euo pipefail
 # features.json defect, in miniature -- and nothing fails when that happens:
 # the file is valid, it is only missing a value.
 #
-# And that writer takes NO LOCK. The savers run on the SPI path (FIFO 70); a
-# mutex shared with a writer on an ordinary thread is a priority inversion
-# with no inheritance. The behaviour is in tests/host/test_tts_config.c; this
-# pins the shape that a later edit could quietly undo.
+# The behaviour is in tests/host/test_tts_config.c; this pins the shape that
+# a later edit could quietly undo.
 
 cd "$(dirname "$0")/../.."
 
@@ -42,15 +40,12 @@ body=$(awk '/^static void save_engine_choice/,/^}/' src/host/tts_engine_dispatch
 grep -q 'tts_config_update' <<< "$body" ||
     fail "save_engine_choice does not save through tts_config_update (tts_config.h)"
 
-# No lock, and it must not come back.
-if grep -qE 'pthread_mutex|pthread\.h|sem_wait|flock\(' src/host/tts_config.c; then
-    fail "src/host/tts_config.c takes a lock -- it is reached from the SPI path"
+# It is built where the engines are: the schwung-tts sidecar, not the shim
+# (which links no speech engine at all since #691).
+grep -E '^\s*TTS_SIDECAR_SRC=' scripts/build.sh | grep -q 'src/host/tts_config.c' ||
+    fail "build.sh does not compile tts_config.c into the schwung-tts sidecar"
+if grep -E '^\s*SHIM_TTS_SRC=' scripts/build.sh | grep -q 'tts_config.c'; then
+    fail "tts_config.c is in the shim build -- it belongs to the sidecar with the engines"
 fi
-grep -q 'atomic_' src/host/tts_config.c ||
-    fail "src/host/tts_config.c no longer merges through atomics"
 
-# The shim is built with it.
-grep -E '^\s*SHIM_TTS_SRC=' scripts/build.sh | grep -q 'src/host/tts_config.c' ||
-    fail "build.sh does not compile tts_config.c into the screen reader shim"
-
-echo "PASS: tts.json -- one writer, field-masked updates, no lock"
+echo "PASS: tts.json -- one writer, field-masked updates, built into the sidecar"

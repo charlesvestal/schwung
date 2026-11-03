@@ -12,11 +12,11 @@
  * editing and saving the whole struct: a load/edit/save pair from each of two
  * threads can interleave and drop the other's change.
  *
- * NO LOCK. The savers are reached from the SPI path (FIFO 70), and a mutex
- * shared with a writer on an ordinary thread would be a priority inversion
- * with no inheritance, worst when that thread holds it across file I/O. The
- * merged values live in atomics, each writer writes the file itself, and a
- * writer that was overtaken writes again (see tts_config_update).
+ * One thread. Every save is reached from the schwung-tts sidecar's main loop
+ * (tts_sidecar.c apply() -> tts_set_* -> the engine savers), so the merge
+ * needs no lock and no atomics. Should a second thread ever save, it needs a
+ * mutex here -- the sidecar is SCHED_OTHER and off the SPI path, so that is
+ * an ordinary lock, not a priority inversion.
  *
  * Deliberately free of unified_log and of the engines, so tests/host can
  * compile it and round-trip a file.
@@ -50,7 +50,7 @@ bool tts_config_load(tts_config_t *out);
 #define TTS_CFG_ALL    0x0Fu
 
 /* Set the named fields from `vals`, keep every other field as it is, and
- * write the file. Safe from any thread and never waits on another one.
+ * write the file. Single-threaded: see the note at the top.
  * Returns false when the file could not be written. */
 bool tts_config_update(unsigned fields, const tts_config_t *vals);
 
