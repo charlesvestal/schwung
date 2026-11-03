@@ -115,13 +115,21 @@ int main(void)
     a.track[2].soloed = 1;
     reset();
     FIRE(&a, &none);
-    CHECK(n_mix == 1 && mix_mu[1] == 1 && mix_mu[0] == 0 && mix_so[2] == 1);
+    /* ...but NOT applied while misaligned: the slots still belong to the set
+     * the UI has not switched away from yet. */
+    CHECK(n_mix == 0);
     CHECK(n_poll == 1);
     CHECK(n_mute == 0 && n_solo == 0);
     CHECK(move_model_sync_active());
     CHECK(ctl.move_model_ready == 1 && ctl.move_doc_gen == 1);
     CHECK(move_model_sync_misaligned());    /* set_doc_gen still 0 */
     CHECK(!move_model_sync_settled());       /* the edge was just now */
+    /* The UI acks: the owed levels land on the next frame, once. */
+    ctl.set_doc_gen = 1;
+    move_model_sync_apply_pending();
+    CHECK(n_mix == 1 && mix_mu[1] == 1 && mix_mu[0] == 0 && mix_so[2] == 1);
+    move_model_sync_apply_pending();
+    CHECK(n_mix == 1);
 
     /* Within the same document: EDGES only. Muting track 4 applies exactly
      * that, and does not re-level the rest (Schwung's own slot mute holds). */
@@ -156,11 +164,29 @@ int main(void)
     FIRE(&f, &e);
     CHECK(n_mute == 0);
 
-    /* A set load: new generation -> levels again, and another poll. */
+    /* A set load: new generation -> another poll, and levels OWED. */
     move_model_t g = doc(2);
+    g.track[0].muted = 1;
     reset();
     FIRE(&g, &d);
-    CHECK(n_mix == 1 && n_poll == 1 && ctl.move_doc_gen == 2);
+    CHECK(n_mix == 0 && n_poll == 1 && ctl.move_doc_gen == 2);
+
+    /* THE LEAK (2026-11-03): between Move's load and the UI's switch, the UI
+     * saves the OUTGOING set from the live slots. Nothing of the incoming
+     * set's mixer may reach them first -- neither the load's levels nor a
+     * gesture inside the window. */
+    move_model_t g2 = g;
+    g2.track[2].muted = 1;
+    g2.track[1].volume = -12.0;
+    reset(); n_vol = 0;
+    FIRE(&g2, &g);
+    CHECK(n_mix == 0 && n_mute == 0 && n_solo == 0 && n_vol == 0);
+    /* Aligned: ONE resync from Move's LATEST mixer, gesture included; the
+     * volume is not replayed (the UI restores the set's own slot levels). */
+    ctl.set_doc_gen = 2;
+    move_model_sync_apply_pending();
+    CHECK(n_mix == 1 && mix_mu[0] == 1 && mix_mu[2] == 1 && mix_mu[1] == 0 && n_vol == 0);
+    reset();
 
     /* ...but an incomplete mixer is never taken as a level. */
     move_model_t h = doc(3);
@@ -213,7 +239,7 @@ int main(void)
     move_model_t z = doc(4);
     z.track[1].slot[0] = clip(900, 0xabc);
     reset(); FIRE(&z, &p); drain_cmds();
-    CHECK(n_del == 0 && n_copy == 0 && n_mix == 1);
+    CHECK(n_del == 0 && n_copy == 0 && n_mix == 0);   /* levels owed until aligned */
 
     /* ---- ONE UNDO: the press path, end to end ---------------------------
      * Move's stack top is (0x10, 1); Schwung p-locks on slot 2; Undo is
@@ -285,6 +311,7 @@ int main(void)
     {
         move_model_t p1 = doc(7), p2;
         FIRE(&p1, &h);
+        ctl.set_doc_gen = 7; move_model_sync_apply_pending();   /* aligned */
         reset();
         p2 = p1; p2.track[2].muted = 1;
         g_fn(&p2, &p1);                                   /* posted only */
@@ -361,6 +388,7 @@ int main(void)
         move_model_t a2 = doc(40), b2;
         a2.master_valid = 1; a2.master_db = -70.0; a2.metronome_on = 1; a2.selected_track = 2;
         FIRE(&a2, &h);                                     /* a new document: levels */
+        ctl.set_doc_gen = 40; move_model_sync_apply_pending();      /* aligned */
         float mvl = -1;
         CHECK(move_model_sync_master_volume(&mvl) && mvl == 0.0f);          /* the knob's bottom is SILENCE */
         CHECK(shadow_metronome_on == 1);
