@@ -2687,6 +2687,19 @@
       "default_branch": "main",
       "asset_name": "s3g-thru-module.tar.gz",
       "min_host_version": "1.7.3"
+    },
+    {
+      "id": "moveless",
+      "name": "moveless",
+      "description": "Generative performance sequencer for Ableton Move. Seven lanes play together; edit the live pattern, save scenes, and morph between them.",
+      "author": "moveless",
+      "component_type": "overtake",
+      "subcategory": "sequencer",
+      "tags": ["chord", "drums", "euclidean", "generative", "polyphonic"],
+      "github_repo": "eboblin/moveless",
+      "default_branch": "main",
+      "asset_name": "moveless-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }
