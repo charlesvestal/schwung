@@ -138,3 +138,17 @@ This module is part of Schwung and was developed with AI assistance, including C
 
 All architecture, implementation, and release decisions are reviewed by human maintainers.  
 AI-assisted content may still contain errors, so please validate functionality, security, and license compatibility before production use.
+
+### Organize Set Pages
+
+Open **Set Pages** in Schwung Manager to arrange Sets on inactive pages. Drag a
+Set to a slot, or select it and then select its destination. An occupied slot
+can be swapped or, if there is room on the page, shifted. Choose **Save changes**
+to apply the arrangement. The currently loaded page is unavailable for editing.
+
+Do not switch pages on Move while the editor is open or while it saves. The
+manager checks for changes before saving and asks you to reload if the pages
+have changed. This check does not prevent a page switch during the save itself.
+If a save is interrupted, the manager stops further edits and identifies an
+unfinished `.manager-edit-*` directory in `schwung/set_pages`; its journal,
+Set directories, and metadata backups can be used to recover the operation.

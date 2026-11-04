@@ -19,6 +19,15 @@ Index.
 **JavaScript**: `.mjs` = shared ES modules, `.js` = UI modules. Host fns are `snake_case` (`host_load_module`).
 **Naming**: Module IDs lowercase-hyphenated (`song-mode`). Param keys lowercase_underscored (`tail_bars`). LED colors PascalCase (`BrightRed`).
 
+## Set Pages in Schwung Manager
+
+The manager edits only inactive Set Pages. It snapshots the inactive stashes and
+`current_page.txt`, rejects stale saves, and updates both `xattrs.txt` and the
+recovery manifests as it moves Set directories. It does not lock out device
+page switches: users must not switch pages during editing or saving. An
+interrupted manager edit leaves a `.manager-edit-*` directory with a journal
+and any recovery files; further edits are blocked until it is resolved.
+
 ## Build / Deploy
 
 ```bash
