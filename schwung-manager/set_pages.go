@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -32,6 +33,57 @@ type setPageSnapshot struct {
 }
 
 var setPagesMu sync.Mutex
+var setPageReadXattr = func(path, key string) (string, error) {
+	b, err := exec.Command("getfattr", "--only-values", "-n", key, path).Output()
+	return strings.TrimSpace(string(b)), err
+}
+
+func readActiveSetPage(root string, slots []*setPageItem) error {
+	dir := filepath.Join(filepath.Dir(root), "UserLibrary", "Sets")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		raw, err := setPageReadXattr(path, "user.song-index")
+		if err != nil {
+			continue
+		}
+		i, err := strconv.Atoi(raw)
+		if err != nil || i < 0 || i >= len(slots) {
+			continue
+		}
+		if slots[i] != nil {
+			return fmt.Errorf("duplicate slot on active page")
+		}
+		subs, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		name := entry.Name()
+		for _, sub := range subs {
+			if sub.IsDir() && !strings.HasPrefix(sub.Name(), ".") {
+				name = sub.Name()
+				break
+			}
+		}
+		item := &setPageItem{ID: entry.Name(), Name: name}
+		if value, e := setPageReadXattr(path, "user.song-color"); e == nil {
+			if color, e := strconv.Atoi(value); e == nil && color >= 0 && color <= 127 {
+				item.Color = &color
+			}
+		}
+		slots[i] = item
+	}
+	return nil
+}
 
 func setPageDir(root string, page int) string {
 	return filepath.Join(root, "set_pages", fmt.Sprintf("page_%d", page))
@@ -71,6 +123,9 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 	for p := 0; p < setPageCount; p++ {
 		s.Pages[p] = make([]*setPageItem, setPageSlots)
 		if p == s.Current {
+			if e := readActiveSetPage(root, s.Pages[p]); e != nil {
+				return nil, e
+			}
 			continue
 		}
 		dir := setPageDir(root, p)

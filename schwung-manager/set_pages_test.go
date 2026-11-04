@@ -188,3 +188,38 @@ func TestSetPagesRejectsMetadataForSetOnAnotherPage(t *testing.T) {
 		t.Fatal("accepted metadata for a Set on a different page")
 	}
 }
+
+func TestSetPagesShowsActiveSetsWithoutAllowingEdits(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "schwung")
+	setDir := filepath.Join(root, "UserLibrary", "Sets", "active", "My Set")
+	if err := os.MkdirAll(setDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "set_pages"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	original := setPageReadXattr
+	defer func() { setPageReadXattr = original }()
+	setPageReadXattr = func(path, key string) (string, error) {
+		if key == "user.song-index" {
+			return "2", nil
+		}
+		return "4", nil
+	}
+	snap, err := readSetPages(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Pages[0][2]; got == nil || got.Name != "My Set" || got.Color == nil || *got.Color != 4 {
+		t.Fatalf("active set missing: %+v", got)
+	}
+	layout := make([][]string, 8)
+	for i := range layout {
+		layout[i] = make([]string, 32)
+	}
+	layout[0][2] = "active"
+	if err = saveSetPages(base, snap.Revision, layout); err == nil {
+		t.Fatal("accepted active page edit")
+	}
+}
