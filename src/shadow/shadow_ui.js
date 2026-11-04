@@ -216,6 +216,7 @@ import {
  * store module from it.
  */
 import { getHostVersion } from '/data/UserData/schwung/shared/store_utils.mjs';
+import { hierBackParent, hierBackRow, hierBackReopensPresetEdit } from '/data/UserData/schwung/shared/hier_back.mjs';
 import { laneVoiceMap } from '/data/UserData/schwung/shared/lane_voice_map.mjs';
 
 import {
@@ -26086,33 +26087,38 @@ function handleBack() {
                     }
                     /* Find the parent level that has children pointing to current level,
                      * or has a navigation param with level pointing to current level */
-                    const levels = hierEditorHierarchy.levels;
-                    let parentLevel = "root";
-                    let foundParent = false;
-                    for (const [name, def] of Object.entries(levels)) {
-                        /* Check children property */
-                        if (def.children === hierEditorLevel) {
-                            parentLevel = name;
-                            foundParent = true;
-                            break;
-                        }
-                        /* Check params array for navigation params with level property */
-                        if (def.params && Array.isArray(def.params)) {
-                            for (const p of def.params) {
-                                if (p && typeof p === "object" && p.level === hierEditorLevel) {
-                                    parentLevel = name;
-                                    foundParent = true;
-                                    break;
-                                }
-                            }
-                            if (foundParent) break;
-                        }
-                    }
+                    const leftLevel = hierEditorLevel;
+                    const { parent: parentLevel, viaNavParam } =
+                        hierBackParent(hierEditorHierarchy.levels, leftLevel);
                     hierEditorLevel = parentLevel;
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
+                    /* A nav param on a PRESET level is only reachable from its
+                     * param list (preset edit mode), so Back returns there —
+                     * loadHierarchyLevel resets a preset level to its browser,
+                     * which dropped users into the preset list when they only
+                     * wanted the next category. See hier_back.mjs. */
+                    if (hierBackReopensPresetEdit(getHierarchyLevelDef(), viaNavParam)) {
+                        hierEditorPresetEditMode = true;
+                        hierEditorChainParams = hierEditorChainParamsNow();
+                        invalidateKnobContextCache();
+                    }
+                    /* Land on the row we left, so the next category is one
+                     * detent away rather than a scroll from the top. */
+                    let leftRow = null;
+                    if (viaNavParam) {
+                        const idx = hierBackRow(hierEditorParams, leftLevel);
+                        if (idx >= 0) {
+                            hierEditorSelectedIdx = idx;
+                            leftRow = hierEditorParams[idx];
+                        }
+                    }
                     needsRedraw = true;
-                    announceHierLevel();
+                    if (leftRow && (hierEditorPresetEditMode || !getHierarchyLevelDef()?.label)) {
+                        announce(leftRow.label || leftRow.level);
+                    } else {
+                        announceHierLevel();
+                    }
                 }
             } else {
                 /* At root level - exit hierarchy editor.
