@@ -2700,6 +2700,19 @@
       "default_branch": "main",
       "asset_name": "moveless-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "tinysid",
+      "name": "TinySID",
+      "description": "Plays C64 .sid tunes on a live 6502 + SID emulation locked to Move's clock: borrow one tune's sounds for another, send the three voices as MIDI to other tracks, loop, retune, and play the song's own instruments from the pads",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "chiptune-retro",
+      "tags": ["vintage-emulation"],
+      "github_repo": "fleshinachair/TinySID",
+      "default_branch": "main",
+      "asset_name": "TinySID.tar.gz",
+      "min_host_version": "1.8.0"
     }
   ]
 }
