@@ -1254,7 +1254,14 @@ void shadow_dispatch_cable2_channeled_slots(void)
                 host_slot_fx_silence_frames[s] = 0;
             }
 
-            uint8_t msg[3] = { status, d1, d2 };
+            /* Remap to the slot's forward channel, exactly as the MIDI_OUT
+             * echo path does. Without it a module that forces a channel
+             * (JV-880's default_forward_channel 1, Patch mode) ignored an
+             * external keyboard on any other channel -- and the echo copy that
+             * WOULD have been remapped is dropped as a duplicate of this one,
+             * so the note vanished (schwung-jv880#4). THRU slots never get
+             * here, and THRU resolves to the original channel anyway. */
+            uint8_t msg[3] = { shadow_chain_remap_channel(s, status), d1, d2 };
             if (shadow_chain_apply_transpose(s, msg))
                 pv2->on_midi(host_chain_slots[s].instance, msg, 3,
                              MOVE_MIDI_SOURCE_EXTERNAL);
