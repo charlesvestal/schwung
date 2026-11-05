@@ -593,14 +593,14 @@
     {
       "id": "ducker",
       "name": "Ducker",
-      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
+      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain, on volume or as a filter sweep",
       "author": "charlesvestal",
       "component_type": "audio_fx",
       "subcategory": "dynamics",
       "github_repo": "charlesvestal/schwung-ducker",
       "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "1.3.0"
     },
     {
       "id": "pushnpull",
