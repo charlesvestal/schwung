@@ -24,11 +24,14 @@ blk=$(awk '/^void shadow_dispatch_cable2_channeled_slots/,/^}/' "$host")
 grep -q 'on_midi(host_chain_slots\[s\]' <<<"$blk" || \
   fail "the cable-2 dispatcher no longer delivers to slots; update this test"
 
-# Every message built for on_midi in the dispatcher is remapped first.
-bad=$(grep -nE 'uint8_t msg\[3\] = \{ *status' <<<"$blk" || true)
-[ -z "$bad" ] || fail "cable-2 dispatch builds a slot message without shadow_chain_remap_channel:
-$bad"
-grep -q 'shadow_chain_remap_channel(s, status)' <<<"$blk" || \
-  fail "cable-2 dispatch does not remap to the slot's forward channel"
+# The message handed to each slot's instrument (the one that goes through the
+# transpose and on to on_midi) is remapped first. The audio-FX broadcast is
+# exempt on purpose: it keeps the ORIGINAL channel, as the THRU path's does,
+# because an FX like a ducker filters on the external device's own channel.
+deliver=$(grep -B1 'if (shadow_chain_apply_transpose(s, msg))' <<<"$blk" | head -1)
+[ -n "$deliver" ] || fail "cable-2 dispatch no longer transposes before delivery; update this test"
+grep -q 'shadow_chain_remap_channel(s, status)' <<<"$deliver" || \
+  fail "cable-2 dispatch hands slots the keyboard's channel instead of the forward channel:
+$deliver"
 
 echo "PASS: cable-2 MIDI is remapped to each slot's forward channel"
