@@ -2700,6 +2700,20 @@
       "default_branch": "main",
       "asset_name": "moveless-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "machinemodule",
+      "name": "Machinemodule",
+      "description": "Elektron Machinedrum SPS-1 UW sound engine, emulated: 16 tracks on the 16 pads, with track effects, mixer and master effects. The editor follows the pad you hit",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["cpu-heavy", "needs-assets", "vintage-emulation"],
+      "github_repo": "sd88me/schwung-machinemodule",
+      "default_branch": "main",
+      "asset_name": "machinemodule-module.tar.gz",
+      "min_host_version": "1.7.3",
+      "requires": "Your own Machinedrum UW OS 1.63 .syx (required, free from Elektron); optional flash image .bin for factory kits and ROM machines, and your own kit .syx dumps. Upload them on the module's page in Schwung Manager"
     }
   ]
 }
