@@ -372,7 +372,7 @@
       "default_branch": "main",
       "asset_name": "midiverb-module.tar.gz",
       "min_host_version": "0.3.0",
-      "requires": "Optional: original Midiverb / Midifex / Midiverb II ROM dumps for cycle-accurate emulation"
+      "requires": "Your own Midiverb / Midifex / Midiverb II program ROM dumps (midiverb.rom, midifex.rom, midiverb2.rom); a unit without its ROM passes audio through"
     },
     {
       "id": "tapescam",
