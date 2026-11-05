@@ -2708,7 +2708,7 @@
       "author": "sd88me",
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
-      "tags": ["cpu-heavy", "drums", "needs-assets", "vintage-emulation"],
+      "tags": ["cpu-heavy", "needs-assets", "vintage-emulation"],
       "github_repo": "sd88me/schwung-machinemodule",
       "default_branch": "main",
       "asset_name": "machinemodule-module.tar.gz",
