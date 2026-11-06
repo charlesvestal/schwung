@@ -2726,8 +2726,7 @@
       "github_repo": "aTanguay/Schwung_FlukeDrums",
       "default_branch": "main",
       "asset_name": "flukedrums-module.tar.gz",
-      "min_host_version": "1.0.0",
-      "requires": "Sample library particularly drum samples using industry standard names (Kick, Snare, Hats, Toms, Percussion, etc.)"
+      "min_host_version": "1.0.0"
     }
   ]
 }
