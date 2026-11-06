@@ -2714,6 +2714,19 @@
       "asset_name": "machinemodule-module.tar.gz",
       "min_host_version": "1.7.3",
       "requires": "Your own Machinedrum UW OS 1.63 .syx (required, free from Elektron); optional flash image .bin for factory kits and ROM machines, and your own kit .syx dumps. Upload them on the module's page in Schwung Manager"
+    },
+        {
+      "id": "flukedrums",
+      "name": "FlukeDrums",
+      "description": "A drum machine built on happy accidents: random kits from your sample library. Roll, lock the keepers, reroll the rest, save the kit",
+      "author": "aTanguay",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["generative", "sample-based"],
+      "github_repo": "aTanguay/Schwung_FlukeDrums",
+      "default_branch": "main",
+      "asset_name": "flukedrums-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }
