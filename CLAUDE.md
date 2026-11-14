@@ -562,6 +562,19 @@ Sidecar: `src/host/link_subscriber.cpp`. SHM layout: `link_audio_in_shm_t` in `s
 
 The old `sendto()`-hook reception path was deleted when the public `abl_link` audio API landed (2026-03-30). Sidecar is now the only reception path; `src/host/shadow_link_audio.c` is just the SHM reader + capture buffer. See `docs/plans/2026-04-17-link-audio-official-api-migration.md`.
 
+### Move's Link peer is named after its HOSTNAME, not "Move"
+
+`move` announces as `Move`, `move3` as `Move3`, and a Move Avahi renamed to
+`move-2` (two Moves on one network) as something else again. The sidecar
+accepted only a peer named exactly `"Move"`, so every other Move was
+subscribed to and dropped: no slot, nothing in `/schwung-link-in`, and the
+shim fell back to Move's own mix in SILENCE -- Move->Schwung on, slot FX and
+Master FX never touching Move. `link_move_peer.h` matches the peer against
+`gethostname()`, normalised (lowercase alnum) on both sides and re-read per
+channels event because a rename is live; with no match, a single peer
+publishing `N-` track channels is taken, and two are refused. The discovery
+log line names the peer and host it chose.
+
 ### Latency Comp
 
 Move's per-track audio round-trips with ~5–14 ms unpredictable drift. Slot synths render locally at ~0 ms → fire ahead of Move audio on the same beat. **Latency Comp** (Global Settings → Audio, default OFF) only runs when `rebuild_from_la = 1`:

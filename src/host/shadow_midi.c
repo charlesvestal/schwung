@@ -1175,6 +1175,18 @@ void shadow_dispatch_cable2_channeled_slots(void)
 
     uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
 
+    /* If any THRU slot exists, shadow_dispatch_direct_external_midi already
+     * fires FX_BROADCAST + master-FX forward this frame; skip them here to
+     * avoid double-dispatching audio FX (e.g. ducker) on the same event. */
+    int has_direct = 0;
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        if (host_chain_slots[s].channel == -1 &&
+            host_chain_slots[s].forward_channel == -2) {
+            has_direct = 1;
+            break;
+        }
+    }
+
     /* 8-byte stride (USB-MIDI + timestamp); don't break on zero. */
     for (int i = 0; i + 8 <= SHADOW_MIDI_IN_BYTES; i += 8) {
         uint8_t header = in_src[i];
@@ -1254,10 +1266,35 @@ void shadow_dispatch_cable2_channeled_slots(void)
                 host_slot_fx_silence_frames[s] = 0;
             }
 
-            uint8_t msg[3] = { status, d1, d2 };
+            /* Remap to the slot's forward channel, exactly as the MIDI_OUT
+             * echo path does. Without it a module that forces a channel
+             * (JV-880's default_forward_channel 1, Patch mode) ignored an
+             * external keyboard on any other channel -- and the echo copy that
+             * WOULD have been remapped is dropped as a duplicate of this one,
+             * so the note vanished (schwung-jv880#4). THRU slots never get
+             * here, and THRU resolves to the original channel anyway. */
+            uint8_t msg[3] = { shadow_chain_remap_channel(s, status), d1, d2 };
             if (shadow_chain_apply_transpose(s, msg))
                 pv2->on_midi(host_chain_slots[s].instance, msg, 3,
                              MOVE_MIDI_SOURCE_EXTERNAL);
+        }
+
+        /* Audio-FX and Master-FX need every cable-2 voice event regardless of
+         * which slot's receive_channel matched. Done here only when no THRU
+         * slot exists — otherwise shadow_dispatch_direct_external_midi already
+         * broadcast this frame. */
+        if (!has_direct) {
+            for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+                if (!host_chain_slots[s].active || !host_chain_slots[s].instance)
+                    continue;
+                uint8_t msg[3] = { status, d1, d2 };
+                pv2->on_midi(host_chain_slots[s].instance, msg, 3,
+                             MOVE_MIDI_SOURCE_FX_BROADCAST);
+            }
+            if (host_master_fx_forward_midi) {
+                uint8_t msg[3] = { status, d1, d2 };
+                host_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            }
         }
     }
 }

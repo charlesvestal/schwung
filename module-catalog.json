@@ -4,13 +4,13 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "1.9.0",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.0/schwung.tar.gz",
+    "latest_version": "1.9.2",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.2/schwung.tar.gz",
     "min_host_version": "0.1.0",
     "channels": {
       "stable": {
-        "version": "1.9.0",
-        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.0/schwung.tar.gz"
+        "version": "1.9.2",
+        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.2/schwung.tar.gz"
       }
     }
   },
@@ -257,6 +257,22 @@
       "requires": "Optional additional .syx patch banks (place in module's banks/ folder)"
     },
     {
+      "id": "frodhes",
+      "name": "Frodhes",
+      "description": "Physical-model electric piano, vibraphone and marimba with drive, filter, compressor, chorus, phaser, delay and reverb, an arpeggiator and its own full-screen pages",
+      "author": "leo Mirabal",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
+      "github_repo": "leonardoMirabal/frodhes",
+      "default_branch": "main",
+      "asset_name": "frodhes-module.tar.gz",
+      "min_host_version": "1.8.2"
+    },
+    {
       "id": "sf2",
       "name": "SF2 Synth",
       "description": "SoundFont (.sf2) synthesizer using FluidLite",
@@ -372,7 +388,7 @@
       "default_branch": "main",
       "asset_name": "midiverb-module.tar.gz",
       "min_host_version": "0.3.0",
-      "requires": "Optional: original Midiverb / Midifex / Midiverb II ROM dumps for cycle-accurate emulation"
+      "requires": "Your own Midiverb / Midifex / Midiverb II program ROM dumps (midiverb.rom, midifex.rom, midiverb2.rom); a unit without its ROM passes audio through"
     },
     {
       "id": "tapescam",
@@ -593,14 +609,14 @@
     {
       "id": "ducker",
       "name": "Ducker",
-      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
+      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain, on volume or as a filter sweep",
       "author": "charlesvestal",
       "component_type": "audio_fx",
       "subcategory": "dynamics",
       "github_repo": "charlesvestal/schwung-ducker",
       "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "1.3.0"
     },
     {
       "id": "pushnpull",
@@ -996,7 +1012,7 @@
       "github_repo": "charlesvestal/schwung-performance-fx",
       "default_branch": "main",
       "asset_name": "performance-fx-module.tar.gz",
-      "min_host_version": "0.7.0"
+      "min_host_version": "0.12.0"
     },
     {
       "id": "dj",
@@ -2646,6 +2662,18 @@
       "min_host_version": "1.7.3"
     },
     {
+      "id": "crest-fx",
+      "name": "Crest FX",
+      "description": "Crest's effects chain for any slot: distortion, chorus, tempo-synced delay and reverb in parallel or any serial order, with dry/wet. Bit-exact passthrough when off. 8 presets",
+      "author": "AI & Klaine",
+      "component_type": "audio_fx",
+      "subcategory": "multi-fx",
+      "github_repo": "klaine/crest-fx",
+      "default_branch": "main",
+      "asset_name": "crest-fx-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
       "id": "chord-display",
       "name": "Chord Display",
       "description": "Shows the chord you play, or a clip plays, on any track, with its roman numeral in the Set's key. Reads any MIDI channel.",
@@ -2713,6 +2741,33 @@
       "default_branch": "main",
       "asset_name": "TinySID.tar.gz",
       "min_host_version": "1.8.0"
+    },
+    {
+      "id": "machinemodule",
+      "name": "Machinemodule",
+      "description": "Elektron Machinedrum SPS-1 UW sound engine, emulated: 16 tracks on the 16 pads, with track effects, mixer and master effects. The editor follows the pad you hit",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["cpu-heavy", "needs-assets", "vintage-emulation"],
+      "github_repo": "sd88me/schwung-machinemodule",
+      "default_branch": "main",
+      "asset_name": "machinemodule-module.tar.gz",
+      "min_host_version": "1.7.3",
+      "requires": "Your own Machinedrum UW OS 1.63 .syx (required, free from Elektron); optional flash image .bin for factory kits and ROM machines, and your own kit .syx dumps. Upload them on the module's page in Schwung Manager"
+    },
+        {
+      "id": "flukedrums",
+      "name": "FlukeDrums",
+      "description": "A drum machine built on happy accidents: random kits from your sample library. Roll, lock the keepers, reroll the rest, save the kit",
+      "author": "aTanguay",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["generative", "sample-based"],
+      "github_repo": "aTanguay/Schwung_FlukeDrums",
+      "default_branch": "main",
+      "asset_name": "flukedrums-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }

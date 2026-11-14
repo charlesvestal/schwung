@@ -67,6 +67,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_cable2_fx_broadcast \
 	$(BUILD_DIR)/test_ui_midi_ring_order \
 	$(BUILD_DIR)/test_master_filter \
 	$(BUILD_DIR)/test_speaker_eq \
@@ -96,6 +97,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_resample_bridge_mode \
 	$(BUILD_DIR)/test_link_audio_reorder \
+	$(BUILD_DIR)/test_link_move_peer \
 	$(BUILD_DIR)/test_bridge_silence_dither \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_sampler_wav_trim \
@@ -187,6 +189,11 @@ $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host
 
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# The real shadow_midi.c, driven through midi_routing_init with fake slots and
+# a fake MIDI_IN buffer: whether external MIDI reaches audio FX and Master FX.
+$(BUILD_DIR)/test_cable2_fx_broadcast: test_cable2_fx_broadcast.c ../../src/host/shadow_midi.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I../../src $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_ui_midi_ring_order: test_ui_midi_ring_order.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
@@ -282,6 +289,9 @@ $(BUILD_DIR)/test_bridge_silence_dither: test_bridge_silence_dither.c ../../src/
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_link_audio_reorder: test_link_audio_reorder.c ../../src/host/link_audio_reorder.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_link_move_peer: test_link_move_peer.c ../../src/host/link_move_peer.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
