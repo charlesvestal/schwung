@@ -199,12 +199,14 @@ function adjustParamValue(param, delta) {
 export function applyPatchSelection() {
     const { selectedSlot, slots, patches, selectedPatch,
             saveSlotsToConfig, fetchKnobMappings,
-            invalidateKnobContextCache, setView, VIEWS } = ctx;
+            invalidateKnobContextCache, setSlotUserCleared,
+            setView, VIEWS } = ctx;
     const patch = patches[selectedPatch];
     const slot = slots[selectedSlot];
     if (!patch || !slot) return;
     const isNewSlot = patch.name === "[New Slot Preset]";
     slot.name = isNewSlot ? "Untitled" : patch.name;
+    setSlotUserCleared(selectedSlot, isNewSlot);
     saveSlotsToConfig(slots);
     if (typeof shadow_request_patch === "function") {
         try {
