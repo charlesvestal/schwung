@@ -57,6 +57,24 @@ int main(void)
                  "}",
                  "{\"preset\":3,\"blob\":\"AB CD\"}");
 
+    /* A User Preset record rides the same file (issue #305) and is written
+     * AFTER `state`. The parser takes the FIRST "state" it finds, so a preset
+     * NAMED "state" must not be mistaken for the state -- which holds only
+     * while the JS saver keeps that order (test_master_fx_user_presets.sh). */
+    expect_state("user_preset after state is ignored",
+                 "{\n"
+                 "  \"module_path\": \"/x/tunnel/dsp.so\",\n"
+                 "  \"module_id\": \"tunnel\",\n"
+                 "  \"state\": {\n"
+                 "    \"mix\": 0.9\n"
+                 "  },\n"
+                 "  \"user_preset\": {\n"
+                 "    \"name\": \"state\",\n"
+                 "    \"hash\": \"h:1\"\n"
+                 "  }\n"
+                 "}",
+                 "{\"mix\":0.9}");
+
     expect_rejected("no state", "{\"module_id\":\"palette\"}");
     expect_rejected("unterminated string", "{\"state\":\"oops}");
     expect_rejected("unsupported state type", "{\"state\":42}");

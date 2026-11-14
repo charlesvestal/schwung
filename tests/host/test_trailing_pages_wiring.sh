@@ -192,7 +192,7 @@ console.log("  ok  trailingMenus() has exactly 4 plan-time call sites, none insi
 ' "$PAGE_CONTROLLER"
 
 # ============================================================================
-# 4. BEHAVIOUR: componentParamPagesIo — the Master FX exclusion.
+# 4. BEHAVIOUR: componentParamPagesIo — which chains get trailing pages.
 # ============================================================================
 
 node -e '
@@ -221,13 +221,20 @@ const body = [
     "const MASTER_FX_SLOTS = 8;",
     grabConst("FX_BUSES"),
     grab("masterFxIndexFromComponentKey"),
-    // Stubs recording whether the trailing-page machinery was reached.
+    "const MASTER_CHAIN_TARGET = { slot: 0 };",
+    // Stubs recording whether the trailing-page machinery was reached, and
+    // with WHICH slot and key -- a master io that forwarded slot 1 would read
+    // the wrong chain while every row still drew.
     "let getComponentParamPrefixCalls = 0;",
     "function getComponentParamPrefix(k) { getComponentParamPrefixCalls++; return k; }",
-    "let trailingMenusCalls = 0;",
-    "function componentTrailingMenus() { trailingMenusCalls++; return [\"MARK\"]; }",
-    "let runActionCalls = 0;",
-    "function runComponentActionFromGrid() { runActionCalls++; }",
+    "let trailingMenusCalls = 0, trailingArgs = null;",
+    "function componentTrailingMenus(...a) { trailingMenusCalls++; trailingArgs = a; return [\"MARK\"]; }",
+    "let runActionCalls = 0, runArgs = null;",
+    "function runComponentActionFromGrid(...a) { runActionCalls++; runArgs = a; }",
+    "let writes = [], refusals = [], marks = [];",
+    "function setSlotParam(s, k, v) { writes.push([s, k, v]); return true; }",
+    "function noteLaneWriteRefusal(s, k) { refusals.push([s, k]); }",
+    "function markComponentParamWrite(s, c) { marks.push([s, c]); }",
     grab("componentParamPagesIo"),
     // The bus-key test, from the REAL model: a bus insert is excluded here for
     // the same reason Master FX is, and a stub that always answered null would
@@ -237,13 +244,45 @@ const body = [
     "const busInsert = componentParamPagesIo(1, \"bus1:fx2\");",
     "if (busInsert !== null) throw new Error(\"expected null for a bus insert, got \" + JSON.stringify(busInsert));",
     "const slot = componentParamPagesIo(1, \"fx1\");",
-    "if (master !== null) throw new Error(\"expected null for a Master FX target, got \" + JSON.stringify(master));",
-    // A SEND position is an FX-bus position and inherits the same exclusion. It
-    // reaches it only because masterFxIndexFromComponentKey accepts every prefix
-    // in FX_BUSES; while that regex named master_fx alone, "send1:fx2" fell
-    // through to the slot-chain branch and was handed slot-chain trailing pages.
+    // A MASTER FX position now gets its "My Presets" page (issue #305), through
+    // the SAME componentTrailingMenus / runComponentActionFromGrid, addressed
+    // at IPC slot 0 with the prefixed key verbatim.
+    "if (!master || typeof master.trailingMenus !== \"function\" || typeof master.runAction !== \"function\")",
+    "  throw new Error(\"expected an io with trailingMenus/runAction for a Master FX target, got \" + JSON.stringify(master));",
+    "master.trailingMenus();",
+    "if (!trailingArgs || trailingArgs[0] !== 0 || trailingArgs[1] !== \"master_fx:fx2\" || trailingArgs[2] !== \"master_fx:fx2\")",
+    "  throw new Error(\"master trailingMenus must reach componentTrailingMenus(0, master_fx:fx2, master_fx:fx2), got \" + JSON.stringify(trailingArgs));",
+    "master.runAction(\"up_save\");",
+    "if (!runArgs || runArgs[0] !== 0 || runArgs[1] !== \"master_fx:fx2\" || runArgs[2] !== \"up_save\")",
+    "  throw new Error(\"master runAction must reach runComponentActionFromGrid(0, master_fx:fx2, action), got \" + JSON.stringify(runArgs));",
+    // setParam reproduces the controller default it replaces (the lane-refusal
+    // note, then the write) and adds the `*` hook -- nothing else.
+    "master.setParam(\"master_fx:fx2:mix\", \"0.5\");",
+    "if (JSON.stringify(writes) !== JSON.stringify([[0, \"master_fx:fx2:mix\", \"0.5\"]]) ||",
+    "    JSON.stringify(refusals) !== JSON.stringify([[0, \"master_fx:fx2:mix\"]]) ||",
+    "    JSON.stringify(marks) !== JSON.stringify([[0, \"master_fx:fx2\"]]))",
+    "  throw new Error(\"master setParam wrong: \" + JSON.stringify({ writes, refusals, marks }));",
+    "if (master.onValueWritten || master.heldStepIsHold || master.deleteHeld)",
+    "  throw new Error(\"the Master FX io must carry no p-lock hooks (it never had them)\");",
+    "trailingMenusCalls = 0; runActionCalls = 0;",
+    // A SEND position is an FX-bus position and now gets the SAME io as the
+    // master (Send FX My Presets): slot 0, its own prefixed key. It reaches
+    // this branch only because masterFxIndexFromComponentKey accepts every
+    // prefix in FX_BUSES; while that regex named master_fx alone, "send1:fx2"
+    // fell through to the slot-chain branch and was handed slot-chain trailing
+    // pages (Module page included) -- which must still never happen.
     "const sendPos = componentParamPagesIo(0, \"send1:fx2\");",
-    "if (sendPos !== null) throw new Error(\"expected null for a Send FX target, got \" + JSON.stringify(sendPos));",
+    "if (!sendPos || typeof sendPos.trailingMenus !== \"function\") throw new Error(\"expected an io for a Send FX target, got \" + JSON.stringify(sendPos));",
+    "sendPos.trailingMenus();",
+    "if (!trailingArgs || trailingArgs[0] !== 0 || trailingArgs[1] !== \"send1:fx2\" || trailingArgs[2] !== \"send1:fx2\")",
+    "  throw new Error(\"send trailingMenus must reach componentTrailingMenus(0, send1:fx2, send1:fx2), got \" + JSON.stringify(trailingArgs));",
+    "const sendB = componentParamPagesIo(0, \"send2:fx1\");",
+    "if (!sendB) throw new Error(\"expected an io for Send B too\");",
+    "sendB.runAction(\"up_load\");",
+    "if (!runArgs || runArgs[0] !== 0 || runArgs[1] !== \"send2:fx1\") throw new Error(\"Send B runAction wrong: \" + JSON.stringify(runArgs));",
+    "if (sendPos.onValueWritten || sendPos.heldStepIsHold || sendPos.deleteHeld)",
+    "  throw new Error(\"a send io must carry no p-lock hooks\");",
+    "trailingMenusCalls = 0; runActionCalls = 0;",
     "if (!slot || typeof slot.trailingMenus !== \"function\" || typeof slot.runAction !== \"function\")",
     "  throw new Error(\"expected an io object with trailingMenus/runAction for a slot component\");",
     "if (getComponentParamPrefixCalls < 1) throw new Error(\"getComponentParamPrefix was never called for the slot case\");",
@@ -261,8 +300,8 @@ try {
 } catch (e) {
     fail("componentParamPagesIo behaviour: " + e.message);
 }
-console.log("  ok  componentParamPagesIo(): null for a Master FX target, a live io " +
-            "(trailingMenus/runAction actually reaching the real functions) for a slot component");
+console.log("  ok  componentParamPagesIo(): a live io for a slot component AND every FX-bus " +
+            "position (Master FX, Send A, Send B: slot 0, prefixed key), null for a bus insert");
 ' "$UI"
 
 # ============================================================================
@@ -300,10 +339,16 @@ const body = [
     "let chainConfigs = {};",
     "function createEmptyChainConfig() { return { synth: null }; }",
     "function getChainComponentModule(cfg, key) { return cfg && cfg.synth; }",
+    // The FX-bus branch: a "master_fx:" / "send<N>:" key reads its module
+    // from its bus mirror instead of chainConfigs (stubbed by key here).
+    "let masterModules = {};",
+    "function isFxBusComponentKey(k) { return /^(master_fx|send[12]):fx[1-8]$/.test(String(k)); }",
+    "function fxBusComponentModuleId(k) { return masterModules[k] || \"\"; }",
+    "let stateReads = [];",
     "let userRecord = null;",
     "function getUserPresetRecord() { return userRecord; }",
     "let liveBlob = \"{}\";",
-    "function getSlotStateWithRetry() { return liveBlob; }",
+    "function getSlotStateWithRetry(s, k) { stateReads.push([s, k]); return liveBlob; }",
     // componentTrailingMenus caches the live blob it reads so the header mark
     // (userPresetHeaderMark) can answer without a second read -- see the
     // note above userPresetLiveBlobCache in shadow_ui.js.
@@ -344,6 +389,9 @@ const body = [
     "  clearListCountArgs: () => { listCountArgs = []; },",
     "  setClipLabel: (v) => { clipLabelValue = v; },",
     "  clipLabelArgs: () => clipLabelArgs.slice(),",
+    "  setMasterModules: (m) => { masterModules = m; },",
+    "  stateReads: () => stateReads.slice(),",
+    "  blobCache: () => Object.assign({}, userPresetLiveBlobCache),",
     "};",
 ].join("\n");
 
@@ -459,6 +507,42 @@ harness.setHelpChildren(null);
 if (actions(harness.run(1, "synth", "synth")[1]).includes("module_help"))
     fail("Module Help must disappear again when the module reports no help content");
 
+// MASTER FX POSITION (issue #305): the SAME function, "My Presets" ONLY -- no
+// Module page (its rows are slot-chain shaped) -- with the module read
+// from the master mirror, and the state read and cached under IPC slot 0 and
+// the prefixed key, so the header `*` (userPresetHeaderMark) finds it.
+harness.setMasterModules({ "master_fx:fx2": "tunnel" });
+harness.setRecord(null);
+harness.setLiveBlob("{\"mix\":1}");
+const mfxEmpty = harness.run(0, "master_fx:fx3", "master_fx:fx3");
+if (mfxEmpty.length !== 0) fail("an EMPTY Master FX position must get no trailing pages, got " + JSON.stringify(mfxEmpty));
+const mfx = harness.run(0, "master_fx:fx2", "master_fx:fx2");
+if (mfx.length !== 1 || mfx[0].name !== "My Presets")
+    fail("a Master FX position must get exactly [\"My Presets\"], got " + JSON.stringify(mfx.map((p) => p.name)));
+if (actions(mfx[0]).join(",") !== "up_load,up_save_as")
+    fail("Master FX My Presets with no record must offer Preset(load) + Save As, got " + actions(mfx[0]).join(","));
+const lastRead = harness.stateReads().pop();
+if (!lastRead || lastRead[0] !== 0 || lastRead[1] !== "master_fx:fx2:state")
+    fail("the Master FX state must be read at slot 0 as master_fx:fx2:state, got " + JSON.stringify(lastRead));
+if (harness.blobCache()["0:master_fx:fx2"] !== "{\"mix\":1}")
+    fail("the Master FX live blob must be cached under 0:master_fx:fx2 for the header mark");
+harness.setRecord(CP.makeRecord("Wide", "{\"mix\":1}"));
+if (actions(harness.run(0, "master_fx:fx2", "master_fx:fx2")[0]).join(",") !== "up_load,up_save,up_save_as,up_delete")
+    fail("Master FX My Presets with a record must offer Save and Delete too");
+harness.setRecord(null);
+
+// SEND POSITION: the same, read from the send own mirror and state key.
+harness.setMasterModules({ "send2:fx1": "tunnel" });
+if (harness.run(0, "send2:fx2", "send2:fx2").length !== 0) fail("an EMPTY send position must get no trailing pages");
+const snd = harness.run(0, "send2:fx1", "send2:fx1");
+if (snd.length !== 1 || snd[0].name !== "My Presets")
+    fail("a send position must get exactly [\"My Presets\"], got " + JSON.stringify(snd.map((p) => p.name)));
+const sendRead = harness.stateReads().pop();
+if (!sendRead || sendRead[0] !== 0 || sendRead[1] !== "send2:fx1:state")
+    fail("the send state must be read at slot 0 as send2:fx1:state, got " + JSON.stringify(sendRead));
+if (harness.blobCache()["0:send2:fx1"] !== "{\"mix\":1}")
+    fail("the send live blob must be cached under 0:send2:fx1 for the header mark");
+
 console.log("  ok  componentTrailingMenus(): [] when empty; (none)/Load+SaveAs-only when no " +
             "record; Save+Delete when a record exists; the real presetRowValue() decides the " +
             "* (imported from current_preset.mjs, not re-typed); Module Help present only " +
@@ -481,6 +565,13 @@ const grab = (name) => {
     return m[0];
 };
 
+const grabConst = (name) => {
+    const re = new RegExp("^const " + name + " = [^\\n]*;$", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + " out of shadow_ui.js");
+    return m[0];
+};
+
 const body = [
     "let needsRedraw = false;",
     "function getComponentParamPrefix(k) { return k; }",
@@ -492,13 +583,23 @@ const body = [
     "let setRecordCalls = [];",
     "function setUserPresetRecord(slot, prefix, rec) { setRecordCalls.push([slot, prefix, rec]); userRecord = rec; }",
     "let calls = [];",
-    "function enterPresetBrowser() { calls.push(\"load\"); }",
-    "function overwriteUserPreset() { calls.push(\"save\"); return true; }",
+    // lastArgs / moveView serve the Master FX block at the end: what the preset
+    // flow was handed, and whether a hand-off "opened a screen" (inert, i.e.
+    // view never moves, for every slot assertion above it).
+    "let lastArgs = null, moveView = false;",
+    "function enterPresetBrowser(...a) { calls.push(\"load\"); lastArgs = a; if (moveView) view = 6; }",
+    "function overwriteUserPreset(...a) { calls.push(\"save\"); lastArgs = a; return true; }",
     "function getSlotStateWithRetry() { return \"{}\"; }",
     "function onUserPresetSaved() { calls.push(\"onSaved\"); }",
     "function announce() {}",
-    "function enterPresetSaveAs() { calls.push(\"saveAs\"); }",
-    "function enterPresetDeleteConfirm() { calls.push(\"deleteConfirm\"); }",
+    "function enterPresetSaveAs(...a) { calls.push(\"saveAs\"); lastArgs = a; }",
+    "function enterPresetDeleteConfirm(...a) { calls.push(\"deleteConfirm\"); lastArgs = a; if (moveView) view = 8; }",
+    // The FX-bus branch (Master FX, Send A, Send B).
+    "function isFxBusComponentKey(k) { return /^(master_fx|send[12]):fx[1-8]$/.test(String(k)); }",
+    "function fxBusComponentModuleId(k) { return (k === \"master_fx:fx2\" || k === \"send1:fx3\") ? \"tunnel\" : \"\"; }",
+    "function fxBusPresetFlowOptions(k, id) { return { returnView: \"masterfx\", focusSlot: false, audition: false, label: id, bus: k.split(\":\")[0] }; }",
+    grabConst("FX_BUS_COMPONENT_ACTIONS"),
+    "let fxBusComponentModalFromGrid = false, fxBusComponentGridReturnKey = \"\", fxBusComponentGridReturnModule = \"\";",
     "function slotChainComponentIndex() { return 0; }",
     "function slotChainComponents() { return [{ key: \"synth\" }]; }",
     "function enterComponentSelect() { calls.push(\"swap\"); }",
@@ -572,7 +673,28 @@ const body = [
     "const help = { ret: helpRet, calls: calls.slice(), view, stack: helpNavStack,",
     "               detail: helpDetailScrollState, modalFlag: componentModalFromGrid,",
     "               retSlot: componentHelpReturnSlot, retKey: componentHelpReturnKey };",
-    "return { seen, setRecordCalls, help, lists, listsEmpty };",
+    // FX-BUS POSITION (Master FX, then Send A): the four preset actions reach
+    // the SAME preset flow, at slot 0 with the prefixed key, carrying the flow
+    // target of that bus; every other action is refused; a hand-off raises
+    // the FX-bus return pair, never the slot one.
+    "const runBus = (key) => {",
+    "  const out = {};",
+    "  moveView = true;",
+    "  for (const action of [\"up_load\",\"up_save\",\"up_save_as\",\"up_delete\",\"swap_module\",\"remove_module\",\"module_lists\",\"module_help\",\"clear_component_lanes\"]) {",
+    "    calls = []; lastArgs = null; view = 0;",
+    "    fxBusComponentModalFromGrid = false; fxBusComponentGridReturnKey = \"\"; componentModalFromGrid = false;",
+    "    userRecord = { name: \"Wide\", hash: \"h:2\" };",
+    "    const ret = runComponentActionFromGrid(0, key, action);",
+    "    out[action] = { ret, calls: calls.slice(), args: lastArgs, flag: fxBusComponentModalFromGrid,",
+    "                    key: fxBusComponentGridReturnKey, mod: fxBusComponentGridReturnModule,",
+    "                    slotFlag: componentModalFromGrid };",
+    "  }",
+    "  moveView = false;",
+    "  return out;",
+    "};",
+    "const mfx = runBus(\"master_fx:fx2\");",
+    "const snd = runBus(\"send1:fx3\");",
+    "return { seen, setRecordCalls, help, lists, listsEmpty, mfx, snd };",
 ].join("\n");
 
 let r;
@@ -598,6 +720,40 @@ for (const [action, want] of Object.entries(expect)) {
 }
 console.log("  ok  runComponentActionFromGrid(): all six navigating actions (up_load, up_save, " +
             "up_save_as, up_delete, swap_module, remove_module) reach their real handlers");
+
+for (const [M, KEY, BUS] of [[r.mfx, "master_fx:fx2", "master_fx"], [r.snd, "send1:fx3", "send1"]]) {
+    const want = { up_load: ["load"], up_save: ["save", "onSaved"], up_save_as: ["saveAs"], up_delete: ["deleteConfirm"] };
+    for (const [action, calls] of Object.entries(want)) {
+        if (JSON.stringify(M[action].calls) !== JSON.stringify(calls))
+            fail(BUS + " " + action + " expected " + JSON.stringify(calls) + ", reached " + JSON.stringify(M[action].calls));
+    }
+    const L = M.up_load.args;
+    if (!L || L[0] !== 0 || L[1] !== KEY || L[2] !== "tunnel" || L[3] !== KEY ||
+        !L[4] || L[4].returnView !== "masterfx" || L[4].focusSlot !== false || L[4].audition !== false ||
+        L[4].bus !== BUS)
+        fail(BUS + " up_load must enter the browser at slot 0 / " + KEY + " / tunnel with that bus " +
+             "flow target, got " + JSON.stringify(L));
+    const D = M.up_delete.args;
+    if (!D || D[4] !== "Wide" || !D[5] || D[5].returnView !== "masterfx")
+        fail(BUS + " up_delete must confirm the LOADED name with that bus flow target, got " + JSON.stringify(D));
+    if (!M.up_save_as.args || !M.up_save_as.args[4] || M.up_save_as.args[4].label !== "tunnel")
+        fail(BUS + " up_save_as must carry that bus flow options, got " + JSON.stringify(M.up_save_as.args));
+    const S = M.up_save.args;
+    if (!S || S[0] !== 0 || S[1] !== KEY || S[2] !== "tunnel" || S[3] !== "Wide")
+        fail(BUS + " up_save must overwrite (0, " + KEY + ", tunnel, Wide), got " + JSON.stringify(S));
+    for (const a of ["swap_module", "remove_module", "module_lists", "module_help", "clear_component_lanes"]) {
+        if (M[a].ret !== false || M[a].calls.length !== 0)
+            fail(BUS + " must REFUSE " + a + " (no Module page), got " + JSON.stringify(M[a]));
+    }
+    for (const a of ["up_load", "up_delete"]) {
+        if (M[a].flag !== true || M[a].key !== KEY || M[a].mod !== "tunnel" || M[a].slotFlag !== false)
+            fail(BUS + " " + a + " hand-off must raise the FX-BUS return pair only, got " + JSON.stringify(M[a]));
+    }
+    if (M.up_save_as.flag !== false) fail(BUS + " Save As opens no screen and must raise no return");
+    console.log("  ok  runComponentActionFromGrid() on a " + BUS + " position: the four preset actions reach " +
+                "the shared preset flow at slot 0 with that bus target; Module-page actions refused; " +
+                "hand-offs raise the FX-bus return pair");
+}
 
 // module_lists: the SECOND action that does not converge on CHAIN_EDIT. It
 // leaves the grid, records the component it is filing so exitModuleLists can

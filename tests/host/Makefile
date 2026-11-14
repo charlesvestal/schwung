@@ -67,8 +67,11 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_cable2_fx_broadcast \
 	$(BUILD_DIR)/test_ui_midi_ring_order \
 	$(BUILD_DIR)/test_master_filter \
+	$(BUILD_DIR)/test_speaker_eq \
+	$(BUILD_DIR)/test_json_span \
 	$(BUILD_DIR)/test_midi_in_compact \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
@@ -94,6 +97,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_resample_bridge_mode \
 	$(BUILD_DIR)/test_link_audio_reorder \
+	$(BUILD_DIR)/test_link_move_peer \
 	$(BUILD_DIR)/test_bridge_silence_dither \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_sampler_wav_trim \
@@ -119,7 +123,8 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_lane_store \
 	$(BUILD_DIR)/test_lane_state_roundtrip \
 	$(BUILD_DIR)/test_slot_clip_phase \
-	$(BUILD_DIR)/test_rec_arm
+	$(BUILD_DIR)/test_rec_arm \
+	$(BUILD_DIR)/test_tts_config
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -185,11 +190,22 @@ $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
+# The real shadow_midi.c, driven through midi_routing_init with fake slots and
+# a fake MIDI_IN buffer: whether external MIDI reaches audio FX and Master FX.
+$(BUILD_DIR)/test_cable2_fx_broadcast: test_cable2_fx_broadcast.c ../../src/host/shadow_midi.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I../../src $(filter %.c,$^) -o $@ $(LDFLAGS)
+
 $(BUILD_DIR)/test_ui_midi_ring_order: test_ui_midi_ring_order.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_master_filter: test_master_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_speaker_eq: test_speaker_eq.c ../../src/host/speaker_eq.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_json_span: test_json_span.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
@@ -275,6 +291,9 @@ $(BUILD_DIR)/test_bridge_silence_dither: test_bridge_silence_dither.c ../../src/
 $(BUILD_DIR)/test_link_audio_reorder: test_link_audio_reorder.c ../../src/host/link_audio_reorder.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
+$(BUILD_DIR)/test_link_move_peer: test_link_move_peer.c ../../src/host/link_move_peer.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
@@ -320,6 +339,11 @@ $(BUILD_DIR)/test_voice_send_source: test_voice_send_source.c ../../src/host/voi
 $(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 $(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# tts_config.c is the one tts.json writer. It needs neither the engines nor
+# the shim.
+$(BUILD_DIR)/test_tts_config: test_tts_config.c ../../src/host/tts_config.c ../../src/host/tts_config.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 # Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is

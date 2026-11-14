@@ -67,9 +67,16 @@ func TestWebUILinksNameTheSlotTheSynthIsIn(t *testing.T) {
 
 func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 	f := &fakeParams{vals: map[string]string{
+		// Positions are found through the chain's own count: fx2 exists
+		// because fx_count says 2, and nothing past it is read.
+		"2/fx_count":   "2",
 		"2/fx2_module": "echo",
-		// Master FX answers a .so PATH, not an id (masterFxModuleID).
-		"0/master_fx:fx3:module": "/data/UserData/schwung/modules/audio_fx/echo/echo.so",
+		// The master bus is ONE listing read, positional, entries carry the
+		// id and the .so PATH (masterFxModuleID covers a path-only entry).
+		"0/master_fx:modules": `[{"id":"","path":""},{"id":"","path":""},` +
+			`{"id":"","path":"/data/UserData/schwung/modules/audio_fx/echo/echo.so"},` +
+			`{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},` +
+			`{"id":"","path":""},{"id":"","path":""}]`,
 	}}
 	got := findModuleWebUILinks(f.get, "echo", "audio_fx", testWebUIBase)
 

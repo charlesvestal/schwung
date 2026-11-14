@@ -148,6 +148,19 @@ jobs:
           file build/link-subscriber | grep -q 'aarch64' || \
             { echo "WRONG ARCH"; file build/link-subscriber; exit 1; }
           echo "ok"
+          # schwung-tts carries the speech engines so the shim does not. The
+          # shim must link NONE of them: eSpeak NG is GPL-3.0, and the shim is
+          # the process every native module is loaded into.
+          printf '%-48s ' build/schwung-tts
+          test -f build/schwung-tts || { echo "MISSING"; exit 1; }
+          file build/schwung-tts | grep -q 'aarch64' || \
+            { echo "WRONG ARCH"; file build/schwung-tts; exit 1; }
+          echo "ok"
+          printf '%-48s ' "schwung-shim.so links no TTS engine"
+          if readelf -d build/schwung-shim.so | grep NEEDED | grep -Eq 'espeak|flite'; then
+            echo "LINKED"; readelf -d build/schwung-shim.so | grep NEEDED; exit 1
+          fi
+          echo "ok"
       - name: Install ripgrep
         # test_chain_host_file_split.sh uses rg. host-tests installs it in its
         # own job; this one runs the same script on the runner, not in the
@@ -186,5 +199,7 @@ jobs:
           # old pre-split entrypoint still on never-blessed devices launches
           # $SCHWUNG_DIR/schwung-manager, so a payload without one leaves the
           # device with no web UI and no way to update itself back out.
+          tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-tts$' || {
+            echo "tarball has no schwung-tts — the screen reader would be silent"; exit 1; }
           tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-manager$' || {
             echo "tarball has no schwung-manager — no web UI, and no way to update off this build"; exit 1; }

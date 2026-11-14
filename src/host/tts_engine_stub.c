@@ -81,3 +81,13 @@ const char *tts_get_engine(void)
 {
     return "espeak";
 }
+
+bool tts_wants_sidecar(void)
+{
+    return false;
+}
+
+bool tts_take_state_published(void)
+{
+    return false;
+}

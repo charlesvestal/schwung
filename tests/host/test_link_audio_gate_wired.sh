@@ -41,7 +41,7 @@ fi
 
 # The ramp-out must come AFTER master volume and speaker EQ: native audio is
 # already at master volume and through Move's own enhancer.
-eq_line=$(grep -n 'speaker_eq_process(mailbox_audio' "$shim" | head -1 | cut -d: -f1)
+eq_line=$(grep -n 'speaker_eq_process(&speaker_eq, mailbox_audio' "$shim" | head -1 | cut -d: -f1)
 xf_line=$(grep -n 'la_mix_ramp_out(mailbox_audio' "$shim" | head -1 | cut -d: -f1)
 if [ -z "$eq_line" ] || [ -z "$xf_line" ] || [ "$xf_line" -le "$eq_line" ]; then
     echo "FAIL: the native crossfade must be added after speaker EQ (eq=$eq_line xfade=$xf_line)"

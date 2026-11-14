@@ -21,7 +21,7 @@ void   shadow_transport_init(uint32_t sample_rate);
 void   shadow_transport_on_realtime(transport_src_t src, uint8_t status);
 void   shadow_transport_advance_block(int frames);   /* once per audio block */
 double shadow_transport_beat_position(void);         /* beats; < 0 = no transport */
-float  shadow_transport_bpm(void);                   /* 0 = unknown */
+float  shadow_transport_bpm(void);                   /* STEADY (held over a window); 0 = unknown */
 int    shadow_transport_source(void);                /* active transport_src_t */
 
 /* Last transport that measured a tempo, and that tempo — retained after the

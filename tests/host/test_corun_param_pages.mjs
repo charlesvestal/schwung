@@ -41,6 +41,7 @@ function harness(source=after){
     paramPagesActive:()=>c.active,
     isHardwarePadPress:d=>(d[0]&240)===144&&d[1]>=68&&d[1]<=99&&d[2]>0,
     _midiCount:0,_midiWindowStart:0,_knobTurnCount:0,controllerIo:null,currentChrome:null,currentSlot:1,
+    knobFilterCfg:{enabled:false,knobs:new Set()},knobFilter:{accept:()=>true,reset(){}},
     shiftIsHeld:()=>c.hostShiftHeld,isLoggingEnabled:()=>false,traced:(_n,f)=>f(),
     exitParamPages:()=>{c.active=false;},
     ctx:{VIEWS,setView:v=>{c.view=v;},isMuteHeld:()=>c.hostMuteHeld},
@@ -48,6 +49,10 @@ function harness(source=after){
     tickParamPages:()=>log.ticks.push(['page',c.view]),
     endComponentWidgetVisit:()=>log.ticks.push(['end',c.view]),
     decodeDelta:n=>n<64?n:n-128,
+    // The Delete+JogClick footer notice the handler dismisses on input, and the
+    // Delete byte it follows (test_delete_footer_notice.sh and
+    // test_delete_jogclick_remove.sh own their behaviour); nothing is showing here.
+    footerNoticeDismissedBy:()=>false,chainFooterNotice:{clear:()=>false},observeDeleteHeld:()=>{},
   };
   // Controller boundary is a fake parameter store; MIDI decoding and page
   // dispatch below are the REAL upstream functions, not a replacement router.

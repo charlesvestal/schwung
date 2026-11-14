@@ -298,6 +298,16 @@ it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
 turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
 the address is unattributable under ASLR.
 
+### `get_bpm()` must be STEADY -- `docs/MODULES.md`
+
+A tempo-synced delay resizes its line from `get_bpm()` every block, so a value
+that moves when the tempo did not is a pitch bend. It used to time each beat on
+the wall clock (a steady 120 read 120.19, 119.49 ...). Now it is Move's tempo
+from the live model, else a clock **fitted over 16 beats in sample time and
+held**. **Never report a tempo from one tick interval, an EMA, or one beat on
+the wall clock**; the tests assert "does not move", not "is near"
+(`test_shadow_transport.sh`, `test_sampler_get_bpm.sh`).
+
 ### JS Host Functions
 
 Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
@@ -551,6 +561,19 @@ Move firmware → link-subscriber sidecar (C++, libs/link)
 Sidecar: `src/host/link_subscriber.cpp`. SHM layout: `link_audio_in_shm_t` in `src/host/link_audio.h`. Sidecar also writes shadow-slot output back as `ME-N` Link Audio channels via `/schwung-pub-audio` → `LinkAudioSink`s.
 
 The old `sendto()`-hook reception path was deleted when the public `abl_link` audio API landed (2026-03-30). Sidecar is now the only reception path; `src/host/shadow_link_audio.c` is just the SHM reader + capture buffer. See `docs/plans/2026-04-17-link-audio-official-api-migration.md`.
+
+### Move's Link peer is named after its HOSTNAME, not "Move"
+
+`move` announces as `Move`, `move3` as `Move3`, and a Move Avahi renamed to
+`move-2` (two Moves on one network) as something else again. The sidecar
+accepted only a peer named exactly `"Move"`, so every other Move was
+subscribed to and dropped: no slot, nothing in `/schwung-link-in`, and the
+shim fell back to Move's own mix in SILENCE -- Move->Schwung on, slot FX and
+Master FX never touching Move. `link_move_peer.h` matches the peer against
+`gethostname()`, normalised (lowercase alnum) on both sides and re-read per
+channels event because a rename is live; with no match, a single peer
+publishing `N-` track channels is taken, and two are refused. The discovery
+log line names the peer and host it chose.
 
 ### Latency Comp
 
@@ -964,6 +987,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   four, one read stop each. Before it, the only way to get a fact to a widget
   was to give it a knob, which is how a module shipped a read-only cell whose
   whole job was carrying a number to the cell beside it.
+- **A widget's extra key can be `"live": true`** — also read every tick, taking
+  turns on the one-live-read-per-tick budget (it keeps its rotation stop too); a
+  canvas page's own `extra_keys` cannot (they stay on the rotation).
 - **A module can own a PAGE (`as_page`), and it is a PAGE_KNOBS page with a
   drawer, NOT a new kind.** That is what makes the encoders work with no input
   code and the reads happen at all: 22 controller branches test PAGE_KNOBS, and
@@ -1071,6 +1097,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   (`partlevel`), so asking with `sram_part_2_partlevel` missed every time and
   paid the read anyway — silent, because *a miss still answers correctly, only
   slowly.*
+- **A write that leaves a condition key where the plan found it plans
+  NOTHING** (`plannedGates`). Every write used to re-plan, and the 4-detent
+  enum gate makes most writes repeats: on the Move `planPages` is ~10 ms
+  (QuickJS, ~50x node), so turning a gating enum dropped the grid from ~56 to
+  ~36 fps. A visibility re-plan also reuses the last trailing menus rather than
+  calling `io.trailingMenus()`, whose host side is a blocking `:state` read.
+  The jumbled VALUES in that report were a worn KNOB 1 — ask which physical
+  knob first.
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
@@ -1123,6 +1157,11 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   one pasted, silently. And a failed read voids the whole snapshot rather than
   dropping a key, or a pad is copied without its sample and still reported as
   `PASTED`.
+- **A worn encoder reports counts BACKWARDS, in bursts of up to ~14** — check
+  WHICH physical knob before blaming a contract. `knob_direction_filter.mjs` is
+  an opt-in per-knob majority filter (`/data/UserData/schwung/knob_direction_filter`,
+  empty = all, or `1,4`), OFF by default because it swallows a healthy knob's
+  small reversals. Grid input only; Move's own screens see the raw knob.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
@@ -1324,6 +1363,8 @@ The synthesised contracts (Global Settings, Slot Settings, Master FX Settings), 
 component load gate, and the input-dispatch order. Read it before editing
 `src/shadow/shadow_ui.js` or its `.mjs` siblings.
 
+- **Component/tool UI loads must restore host callbacks, including on failure.**
+  Use `shared/ui_module_load.mjs`; see `docs/SHADOW_UI.md` for MIDI ownership.
 - **Whatever is drawn LAST must be fed FIRST.** The draw path is a switch with the
   overlays painted after it; the input path is a run of early-outs *before* it. The
   two orders are the reverse of each other, and nothing at either site says so.
@@ -1462,6 +1503,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 **While shadow UI shown** (any mode):
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
+- **Delete + Jog Click** on a focused, populated chain/MFX module — remove it, through the same commit as the "Remove Module" row / picker "None". Held state is the shim's `delete_held` byte, **never a forwarded CC 119** (a JS flag never sees a release made while the UI is hidden). See `docs/SHADOW_UI.md`.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 - **Shift+- / Shift++** — latch (tap) or hold the active scene's A / B snapshot for editing.
 
@@ -1518,7 +1560,7 @@ assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
 
 Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk" warning if speakers active AND no line-in cable. Jog-click proceeds, Back aborts.
 
-Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND `shadow_speaker_active` AND NOT `shadow_line_in_connected`.
+Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND the speaker is active (`speaker_eq.speaker_active`, mirrored to `shadow_control->speaker_active`) AND NOT `shadow_line_in_connected`.
 
 **Continuous feedback guard (bypass-on-risk, auto-clear when safe).** The interactive gate only runs on *user* selection, so a restored line-input slot would activate hot at cold boot (jack state is unknown to the shim there) and feed back. Now there's a continuous guard:
 - **Shim, at boot:** any restored line-input slot is brought up **BYPASSED** (real `synth:bypassed=1` — the visible "B" glyph) with `feedback_hold = 1` as the guard's marker (`shadow_slot_apply_boot_feedback_hold` in `shadow_chain_mgmt.c`, both boot-restore paths). Bypass is set *after* `load_file`, so it survives the per-set mute-state load (which only touches `muted`). Chain host exposes `synth:consumes_line_input` (parsed from `capabilities.audio_in` via the new `json_get_bool_in_section`, since `audio_in` is a JSON boolean) and `synth:bypassed` get/set.
@@ -1651,8 +1693,15 @@ pages the PLANNER appends to the end of every component's knob grid.
 - The trailing pages are appended **after the whole walk**, never injected into a
   level: 11 of 95 fleet modules publish no `levels` at all and minijv has no
   `root`, so there is no level an injection could target.
-- Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
-  helper, so a new call site cannot silently opt it in.
+- Scope is the 4 chain slots' real components **and every FX-bus position**:
+  the 8 Master FX positions (issue #305) and the 8 of each send bus (Send A /
+  Send B). An FX bus gets **My Presets only** (no Module page), through the
+  same code, decided in one helper (`componentParamPagesIo`), with the
+  bus-specific half in the `fxBus*` helpers (a bus index into `FX_BUSES`, not
+  one copy per bus). Bus inserts stay excluded. The record persists as
+  `user_preset` **after `state`** in `master_fx_N.json` /
+  `send_fx_<send>_<i>.json` (the shim's shared boot parser,
+  `fx_boot_restore_one`, takes the first `"state"`). See docs/SHADOW_UI.md.
 - **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
   thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
   replaced, so the help list wore a bar and the help text wore arrows on the same
@@ -2033,8 +2082,9 @@ inline is how this file got to 151 KB.
   `process_vm_readv`, ~1.6% of a core. Selected track, the playing/selected
   clip, region/loop, step-editor page, step grid and the exact launch beat are
   all current to the edit — `Song.abl` is ~10 s stale and has no new clips.
-  It also drives master volume, the metronome, and slot mute / solo / volume
-  (every older inference is the fallback when the model is not live).
+  It also drives master volume, the metronome, slot mute / solo / volume and
+  modules' `get_bpm()` (every older inference is the fallback when the model
+  is not live).
   Only the transport run-flag/beat clock is build-pinned. Read it before
   building anything that needs clip state again.
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
@@ -2118,28 +2168,33 @@ inline is how this file got to 151 KB.
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
 
-### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
+### Schwung's SOURCE is MIT; only `schwung-tts` is conveyed as GPL-3.0
 
 Two different relationships, and collapsing them is the trap — the first draft
 of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
-`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+`schwung` or `schwung-shim.so`" and was **wrong about the shim** at the time.
 
-**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
-and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
-are separate programs reached over `/dev/shm`, sockets and `exec`.
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+),
+`lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+) and
+`schwung-tts` are separate programs reached over `/dev/shm`, sockets and `exec`.
 
-**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
-`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
-`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
-NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
-is GPL-compatible so this is permitted, and the source stays MIT; what changes
-is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
-in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
-giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+**Linked** (makes a combined work): `schwung-tts` links **`-lespeak-ng`**
+(GPL-3.0-or-later), so that BINARY is conveyed under GPL-3.0-or-later. It used
+to be the SHIM that linked it — and the shim is the process every native module
+is `dlopen`ed into (and is LD_PRELOADed into MoveOriginal), which put a
+proprietary module's author in the position of loading into a GPL-3.0 binary.
+Synthesis now lives in the sidecar (`src/host/tts_shm.h`: a seqlocked request
+block + an SPSC audio ring); `tts_client.c` implements `tts_engine.h` over it so
+the shim's call sites did not change. **Never link an engine into the shim
+again**: `test_license_consistency.sh` fails on `espeak|flite` in `SHIM_LIBS`,
+and CI fails on a `NEEDED` entry for either in the built shim.
+`test_tts_sidecar_roundtrip.sh` runs the real client against the real sidecar
+loop with a fake engine — including a 300-cut stress, which is what found that
+a speak must drop ALL audio until the sidecar ACKs it (`discard_until` alone
+arrives too late to cover the window).
 
-Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
-the real binary (`NEEDED` entries), not the intent — the build flag is what
-decides this, and it is easy to reason about the wrong configuration.
+Flite is BSD and is linked alongside eSpeak (in `schwung-tts`); it is not the
+copyleft one. Check the real binary (`NEEDED` entries), not the intent.
 
 The trap is that **one file's header can silently claim otherwise.**
 `JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on

@@ -10,6 +10,20 @@ trailing pages, and Master FX persistence.
 The tri-state read rule these all depend on — **a param read has THREE answers,
 not two** — stays in `CLAUDE.md`, because it is cited from everywhere.
 
+### UI loads preserve the host's callbacks
+
+`loadUiModule()` in `src/shared/ui_module_load.mjs` captures component/tool exports
+and restores host callbacks and `chain_ui` in `finally`, even after failed loads.
+Both global-callback and `chain_ui` modules are supported; omitted callbacks are
+null. This also protects the standalone Chain source/component loaders.
+
+The shadow host keeps `onMidiMessageExternal` installed so a component visit
+cannot bypass CC Learn. Active tools receive raw MIDI through `runToolCallback()`
+with their DSP parameter bindings, including during co-run. Hide, exit and
+suspend clear the active callbacks; resume restores them. The standalone Chain
+UI retains its own component/source dispatch. Regression coverage lives in
+`tests/host/test_ui_module_load.sh`.
+
 ### Whatever is drawn LAST must be fed FIRST
 
 `onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
@@ -555,8 +569,9 @@ user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
 `userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
 `headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
 the read the My Presets page already pays for, and it answers `null`
-harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
-Master FX component, none of which populate a record for their key.
+harmlessly for a synthesised contract (Slot/Master FX/Global Settings),
+none of which populate a record for their key. An FX-bus position (Master
+FX, Send A, Send B) does, and shows its `*` the same way.
 
 **They are appended by the PLANNER, after the whole walk — not injected into
 a level's hierarchy — because injection cannot work for this fleet.** A
@@ -579,17 +594,44 @@ pages at all when `unresolved`, so the append only ever lands on a resolved
 plan — the same rule as "a plan is a statement about what a module declares",
 under "A param read has THREE answers" in `CLAUDE.md`.
 
-**Scope is exactly the 4 chain slots' real components.** Master FX chain
-components are excluded — user presets have only ever been offered for the 4
-chain slots' components, never for a Master FX position, so this inherits that
-gap rather than widening it. Slot Settings and Master FX
-Settings are excluded because they are settings, not modules: no module id to
-key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
-`componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
-component `enterParamPages` site, so a new call site cannot silently opt
-Master FX in. Grid view only — the list view (`param_view = 0`) is a separate
-code path with no pages to jog through and keeps its existing Shift+Click
-route.
+**Scope: the 4 chain slots' real components, and every FX-bus position.** A
+slot component gets "My Presets" + "Module". An **FX-bus position** — Master
+FX (`master_fx:fxN`, issue #305), Send A (`send1:fxN`) or Send B
+(`send2:fxN`), one `FX_BUSES` code path and one editor (`VIEWS.MASTER_FX`) —
+gets **"My Presets" only**, through the same `componentTrailingMenus` /
+`runComponentActionFromGrid` / preset flow. They branch on
+`isFxBusComponentKey` for three things: the module id comes from that bus's
+mirror (`fxBusComponentModuleId`), the preset flow is entered with
+`fxBusPresetFlowOptions` (IPC slot 0 without touching the focused slot, no
+audition, every exit to `VIEWS.MASTER_FX`, Back announcing the bus), and the
+hand-off returns through `maybeReturnToFxBusComponentGrid` (only while the bus
+the key names is on screen) instead of `maybeReturnToComponentGrid`. No
+"Module" page there: its rows are slot-chain shaped and the bus editor has its
+own Shift+Click picker. Everything bus-specific is ONE set of `fxBus*` helpers
+taking a bus index into `FX_BUSES`, not a copy per bus. The record is
+`currentUserPresets["0:<prefix>fxN"]` (`0:master_fx:fx2`, `0:send1:fx2`: the
+prefixed key is its own DSP prefix, so neither collides with the other nor
+with slot 1's `0:fxN`); it follows a reshaped chain of the bus on screen
+(`MASTER_CHAIN_TARGET.onReshape`, called by `writeChainShape`), is cleared on a
+swap / Clear / whole-chain preset / adopted module, and an FX-bus record
+carries the module it was made on so the send saver drops it when the shim
+reports another module (or none) there (`fxBusRecordOrphaned`). It persists as
+`user_preset` in `master_fx_N.json` and in `send_fx_<send>_<i>.json` —
+**always written AFTER `state`**, because the shim's boot parser
+(`fx_boot_restore_one` / `master_fx_saved_state.h`, shared by both families)
+takes the first `"state"` it finds. Reloaded at boot
+(`loadMasterFxChainFromConfigOnMaster`, `syncSendUserPresetRecordsFromFiles`)
+and on a set change (`loadSendFxChainConfigForSet` for the sends). No shim
+change was needed: `send<N>:fx<M>:state` is read and written exactly like the
+master's. **Bus inserts** stay excluded. Slot Settings and Master FX Settings are excluded
+because they are settings, not modules: no module id to key a preset folder on,
+nothing to swap. The decision lives in ONE helper, `componentParamPagesIo` in
+`src/shadow/shadow_ui.js`, called from every component `enterParamPages` site.
+Grid view only — the list view (`param_view = 0`) is a separate code path with
+no pages to jog through and keeps its existing Shift+Click route. Pinned by
+`tests/host/test_trailing_pages_wiring.sh`,
+`tests/host/test_master_fx_user_presets.sh` and
+`tests/host/test_send_fx_user_presets.sh`.
 
 **The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
 list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as
@@ -938,6 +980,44 @@ name the verb of the row **under the cursor** (the picker's filter row cycles
 and loads nothing, so `drawChainPicker` reads `clickVerb` off the row), and a
 one-row screen must not name a JOG with nowhere to go.
 
+**The two chain editors' footers follow the held modifier, and keep their
+places** (`src/shared/chain_editor_chrome.mjs`, used by `drawChainEdit` and
+`drawMasterFx`). At rest `JOG SEL / CLK OPEN / BACK EXIT` (`BACK BUS` on an FX
+bus). **Shift** (`shiftHintsFor`): `JOG MOVE / CLK SWAP` on a module, `CLK SWAP`
+in OPEN's slot on the synth. **Delete ("X", CC 119)** (`deleteHintsFor`):
+`JOG SEL / CLK DELETE` on a loaded module or the synth -- BACK is dropped on
+purpose, because three pairs with DELETE measure 135px against the 128px bar
+and `drawFooter` would drop the MIDDLE pair instead. On the `+`, the patch /
+preset node and Settings the click does exactly what a plain click does, so the
+footer is the resting one (pinned in `SAME_ON_PURPOSE` of the chain-editor
+snapshot). Shift is asked first because Shift+click is dispatched before
+`handleSelect` looks at Delete.
+
+**A Delete+JogClick removal leaves a footer notice, never an overlay.**
+`REMOVED <MODULE NAME>` is drawn as one centred pill IN THE FOOTER ROW, in
+place of the hints (`drawChainEditorBands`' `notice`), so the chain the user is
+checking stays fully visible -- the snapshot test asserts that a notice case
+matches its twin byte for byte above `RULE_Y`. It lasts `FOOTER_NOTICE_MS`
+(1.5 s) and is dismissed earlier by a jog turn, a Delete press or any button /
+step / pad press (`footerNoticeDismissedBy`, run in the MIDI handler AHEAD of the
+jog-click dispatch so the click that raises a notice does not clear it); a
+button release and a capacitive touch (notes 0-9) do not dismiss it. Expiry
+needs no timer: the shadow UI redraws every `REDRAW_INTERVAL` ticks, and the
+draw path resolves the expiry on read. The notice is scoped to the editor that
+raised it (`"slot"` / `"master"`). Tests: `test_delete_footer_notice.sh`,
+`test_chain_gestures.sh`, `test_chain_editor_snapshot.sh`.
+
+**Delete's held state is the shim's byte, not CC 119.** The removal, the
+footer and the notice all ask `isDeleteHeld()`, which reads
+`shadow_get_delete_held()` (`shadow_control_t.delete_held`, the byte the knob
+grid's "Delete + a knob" gesture reads). The shim updates it in every mode and
+does not forward an unclaimed CC 119 to the shadow UI, so nothing in the JS
+can be left believing Delete is down after it was released with the UI hidden.
+A Delete press, which never reaches the MIDI handler, dismisses the notice
+through `observeDeleteHeld()` (every tick, and at the top of the MIDI handler
+so the edge is consumed before a jog click in the same frame raises a notice).
+Test: `test_delete_jogclick_remove.sh`.
+
 ### The metronome is missing by CONSTRUCTION, and detection is one exact string
 
 Under Move→Schwung, `rebuild_from_la` zeroes the mailbox and rebuilds it from
@@ -1046,13 +1126,13 @@ signal. Not covered.
 Same construction problem as the metronome, one layer later: under
 `rebuild_from_la` the DAC mailbox is rebuilt from the four per-track Link Audio
 channels, so Move's own **MoveSpeakerEnhancer** — which sits on its master bus —
-is not in the path, and `speaker_eq_process` in `schwung_shim.c` runs an
+is not in the path, and `speaker_eq_process` (`src/host/speaker_eq.c`) runs an
 emulation of it in its place.
 
 It must never colour headphones, and the jack reading it depends on is the part
 that goes wrong: XMOS can broadcast a transient or uncorrected CC 115 val=0
 ("speaker") while headphones are actually plugged. So the auto logic is biased
-hard toward OFF — a speaker reading is trusted only after `SPK_EQ_STABLE_SEC`
+hard toward OFF — a speaker reading is trusted only after `SPEAKER_EQ_STABLE_SEC`
 of continuity, and the failure it prefers is *less bass on the speaker*, never
 *hollow headphones*.
 

@@ -322,6 +322,22 @@ int shadow_load_config_from_dir(const char *dir) {
                 if (host.chain_slots[i].soloed) (*host.solo_count)++;
             }
         }
+        /* An empty track's Send A/B. Bounded to THIS slot's object: a slot
+         * saved without the field must not pick up the next one's. */
+        char *es_pos = strstr(name_pos, "\"empty_sends\"");
+        char *slot_end = strstr(name_pos + 6, "\"name\"");
+        if (es_pos && (!slot_end || es_pos < slot_end)) {
+            char *br = strchr(es_pos, '[');
+            int a = 0, b = 0;
+            if (br && sscanf(br, "[ %d , %d", &a, &b) == 2) {
+                if (a < 0) a = 0;
+                if (a > 127) a = 127;
+                if (b < 0) b = 0;
+                if (b > 127) b = 127;
+                host.chain_slots[i].empty_send[0] = (uint8_t)a;
+                host.chain_slots[i].empty_send[1] = (uint8_t)b;
+            }
+        }
     }
     free(json);
     host.ui_state_refresh();

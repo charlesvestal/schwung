@@ -4,13 +4,13 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "1.7.3",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.7.3/schwung.tar.gz",
+    "latest_version": "1.9.2",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.2/schwung.tar.gz",
     "min_host_version": "0.1.0",
     "channels": {
       "stable": {
-        "version": "1.7.3",
-        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.7.3/schwung.tar.gz"
+        "version": "1.9.2",
+        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.9.2/schwung.tar.gz"
       }
     }
   },
@@ -257,6 +257,22 @@
       "requires": "Optional additional .syx patch banks (place in module's banks/ folder)"
     },
     {
+      "id": "frodhes",
+      "name": "Frodhes",
+      "description": "Physical-model electric piano, vibraphone and marimba with drive, filter, compressor, chorus, phaser, delay and reverb, an arpeggiator and its own full-screen pages",
+      "author": "leo Mirabal",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
+      "github_repo": "leonardoMirabal/frodhes",
+      "default_branch": "main",
+      "asset_name": "frodhes-module.tar.gz",
+      "min_host_version": "1.8.2"
+    },
+    {
       "id": "sf2",
       "name": "SF2 Synth",
       "description": "SoundFont (.sf2) synthesizer using FluidLite",
@@ -372,7 +388,7 @@
       "default_branch": "main",
       "asset_name": "midiverb-module.tar.gz",
       "min_host_version": "0.3.0",
-      "requires": "Optional: original Midiverb / Midifex / Midiverb II ROM dumps for cycle-accurate emulation"
+      "requires": "Your own Midiverb / Midifex / Midiverb II program ROM dumps (midiverb.rom, midifex.rom, midiverb2.rom); a unit without its ROM passes audio through"
     },
     {
       "id": "tapescam",
@@ -593,14 +609,14 @@
     {
       "id": "ducker",
       "name": "Ducker",
-      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
+      "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain, on volume or as a filter sweep",
       "author": "charlesvestal",
       "component_type": "audio_fx",
       "subcategory": "dynamics",
       "github_repo": "charlesvestal/schwung-ducker",
       "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "1.3.0"
     },
     {
       "id": "pushnpull",
@@ -996,7 +1012,7 @@
       "github_repo": "charlesvestal/schwung-performance-fx",
       "default_branch": "main",
       "asset_name": "performance-fx-module.tar.gz",
-      "min_host_version": "0.7.0"
+      "min_host_version": "0.12.0"
     },
     {
       "id": "dj",
@@ -2490,6 +2506,21 @@
       "min_host_version": "1.6.3"
     },
     {
+      "id": "tinyscratch",
+      "name": "TinyScratch",
+      "description": "Generative auto-scratcher: press a pad and it writes a new, human-sounding scratch for your sample, plays it in time with the song, and lets you keep the ones you like. Thirteen styles, a Groove dial that keeps Improv to a drum groove, pages of clips, Auto and cue pads",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "generative"
+      ],
+      "github_repo": "fleshinachair/TinyScratch",
+      "default_branch": "main",
+      "asset_name": "TinyScratch.tar.gz",
+      "min_host_version": "1.6.3"
+    },
+    {
       "id": "tinyvoice",
       "name": "TinyVoice",
       "description": "Vocal processor: 13 voice modes (robot, talkbox, auto-tune, harmonies, Dalek, walkie) and a vowel-formant talking filter with presets, a bar-synced Freeze looper and built-in demos",
@@ -2589,6 +2620,141 @@
       "default_branch": "main",
       "asset_name": "concat-module.tar.gz",
       "min_host_version": "1.3.0"
+    },
+    {
+      "id": "bloom",
+      "name": "Bloom",
+      "description": "Orchid-style chord instrument. Key-aware major and minor chord pads, strum plate, chord colours and voicings on the wheel, one-button progression ideas, per-step performance (strum, arp, pulse, gate, volume), and Record lays chords and bass onto your Move tracks, locked to Move's clock.",
+      "author": "bondobd",
+      "component_type": "overtake",
+      "subcategory": "sequencer",
+      "tags": ["bass", "chord", "generative", "polyphonic"],
+      "github_repo": "bondobd/schwung-bloom",
+      "default_branch": "main",
+      "asset_name": "bloom-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "amino",
+      "name": "Amino",
+      "description": "Gritty 8-bit wavetable synth: four layers, two oscillators, dirt noise, drive, a resonant multimode filter, four envelopes, two LFOs, an eight-slot mod matrix and two multi-effect slots. 324 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": ["has-remote-ui", "lo-fi", "polyphonic"],
+      "github_repo": "klaine/amino",
+      "default_branch": "main",
+      "asset_name": "amino-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "bizar",
+      "name": "Bizar",
+      "description": "Two-engine hybrid synth: 17 oscillator engines plus processor modes on the second engine, a modulation grid, a cycling envelope, a sequencer and arpeggiator, and three effect slots. 128 presets",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": ["has-remote-ui", "polyphonic", "wavetable"],
+      "github_repo": "klaine/bizar",
+      "default_branch": "main",
+      "asset_name": "bizar-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "crest",
+      "name": "Crest",
+      "description": "8-voice hybrid polysynth: three oscillators with 75 wavetables and cross-FM, a saturating multimode filter, a 20-slot mod matrix, an arpeggiator and a distortion / chorus / delay / reverb chain",
+      "author": "AI & Klaine",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": ["has-remote-ui", "wavetable"],
+      "github_repo": "klaine/crest",
+      "default_branch": "main",
+      "asset_name": "crest-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "chord-display",
+      "name": "Chord Display",
+      "description": "Shows the chord you play, or a clip plays, on any track, with its roman numeral in the Set's key. Reads any MIDI channel.",
+      "author": "Nipheon",
+      "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": ["chord"],
+      "github_repo": "Nipheon/schwung-chord-display",
+      "default_branch": "main",
+      "asset_name": "chord-display-module.tar.gz",
+      "min_host_version": "1.6.2"
+    },
+    {
+      "id": "quark",
+      "name": "Quark",
+      "description": "String and pad machine plus a mono synth: divide-down strings, 89 wavetables (chord stacks included) and FM through 11 filter types, drive, detune bloom and ensemble; a wavetable Mono layer with a chord-following arp; multi-FX and shimmer reverb. 36 presets",
+      "author": "James Fish",
+      "component_type": "sound_generator",
+      "subcategory": "polysynth",
+      "tags": ["chord", "fm", "wavetable"],
+      "github_repo": "james-fish/schwung-quark",
+      "default_branch": "main",
+      "asset_name": "quark-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "s3g-thru",
+      "name": "s3g Thru",
+      "description": "Four-lane stereo sampler with thirteen playback engines, Single, Split, Shared Dual and Quad layouts, performance-data looping, live recording, and configurable effects.",
+      "author": "s3g",
+      "component_type": "overtake",
+      "subcategory": "sampler-looper",
+      "tags": [
+        "granular",
+        "polyphonic",
+        "sample-based"
+      ],
+      "github_repo": "s3g/s3g-thru",
+      "default_branch": "main",
+      "asset_name": "s3g-thru-module.tar.gz",
+      "min_host_version": "1.7.3"
+    },
+    {
+      "id": "moveless",
+      "name": "moveless",
+      "description": "Generative performance sequencer for Ableton Move. Seven lanes play together; edit the live pattern, save scenes, and morph between them.",
+      "author": "moveless",
+      "component_type": "overtake",
+      "subcategory": "sequencer",
+      "tags": ["chord", "drums", "euclidean", "generative", "polyphonic"],
+      "github_repo": "eboblin/moveless",
+      "default_branch": "main",
+      "asset_name": "moveless-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
+      "id": "machinemodule",
+      "name": "Machinemodule",
+      "description": "Elektron Machinedrum SPS-1 UW sound engine, emulated: 16 tracks on the 16 pads, with track effects, mixer and master effects. The editor follows the pad you hit",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["cpu-heavy", "needs-assets", "vintage-emulation"],
+      "github_repo": "sd88me/schwung-machinemodule",
+      "default_branch": "main",
+      "asset_name": "machinemodule-module.tar.gz",
+      "min_host_version": "1.7.3",
+      "requires": "Your own Machinedrum UW OS 1.63 .syx (required, free from Elektron); optional flash image .bin for factory kits and ROM machines, and your own kit .syx dumps. Upload them on the module's page in Schwung Manager"
+    },
+        {
+      "id": "flukedrums",
+      "name": "FlukeDrums",
+      "description": "A drum machine built on happy accidents: random kits from your sample library. Roll, lock the keepers, reroll the rest, save the kit",
+      "author": "aTanguay",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": ["generative", "sample-based"],
+      "github_repo": "aTanguay/Schwung_FlukeDrums",
+      "default_branch": "main",
+      "asset_name": "flukedrums-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }

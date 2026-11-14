@@ -251,6 +251,29 @@ function knobKeys(level) {
     return ((level && level.knobs) || []).map(keyOf).filter((k) => k !== null);
 }
 
+/*
+ * A level's knobs[] as SLOTS: `knobKeys`, except that a literal `null` entry
+ * stays where it is, as a knob with nothing on it.
+ *
+ * Only an explicit null is a hole. Anything else keyOf cannot read is still
+ * dropped, exactly as before, so no contract that plans today plans
+ * differently. The hole is the author saying "this knob does nothing", which
+ * the grid already draws (a sparse page's null cell) and every input path
+ * already treats as a dead knob -- the planner was the one place that closed
+ * it up again, so a module wanting its sends on row two could not say so.
+ * A trailing hole describes nothing and is trimmed.
+ */
+function knobSlots(level, keep) {
+    const out = [];
+    for (const e of ((level && level.knobs) || [])) {
+        if (e === null) { out.push(null); continue; }
+        const k = keyOf(e);
+        if (k !== null && keep(k)) out.push(k);
+    }
+    while (out.length && out[out.length - 1] === null) out.pop();
+    return out;
+}
+
 /* Editable (non-nav) keys a level lists in `params`, in declaration order. */
 function paramKeys(level) {
     return ((level && level.params) || [])
@@ -998,8 +1021,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * Reported from the device as "why is preset a knob on impressive
          * chords?".
          */
-        const authored = knobKeys(lvl).filter(
-            (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k));
+        const keepAuthored = (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k);
+        const authored = knobKeys(lvl).filter(keepAuthored);
+        /* The same keys, at the slots the author put them -- see knobSlots. A
+         * hidden or selector key still closes up rather than leaving a hole:
+         * that is today's behaviour and only an explicit null asks otherwise. */
+        const authoredSlots = authored.length ? knobSlots(lvl, keepAuthored) : [];
 
         /*
          * `page_first`: a canvas page that LEADS its level -- before the knob
@@ -1046,11 +1073,11 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * carry (genera's scale/gen_mode, mrdrums' pad_* aliases — 10 modules,
          * 50 keys), which would silently reintroduce the §1 regression. So a
          * duplicate contributes its unseen extras and nothing else. */
-        const sig = authored.join(" ");
+        const sig = authoredSlots.join(" ");
         const dupAuthored = authored.length > 0 && renderedKnobSigs.has(sig);
         if (!dupAuthored && authored.length > 0) renderedKnobSigs.add(sig);
 
-        const authoredKeys = dupAuthored ? [] : authored;
+        const authoredKeys = dupAuthored ? [] : authoredSlots;
         const extraKeys = extra;
 
         /* Authored keys keep their exact 8-per-page grouping (see
@@ -1094,13 +1121,19 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          */
 
         if (parts.length > 0) {
-            for (const p of parts) for (const k of p) emitted.add(k);
+            for (const p of parts) for (const k of p) if (k !== null) emitted.add(k);
             parts.forEach((keys) => {
+                /* Eight holes in a row chunk to a page with no knob on it. */
+                if (!keys.some((k) => k !== null)) return;
                 const pageName = claimName(title);
                 pages.push({
                     kind: PAGE_KNOBS,
                     name: pageName,
-                    level: levelKey, keys: alignKnobs(keys, pageName),
+                    /* A page the author spaced out with holes is laid out BY
+                     * HAND, so the group nudges do not get to close a hole or
+                     * slide a key across one. */
+                    level: levelKey,
+                    keys: keys.includes(null) ? keys : alignKnobs(keys, pageName),
                     /* The level object travels with the page so the controller
                      * resolves concrete child keys without re-reading the
                      * hierarchy. Null for an ordinary level, which is what
@@ -1123,7 +1156,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                     /* true when every key on this page came from knobs[] — i.e.
                      * the author placed it there. Pages built from params[] are
                      * false, including a page that mixes the two. */
-                    authored: keys.every((k) => authored.includes(k)),
+                    authored: keys.every((k) => k === null || authored.includes(k)),
                 });
             });
         }

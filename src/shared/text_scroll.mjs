@@ -175,3 +175,26 @@ export function getMenuLabelScroller() {
     }
     return menuLabelScroller;
 }
+
+/**
+ * The widest character window a marquee can use for `text` inside `maxWidth`
+ * pixels: the largest k for which EVERY k-character slice of `text` fits.
+ *
+ * The device font is proportional, so a count that fits at the head of a name
+ * can overflow further along -- and the last window, the end of the name, is
+ * the one the marquee exists to show. Measuring every slice keeps each frame
+ * of the scroll on screen.
+ */
+export function fitScrollWindow(text, maxWidth, measure) {
+    const s = String(text == null ? "" : text);
+    if (!s || maxWidth <= 0) return 0;
+    if (measure(s) <= maxWidth) return s.length;
+    for (let k = s.length - 1; k > 0; k--) {
+        let fits = true;
+        for (let i = 0; i + k <= s.length; i++) {
+            if (measure(s.substring(i, i + k)) > maxWidth) { fits = false; break; }
+        }
+        if (fits) return k;
+    }
+    return 1;
+}

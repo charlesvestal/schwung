@@ -127,11 +127,16 @@ const ONE_PASS = evals;
    * number is 2 and not 112 (see the header). A burst that costs strictly more
    * than a single turn is the regression this guards.
    * (No apostrophes in here: the whole script is one single-quoted shell arg.) */
+  /* The single detent must CHANGE the value: a write that repeats the planned
+   * value plans nothing (test_visible_if_replan_no_host_reads.sh), and this
+   * gate is a two-option enum, which toggles once per GESTURE -- so the turn
+   * starts a new one, past TWO_WAY_GESTURE_GAP_MS (270). */
   clock += 20; ctl.tick();
   evals = 0;
-  clock += 20; ctl.onKnobTurn(modeSlot, 1, clock);
+  clock += 400; ctl.onKnobTurn(modeSlot, 1, clock);
   clock += 20; ctl.tick();
   const one = evals;
+  ok(one > 0, "control: the single detent changed the gate and planned (" + one + ")");
 
   clock += 20; ctl.tick();
   evals = 0;
@@ -145,7 +150,7 @@ const ONE_PASS = evals;
 {
   clock += 20; ctl.tick();
   evals = 0;
-  clock += 20; ctl.onKnobTurn(modeSlot, 1, clock);
+  clock += 400; ctl.onKnobTurn(modeSlot, 1, clock);   /* a new gesture: see above */
   ok(evals === 0, "a pending plan is not run by the write itself");
   clock += 20; ctl.tick();
   ok(evals === ONE_PASS, "⭐ and the tick DOES run it — a deferred plan that never happens is worse");

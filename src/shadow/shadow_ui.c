@@ -4068,7 +4068,7 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         int n = (cin == 0x05) ? 1 : (cin == 0x06) ? 2 : 3;
         handled = 1;
         if (cable == 2) {
-            /* Re-lookup onMidiMessageExternal each time in case overtake module replaced it */
+            /* The host router dispatches to the active tool or CC/surface map. */
             JSValue freshExternal;
             if (getGlobalFunction(ctx, "onMidiMessageExternal", &freshExternal)) {
                 callGlobalFunctionN(ctx, &freshExternal, msg, n);

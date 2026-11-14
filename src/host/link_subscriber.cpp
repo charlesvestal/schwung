@@ -40,6 +40,7 @@
 extern "C" {
 #include "link_audio.h"
 #include "link_audio_reorder.h"
+#include "link_move_peer.h"
 }
 
 #include "unified_log.h"
@@ -402,16 +403,33 @@ int main()
     /* Callback records channel IDs — source creation deferred to main loop */
     link.setChannelsChangedCallback([&]() {
         auto channels = link.channels();
+        /* Which peer is THIS device's Move: matched against the hostname,
+         * never the literal "Move" -- a Move with any other hostname announces
+         * under another name (link_move_peer.h). Read per event, because
+         * renaming the Move renames its peer live. Our own peer ("Schwung")
+         * is never a candidate. */
+        char host[96] = "";
+        if (gethostname(host, sizeof(host) - 1) != 0) host[0] = '\0';
+        std::vector<const char *> peer_names, chan_names;
+        for (const auto& ch : channels) {
+            if (ch.peerName == "Schwung") continue;
+            peer_names.push_back(ch.peerName.c_str());
+            chan_names.push_back(ch.name.c_str());
+        }
+        int pick = lmp_choose_peer(peer_names.data(), chan_names.data(),
+                                   (int)peer_names.size(), host);
+        std::string move_peer = pick >= 0 ? peer_names[pick] : "";
         std::lock_guard<std::mutex> lock(g_pending_mu);
         g_pending_channels.clear();
         for (const auto& ch : channels) {
-            if (ch.peerName.find("Move") != std::string::npos) {
+            if (!move_peer.empty() && ch.peerName == move_peer) {
                 g_pending_channels.push_back({ch.id, ch.peerName, ch.name});
             }
         }
         g_channels_changed = true;
-        LOG_INFO(LINK_SUB_LOG_SOURCE, "discovered %zu Move channels",
-                 g_pending_channels.size());
+        LOG_INFO(LINK_SUB_LOG_SOURCE,
+                 "discovered %zu Move channels (peer \"%s\", host \"%s\", %zu peers' channels seen)",
+                 g_pending_channels.size(), move_peer.c_str(), host, peer_names.size());
     });
 
     LOG_INFO(LINK_SUB_LOG_SOURCE, "waiting for channel discovery...");
@@ -526,9 +544,9 @@ int main()
                  * every write (would_overrun == produced, max_avail == 0)
                  * confirming no consumer. Dropping the subscription removes
                  * ~20% of Move's Link publish load. */
-                if (pc.peerName == "Move" && pc.name == "Main") {
+                if (pc.name == "Main") {
                     LOG_INFO(LINK_SUB_LOG_SOURCE,
-                             "skipping Move/Main (no consumer)");
+                             "skipping %s/Main (no consumer)", pc.peerName.c_str());
                     continue;
                 }
 
@@ -543,13 +561,8 @@ int main()
                  * for audio tracks (which Move 2.0 sets can have a mix of).
                  * The leading digit identifies the track and is enough to
                  * pick the slot regardless of the suffix. */
-                int slot_idx = -1;
-                if (pc.peerName == "Move" && pc.name.size() >= 2) {
-                    char d = pc.name[0];
-                    if (d >= '1' && d <= '4' && pc.name[1] == '-') {
-                        slot_idx = d - '1';
-                    }
-                }
+                /* Every pending channel is already this device's Move. */
+                int slot_idx = lmp_track_slot(pc.name.c_str());
 
                 if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
                     link_audio_in_slot_t *slot = &in_shm->slots[slot_idx];

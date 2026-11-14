@@ -55,6 +55,12 @@
 # rendering byte for byte as they did is the point: the audio machinery and
 # the bus half of the screen were not supposed to change, and did not.
 #
+# DELETE ("X") + JOG CLICK ADDED eight cases and moved NONE: the footer
+# while Delete is held (CLK DELETE on a loaded position, the resting footer
+# on the `+`, declared in SAME_ON_PURPOSE) and the footer-row confirmation a
+# removal raises. The notice cases are also checked against their twins to
+# change nothing above the footer row.
+#
 # A mismatch names which case moved, and the runner prints the render.
 #
 # Regenerate with:
@@ -118,6 +124,8 @@ chain/len1/sel-fx1 19a6bc09b1e6daf9f429d3d2a949bbf7c9b33fde
 chain/len2/bypassed ee5f0f93a2add952ded84c8cbff44214f3bde0ed
 chain/len2/bypassed-selected e291b6ef9aff49959e4f695783252a71b2dcc1c7
 chain/len2/bypassed-synth eae10890e182f4c6557deb3928082fb5774c3484
+chain/len2/delete 7e1e523d8237bc778cae87124ac826437238adbf
+chain/len2/delete-synth f4d4eb3e7c968e6bb1a4d7ccc0d2ef9e6c7b4b7c
 chain/len2/fx1-splits dc7a4aa9c3229af79dbe6ae40a485768e85c0965
 chain/len2/info-preset 6125e75a4953177be58a35cf4a481ad98a99c391
 chain/len2/info-rnbo 2594544192d7b98a21b0176ea241b76a3831e628
@@ -128,6 +136,8 @@ chain/len2/lfo2 d857c30735fb4131b52d3b83ca531969d1f6524e
 chain/len2/patch-dirty a53c98bca78c85c1a5b498584ea527e10dd078f6
 chain/len2/patch-named 8c381ea079b895b365fc5cc0d9362bea767cc142
 chain/len2/patch-selected-named ac763ac36ba356929e8c7460c3e9f6ad3bc9c75d
+chain/len2/removed-notice 022fe39566d90a2c4b0898afc2137a8e4bbecbea
+chain/len2/removed-notice-long 148557639b62fb87b1e7d7a0e28355708e4cc309
 chain/len2/sel-fx1 dc7a4aa9c3229af79dbe6ae40a485768e85c0965
 chain/len2/sel-fx2 bbdecc8b5b61f31c24fc5cb8dfff906cd9499254
 chain/len2/sel-settings c01d109c9dbafe0be25ae4144d95fe9c12081158
@@ -136,6 +146,7 @@ chain/len2/shift 2f8b2500a60524d60f582f8322cf0072746f9201
 chain/len2/synth-splits 7b408ef1a7e72b2cc5494454c2f1e35428b53541
 chain/len2/synth-splits-shift 8f83c965ed8222c9ea7d5021e025a25c5cae8ef5
 chain/len5/bypassed+lfo1+2 4552ae32fccc26c4fe498eeb5367c0ba27c725dd
+chain/len5/delete-add-fx 155bacde5ba7ee65fd5cdd916bb9c2275cddce62
 chain/len5/knob-card f3569f05ec731c30eaeb3a4865530baae6f23b27
 chain/len5/sel-add-fx 155bacde5ba7ee65fd5cdd916bb9c2275cddce62
 chain/len5/sel-fx4 63969214e081cf6507d84de9681ace3359fe98b1
@@ -147,6 +158,7 @@ chain/len8/sel-fx8 f78e0b76866f52c522913b0acae0cb2c4fba0a60
 chain/len8/sel-patch 2915b10c36d08d2a88f13f485231d2459ff039ff
 chain/len8/sel-settings 86f8a87f47aaa5e66760332bb945acebe1dfb174
 master/hole/sel-fx3 a94fa76bcbf502adcb189dc5558d93414cf7eecb
+master/len0/delete 07324f0342f227ab1b33e2d6864620aebd3c7b61
 master/len0/sel-add-fx 07324f0342f227ab1b33e2d6864620aebd3c7b61
 master/len0/sel-preset 92d1115e444173bd3adad0ae590ef7620d18a7a1
 master/len0/sel-settings 0d77756d96e692c9d018e51b298407c7995d5c4f
@@ -157,12 +169,14 @@ master/len1/sel-add-fx 05316d1d2addc4af868dd8435b80cc8a062d97c7
 master/len1/sel-fx1 244db887eb05df5f10580695ca5907bed6074741
 master/len2/bypassed 60f1e7be895863abb122150ccee20a5de48664b1
 master/len2/bypassed-selected 7d2c922612bd47e554e6f473f3c4a42043969adc
+master/len2/delete 48410aa347dab807470ffb25963e6335e7a76060
 master/len2/info-optname d519fd12927bcf15d1da44a4082a6bfee8866266
 master/len2/info-preset ce1e413219c20ed11b61af8f1c77326e417182cc
 master/len2/knob-card-strip 6338f6b20c269db9b34fd87f3ac257fdd7d2f604
 master/len2/lfo1 fc315cb5474975415709e2f15d17a8a254e6d733
 master/len2/lfo1+2 21a5b958f4ed34dec7665ac594a2d7cb8d638e6a
 master/len2/lfo2 1195355a22f417d46ed1d56940ba281800c551a8
+master/len2/removed-notice f8f9a258afd99f3b990b5261d87726b131f46536
 master/len2/sel-add-fx 37c79dda5f6e7bcc4e5002840f01b77c16c89337
 master/len2/sel-fx1 c836842855ef12b0321a8e18ab36fbe75964995c
 master/len2/sel-fx2 9b76a83cb404e5c597175dd36e94778c0e575b5b

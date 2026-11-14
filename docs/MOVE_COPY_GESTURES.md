@@ -85,7 +85,7 @@ backwards would delete automation the user never asked to lose.
 - **Steps are 0.25 quarters apart**, so step index N lands at `N * 0.25`
   within the displayed page.
 - **Move writes `Song.abl` ~8–12 s after an edit** (measured; see
-  `STEP_PLOCK_CLIP_PENDING` in `step_plock.h`). Every before/after diff has to
+  the note above `STEP_PLOCK_NO_CLIP` in `step_plock.h`). Every before/after diff has to
   wait that out, and a gesture's effect is invisible until it does.
 - **Double Loop (Shift+Step 15) REPEATS the existing pages**: a 1–2 clip
   becomes 1–2–1–2. It does not make every page identical — that only looks

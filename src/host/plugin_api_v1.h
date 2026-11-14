@@ -210,8 +210,12 @@ typedef struct host_api_v1 {
     void *mod_host_ctx;
 
     /* Tempo query — returns current BPM (120.0 default).
-     * Uses sampler_get_bpm() fallback chain: MIDI clock → set tempo → settings → 120.
-     * NULL if host does not support tempo. */
+     * STEADY: on a steady tempo it returns the same value every call, so a
+     * module may resize a delay line from it per block without bending pitch.
+     * Move's own tempo from its live model (exact) while Move is not synced
+     * to an external clock; otherwise the running clock measured over a
+     * 16-beat window and held. Fallbacks: last measured → settings → 120.
+     * See sampler_get_bpm(). NULL if host does not support tempo. */
     float (*get_bpm)(void);
 
     /* Inject a USB-MIDI packet into Move's MIDI_IN, as if it had arrived at

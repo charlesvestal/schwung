@@ -101,6 +101,25 @@ else {
 if (writes.some((x) => x.startsWith("synth:" + LOCKED + "=")))
     bad.push("a turn under a held step ALSO wrote the track value -- that is the leak");
 
+/* A SLOW turn under the same held step keeps walking from the LOCK. The
+ * write lands in heldValues, never in s.values, so s.values still says the
+ * BASE once the settle window closes -- and a knob that "follows the value
+ * the instrument reports" must not take that for the instrument moving the
+ * parameter, or every pause snaps the lock back to the track. */
+const firstLock = w ? Number(w.split("=")[1].split(" ")[3]) : NaN;
+ticks(30);                                   /* well past SETTLE_TICKS */
+writes.length = 0;
+ctrl.onKnobTurn(ctrl.page.keys.indexOf(LOCKED), 1, 3000);
+ticks(6);
+const wSlow = writes.find((x) => x.startsWith("lanes:plock_step="));
+if (!wSlow) bad.push("a second, slow turn under a held step wrote no p-lock");
+else {
+    const v = Number(wSlow.split("=")[1].split(" ")[3]);
+    if (!(v > firstLock && v < 40))
+        bad.push("a slow second turn under a held step walked to " + v +
+                 " -- it must continue from the lock (" + firstLock + "), not reseed from the base (100)");
+}
+
 /* Release: the lock display goes, and the knob walks from the base again. */
 held = -1; ticks(12);
 if (decOf(LOCKED)) bad.push("releasing the step left the lock on screen");

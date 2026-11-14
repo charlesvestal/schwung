@@ -14,6 +14,7 @@
  *     exists to prevent)
  */
 
+#define _DEFAULT_SOURCE   /* usleep under -std=c11 (an error, not a warning, from GCC 14 on) */
 #include "align_capture.h"
 
 #include <assert.h>

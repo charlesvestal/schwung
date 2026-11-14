@@ -437,6 +437,11 @@ function world() {
     /* The knob-card / diagram primitive set, extracted to its own top-level
        function. A free identifier under the lift, same as the rest. */
     "movyPrimitives",
+    /* The Delete ("X") footer and the Delete+JogClick footer notice. Neither
+       reads a param (the held state is a control-SHM byte, the notice a text
+       with an expiry), so they belong inside the budget at no cost -- noops
+       here. */
+    "isDeleteHeld", "deleteHintsFor", "chainFooterNoticeText",
   ];
   const mk = lift("drawChainEdit", drawDeps);
   const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
@@ -449,7 +454,8 @@ function world() {
     () => { w.cardDraws++; },
     slotChainTarget, chainLfoTargetMap, chainComponentBypassed, noop,
     () => [], [],
-    () => ({ fillRect: noop, print: noop, textWidth: () => 10, setPixel: noop }));
+    () => ({ fillRect: noop, print: noop, textWidth: () => 10, setPixel: noop }),
+    () => false, () => [], () => "");
   w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);

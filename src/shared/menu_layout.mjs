@@ -413,6 +413,14 @@ export function drawMenuList({
     const itemHighlightHeight = getSubLabel ? (lineHeight + subLabelOffset + 2) : highlightHeight;
     const resolvedTopY = listArea?.topY ?? topY;
     const resolvedBottomY = listArea?.bottomY ?? indicatorBottomY;
+    /* THE HORIZONTAL EXTENT a row may paint: the selection highlight, the
+     * divider rules, the right-aligned value and the scrollbar all run to it.
+     * The whole screen unless the caller says otherwise, which is every caller
+     * but one -- the param-pages lists, which a module can embed in a rect of
+     * its own (TB-3PO, movy) and which otherwise painted their highlight across
+     * the module's chrome. */
+    const areaLeftX = listArea?.leftX ?? 0;
+    const areaRightX = listArea?.rightX ?? SCREEN_WIDTH;
     const computedMaxVisible = maxVisible > 0
         ? maxVisible
         : Math.max(1, Math.floor((resolvedBottomY - resolvedTopY) / itemHeight));
@@ -442,7 +450,7 @@ export function drawMenuList({
      *
      * VALUE_RIGHT_CLEARANCE is kept as the ceiling a value may never pass; the
      * bar sits outside it by construction (126 against a 118 edge). */
-    const valueRightEdgeClear = SCREEN_WIDTH - valuePaddingRight;
+    const valueRightEdgeClear = areaRightX - valuePaddingRight;
     const scrolls = (startIdx > 0) || (endIdx < totalItems);
     /* The bar owns SCREEN_WIDTH-2; the gutter is that column plus one clear
      * pixel, so nothing is drawn butted against the track. ONE constant, used
@@ -450,7 +458,7 @@ export function drawMenuList({
      * things that reach the right edge, and if they disagreed the bar would be
      * legible on some rows and not others. */
     const BAR_GUTTER = 3;
-    const valueRightEdgeBar = Math.min(valueRightEdgeClear, SCREEN_WIDTH - BAR_GUTTER);
+    const valueRightEdgeBar = Math.min(valueRightEdgeClear, areaRightX - BAR_GUTTER);
     /*
      * THE CLEARANCE IS CHARGED PER ROW, not to the whole list.
      *
@@ -512,16 +520,17 @@ export function drawMenuList({
                  * two levels. Absent -- every other caller -- nothing moves. */
                 const captionX = labelX + (item.level > 0 ? 10 : 0);
                 /* Line left of caption */
-                ctx.fillRect(0, midY, captionX - 2, 1, 1);
+                ctx.fillRect(areaLeftX, midY, captionX - 2 - areaLeftX, 1, 1);
                 ctx.print(captionX, midY - 3, item.label, 1);
                 /* Line right of caption */
                 /* Stops at the scrollbar gutter, as the selected-row fill
                  * does -- a rule run through the bar reads as a second bar. */
                 const rightStart = captionX + captionW + 2;
-                const rightEnd = SCREEN_WIDTH - (scrolls ? BAR_GUTTER : 0);
+                const rightEnd = areaRightX - (scrolls ? BAR_GUTTER : 0);
                 ctx.fillRect(rightStart, midY, Math.max(0, rightEnd - rightStart), 1, 1);
             } else {
-                ctx.fillRect(2, midY, SCREEN_WIDTH - 4 - (scrolls ? BAR_GUTTER : 0), 1, 1);
+                ctx.fillRect(areaLeftX + 2, midY,
+                             areaRightX - areaLeftX - 4 - (scrolls ? BAR_GUTTER : 0), 1, 1);
             }
             continue;
         }
@@ -712,7 +721,8 @@ export function drawMenuList({
              * Only when the list actually scrolls, matching valueRightEdgeFor.
              * A list with no bar keeps the full-width highlight it always had.
              */
-            ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH - (scrolls ? BAR_GUTTER : 0),
+            ctx.fillRect(areaLeftX, y - highlightOffset,
+                         areaRightX - areaLeftX - (scrolls ? BAR_GUTTER : 0),
                          itemHighlightHeight, 1);
             ctx.print(labelX, y, label, 0);
             if (displayValue) {
@@ -760,6 +770,7 @@ export function drawMenuList({
         total: totalItems,
         startIdx,
         visible: endIdx - startIdx,
+        rightX: areaRightX,
     });
 }
 
@@ -807,12 +818,15 @@ export function drawScrollbar({
     total,
     startIdx,
     visible = windowRows,
+    /* The right edge of the surface the bar belongs to -- the screen, unless
+     * the list was drawn into a caller's rect. */
+    rightX = SCREEN_WIDTH,
 }) {
     /* Nothing to scroll: no bar, and the row budget it would have cost is
      * given back. */
     if (!(startIdx > 0 || startIdx + visible < total)) return;
 
-    const trackX = SCREEN_WIDTH - 2;
+    const trackX = rightX - 2;
     /*
      * THE TRACK COVERS THE ROWS, NOT THE RECT.
      *

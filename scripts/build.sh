@@ -198,10 +198,16 @@ done
 
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
-    SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
+    # The shim links NO speech engine: it talks to the schwung-tts sidecar
+    # (built below) over /schwung-tts. eSpeak NG is GPL-3.0, and the shim is
+    # the process every native module is loaded into -- see src/host/tts_shm.h.
+    # tests/host/test_shim_links_no_tts_engine.sh pins this.
+    SHIM_TTS_SRC="src/host/tts_client.c"
     SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
-    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
-    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
+    SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include"
+    SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm"
+    TTS_SIDECAR_SRC="src/host/tts_sidecar.c src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c src/host/tts_config.c src/host/shadow_shm_util.c src/host/unified_log.c"
+    TTS_SIDECAR_LIBS="-L/usr/lib/aarch64-linux-gnu -lrt -lpthread -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
 else
     echo "Screen reader build: disabled"
     SHIM_TTS_SRC="src/host/tts_engine_stub.c"
@@ -250,6 +256,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/step_menu.c src/host/step_menu.h src/host/step_menu_glue.h src/host/step_chance.h \
     src/host/move_model.c src/host/move_model.h src/host/move_model_sync.c src/host/move_model_sync.h src/host/move_info.c src/host/move_info.h src/host/move_info_pub.h src/host/edit_follow.c src/host/edit_follow.h src/host/edit_gesture.c src/host/edit_gesture.h src/host/undo_timeline.c src/host/undo_timeline.h \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
+    src/host/speaker_eq.c src/host/speaker_eq.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
     src/host/shadow_overtake_midi.c src/host/shadow_overtake_midi.h \
@@ -268,6 +275,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
     src/host/shadow_led_queue.h src/host/shadow_state.h \
     src/host/plugin_api_v1.h src/host/unified_log.h src/host/tts_engine.h \
+    src/host/tts_config.h src/host/tts_config.c \
     src/host/schwung_trace.h \
     src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
@@ -307,6 +315,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/undo_timeline.c \
         src/host/shadow_state.c \
         src/host/shadow_xmos_audio.c \
+        src/host/speaker_eq.c \
         src/host/usbc_out_gate.c \
         src/host/shadow_midi.c \
         src/host/shadow_midi_filter.c \
@@ -326,6 +335,22 @@ if needs_rebuild build/schwung-shim.so \
         $SHIM_LIBS
 else
     echo "Skipping shim (up to date)"
+fi
+
+# Build the TTS sidecar: the ONLY binary eSpeak NG and Flite are linked into.
+if [ "$SCREEN_READER_ENABLED" = "1" ]; then
+    if needs_rebuild build/schwung-tts $TTS_SIDECAR_SRC $SRC_HEADERS; then
+        echo "Building schwung-tts..."
+        "${CROSS_PREFIX}gcc" -g -O2 -Wl,--no-undefined \
+            -Wl,-rpath,'$ORIGIN/lib' \
+            -o build/schwung-tts \
+            $TTS_SIDECAR_SRC \
+            -DENABLE_SCREEN_READER=1 \
+            -Isrc -Isrc/host -I/usr/include -I/usr/include/flite \
+            $TTS_SIDECAR_LIBS
+    else
+        echo "Skipping schwung-tts (up to date)"
+    fi
 fi
 
 # Web shim removed in 0.9.2 — MoveWebService is no longer wrapped.
@@ -574,9 +599,16 @@ if [ ! -f ./build/lib/.tts_bundled ]; then
         ./scripts/verify-espeak-bundle.sh ./build/lib ./build/espeak-ng-data || true
     fi
 
-    # License files
-    cp /usr/share/doc/libespeak-ng1/copyright ./build/licenses/ESPEAK_NG_LICENSE.txt 2>/dev/null || true
-    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt 2>/dev/null || true
+    # License files for the libraries redistributed in build/lib. NOT optional:
+    # these ship beside GPL-3.0 (eSpeak NG), BSD (Flite) and Apache-2.0 (sonic)
+    # binaries, and a `|| true` here produced a release missing them that looked
+    # identical to a good one -- the link-subscriber silent-skip shape.
+    cp /usr/share/doc/libespeak-ng1/copyright ./build/licenses/ESPEAK_NG_LICENSE.txt
+    cp /usr/share/doc/libflite1/copyright ./build/licenses/FLITE_LICENSE.txt
+    cp /usr/share/doc/libsonic0/copyright ./build/licenses/SONIC_LICENSE.txt
+    # Apache-2.0 requires the licence text itself; sonic's copyright file only
+    # points at Debian's common-licenses copy, which does not ship.
+    cp /usr/share/common-licenses/Apache-2.0 ./build/licenses/APACHE-2.0.txt
 
     touch ./build/lib/.tts_bundled
 else

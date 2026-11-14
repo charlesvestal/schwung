@@ -369,6 +369,57 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     }
   }
 
+  /* ---- a null in knobs[] is a knob with nothing on it ------------------
+   *
+   * The author placing a control on knob 5 has to be able to say so. Closing
+   * the hole up put the three sends of a mixer at knobs 3-5 -- two beside the pan
+   * on row one, one alone on row two -- however the knobs[] was written.
+   */
+  {
+    const f = (key, name) => ({ key, name, type: "float", min: 0, max: 1 });
+    const cp = ["gain", "pan", "s1", "s2", "s3", "x"].map((k) => f(k, k));
+    const hier = (knobs, params) => ({ levels: { root: { name: "Mix", knobs, params: params || [] } } });
+    const keysOf1 = (h, c) => planPages({ hierarchy: h, chainParams: c || cp }).pages
+      .filter((pg) => pg.kind === PAGE_KNOBS).map((pg) => pg.keys);
+
+    const mix = keysOf1(hier(["gain", "pan", null, null, "s1", "s2", "s3"]));
+    if (mix.length !== 1) fail("holes: expected one page, got " + mix.length);
+    if (JSON.stringify(mix[0]) !== JSON.stringify(["gain", "pan", null, null, "s1", "s2", "s3"]))
+      fail("holes: knobs[] nulls must stay holes, got " + JSON.stringify(mix[0]));
+    const slots = pageSlotKeys({ kind: PAGE_KNOBS, keys: mix[0] });
+    if (slots[2] !== null || slots[3] !== null || slots[4] !== "s1" || slots[7] !== null)
+      fail("holes: pageSlotKeys should put s1 on knob 5, got " + JSON.stringify(slots));
+
+    const trail = keysOf1(hier(["gain", null, null]));
+    if (JSON.stringify(trail[0]) !== JSON.stringify(["gain"]))
+      fail("holes: a trailing hole describes nothing and is trimmed, got " + JSON.stringify(trail[0]));
+
+    /* params[] leftovers still join the page -- AFTER the authored slots, never
+     * into a hole the author left on purpose. */
+    const extra = keysOf1(hier(["gain", "pan", null, null, "s1"], ["gain", "pan", "s1", "x"]));
+    if (JSON.stringify(extra[0]) !== JSON.stringify(["gain", "pan", null, null, "s1", "x"]))
+      fail("holes: overflow must append after the authored slots, got " + JSON.stringify(extra[0]));
+
+    /* A page laid out with holes is laid out by hand: the ADSR at knobs 3-6
+     * straddles the row break, and without a hole alignGroupsToRows moves it
+     * onto one row (proved by the control right below). */
+    const env = ["attack", "decay", "sustain", "release", "cutoff"].map((k) => f(k, k));
+    const straddle = keysOf1(hier(["cutoff", "x", "attack", "decay", "sustain", "release"]), env.concat([f("x", "x")]));
+    if (straddle[0].indexOf("attack") === 2)
+      fail("holes control: an un-holed straddling ADSR should be realigned, got " + JSON.stringify(straddle[0]));
+    const byHand = keysOf1(hier(["cutoff", null, "attack", "decay", "sustain", "release"]), env);
+    if (JSON.stringify(byHand[0]) !== JSON.stringify(["cutoff", null, "attack", "decay", "sustain", "release"]))
+      fail("holes: a holed page must not be realigned, got " + JSON.stringify(byHand[0]));
+
+    /* No null, no change: the fleet goldens above already cover this, but a
+     * hidden key still closes up rather than becoming a hole. */
+    const hid = planPages({ hierarchy: { levels: { root: { name: "Mix", knobs: ["gain", "pan", "s1"],
+                  params: [{ key: "pan", name: "pan", visible_if: { param: "gain", equals: "never" } }] } } },
+                chainParams: cp, visible: () => false }).pages.filter((pg) => pg.kind === PAGE_KNOBS)[0].keys;
+    if (JSON.stringify(hid) !== JSON.stringify(["gain", "s1"]))
+      fail("holes: a hidden key must still close up, got " + JSON.stringify(hid));
+  }
+
   console.log("PASS: param-page planner — " + fx.modules.length + " modules, " + totalPages +
               " pages, every declared key reachable, no duplicate page names");
 });

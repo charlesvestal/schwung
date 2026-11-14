@@ -1,5 +1,13 @@
 /*
- * TTS Engine - Dual-engine dispatcher (eSpeak-NG + Flite)
+ * TTS Engine API.
+ *
+ * Two implementations of the same header:
+ *   - tts_engine_dispatch.c (+ the eSpeak-NG and Flite backends) is linked
+ *     into the `schwung-tts` sidecar, and only there.
+ *   - tts_client.c is linked into schwung-shim.so and forwards every call to
+ *     that sidecar over /schwung-tts (tts_shm.h). tts_engine_stub.c replaces
+ *     it in a build without the screen reader.
+ * The shim must never link an engine: see tts_shm.h.
  */
 
 #ifndef TTS_ENGINE_H
@@ -56,5 +64,15 @@ void tts_set_engine(const char *engine_name);
 
 /* Get current TTS engine name */
 const char *tts_get_engine(void);
+
+/* Shim side only (tts_client.c / tts_engine_stub.c).
+ *
+ * tts_wants_sidecar(): the request segment exists, so launching the sidecar
+ * is worth doing.
+ * tts_take_state_published(): true ONCE each time a sidecar (re)starts and
+ * publishes the settings it loaded from disk; the getters answer with them
+ * from then on. Until the first one, setters and speak are dropped. */
+bool tts_wants_sidecar(void);
+bool tts_take_state_published(void);
 
 #endif /* TTS_ENGINE_H */

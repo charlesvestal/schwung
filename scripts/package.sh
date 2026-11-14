@@ -59,6 +59,16 @@ if [ -f "./link-subscriber" ]; then
     ITEMS="$ITEMS ./link-subscriber"
 fi
 
+# schwung-tts: the speech sidecar, the only binary eSpeak NG / Flite are linked
+# into. A screen-reader build (lib/libespeak-ng.so* present) without it would
+# ship a shim that asks a sidecar that never arrives -- silent, so refuse.
+if [ -f "./schwung-tts" ]; then
+    ITEMS="$ITEMS ./schwung-tts"
+elif ls ./lib/libespeak-ng.so* >/dev/null 2>&1; then
+    echo "ERROR: build/lib carries eSpeak NG but build/schwung-tts is missing — refusing to package." >&2
+    exit 1
+fi
+
 # Add display-server if it was built
 if [ -f "./display-server" ]; then
     ITEMS="$ITEMS ./display-server"

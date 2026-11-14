@@ -35,6 +35,36 @@ setsid bash -c '
     exec >/dev/null 2>&1
     log "=== launch-standalone.sh started at $(date) ==="
     log "Binary: $BINARY"
+
+    # One launch at a time, decided BEFORE anything is killed. Pressing a
+    # standalone tool twice in the Tools menu runs this script twice; the
+    # second copy used to run the whole sweep, find the binary refusing its
+    # own single-instance lock, and then restart Move underneath the first
+    # copy, which still owns SPI. mkdir is the atomic test-and-set BusyBox
+    # has; a lock whose owner is gone (power cut, SIGKILL) is stale.
+    #
+    # In /dev/shm, NEVER /tmp: on the Move /tmp is /var/volatile/tmp on the
+    # ROOT partition (ext4, measured at 98% used), and this runs as ableton,
+    # which gets none of the root-reserved blocks. On a full partition mkdir
+    # fails, the retry below fails the same way, and every standalone tool
+    # refuses to launch. /dev/shm never fills that way and empties on reboot.
+    LOCK=/dev/shm/schwung-standalone.lock
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        owner=$(cat "$LOCK/pid" 2>/dev/null)
+        # Liveness is read from /proc, not kill -0: a launch running as root
+        # answers EPERM to an ableton kill -0, which reads as "dead". The
+        # cmdline match also keeps a recycled pid from holding the lock.
+        if [ -n "$owner" ] \
+            && grep -q schwung-standalone.lock "/proc/$owner/cmdline" 2>/dev/null; then
+            log "another standalone launch is running (pid $owner); refusing"
+            exit 0
+        fi
+        log "clearing stale standalone lock (pid ${owner:-none})"
+        rm -rf "$LOCK"
+        mkdir "$LOCK" 2>/dev/null || { log "lost the standalone lock race; refusing"; exit 0; }
+    fi
+    echo $$ > "$LOCK/pid"
+    trap "rm -rf \"$LOCK\"" EXIT
     sleep 1
 
     # Let shadow_ui SAVE before anything else dies. SIGTERM makes it raise
@@ -79,6 +109,17 @@ setsid bash -c '
         else
             log "move-launcher KillMode=${KM:-unknown}; not pausing it"
         fi
+    fi
+
+    # The Move about to be killed booted fine: it ran long enough to open the
+    # Tools menu. But the boot watchdog only clears its strike once Move has
+    # lived 15 s, and every Move restart below counts as a boot attempt. So
+    # three quick open/close cycles of a standalone tool read as three failed
+    # boots and put boot-select --forced, with its 60 s backstop, on screen.
+    # A tool launch is not a failed boot: clear the strike here.
+    BT_LIB=/data/UserData/schwung/host/boot_target_lib.sh
+    if [ -f "$BT_LIB" ] && . "$BT_LIB" && bt_watchdog_clear; then
+        log "boot watchdog cleared (the running Move was alive)"
     fi
 
     # Two-phase kill

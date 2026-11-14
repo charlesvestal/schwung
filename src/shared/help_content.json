@@ -266,7 +266,12 @@
             "jog to an entry and",
             "click to run it.",
             "Jogging past does",
-            "not fire anything."
+            "not fire anything.",
+            "",
+            "Master FX and Send",
+            "FX modules get My",
+            "Presets too (no",
+            "Module page)."
           ]
         },
         {
@@ -311,6 +316,13 @@
             "so tails ring out.",
             "A 'B' glyph shows",
             "above the module.",
+            "",
+            "Delete+Jog Click on",
+            "a focused module:",
+            "remove it from the",
+            "chain. Works in",
+            "Master FX and the",
+            "sends too.",
             "",
             "Mute+Track 1-4:",
             "mute that slot.",

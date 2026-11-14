@@ -472,6 +472,41 @@ a real controller through choosing a child, asserting `state.values` really is
 keyed by templates — if the controller ever files resolved keys, the inversion
 becomes wrong and that half fails.
 
+### Turning a gating enum re-planned on EVERY write, and a plan is ~10 ms on the Move
+
+Reported from the device (lost-and-found `sync`/`routing`, genloss `classic`,
+mood `wet_mode`) as *"enums that gate other cells skip, flicker and snap back;
+plain enums are fine"*. Two findings, only one of them ours:
+
+- **The jumbled VALUES were a worn encoder.** All four keys sit on KNOB 1. The
+  raw MIDI_IN stream (`spi_midi_log_on`) showed knob 1 reversing on 27% of its
+  counts while turned one way; the same param on knob 8 was clean, and a
+  strictly one-direction INJECTED turn came out monotonic at every speed. The
+  controller followed its input faithfully. Check which PHYSICAL knob before
+  suspecting a contract.
+- **The FRAME RATE was ours.** A gating turn took the grid from ~56 fps to
+  25–36. OTLP with temporary per-statement spans put it in `flushReplan`:
+  9.5 ms per tick, 340 ms of every second of the turn. `onKnobTurn` marked a
+  re-plan on **every write** to a condition key, and the 4-detent enum gate
+  makes most writes repeat the value already planned against ("Host Host Host
+  Manual") — 40 passes for 10 changes in a 120-detent sweep. `planPages` costs
+  ~0.17 ms under node and ~50x that under QuickJS on the Move; the 6.7x
+  Mac-to-Move factor is for native DSP and does not transfer to JS.
+
+The controller now stamps the condition-key values each plan was built from
+(`plannedGates`) and `replanIfCondition` owes nothing when a write leaves its
+key where the plan found it. A null stamp (fresh load, mode re-plan) still
+re-plans. Separately, a visibility re-plan reuses the trailing menus the last
+`load()` / `refreshTrailing()` fetched instead of calling `io.trailingMenus()`:
+the host's `componentTrailingMenus()` does a blocking `<prefix>:state` read
+(6–7 ms on lost-and-found) to mark the preset row modified, and nothing a
+`visible_if` flip changes lives in those rows. The preset `*` keeps its own
+once-per-settle refresh (`tickUserPresetStale`).
+
+`tests/host/test_visible_if_replan_no_host_reads.sh` counts planning passes and
+host calls during a real controller turn, with controls that the turn did
+re-plan and that Tempo appeared and disappeared.
+
 ### The grid FOLLOWS the focused voice, and writes no LEDs doing it
 
 A module can declare what its performance surface is — `pad_layout`, and a `note`
@@ -689,6 +724,12 @@ Three rules keep that from being vandalism:
   to knob 5.
 - **the real detector confirms the result**, and a move that loses a group
   that already drew is rejected.
+- **a page with an authored hole is left alone.** A `null` in `knobs[]` keeps
+  its slot (`knobSlots` in page_plan.mjs) and says the author placed every key
+  by hand; nudging a block across a hole would undo exactly that. The hole
+  itself is the sparse-page case the grid already drew as a gap: `keyAt`,
+  `knobRows` and every renderer skip a null key, and `getOrGuess(null)` THROWS
+  — so a new loop over `page.keys` must skip holes as well.
 
 An earlier version scored by keys covered with no cost bound and did what that
 invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
@@ -710,6 +751,35 @@ surge's twelve hold/sustain/release LFO pages — no attack at all — produced 
 coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
 satisfied. A HANG, not a wrong picture, and unreachable until alignment made
 those pages drawable.
+
+### A worn encoder reports BACKWARDS — an opt-in per-knob filter
+
+A dirty or worn encoder does not skip counts, it reports some of them in the
+wrong direction, in bursts. Measured on a real Move (2026-10-22, knob 1, raw
+MIDI_IN via `spi_midi_log_on`, one direction per touch): slow turns 78–83%
+correct with wrong-way runs of up to ~14 counts, fast turns ~97%. Through the
+4-detent enum gate that walks an enum backwards by several options; it was
+first reported as a software bug in `visible_if` enums, because every gating
+enum in the reporting modules sat on knob 1.
+
+`knob_direction_filter.mjs` keeps the last 12 counts per knob and an accepted
+direction; a count against it is held back, the direction flips only when the
+window leans the other way by 6, and a new touch commits only once 8 counts
+agree. On the captured stream: zero backward enum steps, against 7 unfiltered.
+
+**It is OFF by default, deliberately.** It cannot tell a misread burst from a
+deliberate small correction: on a healthy knob every reversal pays ~9 counts,
+and a clean `+4 -12 +12 -12` sweep walks `C D C` instead of
+`C D C B A B C D C B A`. A healthy knob gains nothing and loses fine control.
+
+Enable per device with `/data/UserData/schwung/knob_direction_filter`: empty
+for all knobs, or knob numbers (`1`, `1,4`). Read on each grid entry. It
+filters the Schwung grid's knob input only (`handleParamPagesMidi`) — Move's
+own screens read MIDI_IN directly and still see the raw encoder. A held-back
+count is CONSUMED, never returned unhandled, or the legacy knob handler would
+write it. `tests/host/test_knob_direction_filter.sh` runs the capture
+(`tests/fixtures/knob_jitter_capture.json`) through the real knob engine and
+pins the healthy-knob cost.
 
 ### A turn PEEKS the list; a cell that is already big does not
 
@@ -742,6 +812,32 @@ controller.renderOverlays(ctx, { clearScreen: clear_screen });
 
 Pass no `clearScreen` and it declines to draw rather than interleaving its list
 with the grid underneath, which is what an embedded consumer wants.
+
+**Every body stays inside `rect`, not only the knob grid.** The knob list, the
+section picker and the items, preset and menu pages ended at `footer ? RULE_Y :
+64` and never read `rect`, so a host passing `rect` plus `bands.footer: false`
+(movy, whose loop strip owns rows 60-63) had a preset browser drawn down to row
+63 over its own bottom band. `bodyBottom()` clamps all five to the rect; with no
+rect it answers what it always did. `tests/host/test_door_body_honours_rect.sh`.
+
+**And on the other three sides.** Clamping the bottom left the top, left and
+width at the full-screen constants, so a rect inset from the top or a side
+(TB-3PO passes `{x:0, y:8, w:128, h:49}`) still had the list -- and an entered
+list's selection highlight, which spanned x 0..127 -- drawn over the caller's
+chrome. `listFrame()` lays all five out the way `movyBandLayout` lays out the
+grid: with a rect, inside it and under whichever of the header and bank bar are
+drawn; without one, at the vertical rhythm's own positions. `MENU_LIST_*` and
+`MENU_FRAME_*` survive as OFFSETS from that origin, so the no-rect draw is
+byte-identical to before. The horizontal extent reaches `drawMenuList` as
+`listArea.leftX/rightX` (highlight, divider rules, value edge, scrollbar) and
+defaults to the screen, so no other list in the shadow UI moves.
+`tests/host/test_list_bodies_honour_rect.sh` insets a rect on all four sides and
+fails on any ink outside it, and asserts a full-screen rect draws exactly what no
+rect does.
+
+Not covered: the header and footer BANDS themselves are still drawn at their
+absolute rows when they are wanted inside a rect -- only the knob grid reflows
+them. TB-3PO, the embedder checked, turns all three bands off.
 
 **A module binding the controller from its own `ui_chain.js` owes that second
 call**, and until 2026-09 nothing said so: the draw lived in
@@ -1879,6 +1975,28 @@ but only an internal detector could produce one. `viz.extra_keys` lets a module
 declare them. Capped at four: one read per stop, and a cell asking for twenty
 would spend the page's whole read budget and starve every other value on screen.
 
+**A widget's extra key may be `live`.** The rotation visits a key once per pass,
+a few times a second, which is a slideshow for a meter or a playhead. Declare
+the key `"live": true` in `chain_params` and `liveExtraKeys` (in
+`page_controller.mjs`) adds it to the `modKeys` list `refreshModulatedValues`
+already walks, so it is also re-read as `<key>:effective` every tick, like a
+live cell key. The rotation still visits it too: that stop (counted in the cap
+of four) supplies the plain read behind `baseValues`. It spends the same
+`MOD_FAST_READS_PER_TICK` budget as every other live key on the page: live keys
+take turns, so with N of them each is read once every N ticks, and they do not
+stack. `liveExtraKeys` walks `vizGroups()` only, so **`live` applies to a
+widget's `viz.extra_keys` and not to a canvas page's own `extra_keys`** (see the
+next section): those stay on the rotation and the flag is ignored there, while a
+key that is also a widget extra on the same page is live. A key that also has a
+cell is left to `moving()`.
+
+Two side effects. Any live extra makes `modValues` non-empty, so every widget on
+the page is handed `baseValues`: `drawFader` draws its base marks (and
+`drawSample` is handed them too) even though nothing on it is modulated; custom
+widgets only care if they read `baseValues`. And on an `as_page` canvas page
+that also has knobs, a widget's live extra is merged into the canvas `values`,
+although that page draws no widget.
+
 ### A page the MODULE draws, and it is still a page
 
 `type: "canvas"` gives a cell you dive into. `as_page` gives a page in the
@@ -1927,7 +2045,8 @@ widget drawing that vowel sat frozen at the knob while the sound moved.
 `"live": true` buys the treatment a modulated key already gets: `:effective`
 re-read EVERY TICK rather than on the rotation, which on an eight-knob page
 comes round about four times a second — an animation drawn from that is a
-slideshow.
+slideshow. A widget's `viz.extra_keys` entry can be live too (see above); a
+canvas page's cannot.
 
 Two traps behind it, both found on hardware. The chain host OWNED `:effective`
 and, for a key it was not modulating, stripped the suffix and asked the plugin

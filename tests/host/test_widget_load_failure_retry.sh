@@ -82,7 +82,7 @@ const here = () => MODULES[`${slot}:${comp}`] || { id: "", params: [] };
 
 const make = new Function(
   "paramPagesSlot", "paramPagesComponent", "getSlotParam", "componentModuleIdKey",
-  "getComponentChainParams", "getModuleBasePath", "loadCanvasOverlayScript",
+  "gridComponentChainParams", "getModuleBasePath", "loadCanvasOverlayScript",
   "registerOverlayWidgets", "clearWidgets", "debugLog", "WIDGET_RETRY_TICKS",
   preamble + src +
   "; return { tickComponentWidgets, ensureComponentWidgets, endComponentWidgetVisit," +

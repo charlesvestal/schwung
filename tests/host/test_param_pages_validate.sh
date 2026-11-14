@@ -140,6 +140,16 @@ Promise.all([
     if (errors.length) fail("modules that cannot render at all: " + errors.join("; "));
   }
 
+  /* An authored hole (knobs[] null) is a knob with nothing on it, not a
+   * param missing its metadata. */
+  {
+    const chainParams = ["gain", "s1"].map((key) => ({ key, name: key, type: "float", min: 0, max: 1 }));
+    const hierarchy = { levels: { root: { name: "Mix", knobs: ["gain", null, "s1"] } } };
+    const f = V.validateContract({ id: "holes", hierarchy, chainParams }).findings;
+    if (f.some((x) => x.rule === "undeclared-knob-params"))
+      fail("a knobs[] hole was reported as an undeclared knob param");
+  }
+
   const { reports } = V.validateFleet(fx.modules);
   console.log("PASS: contract validator — rules fire on " + reports.length + "/" + fx.modules.length +
               " fleet modules, known false positives stay dead, no module is unrenderable");

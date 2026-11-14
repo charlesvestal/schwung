@@ -507,6 +507,50 @@ static void test_pair_consistent(void)
     CHECK(mm_pair_consistent(&a, &b) == 0);      /* a set load mid-read is a tear */
 }
 
+/* WHERE THE READER LOOKS. A [heap]-only search could not see an object built
+ * on another of Move's threads (glibc puts those in anonymous arenas), and a
+ * 64 MB heap window missed a registry pushed past it -- both seen in a field
+ * status file. These lines are real /proc/self/maps shapes. */
+static void test_classify_maps(void)
+{
+    uint64_t lo = 0, hi = 0;
+    CHECK(mm_classify_maps_line("5570000000-5571000000 r--p 00000000 b3:03 1234   /opt/move/MoveOriginal\n", &lo, &hi) == MM_MAP_IMAGE);
+    CHECK(lo == 0x5570000000ull && hi == 0x5571000000ull);
+    CHECK(mm_classify_maps_line("5571000000-5572000000 r-xp 01000000 b3:03 1234   /opt/move/MoveOriginal\n", &lo, &hi) == MM_MAP_IMAGE);
+    CHECK(mm_classify_maps_line("5572000000-5572100000 ---p 02000000 b3:03 1234   /opt/move/MoveOriginal\n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("55a0000000-55b4000000 rw-p 00000000 00:00 0      [heap]\n", &lo, &hi) == MM_MAP_HEAP);
+    CHECK(lo == 0x55a0000000ull && hi == 0x55b4000000ull);
+    /* A thread arena: rw, no path. The case the old search never visited. */
+    CHECK(mm_classify_maps_line("7f80000000-7f84000000 rw-p 00000000 00:00 0 \n", &lo, &hi) == MM_MAP_ANON);
+    CHECK(lo == 0x7f80000000ull && hi == 0x7f84000000ull);
+    CHECK(mm_classify_maps_line("7f80000000-7f84000000 rw-p 00000000 00:00 0", &lo, &hi) == MM_MAP_ANON);
+    CHECK(mm_classify_maps_line("7f80000000-7f84000000 rw-p 00000000 00:00 0      [anon:libc_malloc]\n", &lo, &hi) == MM_MAP_ANON);
+    /* Never: the arena's reserved tail, the stack, a file, executable memory. */
+    CHECK(mm_classify_maps_line("7f84000000-7f88000000 ---p 00000000 00:00 0 \n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("7ffd000000-7ffd021000 rw-p 00000000 00:00 0      [stack]\n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("7f90000000-7f90100000 rw-p 00000000 b3:03 99     /usr/lib/libc.so.6\n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("7f91000000-7f91100000 rwxp 00000000 00:00 0 \n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("7f92000000-7f92100000 rw-s 00000000 00:05 7      /dev/shm/schwung-control\n", &lo, &hi) == MM_MAP_SKIP);
+    /* A file merely CALLED like the image is not the image. */
+    CHECK(mm_classify_maps_line("7f93000000-7f93100000 r--p 00000000 b3:03 5      /tmp/NotMoveOriginal\n", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line("garbage", &lo, &hi) == MM_MAP_SKIP);
+    CHECK(mm_classify_maps_line(NULL, &lo, &hi) == MM_MAP_SKIP);
+}
+
+/* NEVER GIVE UP FOR THE BOOT: the schedule must stay finite and positive for
+ * any attempt count, and settle at a minute. The old loop stopped at eight. */
+static void test_retry_schedule(void)
+{
+    const int want[] = { 1, 2, 4, 8, 16, 30, 30, 60, 60 };
+    for (int n = 1; n <= 9; n++) CHECK(mm_resolve_retry_delay_s(n) == want[n - 1]);
+    CHECK(mm_resolve_retry_delay_s(1000) == 60);
+    CHECK(mm_resolve_retry_delay_s(1 << 30) == 60);
+    CHECK(mm_resolve_retry_delay_s(0) == 1);
+    int total = 0;
+    for (int n = 1; n <= 7; n++) total += mm_resolve_retry_delay_s(n);
+    CHECK(total < 120);   /* still quick to connect in the first two minutes */
+}
+
 int main(void)
 {
     test_pair_consistent();
@@ -521,6 +565,8 @@ int main(void)
     test_tree(0);
     test_tree_key_looks_like_vptr();
     test_position();
+    test_classify_maps();
+    test_retry_schedule();
     if (fails) { printf("test_move_model: %d FAILED\n", fails); return 1; }
     printf("test_move_model: PASS\n");
     return 0;

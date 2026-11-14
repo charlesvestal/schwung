@@ -192,25 +192,33 @@ else
   bad "package.sh must HARD-FAIL on a missing licence file, not package without it"
 fi
 
-# ------------------------- 6. the eSpeak LINKAGE is documented, not denied
+# ------------------------- 6. the eSpeak LINKAGE lives in schwung-tts ONLY
 #
-# The first draft of THIRD_PARTY_LICENSES.md claimed "nothing copyleft is
-# linked into schwung or schwung-shim.so". That was false: SHIM_LIBS carries
-# -lespeak-ng under SCREEN_READER_ENABLED=1 (the default and shipping config),
-# and libespeak-ng.so.1 is a NEEDED entry of the built shim. eSpeak NG is
-# GPL-3.0-or-later, so that binary is conveyed under GPL-3.0-or-later.
-#
-# This pin is two-sided on purpose. If the linkage goes away, the docs must
-# stop saying it exists; while it is there, they must not deny it.
-if has scripts/build.sh '\-lespeak-ng'; then
-  if grep -qF 'GPL-3.0-or-later' THIRD_PARTY_LICENSES.md && \
-     grep -qiE 'schwung-shim\.so.*(linked|combined|GPL-3)' THIRD_PARTY_LICENSES.md; then
-    ok "the shim's eSpeak linkage is documented as making a GPL-3.0 binary"
+# The shim used to link -lespeak-ng, which made schwung-shim.so a GPL-3.0
+# binary -- the process every native module is dlopen'd into. Synthesis moved
+# to the schwung-tts sidecar (src/host/tts_shm.h). Two-sided, as before:
+# the shim's link line must carry no engine, and while schwung-tts links one
+# the docs must say THAT binary is GPL-3.0 and the shim is MIT.
+shim_libs=$(grep -E '^\s*SHIM_LIBS=' scripts/build.sh)
+if printf '%s\n' "$shim_libs" | grep -Eq 'espeak|flite'; then
+  bad "SHIM_LIBS links a TTS engine again -- it belongs in TTS_SIDECAR_LIBS (schwung-tts)"
+else
+  ok "SHIM_LIBS links no TTS engine"
+fi
+if grep -E '^\s*SHIM_TTS_SRC=' scripts/build.sh | grep -Eq 'tts_engine_(espeak|flite|dispatch)'; then
+  bad "SHIM_TTS_SRC compiles an engine backend into the shim"
+else
+  ok "SHIM_TTS_SRC compiles no engine backend"
+fi
+if has scripts/build.sh 'TTS_SIDECAR_LIBS=.*-lespeak-ng'; then
+  if grep -qE '^\| `schwung-tts` \| \*\*GPL-3\.0-or-later\*\*' THIRD_PARTY_LICENSES.md && \
+     grep -qE '^\| `schwung-shim\.so` \| MIT' THIRD_PARTY_LICENSES.md; then
+    ok "docs: schwung-tts is GPL-3.0-or-later, schwung-shim.so is MIT"
   else
-    bad "build.sh links -lespeak-ng but THIRD_PARTY_LICENSES.md does not say schwung-shim.so is conveyed under GPL-3.0-or-later"
+    bad "THIRD_PARTY_LICENSES.md must list schwung-tts as GPL-3.0-or-later and schwung-shim.so as MIT"
   fi
 else
-  ok "no -lespeak-ng in build.sh (shim links no copyleft)"
+  ok "no -lespeak-ng in schwung-tts either"
 fi
 
 # The exact false claim, in any of the places that state the licence.
@@ -225,6 +233,23 @@ if [ -z "$denial" ]; then
 else
   bad "a blanket 'nothing copyleft is linked' claim is back in:$denial -- schwung-shim.so links eSpeak NG (GPL-3.0+) in the default build"
 fi
+
+# ---------------- 6b. redistributed shared libraries carry their own notices
+#
+# build/lib ships libespeak-ng (GPL-3.0), libflite (BSD) and libsonic
+# (Apache-2.0, which requires the licence TEXT, not a pointer to Debian's
+# common-licenses). These copies were `|| true` for a long time: a release
+# missing them looks identical to a good one.
+for want in ESPEAK_NG_LICENSE.txt FLITE_LICENSE.txt SONIC_LICENSE.txt APACHE-2.0.txt; do
+  line=$(grep -E "cp .*build/licenses/$want" scripts/build.sh || true)
+  if [ -z "$line" ]; then
+    bad "build.sh does not stage licenses/$want"
+  elif printf '%s' "$line" | grep -q '|| true'; then
+    bad "build.sh stages licenses/$want with '|| true' -- a missing notice must fail the build"
+  else
+    ok "build.sh stages licenses/$want unconditionally"
+  fi
+done
 
 # ---------------------------------------- 7. the vendored texts are present
 for t in licenses/GPL-2.0.txt licenses/GPL-3.0.txt; do

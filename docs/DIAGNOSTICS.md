@@ -287,6 +287,17 @@ Gated by the same Mirror Display setting as the screen.
   from Move still shows. `src/host/surface_live_shm.h`; always tracked (a
   few byte compares a frame, no store to the page unless something changed),
   because an LED is written once and a viewer arriving later must see it.
+- **Fingers, for video.** With the **Fingers** button on (the default; the
+  choice is remembered per browser) the device drawing shows a translucent
+  fingertip on every control as it is touched or pressed — solid while held,
+  fading over half a second once let go — so a recording shows what the hands
+  did. A knob or wheel turn adds a curved arrow for the direction; a wheel
+  click adds a dot under the finger and a spreading ring, so a push does not
+  read as a rest. Presses come from the held state AND the event ring: a tap
+  that begins and ends between two snapshots exists only in the ring. Turns
+  are in neither and are read off the encoder positions. Drawn in the page
+  only, from the snapshot it already receives; `tests/host/test_mirror_fingers.sh`
+  lifts the tracker out and runs it.
 - **The byte after `3B` in Move's RGB LED SysEx is a CHANNEL**, not a
   subcommand: `00` addresses a NOTE (pads, steps), `10` a CC (tracks, knob
   rings, transport). Decoding only `10` misses every pad. Latest write wins

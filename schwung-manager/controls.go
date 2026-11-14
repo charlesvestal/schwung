@@ -33,8 +33,8 @@ const (
 	controlsFile      = "controls.json"
 	controlsMaxBytes  = 256 * 1024
 	controlsSlots     = 4
-	controlsMasterFx  = 8
-	controlsMaxFxRead = 8
+	controlsMasterFx  = masterFxSlotCount // remote_ui_chain.go: one place for the caps
+	controlsMaxFxRead = chainMaxAudioFx
 )
 
 // The shared ES modules the editor imports. A fixed list: this route serves

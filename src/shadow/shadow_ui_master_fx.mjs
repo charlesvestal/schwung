@@ -18,7 +18,8 @@ import {
 } from '/data/UserData/schwung/shared/chain_diagram.mjs';
 /* The bands around the row of boxes — header, label, info, footer. The SAME
  * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
-import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST }
+import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST,
+         deleteHintsFor }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The knob card, drawn over the diagram — the SAME renderer drawChainEdit uses.
  * It shipped 2026-08-20 scoped to the slot chain, so a Master FX knob still
@@ -126,6 +127,7 @@ export function drawMasterFx() {
             drawHelpDetail, drawHelpList,
             MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed,
             ensureMasterFxConfigFresh, isShiftHeld,
+            isDeleteHeld, chainFooterNoticeText,
             knobCardDrawState, fxBus, sendBusLevelRead } = ctx;
 
     clear_screen();
@@ -359,8 +361,14 @@ export function drawMasterFx() {
         headerRight: fxBus().short,
         label,
         info: infoLine,
+        /* Delete ("X") names its click too, exactly as on the slot editor
+         * and below Shift for the same reason: Shift+click is dispatched
+         * first. */
         hints: fxBusHints(isShiftHeld() ? shiftHintsFor(selectedComp)
-                                        : CHAIN_HINTS_AT_REST),
+                        : isDeleteHeld() ? deleteHintsFor(selectedComp)
+                        : CHAIN_HINTS_AT_REST),
+        /* The Delete+JogClick confirmation, footer row only. */
+        notice: chainFooterNoticeText("master"),
     });
 
     /*

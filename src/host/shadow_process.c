@@ -245,6 +245,74 @@ void launch_shadow_ui(void) {
 }
 
 /* ============================================================================
+ * TTS sidecar (schwung-tts)
+ *
+ * eSpeak NG is GPL-3.0; it lives in this separate program so the shim -- the
+ * process every native module is loaded into -- links no copyleft engine.
+ * The sidecar exits on its own when its parent goes, so there are no orphans
+ * to sweep and no pid file to adopt.
+ * ============================================================================ */
+
+#define TTS_SIDECAR_PATH        "/data/UserData/schwung/schwung-tts"
+#define TTS_RAPID_WINDOW_SEC    10
+#define TTS_MAX_RAPID_RELAUNCH  5
+
+static pid_t tts_pid = -1;
+static time_t tts_last_launch_sec = 0;
+static int tts_rapid_relaunches = 0;
+static int tts_backoff_active = 0;
+
+void launch_tts_sidecar(void) {
+    if (tts_pid > 0) {
+        if (waitpid(tts_pid, NULL, WNOHANG) != tts_pid) return;  /* alive */
+        tts_pid = -1;
+    }
+    if (tts_backoff_active) return;
+
+    struct timespec now_ts;
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    if (tts_last_launch_sec != 0 &&
+        (now_ts.tv_sec - tts_last_launch_sec) < TTS_RAPID_WINDOW_SEC) {
+        if (++tts_rapid_relaunches >= TTS_MAX_RAPID_RELAUNCH) {
+            tts_backoff_active = 1;  /* silent: this is the SPI path */
+            return;
+        }
+    } else {
+        tts_rapid_relaunches = 0;
+    }
+
+    if (access(TTS_SIDECAR_PATH, X_OK) != 0) return;
+
+    tts_last_launch_sec = now_ts.tv_sec;
+    int pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        struct sched_param sp = { .sched_priority = 0 };
+        sched_setscheduler(0, SCHED_OTHER, &sp);
+        child_reset_signals();
+
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        CPU_SET(0, &mask);
+        CPU_SET(1, &mask);
+        CPU_SET(2, &mask);
+        sched_setaffinity(0, sizeof(mask), &mask);
+
+        setsid();
+        freopen("/dev/null", "w", stdout);
+        freopen("/dev/null", "a", stderr);
+        int fdlimit = (int)sysconf(_SC_OPEN_MAX);
+        for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {
+            close(i);
+        }
+        unsetenv("LD_PRELOAD");
+        execl(TTS_SIDECAR_PATH, "schwung-tts", (char *)0);
+        _exit(1);
+    }
+    tts_pid = pid;
+}
+
+/* ============================================================================
  * Link subscriber process management
  * ============================================================================ */
 
