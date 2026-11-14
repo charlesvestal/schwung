@@ -257,6 +257,22 @@
       "requires": "Optional additional .syx patch banks (place in module's banks/ folder)"
     },
     {
+      "id": "frodhes",
+      "name": "Frodhes",
+      "description": "Physical-model electric piano, vibraphone and marimba with drive, filter, compressor, chorus, phaser, delay and reverb, an arpeggiator and its own full-screen pages",
+      "author": "leo Mirabal",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
+      "github_repo": "leonardoMirabal/frodhes",
+      "default_branch": "main",
+      "asset_name": "frodhes-module.tar.gz",
+      "min_host_version": "1.8.2"
+    },
+    {
       "id": "sf2",
       "name": "SF2 Synth",
       "description": "SoundFont (.sf2) synthesizer using FluidLite",
