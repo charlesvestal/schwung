@@ -75,6 +75,11 @@
         "type": "bool"
       },
       {
+        "key": "movy_link",
+        "label": "Movy Link",
+        "type": "bool"
+      },
+      {
         "key": "latency_comp_enabled",
         "label": "Latency Comp",
         "type": "bool"

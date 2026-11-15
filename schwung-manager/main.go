@@ -2872,6 +2872,10 @@ var settingsToFeatures = map[string]string{
 	"skipback_seconds":       "skipback_seconds",
 	"midi_indicator_enabled": "midi_indicator_enabled",
 	"stay_in_shadow":         "stay_in_shadow",
+	// Read by the movy standalone tool (its movy-host), which runs instead
+	// of Move: Ableton Link tempo sync + per-track Link Audio out. Web-only:
+	// the on-device Global Settings is not on screen while movy runs.
+	"movy_link": "movy_link_enabled",
 }
 
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
