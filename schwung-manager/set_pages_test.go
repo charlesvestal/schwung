@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -167,7 +169,7 @@ func TestSetPagesSwapKeepsEachSetsAttributes(t *testing.T) {
 	}
 }
 
-func TestSetPagesRejectsMetadataForSetOnAnotherPage(t *testing.T) {
+func TestSetPagesIgnoresOrphanMetadata(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "set_pages")
 	a := filepath.Join(base, "page_1")
@@ -181,11 +183,125 @@ func TestSetPagesRejectsMetadataForSetOnAnotherPage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(a, "xattrs.txt"), []byte("one user.song-index 0\none user.song-color 2\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(b, "xattrs.txt"), []byte("one user.song-color 19\n"), 0644); err != nil {
+	// A collision in the device's move leaves lines behind for Sets that are
+	// not in that page's directory; its restore ignores them.
+	if err := os.WriteFile(filepath.Join(b, "xattrs.txt"), []byte("one user.song-color 19\nstray line\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readSetPages(root); err == nil {
-		t.Fatal("accepted metadata for a Set on a different page")
+	snap, err := readSetPages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Pages[1][0] == nil || snap.Pages[1][0].ID != "one" {
+		t.Fatal("set missing after orphan metadata")
+	}
+	if got := snap.attrs["one"]["user.song-color"]; got != "2" {
+		t.Fatalf("orphan metadata overwrote the real Set: color %q", got)
+	}
+	if len(snap.location) != 1 {
+		t.Fatalf("orphan metadata created a Set: %v", snap.location)
+	}
+}
+
+func TestSetPagesRecoversMissingSlotMetadata(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "set_pages")
+	if err := os.MkdirAll(filepath.Join(base, "page_1", "one", "Song"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "page_1", "xattrs.txt"), []byte("one user.song-color 3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	original := setPageReadXattr
+	defer func() { setPageReadXattr = original }()
+	setPageReadXattr = func(path, key string) (string, error) {
+		if key == "user.song-index" {
+			return "5", nil
+		}
+		return "3", nil
+	}
+	snap, err := readSetPages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Pages[1][5] == nil || snap.Pages[1][5].ID != "one" {
+		t.Fatal("Set missing after recovering its slot")
+	}
+	if got := snap.attrs["one"]["user.song-index"]; got != "5" {
+		t.Fatalf("recovered slot not healed in metadata: %q", got)
+	}
+}
+
+func TestSetPagesRemovesStageAfterRolledBackSave(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "set_pages")
+	for _, id := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(base, "page_1", id, "Song"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, "current_page.txt"), []byte("0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "page_1", "xattrs.txt"), []byte("a user.song-index 0\nb user.song-index 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "page_2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A non-directory at the destination is a collision that readSetPages
+	// ignores, so the save gets as far as the second move before failing.
+	if err := os.WriteFile(filepath.Join(base, "page_2", "a"), []byte("blocker"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := readSetPages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := make([][]string, 8)
+	for i := range layout {
+		layout[i] = make([]string, 32)
+	}
+	layout[2][0] = "a"
+	layout[2][1] = "b"
+	if err = saveSetPages(root, snap.Revision, layout); err == nil {
+		t.Fatal("accepted destination collision")
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".manager-edit-") {
+			t.Fatalf("rolled-back save left %s behind", entry.Name())
+		}
+	}
+	for _, id := range []string{"a", "b"} {
+		if _, err := os.Stat(filepath.Join(base, "page_1", id, "Song")); err != nil {
+			t.Fatalf("%s was not restored: %v", id, err)
+		}
+	}
+	if _, err := readSetPages(root); err != nil {
+		t.Fatalf("later load blocked: %v", err)
+	}
+}
+
+func TestSetPagesRefusesToReadDuringPageChange(t *testing.T) {
+	root := t.TempDir()
+	lock, err := os.OpenFile(filepath.Join(root, setPagesLockName), os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	original := setPagesLockWait
+	defer func() { setPagesLockWait = original }()
+	setPagesLockWait = 0
+	if _, err := readSetPages(root); err == nil || !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("read during page change returned %v", err)
 	}
 }
 

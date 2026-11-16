@@ -14,6 +14,9 @@
 
 #define SET_PAGES_DIR "/data/UserData/schwung/set_pages"
 #define SET_PAGES_CURRENT_PATH SET_PAGES_DIR "/current_page.txt"
+/* Shared with Schwung Manager's Set Pages editor. The switch thread holds it
+ * from before it publishes the new page until current_page.txt is written. */
+#define SET_PAGES_LOCK_PATH "/data/UserData/schwung/.set-pages.lock"
 #define SET_PAGES_TOTAL 8
 #define SET_PAGE_OVERLAY_FRAMES 120  /* ~2 seconds at 60fps */
 

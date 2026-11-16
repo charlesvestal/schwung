@@ -21,12 +21,7 @@ Index.
 
 ## Set Pages in Schwung Manager
 
-The manager edits only inactive Set Pages. It snapshots the inactive stashes and
-`current_page.txt`, rejects stale saves, and updates both `xattrs.txt` and the
-recovery manifests as it moves Set directories. It does not lock out device
-page switches: users must not switch pages during editing or saving. An
-interrupted manager edit leaves a `.manager-edit-*` directory with a journal
-and any recovery files; further edits are blocked until it is resolved.
+See `docs/SET_PAGES.md` for the editor's lock and file contract with `set_pages/`.
 
 ## Build / Deploy
 
@@ -2067,6 +2062,9 @@ inline is how this file got to 151 KB.
   chain host's file layout, and the shape-edit permutation verbs.
 - `docs/DIAGNOSTICS.md` — **Measuring the device.** On-device E2E, OTLP tracing,
   the param tally, the SPI frame tally. Every switch is off by default.
+- `docs/SET_PAGES.md` — **Set Pages editor.** The manager's lock and file
+  contract with the device's `set_pages/` stashes, metadata tolerance and
+  rollback rules.
 
 - `docs/CANVAS_PAGES.md` — **Enterable canvases.** A module-drawn screen you
   navigate: `enterable` hands it the click, `handleBack` is the exit contract

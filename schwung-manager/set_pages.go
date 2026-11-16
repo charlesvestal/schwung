@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,10 +13,57 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 const setPageCount = 8
 const setPageSlots = 32
+
+// The device's switch thread and this editor both lock the same file so a save
+// can never overlap the window in which Move has changed page in memory but has
+// not yet written current_page.txt.
+const setPagesLockName = ".set-pages.lock"
+
+var setPagesLockWait = 2 * time.Second
+
+func acquireSetPagesLock(root string, exclusive bool) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(root, setPagesLockName), os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		return nil, err
+	}
+	how := syscall.LOCK_SH
+	if exclusive {
+		how = syscall.LOCK_EX
+	}
+	deadline := time.Now().Add(setPagesLockWait)
+	for {
+		err = syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			_ = f.Close()
+			return nil, err
+		}
+		if !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, errors.New("a Set page change is in progress; reload after Move finishes")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func releaseSetPagesLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
 
 type setPageItem struct {
 	ID    string `json:"id"`
@@ -92,9 +138,47 @@ func safeSetID(id string) bool {
 	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/\\ \t\r\n")
 }
 
-// The digest includes all files in the inactive stashes and their metadata, so
-// even changes that do not affect the visible layout invalidate a draft.
 func readSetPages(root string) (*setPageSnapshot, error) {
+	lock, err := acquireSetPagesLock(root, false)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseSetPagesLock(lock)
+	return readSetPagesLocked(root)
+}
+
+func readSetPageAttrs(path string) (map[string]map[string]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	attrs := map[string]map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.SplitN(strings.TrimSuffix(line, "\r"), " ", 3)
+		if len(fields) != 3 || fields[0] == "" || fields[1] == "" || !safeSetID(fields[0]) {
+			continue
+		}
+		if attrs[fields[0]] == nil {
+			attrs[fields[0]] = map[string]string{}
+		}
+		attrs[fields[0]][fields[1]] = fields[2]
+	}
+	return attrs, nil
+}
+
+func setPageSlot(raw string) (int, bool) {
+	slot, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || slot < 0 || slot >= setPageSlots {
+		return 0, false
+	}
+	return slot, true
+}
+
+// The digest includes metadata for every file in the inactive stashes, so even
+// changes that do not affect the visible layout invalidate a draft. Reading the
+// file contents made every load and save too slow on a device with many Sets;
+// size and modification time are enough to notice a change.
+func readSetPagesLocked(root string) (*setPageSnapshot, error) {
 	entries, err := os.ReadDir(filepath.Join(root, "set_pages"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -153,19 +237,7 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 				return fmt.Errorf("symlink in page %d", p+1)
 			}
 			fmt.Fprintf(h, "%d:%s:%d:%d:%d\n", p, rel, info.Mode(), info.Size(), info.ModTime().UnixNano())
-			if info.Mode().IsRegular() {
-				f, e := os.Open(path)
-				if e != nil {
-					return e
-				}
-				_, e = io.Copy(h, f)
-				closeErr := f.Close()
-				if e != nil {
-					return e
-				}
-				return closeErr
-			}
-			if !d.IsDir() {
+			if !d.IsDir() && !info.Mode().IsRegular() {
 				return errors.New("unsupported file in set page")
 			}
 			return nil
@@ -173,29 +245,11 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 		if e != nil {
 			return nil, e
 		}
-		attrData, e := os.ReadFile(filepath.Join(dir, "xattrs.txt"))
-		if e != nil && !os.IsNotExist(e) {
+		attrs, e := readSetPageAttrs(filepath.Join(dir, "xattrs.txt"))
+		if e != nil {
 			return nil, e
 		}
-		for _, line := range strings.Split(string(attrData), "\n") {
-			fields := strings.SplitN(line, " ", 3)
-			if len(fields) != 3 {
-				if strings.TrimSpace(line) != "" {
-					return nil, fmt.Errorf("invalid metadata on page %d", p+1)
-				}
-				continue
-			}
-			if !safeSetID(fields[0]) {
-				return nil, errors.New("invalid metadata id")
-			}
-			if oldPage, exists := s.location[fields[0]]; exists && oldPage != p {
-				return nil, fmt.Errorf("metadata for %s is on the wrong page", fields[0])
-			}
-			if s.attrs[fields[0]] == nil {
-				s.attrs[fields[0]] = map[string]string{}
-			}
-			s.attrs[fields[0]][fields[1]] = fields[2]
-		}
+		used := make([]bool, setPageSlots)
 		for _, entry := range entries {
 			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 				continue
@@ -207,19 +261,53 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 			if _, exists := s.location[id]; exists {
 				return nil, fmt.Errorf("duplicate set %s", id)
 			}
-			s.location[id] = p
-			attrs := s.attrs[id]
-			if attrs == nil {
-				return nil, fmt.Errorf("missing slot metadata for %s", id)
+			path := filepath.Join(dir, id)
+			setAttrs := attrs[id]
+			if setAttrs == nil {
+				setAttrs = map[string]string{}
 			}
-			slot, e := strconv.Atoi(attrs["user.song-index"])
-			if e != nil || slot < 0 || slot >= setPageSlots {
-				return nil, fmt.Errorf("invalid slot for %s", id)
+			// A Set directory without metadata is what a collision in the
+			// device's move leaves behind (and its restore ignores the delta).
+			// Fall back to the attributes still on the directory, then to the
+			// first free slot, so one bad line cannot break every page.
+			slot, ok := setPageSlot(setAttrs["user.song-index"])
+			if !ok {
+				if raw, readErr := setPageReadXattr(path, "user.song-index"); readErr == nil {
+					slot, ok = setPageSlot(raw)
+				}
 			}
-			if s.Pages[p][slot] != nil {
-				return nil, fmt.Errorf("duplicate slot on page %d", p+1)
+			if !ok || used[slot] {
+				slot = -1
+				for i := range used {
+					if !used[i] {
+						slot = i
+						break
+					}
+				}
+				if slot < 0 {
+					return nil, fmt.Errorf("too many sets on page %d", p+1)
+				}
 			}
-			sub, e := os.ReadDir(filepath.Join(dir, id))
+			used[slot] = true
+			setAttrs["user.song-index"] = strconv.Itoa(slot)
+			color, colorOK := 0, false
+			if raw, exists := setAttrs["user.song-color"]; exists {
+				if color, e = strconv.Atoi(raw); e == nil && color >= 0 && color <= 127 {
+					colorOK = true
+				}
+			}
+			if !colorOK {
+				if raw, readErr := setPageReadXattr(path, "user.song-color"); readErr == nil {
+					if color, e = strconv.Atoi(raw); e == nil && color >= 0 && color <= 127 {
+						colorOK = true
+						setAttrs["user.song-color"] = raw
+					}
+				}
+			}
+			if !colorOK {
+				delete(setAttrs, "user.song-color")
+			}
+			sub, e := os.ReadDir(path)
 			if e != nil {
 				return nil, e
 			}
@@ -231,16 +319,16 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 				}
 			}
 			item := &setPageItem{ID: id, Name: name}
-			if color, e := strconv.Atoi(attrs["user.song-color"]); e == nil && color >= 0 && color <= 127 {
+			if colorOK {
 				item.Color = &color
 			}
+			s.location[id] = p
+			s.attrs[id] = setAttrs
 			s.Pages[p][slot] = item
 		}
-		for id := range s.attrs {
-			if _, exists := s.location[id]; !exists {
-				return nil, fmt.Errorf("orphaned metadata for %s", id)
-			}
-		}
+		// Metadata lines with no matching directory are left behind when the
+		// device's move hits a collision. Its restore ignores them, and so do
+		// we: they are dropped when xattrs.txt is regenerated on save.
 	}
 	s.Revision = hex.EncodeToString(h.Sum(nil))
 	return s, nil
@@ -249,7 +337,12 @@ func readSetPages(root string) (*setPageSnapshot, error) {
 func saveSetPages(root, revision string, layout [][]string) (result error) {
 	setPagesMu.Lock()
 	defer setPagesMu.Unlock()
-	s, err := readSetPages(root)
+	lock, err := acquireSetPagesLock(root, true)
+	if err != nil {
+		return err
+	}
+	defer releaseSetPagesLock(lock)
+	s, err := readSetPagesLocked(root)
 	if err != nil {
 		return err
 	}
@@ -291,11 +384,44 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 	if err != nil {
 		return err
 	}
+	type moved struct{ from, to string }
+	moves := []moved{}
+	type metadataBackup struct {
+		target, backup string
+		existed        bool
+	}
+	replaced := []metadataBackup{}
+	// Undo metadata replacements first, then reverse every directory move. A
+	// clean undo removes the staging directory too, so a rejected save (such as
+	// a destination collision) does not block every later load. The recovery
+	// files stay only when a rename failed and a human needs them.
+	undo := func() bool {
+		ok := true
+		for i := len(replaced) - 1; i >= 0; i-- {
+			b := replaced[i]
+			if e := os.Remove(b.target); e != nil && !os.IsNotExist(e) {
+				ok = false
+			}
+			if b.existed {
+				if e := os.Rename(b.backup, b.target); e != nil {
+					ok = false
+				}
+			}
+		}
+		for i := len(moves) - 1; i >= 0; i-- {
+			if e := os.Rename(moves[i].to, moves[i].from); e != nil {
+				ok = false
+			}
+		}
+		return ok
+	}
 	success := false
 	defer func() {
-		if success {
+		if success || undo() {
 			_ = os.RemoveAll(stage)
-		} else if result != nil {
+			return
+		}
+		if result != nil {
 			result = fmt.Errorf("%w; recovery files: %s", result, stage)
 		}
 	}()
@@ -308,13 +434,6 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 	}
 	if err = os.WriteFile(filepath.Join(stage, "journal.json"), journal, 0600); err != nil {
 		return err
-	}
-	type moved struct{ from, to string }
-	moves := []moved{}
-	rollback := func() {
-		for i := len(moves) - 1; i >= 0; i-- {
-			_ = os.Rename(moves[i].to, moves[i].from)
-		}
 	}
 	ids := make([]string, 0, len(destination))
 	for id := range destination {
@@ -332,7 +451,6 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 		src := filepath.Join(setPageDir(root, s.location[id]), id)
 		tmp := filepath.Join(stage, id)
 		if err = os.Rename(src, tmp); err != nil {
-			rollback()
 			return err
 		}
 		moves = append(moves, moved{src, tmp})
@@ -341,14 +459,11 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 		src := filepath.Join(stage, id)
 		dst := filepath.Join(setPageDir(root, destination[id]), id)
 		if _, e := os.Lstat(dst); e == nil {
-			rollback()
 			return errors.New("destination collision")
 		} else if !os.IsNotExist(e) {
-			rollback()
 			return e
 		}
 		if err = os.Rename(src, dst); err != nil {
-			rollback()
 			return err
 		}
 		moves = append(moves, moved{src, dst})
@@ -381,25 +496,9 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 		}
 		for name, contents := range map[string]string{"xattrs.txt": b.String(), "manifest.txt": manifest.String()} {
 			if err = os.WriteFile(filepath.Join(stage, fmt.Sprintf("new-%d-%s", p, name)), []byte(contents), 0644); err != nil {
-				rollback()
 				return err
 			}
 		}
-	}
-	type metadataBackup struct {
-		target, backup string
-		existed        bool
-	}
-	replaced := []metadataBackup{}
-	restore := func() {
-		for i := len(replaced) - 1; i >= 0; i-- {
-			b := replaced[i]
-			_ = os.Remove(b.target)
-			if b.existed {
-				_ = os.Rename(b.backup, b.target)
-			}
-		}
-		rollback()
 	}
 	for p := 0; p < setPageCount; p++ {
 		if p == s.Current {
@@ -410,12 +509,10 @@ func saveSetPages(root, revision string, layout [][]string) (result error) {
 			backup := filepath.Join(stage, fmt.Sprintf("backup-%d-%s", p, name))
 			e := os.Rename(target, backup)
 			if e != nil && !os.IsNotExist(e) {
-				restore()
 				return e
 			}
 			replaced = append(replaced, metadataBackup{target, backup, e == nil})
 			if err = os.Rename(filepath.Join(stage, fmt.Sprintf("new-%d-%s", p, name)), target); err != nil {
-				restore()
 				return err
 			}
 		}
