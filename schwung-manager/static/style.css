@@ -1715,7 +1715,8 @@ a.update-available:focus {
  * The container ignores pointer events so it can span the corner without
  * covering the page underneath; each toast takes them back for its dismiss
  * button. */
-#flash-messages {
+#flash-messages,
+#set-pages-messages {
     position: fixed;
     top: var(--space-md);
     right: var(--space-md);
@@ -1760,7 +1761,8 @@ a.update-available:focus {
 /* Narrow screens: span the width under the header instead of a corner card
  * that would crowd the nav. */
 @media (max-width: 480px) {
-    #flash-messages {
+    #flash-messages,
+    #set-pages-messages {
         left: var(--space-sm);
         right: var(--space-sm);
         max-width: none;
