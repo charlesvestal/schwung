@@ -2780,6 +2780,18 @@
       "default_branch": "main",
       "asset_name": "flukedrums-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "moveremote",
+      "name": "Move Remote",
+      "description": "The whole Move as a control surface for a computer, phone or tablet, over USB or Wi-Fi. Every pad (velocity, aftertouch), button, knob and touch goes out raw; every LED, the screen, audio and USB-A MIDI come back. Includes a browser page at move.local:7720",
+      "author": "Quixotic7",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "github_repo": "Quixotic7/abletonmoveremote",
+      "default_branch": "main",
+      "asset_name": "moveremote-module.tar.gz",
+      "min_host_version": "1.6.0"
     }
   ]
 }
