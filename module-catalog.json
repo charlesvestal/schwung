@@ -2714,7 +2714,7 @@
     {
       "id": "s3g-thru",
       "name": "s3g Thru",
-      "description": "Four-lane stereo sampler with thirteen playback engines, Single, Split, Shared Dual and Quad layouts, performance-data looping, live recording, and configurable effects.",
+      "description": "Four-lane stereo sampler with fifteen engines, seven performance modes, Euclidean and Onset sequencing, live recording, performance looping and effects.",
       "author": "s3g",
       "component_type": "overtake",
       "subcategory": "sampler-looper",
