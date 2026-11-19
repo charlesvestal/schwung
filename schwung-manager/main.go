@@ -1049,6 +1049,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/system.html",
 		"templates/system_cpu.html",
 		"templates/controls.html",
+		"templates/set_pages.html",
 		"templates/install.html",
 		"templates/help.html",
 		"templates/remote_ui.html",
@@ -4357,6 +4358,9 @@ func main() {
 	mux.HandleFunc("GET /help", app.handleHelp)
 
 	// Controls: the set's Custom surface pages and CC map (controls.go)
+	mux.HandleFunc("GET /set-pages", app.handleSetPages)
+	mux.HandleFunc("GET /api/set-pages", app.handleSetPagesRead)
+	mux.HandleFunc("POST /api/set-pages", app.handleSetPagesSave)
 	mux.HandleFunc("GET /controls", app.handleControls)
 	mux.HandleFunc("GET /api/controls", app.handleControlsGet)
 	mux.HandleFunc("PUT /api/controls", app.handleControlsPut)

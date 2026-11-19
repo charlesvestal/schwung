@@ -19,6 +19,10 @@ Index.
 **JavaScript**: `.mjs` = shared ES modules, `.js` = UI modules. Host fns are `snake_case` (`host_load_module`).
 **Naming**: Module IDs lowercase-hyphenated (`song-mode`). Param keys lowercase_underscored (`tail_bars`). LED colors PascalCase (`BrightRed`).
 
+## Set Pages in Schwung Manager
+
+See `docs/SET_PAGES.md` for the editor's lock and file contract with `set_pages/`.
+
 ## Build / Deploy
 
 ```bash
@@ -2071,6 +2075,9 @@ inline is how this file got to 151 KB.
   chain host's file layout, and the shape-edit permutation verbs.
 - `docs/DIAGNOSTICS.md` — **Measuring the device.** On-device E2E, OTLP tracing,
   the param tally, the SPI frame tally. Every switch is off by default.
+- `docs/SET_PAGES.md` — **Set Pages editor.** The manager's lock and file
+  contract with the device's `set_pages/` stashes, metadata tolerance and
+  rollback rules.
 
 - `docs/CANVAS_PAGES.md` — **Enterable canvases.** A module-drawn screen you
   navigate: `enterable` hands it the click, `handleBack` is the exit contract

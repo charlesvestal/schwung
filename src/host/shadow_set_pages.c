@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/xattr.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -903,6 +904,36 @@ int set_page_read_persisted(void)
     return page;
 }
 
+/* Serialize a page switch against Schwung Manager's Set Pages editor. Both
+ * processes lock the same file. The manager holds it for the duration of a
+ * read or save; the switch thread holds it from before it publishes the new
+ * page until current_page.txt is written, closing the window in which a save
+ * could still treat the target page as inactive and move its Sets away while
+ * the device is restoring them. */
+static int set_page_lock(int wait)
+{
+    shadow_ensure_dir(SET_PAGES_DIR);
+    int fd = open(SET_PAGES_LOCK_PATH, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    if (fd < 0) return -1;
+    for (;;) {
+        if (flock(fd, LOCK_EX | (wait ? 0 : LOCK_NB)) == 0) break;
+        if (errno != EINTR) {
+            close(fd);
+            return -1;
+        }
+    }
+    /* The manager runs as ableton; root creates this file on the first switch. */
+    chown_to_ableton(SET_PAGES_LOCK_PATH);
+    return fd;
+}
+
+static void set_page_unlock(int fd)
+{
+    if (fd < 0) return;
+    flock(fd, LOCK_UN);
+    close(fd);
+}
+
 /* Background thread args for set page change */
 typedef struct {
     int old_page;
@@ -975,6 +1006,31 @@ static void *set_page_change_thread(void *arg)
     int old_page = a->old_page;
     int new_page = a->new_page;
     free(a);
+
+    /* Take the editor's lock BEFORE publishing the new page. Doing it here,
+     * rather than in shadow_change_set_page, keeps the MIDI thread off disk
+     * I/O. If the manager is saving, this waits for it to finish; the manager
+     * then sees the new current_page.txt and rejects its stale draft. */
+    int lock_fd = set_page_lock(1);
+    if (lock_fd < 0) {
+        host.log("SetPage: could not lock set_pages; switch aborted");
+        set_page_change_in_flight = 0;
+        return NULL;
+    }
+
+    /* Update state and show "Loading..." toast (before I/O) */
+    set_page_current = new_page;
+    set_page_loading = 1;
+    set_page_overlay_active = 1;
+    set_page_overlay_timeout = SET_PAGE_OVERLAY_FRAMES;
+    host.overlay_sync();
+
+    /* TTS announcement */
+    {
+        char sr_buf[128];
+        snprintf(sr_buf, sizeof(sr_buf), "Page %d of %d", new_page + 1, SET_PAGES_TOTAL);
+        host.announce(sr_buf);
+    }
 
     /* 1. Save song if dirty via dbus (blocking - we're on a background thread) */
     {
@@ -1073,9 +1129,15 @@ static void *set_page_change_thread(void *arg)
     /* 8. Save shadow state before restart */
     host.save_state();
 
+    /* The page is on disk and Move is about to restart; the manager can read
+     * the new state from here. Release before restart so a waiting request
+     * isn't left holding the lock across the process kill. */
+    set_page_unlock(lock_fd);
+
     /* 9. Trigger restart via the existing mechanism */
     host.log("SetPage: triggering restart");
     system("/data/UserData/schwung/restart-move.sh");
+    set_page_change_in_flight = 0;
 
     return NULL;
 }
@@ -1096,24 +1158,14 @@ void shadow_change_set_page(int new_page)
         host.log(msg);
     }
 
-    /* Update state and show "Loading..." toast immediately (before I/O) */
-    set_page_current = new_page;
-    set_page_loading = 1;
-    set_page_overlay_active = 1;
-    set_page_overlay_timeout = SET_PAGE_OVERLAY_FRAMES;
-    host.overlay_sync();
-
-    /* TTS announcement */
-    {
-        char sr_buf[128];
-        snprintf(sr_buf, sizeof(sr_buf), "Page %d of %d", new_page + 1, SET_PAGES_TOTAL);
-        host.announce(sr_buf);
-    }
-
-    /* Spawn background thread for heavy I/O */
+    /* Spawn background thread for heavy I/O. It publishes the new page and
+     * owns the editor lock, so nothing changes here until the lock is held. */
     set_page_change_in_flight = 1;
     set_page_change_args_t *args = malloc(sizeof(set_page_change_args_t));
-    if (!args) return;
+    if (!args) {
+        set_page_change_in_flight = 0;
+        return;
+    }
     args->old_page = old_page;
     args->new_page = new_page;
 
@@ -1122,6 +1174,7 @@ void shadow_change_set_page(int new_page)
         pthread_detach(tid);
     } else {
         free(args);
+        set_page_change_in_flight = 0;
         host.log("SetPage: failed to create background thread");
     }
 }
