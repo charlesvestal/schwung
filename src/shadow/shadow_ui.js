@@ -13502,6 +13502,9 @@ function doDeletePreset(slotIndex) {
 
     /* Clear the slot to "Untitled" state */
     slots[slotIndex].name = "Untitled";
+    /* A deliberate empty: see applyPatchSelection. Without it autosave keeps
+     * the old slot_N.json and the deleted chain returns on set load. */
+    slotUserCleared[slotIndex] = true;
     saveSlotsToConfig(slots);
 
     /* Request slot clear (load PATCH_INDEX_NONE) */
@@ -27153,6 +27156,7 @@ function drawHelpDetail() {
      * bus with Send A's modules. */
     _ctx.getMasterFxDisplayName = () => withFxBus(0, () => getMasterFxDisplayName());
     _ctx.saveSlotsToConfig = (...args) => saveSlotsToConfig(...args);
+    _ctx.setSlotUserCleared = (slot, cleared) => { slotUserCleared[slot] = !!cleared; };
     _ctx.fetchKnobMappings = (...args) => fetchKnobMappings(...args);
     _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
     _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
