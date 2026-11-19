@@ -26,6 +26,7 @@ debugLog("shadow_ui.js loaded");
 
 /* Import shared utilities - single source of truth */
 import { setStateCopyCommand } from './set_state_copy.mjs';
+import { externalSettingChanges, settingWireValue } from './web_settings_adopt.mjs';
 import {
     MoveMainKnob,      // CC 14 - jog wheel
     MoveMainButton,    // CC 3 - jog click
@@ -5811,6 +5812,23 @@ function loadParamViewConfig() {
     } catch (e) {}
 }
 
+/* schwung-manager writes param_view.json too (Settings -> Param View). The
+ * device's own writes are synchronous (saveParamViewConfig on the change), so
+ * the file can only disagree with paramViewGlobal when the manager wrote it.
+ * The manager used to write this into shadow_config.json, where nothing reads
+ * it -- the web page showed the new value and the Move ignored it. */
+function adoptWebParamView() {
+    try {
+        const content = host_read_file(PARAM_VIEW_CONFIG_PATH);
+        if (!content) return;
+        const v = JSON.parse(content).param_view;
+        if ((v === 0 || v === 1) && v !== paramViewGlobal) {
+            paramViewGlobal = v;
+            debugLog("web setting adopted: param_view=" + v);
+        }
+    } catch (e) {}
+}
+
 /* Tools menu state */
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
@@ -6335,6 +6353,43 @@ let cachedResampleBridgeMode = 0;
 let cachedLinkAudioRouting = false;
 let cachedLinkAudioPublish = false;
 let cachedLatencyCompEnabled = false;
+/* What the shadow UI last loaded or wrote for the four settings above, keyed
+ * by shadow_config.json key. schwung-manager writes the same keys into the
+ * same file, so a file value that differs from this one is the MANAGER's and
+ * is adopted, not overwritten — see web_settings_adopt.mjs. */
+let persistedWebAudio = {};
+
+function setWebAudioCache(configKey, value) {
+    switch (configKey) {
+        case "resample_bridge_mode": cachedResampleBridgeMode = value; break;
+        case "link_audio_routing":   cachedLinkAudioRouting = value; break;
+        case "link_audio_publish":   cachedLinkAudioPublish = value; break;
+        case "latency_comp_enabled": cachedLatencyCompEnabled = value; break;
+    }
+}
+
+function rememberPersistedWebAudio() {
+    persistedWebAudio = {
+        resample_bridge_mode: cachedResampleBridgeMode,
+        link_audio_routing:   cachedLinkAudioRouting,
+        link_audio_publish:   cachedLinkAudioPublish,
+        latency_comp_enabled: cachedLatencyCompEnabled,
+    };
+}
+
+/* Apply settings the web manager changed in shadow_config.json: push them to
+ * the shim and the cache, so the next save writes them back unchanged rather
+ * than reverting them. `config` is the already-parsed file. */
+function adoptWebAudioSettings(config) {
+    if (typeof shadow_set_param !== "function") return;
+    const changes = externalSettingChanges(config, persistedWebAudio, parseResampleBridgeMode);
+    for (const c of changes) {
+        shadow_set_param(0, "master_fx:" + c.param, settingWireValue(c.value));
+        setWebAudioCache(c.configKey, c.value);
+        persistedWebAudio[c.configKey] = c.value;
+        debugLog("web setting adopted: " + c.configKey + "=" + settingWireValue(c.value));
+    }
+}
 /* Default -1 (All): Master FX heard every channel before this setting
  * existed, so anything else here is a silent regression for every sidechain
  * already in the field. Mirrors master_fx_midi_channel in the shim. */
@@ -15669,7 +15724,12 @@ function saveMasterFxChainConfigOnMaster() {
         }
         /* Use JS-cached values instead of reading from shim to avoid
          * race condition where periodic autosave reads shim defaults
-         * before loadMasterFxChainFromConfig() has restored them. */
+         * before loadMasterFxChainFromConfig() has restored them.
+         *
+         * Adopt FIRST: the manager may have written one of these since our
+         * last save, and writing the cache over it is what reverted the web
+         * page's Move Resample to Native every few seconds. */
+        adoptWebAudioSettings(config);
         config.resample_bridge_mode = cachedResampleBridgeMode;
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
@@ -15677,6 +15737,7 @@ function saveMasterFxChainConfigOnMaster() {
         config.master_fx_midi_channel = cachedMasterFxMidiChannel;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
+        rememberPersistedWebAudio();
     } catch (e) {
         /* Ignore errors */
     }
@@ -16138,9 +16199,11 @@ function syncJsOnlySettings() {
         if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
             previewEnabled = c.browser_preview;
         }
+        return c;
     } catch (e) {
         /* Ignore errors — file may be mid-write */
     }
+    return null;
 }
 
 function loadTextPreviewConfig() {
@@ -16194,6 +16257,9 @@ function loadMasterFxChainFromConfigOnMaster() {
             shadow_set_param(0, "master_fx:latency_comp_enabled", config.latency_comp_enabled ? "1" : "0");
             cachedLatencyCompEnabled = !!config.latency_comp_enabled;
         }
+        /* What is on disk now is ours; anything that differs later was
+         * written by the manager. */
+        rememberPersistedWebAudio();
         if (config.master_fx_midi_channel !== undefined && typeof shadow_set_param === "function") {
             /* The shim reads this key straight from shadow_config.json at init,
              * so the filter is already in force before the first frame. This
@@ -29221,7 +29287,11 @@ globalThis.tick = function() {
          * assuming it. */
         const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.config_sync") : 0;
         try {
-            syncJsOnlySettings();
+            /* The parse is reused, not repeated: adoption is a param write,
+             * which is why it is not inside the JS-only sync. */
+            const syncedConfig = syncJsOnlySettings();
+            if (syncedConfig) adoptWebAudioSettings(syncedConfig);
+            adoptWebParamView();
 
             /* Check for web-initiated upgrade status and show OLED overlay */
             try {

@@ -2158,3 +2158,39 @@ So a script that tears Move down must signal shadow_ui FIRST and wait, and only
 then kill MoveOriginal. `launch-standalone.sh` does (bounded at 3 s);
 `restart-move.sh` does not need to, because the restart path raises
 `should_exit` before it runs. `tests/host/test_shadow_ui_requested_exit.sh`.
+
+## shadow_config.json has TWO writers, and the shadow UI was reverting the other
+
+schwung-manager's Settings page writes `resample_bridge_mode`,
+`link_audio_routing`, `link_audio_publish` and `latency_comp_enabled` into
+`shadow_config.json` — and does nothing else, since it has no SHM path to the
+shim for them. The shadow UI read those keys ONCE at boot into `cached*` vars,
+and `saveMasterFxChainConfig()` — which the periodic autosave runs every ~5 s,
+whether or not anything changed — wrote the caches back over the file. So Move
+Resample set to Schwung Mix on the web page reverted to Native a few seconds
+later (the page's own poll showed it happen), and the shim never saw the change.
+
+`web_settings_adopt.mjs` is a **three-way compare**: `persistedWebAudio` is what
+the shadow UI last loaded or wrote, a file value that differs from it is the
+manager's and is ADOPTED (pushed to the shim and the cache), and an equal one is
+ours. Comparing the file against the CACHE instead would revert every
+on-device change at the next 2 s sync — the same bug pointed the other way.
+Adoption runs at the top of the save and on the 2 s config sync.
+`tests/host/test_web_settings_adopt.sh` simulates both writers over one file.
+A new manager setting that the shadow UI also serialises from a cache needs an
+entry in `WEB_AUDIO_SETTINGS`, or it has this bug.
+
+**Three more settings never reached the device, and the manager's live path
+was dead on every boot.** Param View and Open With were written to
+`shadow_config.json`, which the device does not read for either — Param View
+lives in `param_view.json` (now re-read on the 2 s sync), Open With in
+`features.json` as the NAME `load_feature_config` parses (`long_press` /
+`shift_vol` / `both`), plus SHM. Show MIDI reached `features.json` with no live
+path. And underneath all of it, the manager opened `/schwung-control` once at
+startup, lost the boot race on every boot logged on the device, and held nil
+for life — so every "live" web setting (Display Mirror, the screen reader,
+Overlay Knobs, Set Pages, Skipback, Keep Schwung) silently waited for a reboot.
+`control()` attaches lazily, the same fix `params()` and `perfSegment()` had
+already had. `tests/host/test_manager_settings_reach_device.sh` walks the
+schema and fails on a key with no route to the device, and on any direct
+`app.shm` read.

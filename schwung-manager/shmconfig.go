@@ -58,6 +58,8 @@ const (
 	offOpenToolCmd     = 56 // uint8 — 0=none, 1=open tool
 	offSkipbackSeconds = 62 // uint16 — 30/60/120/180/240/300 (after sampler_source_request, sampler_silent; pinned by tests/host/test_manager_shm_offsets.sh)
 	offStayInShadow    = 85 // uint8 — "Keep Schwung": a Track tap switches slot
+	offShadowUITrigger = 57 // uint8 — 0=long_press, 1=shift_vol, 2=both; the shim reads it live
+	offMidiIndicator   = 65 // uint8 — "Show MIDI"; the shim reads it live
 	// The mapping is capped here, not sized to the struct: CONTROL_BUFFER_SIZE
 	// is 256 for a struct that uses ~86, and mapping the declared cap means a
 	// field appended later needs only its offset added above. The ACTUAL length
@@ -202,6 +204,12 @@ func (s *ShmConfig) SetSkipbackSeconds(v uint16)      { s.setU16(offSkipbackSeco
 func (s *ShmConfig) StayInShadow() bool     { return s.getU8(offStayInShadow) != 0 }
 func (s *ShmConfig) SetStayInShadow(v bool) { s.setU8(offStayInShadow, boolU8(v)) }
 
+func (s *ShmConfig) ShadowUITrigger() uint8     { return s.getU8(offShadowUITrigger) }
+func (s *ShmConfig) SetShadowUITrigger(v uint8) { s.setU8(offShadowUITrigger, v) }
+
+func (s *ShmConfig) MidiIndicator() bool     { return s.getU8(offMidiIndicator) != 0 }
+func (s *ShmConfig) SetMidiIndicator(v bool) { s.setU8(offMidiIndicator, boolU8(v)) }
+
 func (s *ShmConfig) SetOpenToolCmd(v uint8) { s.setU8(offOpenToolCmd, v) }
 
 func boolU8(v bool) uint8 {
@@ -209,4 +217,24 @@ func boolU8(v bool) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// control returns the shadow_control_t mapping, attaching lazily.
+//
+// The same race as params() and perfSegment(), on the third segment, and the
+// one left behind: the manager wins the boot race on every boot logged on the
+// device ("shared memory config: not available" at each), and only the
+// open-in-tool handler retried. So every LIVE web setting -- Display Mirror,
+// the screen reader, Overlay Knobs, Set Pages, Skipback, Keep Schwung, Show
+// MIDI, Open With -- was written to its file and never applied until a
+// reboot, while the page reported it as set.
+func (app *App) control() *ShmConfig {
+	app.controlMu.Lock()
+	defer app.controlMu.Unlock()
+	if app.shm == nil {
+		if app.shm = OpenShmConfig(); app.shm != nil && app.logger != nil {
+			app.logger.Info("shared memory config: connected")
+		}
+	}
+	return app.shm
 }

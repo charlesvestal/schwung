@@ -53,6 +53,8 @@ offSkipbackReqVol skipback_require_volume
 offOpenToolCmd open_tool_cmd
 offSkipbackSeconds skipback_seconds
 offStayInShadow stay_in_shadow
+offShadowUITrigger shadow_ui_trigger
+offMidiIndicator midi_indicator_enabled
 '
 
 {
