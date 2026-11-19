@@ -1439,6 +1439,12 @@ component load gate, and the input-dispatch order. Read it before editing
   so removing the toggle alone would have left a device that had it switched
   on serving :404 at every boot with nothing left to turn it off:
   `retireFilebrowserService()` deletes the flag and kills the process, once.
+- **`shadow_config.json` has TWO writers.** schwung-manager writes four audio
+  keys there and nothing else; the autosave wrote the shadow UI's boot-time
+  cache over them every ~5 s, so the web's Move Resample "switched back". A
+  value differing from what the UI last PERSISTED is adopted
+  (`web_settings_adopt.mjs`) — compared against the cache, on-device changes
+  would revert instead.
 - **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
   dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
   (that block is gated on the trigger mode, so a jump inside it works on

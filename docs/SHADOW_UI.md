@@ -2158,3 +2158,24 @@ So a script that tears Move down must signal shadow_ui FIRST and wait, and only
 then kill MoveOriginal. `launch-standalone.sh` does (bounded at 3 s);
 `restart-move.sh` does not need to, because the restart path raises
 `should_exit` before it runs. `tests/host/test_shadow_ui_requested_exit.sh`.
+
+## shadow_config.json has TWO writers, and the shadow UI was reverting the other
+
+schwung-manager's Settings page writes `resample_bridge_mode`,
+`link_audio_routing`, `link_audio_publish` and `latency_comp_enabled` into
+`shadow_config.json` — and does nothing else, since it has no SHM path to the
+shim for them. The shadow UI read those keys ONCE at boot into `cached*` vars,
+and `saveMasterFxChainConfig()` — which the periodic autosave runs every ~5 s,
+whether or not anything changed — wrote the caches back over the file. So Move
+Resample set to Schwung Mix on the web page reverted to Native a few seconds
+later (the page's own poll showed it happen), and the shim never saw the change.
+
+`web_settings_adopt.mjs` is a **three-way compare**: `persistedWebAudio` is what
+the shadow UI last loaded or wrote, a file value that differs from it is the
+manager's and is ADOPTED (pushed to the shim and the cache), and an equal one is
+ours. Comparing the file against the CACHE instead would revert every
+on-device change at the next 2 s sync — the same bug pointed the other way.
+Adoption runs at the top of the save and on the 2 s config sync.
+`tests/host/test_web_settings_adopt.sh` simulates both writers over one file.
+A new manager setting that the shadow UI also serialises from a cache needs an
+entry in `WEB_AUDIO_SETTINGS`, or it has this bug.
