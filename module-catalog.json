@@ -2792,6 +2792,18 @@
       "default_branch": "main",
       "asset_name": "moveremote-module.tar.gz",
       "min_host_version": "1.6.0"
+    },
+    {
+      "id": "beat_repeat",
+      "name": "Beet Repeat",
+      "description": "Tempo-synced stutter/repeat FX in the style of Live's Beat Repeat",
+      "author": "BarfCity",
+      "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
+      "github_repo": "inpoliteco/beetrepeet",
+      "default_branch": "main",
+      "asset_name": "beat_repeat-module.tar.gz",
+      "min_host_version": "1.9.3"
     }
   ]
 }
