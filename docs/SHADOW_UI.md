@@ -2179,3 +2179,18 @@ Adoption runs at the top of the save and on the 2 s config sync.
 `tests/host/test_web_settings_adopt.sh` simulates both writers over one file.
 A new manager setting that the shadow UI also serialises from a cache needs an
 entry in `WEB_AUDIO_SETTINGS`, or it has this bug.
+
+**Three more settings never reached the device, and the manager's live path
+was dead on every boot.** Param View and Open With were written to
+`shadow_config.json`, which the device does not read for either — Param View
+lives in `param_view.json` (now re-read on the 2 s sync), Open With in
+`features.json` as the NAME `load_feature_config` parses (`long_press` /
+`shift_vol` / `both`), plus SHM. Show MIDI reached `features.json` with no live
+path. And underneath all of it, the manager opened `/schwung-control` once at
+startup, lost the boot race on every boot logged on the device, and held nil
+for life — so every "live" web setting (Display Mirror, the screen reader,
+Overlay Knobs, Set Pages, Skipback, Keep Schwung) silently waited for a reboot.
+`control()` attaches lazily, the same fix `params()` and `perfSegment()` had
+already had. `tests/host/test_manager_settings_reach_device.sh` walks the
+schema and fails on a key with no route to the device, and on any direct
+`app.shm` read.

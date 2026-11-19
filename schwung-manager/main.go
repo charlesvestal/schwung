@@ -1099,7 +1099,8 @@ type App struct {
 	channelPref   *ChannelPref
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig      // shared memory for live config sync (nil if not on device)
+	shm           *ShmConfig      // shared memory for live config sync; read it through control(), never directly
+	controlMu     sync.Mutex      // guards the lazy attach of shm
 	shmParams     *ShmParams      // shared memory for param get/set (nil if not on device); use params(), don't read directly
 	paramsMu      sync.Mutex      // guards the lazy attach of shmParams
 	perfShm       *PerfShm        // /schwung-perf frame budget (nil until the shim creates it)
@@ -1137,8 +1138,8 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	// the feature is hidden unless manager-config.json switches it on.
 	data["BetaEnabled"] = app.channelPref.Enabled()
 	// Inject mirror enabled state for nav bar.
-	if app.shm != nil {
-		data["MirrorEnabled"] = app.shm.DisplayMirror()
+	if shm := app.control(); shm != nil {
+		data["MirrorEnabled"] = shm.DisplayMirror()
 	}
 	// The toast's kind, from the same redirect that carried its text. Injected
 	// HERE rather than in each handler because every page renders the flash
@@ -2875,6 +2876,51 @@ var settingsToFeatures = map[string]string{
 	"stay_in_shadow":         "stay_in_shadow",
 }
 
+// Two settings the device keeps in files of their OWN, so neither map above
+// can describe them. Both were written into shadow_config.json for as long as
+// the page offered them, where nothing on the device reads them: the page
+// showed the new value (it reads back its own write) and the Move ignored it.
+//
+//	param_view         -> param_view.json {"param_view": 0|1}; shadow_ui.js
+//	                      re-reads it on its 2 s config sync
+//	shadow_ui_trigger  -> features.json "shadow_ui_trigger" as a NAME, which is
+//	                      what load_feature_config parses; applied live via SHM
+var shadowUITriggerNames = []string{"long_press", "shift_vol", "both"}
+
+func (app *App) paramViewPath() string {
+	return filepath.Join(app.basePath, "param_view.json")
+}
+
+// readParamView returns the device's Param View (0 List, 1 Knobs), default
+// Knobs as in shadow_ui.js.
+func (app *App) readParamView() float64 {
+	if v, ok := readJSONFile(app.paramViewPath())["param_view"].(float64); ok {
+		return v
+	}
+	return 1
+}
+
+// readShadowUITrigger maps features.json's name back to the schema index,
+// default Both as in the shim.
+func readShadowUITrigger(ft map[string]any) float64 {
+	if name, ok := ft["shadow_ui_trigger"].(string); ok {
+		for i, n := range shadowUITriggerNames {
+			if n == name {
+				return float64(i)
+			}
+		}
+	}
+	return 2
+}
+
+// deviceOwnedSettingValues overlays the two file-owned settings onto a values
+// map, after the shadow_config.json pass — which may still hold a stale copy
+// of either from before this was fixed.
+func (app *App) deviceOwnedSettingValues(values map[string]any, ft map[string]any) {
+	values["param_view"] = app.readParamView()
+	values["shadow_ui_trigger"] = readShadowUITrigger(ft)
+}
+
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sections, err := app.loadSettingsSchema()
 	if err != nil {
@@ -2926,6 +2972,7 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 			values[schemaKey] = v
 		}
 	}
+	app.deviceOwnedSettingValues(values, ft)
 
 	data := map[string]any{
 		"Title":    "Settings",
@@ -2960,24 +3007,30 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	app.deviceOwnedSettingValues(values, features)
+
 	// Overlay with live values from shared memory (source of truth for device state).
-	if app.shm != nil {
-		values["display_mirror"] = app.shm.DisplayMirror()
-		values["overlay_knobs"] = float64(app.shm.OverlayKnobsMode())
-		values["screen_reader_enabled"] = app.shm.TTSEnabled()
-		if app.shm.TTSEngine() == 1 {
+	if shm := app.control(); shm != nil {
+		values["display_mirror"] = shm.DisplayMirror()
+		values["overlay_knobs"] = float64(shm.OverlayKnobsMode())
+		values["screen_reader_enabled"] = shm.TTSEnabled()
+		if shm.TTSEngine() == 1 {
 			values["screen_reader_engine"] = "flite"
 		} else {
 			values["screen_reader_engine"] = "espeak"
 		}
-		values["screen_reader_speed"] = float64(app.shm.TTSSpeed())
-		values["screen_reader_pitch"] = float64(app.shm.TTSPitch())
-		values["screen_reader_volume"] = float64(app.shm.TTSVolume())
-		values["screen_reader_debounce"] = float64(app.shm.TTSDebounce())
-		values["set_pages_enabled"] = app.shm.SetPagesEnabled()
-		values["stay_in_shadow"] = app.shm.StayInShadow()
-		values["skipback_shortcut"] = float64(boolToInt(app.shm.SkipbackRequireVolume()))
-		if s := app.shm.SkipbackSeconds(); s > 0 {
+		values["screen_reader_speed"] = float64(shm.TTSSpeed())
+		values["screen_reader_pitch"] = float64(shm.TTSPitch())
+		values["screen_reader_volume"] = float64(shm.TTSVolume())
+		values["screen_reader_debounce"] = float64(shm.TTSDebounce())
+		values["set_pages_enabled"] = shm.SetPagesEnabled()
+		values["stay_in_shadow"] = shm.StayInShadow()
+		values["midi_indicator_enabled"] = shm.MidiIndicator()
+		if t := shm.ShadowUITrigger(); t <= 2 {
+			values["shadow_ui_trigger"] = float64(t)
+		}
+		values["skipback_shortcut"] = float64(boolToInt(shm.SkipbackRequireVolume()))
+		if s := shm.SkipbackSeconds(); s > 0 {
 			values["skipback_seconds"] = float64(s)
 		}
 	}
@@ -3029,7 +3082,31 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 	shadowPath := filepath.Join(app.basePath, "shadow_config.json")
 	featuresPath := filepath.Join(app.basePath, "config", "features.json")
 
-	if featKey, isFeat := settingsToFeatures[key]; isFeat {
+	if key == "param_view" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > 1 {
+			http.Error(w, `{"ok":false,"error":"bad value"}`, http.StatusBadRequest)
+			return
+		}
+		pv := readJSONFile(app.paramViewPath())
+		pv["param_view"] = n
+		if err := writeJSONFile(app.paramViewPath(), pv); err != nil {
+			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
+			return
+		}
+	} else if key == "shadow_ui_trigger" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n >= len(shadowUITriggerNames) {
+			http.Error(w, `{"ok":false,"error":"bad value"}`, http.StatusBadRequest)
+			return
+		}
+		ft := readJSONFile(featuresPath)
+		ft["shadow_ui_trigger"] = shadowUITriggerNames[n]
+		if err := writeJSONFile(featuresPath, ft); err != nil {
+			http.Error(w, `{"ok":false,"error":"write failed"}`, http.StatusInternalServerError)
+			return
+		}
+	} else if featKey, isFeat := settingsToFeatures[key]; isFeat {
 		// Feature flag — read, update, write features.json.
 		ft := readJSONFile(featuresPath)
 		switch key {
@@ -3117,46 +3194,53 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 // instant effect. This bypasses the JS tick() path entirely, avoiding the
 // SIGABRT that occurred when syncSettingsFromConfigFile() was called from tick().
 func (app *App) applyShmSetting(key, value string) {
-	if app.shm == nil {
+	shm := app.control()
+	if shm == nil {
 		return
 	}
 	switch key {
 	case "display_mirror":
-		app.shm.SetDisplayMirror(value == "true")
+		shm.SetDisplayMirror(value == "true")
 	case "overlay_knobs":
 		if v, err := strconv.Atoi(value); err == nil {
-			app.shm.SetOverlayKnobsMode(uint8(v))
+			shm.SetOverlayKnobsMode(uint8(v))
 		}
 	case "screen_reader_enabled":
-		app.shm.SetTTSEnabled(value == "true")
+		shm.SetTTSEnabled(value == "true")
 	case "screen_reader_engine":
 		if value == "flite" {
-			app.shm.SetTTSEngine(1)
+			shm.SetTTSEngine(1)
 		} else {
-			app.shm.SetTTSEngine(0)
+			shm.SetTTSEngine(0)
 		}
 	case "screen_reader_speed":
 		if v, err := strconv.ParseFloat(value, 32); err == nil {
-			app.shm.SetTTSSpeed(float32(v))
+			shm.SetTTSSpeed(float32(v))
 		}
 	case "screen_reader_pitch":
 		if v, err := strconv.Atoi(value); err == nil {
-			app.shm.SetTTSPitch(uint16(v))
+			shm.SetTTSPitch(uint16(v))
 		}
 	case "screen_reader_volume":
 		if v, err := strconv.Atoi(value); err == nil {
-			app.shm.SetTTSVolume(uint8(v))
+			shm.SetTTSVolume(uint8(v))
 		}
 	case "screen_reader_debounce":
 		if v, err := strconv.Atoi(value); err == nil {
-			app.shm.SetTTSDebounce(uint16(v))
+			shm.SetTTSDebounce(uint16(v))
 		}
 	case "set_pages_enabled":
-		app.shm.SetSetPagesEnabled(value == "true")
+		shm.SetSetPagesEnabled(value == "true")
 	case "stay_in_shadow":
-		app.shm.SetStayInShadow(value == "true")
+		shm.SetStayInShadow(value == "true")
+	case "midi_indicator_enabled":
+		shm.SetMidiIndicator(value == "true")
+	case "shadow_ui_trigger":
+		if v, err := strconv.Atoi(value); err == nil && v >= 0 && v < len(shadowUITriggerNames) {
+			shm.SetShadowUITrigger(uint8(v))
+		}
 	case "skipback_shortcut":
-		app.shm.SetSkipbackRequireVolume(value != "0" && value != "false")
+		shm.SetSkipbackRequireVolume(value != "0" && value != "false")
 	case "skipback_seconds":
 		if v, err := strconv.Atoi(value); err == nil {
 			if v < 30 {
@@ -3165,7 +3249,7 @@ func (app *App) applyShmSetting(key, value string) {
 			if v > 300 {
 				v = 300
 			}
-			app.shm.SetSkipbackSeconds(uint16(v))
+			shm.SetSkipbackSeconds(uint16(v))
 		}
 	}
 }
@@ -4068,16 +4152,8 @@ func (app *App) handleAPIOpenInTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lazy-connect to SHM if it wasn't available at startup (shim may
-	// have started after schwung-manager).
-	if app.shm == nil {
-		if s := OpenShmConfig(); s != nil {
-			app.shm = s
-			app.logger.Info("shared memory config: connected (lazy)")
-		}
-	}
-	if app.shm != nil {
-		app.shm.SetOpenToolCmd(1)
+	if shm := app.control(); shm != nil {
+		shm.SetOpenToolCmd(1)
 	} else {
 		app.logger.Warn("open-in-tool: shared memory not available, tool command may not be delivered")
 	}

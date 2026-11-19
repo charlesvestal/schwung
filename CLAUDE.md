@@ -1445,6 +1445,10 @@ component load gate, and the input-dispatch order. Read it before editing
   value differing from what the UI last PERSISTED is adopted
   (`web_settings_adopt.mjs`) — compared against the cache, on-device changes
   would revert instead.
+  The schema test (`test_manager_settings_reach_device.sh`) requires every
+  web setting to have a route the DEVICE reads; Param View and Open With had
+  none, and the manager's control-segment mapping was nil on every boot until
+  `control()` made it lazy.
 - **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
   dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
   (that block is gated on the trigger mode, so a jump inside it works on

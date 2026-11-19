@@ -5812,6 +5812,23 @@ function loadParamViewConfig() {
     } catch (e) {}
 }
 
+/* schwung-manager writes param_view.json too (Settings -> Param View). The
+ * device's own writes are synchronous (saveParamViewConfig on the change), so
+ * the file can only disagree with paramViewGlobal when the manager wrote it.
+ * The manager used to write this into shadow_config.json, where nothing reads
+ * it -- the web page showed the new value and the Move ignored it. */
+function adoptWebParamView() {
+    try {
+        const content = host_read_file(PARAM_VIEW_CONFIG_PATH);
+        if (!content) return;
+        const v = JSON.parse(content).param_view;
+        if ((v === 0 || v === 1) && v !== paramViewGlobal) {
+            paramViewGlobal = v;
+            debugLog("web setting adopted: param_view=" + v);
+        }
+    } catch (e) {}
+}
+
 /* Tools menu state */
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
@@ -29274,6 +29291,7 @@ globalThis.tick = function() {
              * which is why it is not inside the JS-only sync. */
             const syncedConfig = syncJsOnlySettings();
             if (syncedConfig) adoptWebAudioSettings(syncedConfig);
+            adoptWebParamView();
 
             /* Check for web-initiated upgrade status and show OLED overlay */
             try {
