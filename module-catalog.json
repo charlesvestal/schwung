@@ -2817,6 +2817,22 @@
       "default_branch": "main",
       "asset_name": "beat_repeat-module.tar.gz",
       "min_host_version": "1.9.3"
+    },
+    {
+      "id": "chimera",
+      "name": "Schimera",
+      "description": "A physically modeled human voice: every sound comes from a simulated airway (lungs, vocal folds, tongue, lips, nose), not samples. Speak a line of text at a key's pitch, sing it a syllable per key, or play a held vowel and sweep it with pad pressure. Port of jamesondh's CHIMERA engine, lightened to run on the Move.",
+      "author": "Jameson Hodge (CHIMERA engine) · port: legsmechanical",
+      "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "mono",
+        "vocal"
+      ],
+      "github_repo": "legsmechanical/schwung-chimera",
+      "default_branch": "main",
+      "asset_name": "chimera-module.tar.gz",
+      "min_host_version": "1.8.0"
     }
   ]
 }
