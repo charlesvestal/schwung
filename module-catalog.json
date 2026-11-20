@@ -2813,8 +2813,8 @@
       "component_type": "sound_generator",
       "subcategory": "physical-modeling",
       "tags": [
-        "vocal",
-        "mono"
+        "mono",
+        "vocal"
       ],
       "github_repo": "legsmechanical/schwung-chimera",
       "default_branch": "main",
