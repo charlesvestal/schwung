@@ -2833,6 +2833,21 @@
       "default_branch": "main",
       "asset_name": "chimera-module.tar.gz",
       "min_host_version": "1.8.0"
+    },
+    {
+      "id": "macros",
+      "name": "Macros",
+      "description": "Eight performance macros per Set on Move's knobs. Each macro moves any number of slot, send and Master FX settings with its own range and curve, and two-sided macros work like a DJ filter. Move keeps its pads, steps, transport and Note/Session button while you play. Edit macros in the browser and hear them on Move as you drag.",
+      "author": "Samir Caus",
+      "component_type": "overtake",
+      "subcategory": "performance-fx",
+      "tags": [
+        "has-remote-ui"
+      ],
+      "github_repo": "samircaus/schwung-macros",
+      "default_branch": "main",
+      "asset_name": "macros-module.tar.gz",
+      "min_host_version": "1.9.4"
     }
   ]
 }
