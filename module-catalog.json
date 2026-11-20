@@ -2833,6 +2833,18 @@
       "default_branch": "main",
       "asset_name": "chimera-module.tar.gz",
       "min_host_version": "1.8.0"
+    },
+    {
+      "id": "remotefm1",
+      "name": "RemoteFM1",
+      "description": "FM-1 firmwares on the Move itself: 118 synths and grooveboxes from the RemoteFM1 catalog, three at once, played from the pads, knobs and sequencer. Schwung MIDI and audio FX inside, MIDI routing between firmwares, screen reader support; a browser page at remotefm1.local:7730; an FM-1 on USB-A or Wi-Fi as its panel",
+      "author": "Quixotic7",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "github_repo": "Quixotic7/remoteFM14Move",
+      "default_branch": "main",
+      "asset_name": "remotefm1-module.tar.gz",
+      "min_host_version": "1.6.0"
     }
   ]
 }
