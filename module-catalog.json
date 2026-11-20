@@ -2755,6 +2755,19 @@
       "min_host_version": "1.8.0"
     },
     {
+      "id": "tinyhouse",
+      "name": "TinyHouse",
+      "description": "Serum 2 and Vital presets on the Move: a 3-oscillator wavetable, sample and granular synth with unison, filters, effects and macros. Import your own .SerumPreset, .SerumPack, .vital and .vitalbank files from the browser page (Vital ones carry their own wavetables and samples). Waterfall wavetable view on the Move's screen",
+      "author": "fleshinachair",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": ["granular", "has-remote-ui", "polyphonic", "sample-based"],
+      "github_repo": "fleshinachair/TinyHouse",
+      "default_branch": "main",
+      "asset_name": "tinyhouse-module.tar.gz",
+      "min_host_version": "1.9.3"
+    },
+    {
       "id": "machinemodule",
       "name": "Machinemodule",
       "description": "Elektron Machinedrum SPS-1 UW sound engine, emulated: 16 tracks on the 16 pads, with track effects, mixer and master effects. The editor follows the pad you hit",
