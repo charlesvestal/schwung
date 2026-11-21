@@ -2835,6 +2835,45 @@
       "min_host_version": "1.8.0"
     },
     {
+      "id": "remotefm1",
+      "name": "RemoteFM1",
+      "description": "FM-1 firmwares on the Move itself: 118 synths and grooveboxes from the RemoteFM1 catalog, three at once, played from the pads, knobs and sequencer. Schwung MIDI and audio FX inside, MIDI routing between firmwares, screen reader support; a browser page at remotefm1.local:7730; an FM-1 on USB-A or Wi-Fi as its panel",
+      "author": "Quixotic7",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "github_repo": "Quixotic7/remoteFM14Move",
+      "default_branch": "main",
+      "asset_name": "remotefm1-module.tar.gz",
+      "min_host_version": "1.6.0"
+    },
+    {
+      "id": "move-mpc-control",
+      "name": "Move MPC Control",
+      "description": "The Move as pads, clip launcher, step sequencer, and Q-Link knobs for an Akai MPC (MPC 3.10.1 or later) over one USB cable: the MPC's clip matrix, drum pads, notes, Step Seq, mutes, and transport, with clip and pad colours from the MPC. Needs the Ableton Move (Schwung) controller script on the MPC: github.com/ryanmgilmore/mpc-control-script-move",
+      "author": "Ryan Gilmore",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "github_repo": "ryanmgilmore/move-mpc-control",
+      "default_branch": "main",
+      "asset_name": "move-mpc-control-module.tar.gz",
+      "min_host_version": "1.9.4"
+    },
+    {
+      "id": "macros",
+      "name": "Macros",
+      "description": "Eight performance macros per Set on Move's knobs. Each macro moves any number of slot, send and Master FX settings with its own range and curve, and two-sided macros work like a DJ filter. Move keeps its pads, steps, transport and Note/Session button while you play. Edit macros in the browser and hear them on Move as you drag.",
+      "author": "Samir Caus",
+      "component_type": "overtake",
+      "subcategory": "performance-fx",
+      "tags": [
+        "has-remote-ui"
+      ],
+      "github_repo": "samircaus/schwung-macros",
+      "default_branch": "main",
+      "asset_name": "macros-module.tar.gz",
+      "min_host_version": "1.9.4"
+    },
+    {
       "id": "piano-keys",
       "name": "Piano Keys",
       "description": "Pads as a piano keyboard with multi-channel output, aftertouch and knob CCs",
