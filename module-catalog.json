@@ -2884,6 +2884,22 @@
       "default_branch": "main",
       "asset_name": "piano-keys-module.tar.gz",
       "min_host_version": "1.9.3"
+    },
+    {
+      "id": "melodee-move",
+      "name": "Melodee",
+      "description": "Melodee, the groovebox by Kerem Kiliç (Ellic Studio), as a standalone session: Move restarts into Melodee and comes back when you quit. Sixteen tracks with Melodee's sampler and Chop on the 32 pads, Schwung's synths and audio effects, keygroups, MIDI and audio tracks, the sequencer, Looper, Mixer and Song with exports (stems, MPC 3, Ableton Live Set). A web page at move.local:8080 for its files.",
+      "author": "Kerem Kiliç (Ellic Studio)",
+      "component_type": "tool",
+      "subcategory": "sampling-editing",
+      "tags": [
+        "drums",
+        "sample-based"
+      ],
+      "github_repo": "keremimo/melodee-move",
+      "default_branch": "main",
+      "asset_name": "melodee-move-module.tar.gz",
+      "min_host_version": "1.9.0"
     }
   ]
 }
