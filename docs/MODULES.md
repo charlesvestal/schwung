@@ -189,9 +189,9 @@ later ableton launch then fails to stage `bin/heal.new` into it.
 
 #### Shared memory a standalone tool may rely on
 
-With Move stopped there is no shim and no shadow_ui, but two dev surfaces keep
-working if the standalone program speaks their shared memory. Both layouts are
-stable contracts:
+With Move stopped there is no shim and no shadow_ui, but two dev surfaces and
+the screen reader's speech keep working if the standalone program speaks their
+shared memory. All three layouts are stable contracts:
 
 - **`/dev/shm/schwung-display-live`** (1024 bytes): the screen in
   `js_display_pack` format — 8 pages × 128 columns, bit 0 the topmost pixel of
@@ -206,6 +206,19 @@ stable contracts:
   them working. Its creator must `shadow_midi_inject_init` it — zero-fill is
   not a valid state — and the shim that normally does is not running, so the
   standalone program initialises it on start (what is there is stale).
+- **`/dev/shm/schwung-tts`**: the screen reader's speech (`tts_shm_t` in
+  `src/host/tts_shm.h`). A standalone program plays the shim's side: create
+  the segment, zero it, store `version` and then `magic` (release), and spawn
+  `/data/UserData/schwung/schwung-tts` as its own child — its own session,
+  SCHED_OTHER, stdio on `/dev/null`, no inherited fds. The sidecar publishes
+  the user's voice settings in `state`; restate them in `want`, write text
+  under the `req_seq` seqlock, and drain the ring from the audio thread, skipping
+  samples below `discard_until` once `speak_ack` reaches your `speak_count`.
+  Speak only while `state.enabled` is set. The sidecar exits when its parent
+  does; stop it (SIGTERM) on a clean quit too, since the shim starts its own
+  when Move comes back. A layout change bumps `TTS_SHM_VERSION`, and the
+  sidecar then refuses the segment and exits, so an old tool goes silent
+  rather than corrupt.
 
 Either file may already exist from the stack, owned by whoever ran it. Create
 with mode 0666 (`fchmod` after `shm_open`), so a later run under the other uid
@@ -214,6 +227,9 @@ can open it.
 movy's standalone host (`host/display.c` and `host/inject_ring.c` in
 [schwung-movy](https://github.com/DimaDake/schwung-movy)) is a working example
 of both.
+Melodee (`src/move/speech.cpp` in
+[melodee-move](https://github.com/keremimo/melodee-move)) and RemoteFM1 are
+working examples of speech.
 
 ### `forks_processes`
 
