@@ -2872,6 +2872,18 @@
       "default_branch": "main",
       "asset_name": "macros-module.tar.gz",
       "min_host_version": "1.9.4"
+    },
+    {
+      "id": "piano-keys",
+      "name": "Piano Keys",
+      "description": "Pads as a piano keyboard with multi-channel output, aftertouch and knob CCs",
+      "author": "chrgthb",
+      "component_type": "overtake",
+      "subcategory": "controller",
+      "github_repo": "chrgthb/Schwung_Piano_keys",
+      "default_branch": "main",
+      "asset_name": "piano-keys-module.tar.gz",
+      "min_host_version": "1.9.3"
     }
   ]
 }
