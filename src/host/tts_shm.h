@@ -16,6 +16,12 @@
  * The shim side runs on the SPI callback, so it does no syscalls and takes no
  * locks: the request block is a seqlock (odd while being written), the ring
  * is two monotonic counters.
+ *
+ * THIS IS A PUBLIC CONTRACT. Standalone tools (Melodee, RemoteFM1) play the
+ * shim's side of it themselves, from their own copy of this layout -- see
+ * docs/MODULES.md, "Shared memory a standalone tool may rely on". Any change
+ * to the layout or its protocol must bump TTS_SHM_VERSION, which makes the
+ * sidecar refuse an old tool's segment instead of misreading it.
  */
 #ifndef TTS_SHM_H
 #define TTS_SHM_H
