@@ -2845,6 +2845,18 @@
       "default_branch": "main",
       "asset_name": "remotefm1-module.tar.gz",
       "min_host_version": "1.6.0"
+    },
+    {
+      "id": "move-mpc-control",
+      "name": "Move MPC Control",
+      "description": "The Move as pads, clip launcher, step sequencer, and Q-Link knobs for an Akai MPC (MPC 3.10.1 or later) over one USB cable: the MPC's clip matrix, drum pads, notes, Step Seq, mutes, and transport, with clip and pad colours from the MPC. Needs the Ableton Move (Schwung) controller script on the MPC: github.com/ryanmgilmore/mpc-control-script-move",
+      "author": "Ryan Gilmore",
+      "component_type": "tool",
+      "subcategory": "performance",
+      "github_repo": "ryanmgilmore/move-mpc-control",
+      "default_branch": "main",
+      "asset_name": "move-mpc-control-module.tar.gz",
+      "min_host_version": "1.9.4"
     }
   ]
 }
