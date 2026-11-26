@@ -1855,13 +1855,13 @@
       "id": "beatbank",
       "name": "Beat Bank",
       "description": "Library of standard drum patterns from editable .beat files — pick a pattern, it prints one bar into Move.",
-      "author": "Mission Minnow",
+      "author": "Mission Minnow (Fork by Matt Estela)",
       "component_type": "midi_fx",
       "subcategory": "sequencer",
       "tags": [
         "drums"
       ],
-      "github_repo": "mission-minnow/beatbank",
+      "github_repo": "mestela/beatbank",
       "default_branch": "main",
       "asset_name": "beatbank-module.tar.gz",
       "min_host_version": "0.11.5"
