@@ -2885,6 +2885,22 @@
       "default_branch": "main",
       "asset_name": "melodee-move-module.tar.gz",
       "min_host_version": "1.9.0"
+    },
+    {
+      "id": "vial",
+      "name": "Vial",
+      "description": "Polyphonic spectral-morphing wavetable synthesizer based on Vital/Vial: three wavetable oscillators with 81 wavetables (Preset, 6 Vial shapes, and 74 Amino wavetables), sampler/noise, dual multimode filters, three envelopes, LFOs with selectable shapes, an 8-slot modulation matrix, seven built-in effects, and a Remote Web UI. Loads native .vital/.vial presets plus on-the-fly Helm (.helm) and Surge XT (.fxp) presets.",
+      "author": "Matt Tytel / Gregory Buchenberger (port: andree182)",
+      "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": [
+        "has-remote-ui",
+        "polyphonic"
+      ],
+      "github_repo": "andree182/schwung-vial",
+      "default_branch": "master",
+      "asset_name": "vial-module.tar.gz",
+      "min_host_version": "1.7.3"
     }
   ]
 }
