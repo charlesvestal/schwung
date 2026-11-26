@@ -2699,7 +2699,7 @@
     {
       "id": "s3g-thru",
       "name": "s3g Thru",
-      "description": "Four-lane stereo sampler with fifteen engines, seven performance modes, Euclidean and Onset sequencing, live recording, performance looping and effects.",
+      "description": "Stereo sample and synthesis instrument with 22 engines, four lanes, seven performance modes, assignable LFOs, polymetric sequencing, live recording, performance looping and effects.",
       "author": "s3g",
       "component_type": "overtake",
       "subcategory": "sampler-looper",
