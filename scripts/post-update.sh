@@ -26,6 +26,19 @@ cp "$BASE/schwung-shim.so" /usr/lib/schwung-shim.so 2>/dev/null || \
 chmod u+s /usr/lib/schwung-shim.so 2>/dev/null
 chmod u+s "$BASE/schwung-shim.so" 2>/dev/null
 
+# --- Save the stock Move binary (only once) ---
+#
+# BEFORE schwung-heal below: heal mirrors shim-entrypoint.sh over /opt/move/Move,
+# so after a stock firmware update (which rewrites /opt/move and leaves no
+# MoveOriginal) a heal-first order lost the stock binary and then saved the
+# entrypoint script as MoveOriginal. Never save the entrypoint as the original.
+# Effective only as root (legacy store path / ssh); as ableton the mv fails and
+# heal refuses the entrypoint mirror until install.sh has run.
+if [ ! -f /opt/move/MoveOriginal ] && [ -f /opt/move/Move ] && \
+   ! cmp -s /opt/move/Move "$BASE/shim-entrypoint.sh"; then
+    mv /opt/move/Move /opt/move/MoveOriginal
+fi
+
 # --- Privileged mirror (web-installer path) ---
 #
 # schwung-manager runs this script as `ableton`, so the /usr/lib writes above
@@ -68,10 +81,6 @@ fi
 chmod +x "$BASE/shim-entrypoint.sh" 2>/dev/null
 [ -f "$BASE/schwung-entry.sh" ] && chmod +x "$BASE/schwung-entry.sh" 2>/dev/null
 
-# Backup original Move binary (only once)
-if [ ! -f /opt/move/MoveOriginal ] && [ -f /opt/move/Move ]; then
-    mv /opt/move/Move /opt/move/MoveOriginal
-fi
 
 # Install shimmed entrypoint
 if [ -f /opt/move/MoveOriginal ] && [ -f "$BASE/shim-entrypoint.sh" ]; then
