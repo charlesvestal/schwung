@@ -202,6 +202,15 @@ static int needs_copy(const char *src, const char *dst) {
     return contents_differ(src, dst);             /* same size → verify bytes */
 }
 
+/* Is the stock Move binary saved as /opt/move/MoveOriginal? It must exist and
+ * must not be the entrypoint script itself (what a mirror-before-backup leaves). */
+static int stock_binary_saved(void) {
+    struct stat st;
+    if (stat("/opt/move/MoveOriginal", &st) < 0 || !S_ISREG(st.st_mode)) return 0;
+    return needs_copy("/data/UserData/schwung/shim-entrypoint.sh",
+                      "/opt/move/MoveOriginal");
+}
+
 /* Install one tool's staged helper, working entirely through a descriptor for
  * that tool's bin/ directory.
  *
@@ -424,8 +433,21 @@ int main(int argc, char **argv) {
     }
 
     /* Entrypoint — perms 0755. Wedging this with a half-written file
-     * could brick boot, hence atomic-rename. */
-    if (needs_copy("/data/UserData/schwung/shim-entrypoint.sh",
+     * could brick boot, hence atomic-rename.
+     *
+     * Only over a saved stock binary. A stock firmware update rewrites /opt/move
+     * and leaves no MoveOriginal; /opt/move/Move is then the ONLY copy of the
+     * stock binary, and the entrypoint exec's MoveOriginal. Mirroring there
+     * deletes stock Move, and post-update.sh's backup step afterwards saves the
+     * entrypoint script as MoveOriginal (seen on a device, 2026-11-28: recovered
+     * only from the still-running Move's /proc/<pid>/exe). Saving the stock
+     * binary is install.sh's / post-update.sh's job (a mv on the near-full root
+     * partition); heal refuses, and rc = 2 keeps --reboot from rebooting into it. */
+    if (!stock_binary_saved()) {
+        fprintf(stderr, "schwung-heal: /opt/move/MoveOriginal missing or not the stock binary;"
+                        " entrypoint NOT mirrored (run install.sh)\n");
+        rc = 2;
+    } else if (needs_copy("/data/UserData/schwung/shim-entrypoint.sh",
                    "/opt/move/Move")) {
         if (copy_atomic("/data/UserData/schwung/shim-entrypoint.sh",
                         "/opt/move/Move", 0755) == 0) {
